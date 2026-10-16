@@ -7,7 +7,7 @@ playwright
 playwright-stealth
 openai
 pytesseract
-Pillow
+Pillow==12.3.0
 yt-dlp>=2026.8.19
 aiogram>=3.4
 pyrotgfork>=2.2

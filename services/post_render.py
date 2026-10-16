@@ -41,13 +41,20 @@ MAX_QA_BYTES = 2 * 1024 * 1024
 # conservative explicit bound so the job scheduler can reserve peak disk.
 MAX_OVERLAY_BYTES = 16 * 1024 * 1024
 MAX_DURATION_MS = 600_000
-# Proof the caption is in the delivered pixels. Of the overlay's solid pixels
-# (alpha 200 or more), at least this share must look like the overlay's own
-# colour in the QA frame, within a tolerance that covers JPEG, 4:2:0 chroma
-# and the up-to-22% of video that shows through at alpha 200-254.
-CAPTION_INK_MIN_SHARE = 0.60
+# Proof the caption is in the delivered pixels, measured as CHANGE against the
+# source. The QA frame is compared with the same source frame at the same time
+# (through the same delivery graph, minus the overlay). Where the caption would
+# change the picture by more than CAPTION_INK_CONTRAST levels (glyph pixels only,
+# never a background box), the burned frame must have moved at least
+# CAPTION_INK_MIN_SHARE of the way toward the caption's colour, on average.
+# Matching colours alone prove nothing: white text on a white clip "matches"
+# whether or not it was drawn. Too few such pixels means the caption cannot be
+# seen against this picture at all, which is refused as well.
+CAPTION_INK_MIN_SHARE = 0.40
 CAPTION_INK_ALPHA_MIN = 200
-CAPTION_INK_TOLERANCE = 64
+CAPTION_INK_CONTRAST = 48
+CAPTION_INK_MIN_PIXELS = 64
+CAPTION_INK_BOX_TOLERANCE = 24
 Hash = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
 Identity = Annotated[str, Field(min_length=1, max_length=512)]
 
@@ -296,7 +303,7 @@ def _file_hash(path: Path, limit: int) -> tuple[str, int]:
     return digest.hexdigest(), total
 
 
-def _video_graph(source_probe: MediaProbe, frame_height: int | None = None) -> str:
+def _video_graph(source_probe: MediaProbe, frame_height: int | None = None, overlay: bool = True) -> str:
     chain = []
     if (source_probe.width, source_probe.height) != (1080, 1920):
         if abs(source_probe.width * 16 - source_probe.height * 9) <= 32:
@@ -315,6 +322,9 @@ def _video_graph(source_probe: MediaProbe, frame_height: int | None = None) -> s
         # The delivery frame is exactly 1080x1920 here. A page frame keeps its
         # centred band and letterboxes it in plain black on the same canvas.
         chain.append(letterbox_filter(frame_height))
+    if not overlay:
+        # The picture as delivered, without the caption: the reference for the ink check.
+        return f"[0:v:0]{','.join(chain) if chain else 'null'}[v]"
     if not chain:
         return "[0:v:0][1:v:0]overlay=0:0:format=auto[v]"
     return f"[0:v:0]{','.join(chain)}[delivery];[delivery][1:v:0]overlay=0:0:format=auto[v]"
@@ -351,29 +361,47 @@ def _encode_final(source: Path, overlay: Path, final: Path, source_probe: MediaP
     raise PostRenderError("delivery_budget_exceeded", "both bounded encodes exceeded the byte or duration contract")
 
 
-def _caption_ink_share(overlay_png: bytes, qa_frame: Image.Image) -> float:
-    """Share of the overlay's solid pixels that the burned QA frame shows in the overlay's colour.
+def _caption_ink(overlay_png: bytes, qa_frame: Image.Image, source_frame: Image.Image,
+                 box_color: str | None = None) -> tuple[float, int]:
+    """How much of the caption's contrast reached the burned frame: ``(share, pixels measured)``.
 
     The overlay is laid over the 1080x1920 delivery frame at 0:0 (see
-    ``_video_graph``), a framed page's band included, so its pixels line up
-    with the QA frame without any offset. Only the overlay's own bounding box
-    is compared. 0.0 when the overlay has no solid pixel at all.
+    ``_video_graph``), a framed page's band included, so its pixels line up with
+    both frames without any offset. Only the overlay's own bounding box is read.
+
+    For each glyph pixel (overlay alpha at least CAPTION_INK_ALPHA_MIN, leaving out
+    pixels painted in ``box_color``, the box or highlight behind the text) the caption
+    should turn the source colour into the expected colour. Pixels where that change
+    is under CAPTION_INK_CONTRAST carry no evidence and are skipped. Each measured
+    pixel scores how far the burned frame moved from the source toward the expected
+    colour (1.0 is all the way, 0.0 not at all, clipped to -0.5..1.5); the share is
+    the mean. ``(0.0, 0)`` when no pixel can be measured.
     """
+
+    import numpy as np  # already installed with librosa; imported here like services/sound_cache.py
 
     with Image.open(io.BytesIO(overlay_png)) as opened:
         overlay = opened.convert("RGBA")
     box = overlay.getchannel("A").getbbox()
     if box is None:
-        return 0.0
-    solid = overlay.getchannel("A").crop(box).point(lambda a: 255 if a >= CAPTION_INK_ALPHA_MIN else 0)
-    solid_pixels = solid.histogram()[255]
-    if solid_pixels == 0:
-        return 0.0
-    difference = ImageChops.difference(overlay.convert("RGB").crop(box), qa_frame.convert("RGB").crop(box))
-    red, green, blue = difference.split()
-    worst = ImageChops.lighter(ImageChops.lighter(red, green), blue)
-    close = worst.point(lambda d: 255 if d <= CAPTION_INK_TOLERANCE else 0)
-    return close.histogram(mask=solid)[255] / solid_pixels
+        return 0.0, 0
+    layer = np.asarray(overlay.crop(box), dtype=np.float32)
+    alpha, colour = layer[..., 3], layer[..., :3]
+    source = np.asarray(source_frame.convert("RGB").crop(box), dtype=np.float32)
+    burned = np.asarray(qa_frame.convert("RGB").crop(box), dtype=np.float32)
+    expected = colour * (alpha / 255.0)[..., None] + source * (1.0 - alpha / 255.0)[..., None]
+    glyph = alpha >= CAPTION_INK_ALPHA_MIN
+    if box_color is not None:
+        background = np.array([int(box_color[i:i + 2], 16) for i in (1, 3, 5)], dtype=np.float32)
+        glyph &= np.abs(colour - background).max(axis=-1) > CAPTION_INK_BOX_TOLERANCE
+    change = expected - source
+    measured = glyph & (np.abs(change).max(axis=-1) > CAPTION_INK_CONTRAST)
+    count = int(measured.sum())
+    if count < CAPTION_INK_MIN_PIXELS:
+        return 0.0, count
+    wanted, got = change[measured], (burned - source)[measured]
+    progress = np.clip((wanted * got).sum(axis=-1) / (wanted * wanted).sum(axis=-1), -0.5, 1.5)
+    return float(progress.mean()), count
 
 
 def source_visual_matches(request: PostRenderRequest) -> bool:
@@ -453,12 +481,28 @@ def render_post(source_path: Path, output_directory: Path, request: PostRenderRe
         _run([tools.ffmpeg, "-nostdin", "-v", "error", "-xerror", "-protocol_whitelist", "file,pipe",
               "-ss", f"{qa_at_ms / 1000:.3f}", "-f", "mov", "-i", str(final_path),
               "-frames:v", "1", "-q:v", "3", "-update", "1", str(qa_path)], tools, output_file=qa_path, output_limit=MAX_QA_BYTES)
-        with Image.open(qa_path) as frame:
+        # The same source frame, through the same delivery graph but without the caption: what the
+        # burned frame must differ from. The source is deleted below, so this is the only chance.
+        reference_path = output_directory / "reference.jpg"
+        _run([tools.ffmpeg, "-nostdin", "-v", "error", "-xerror", "-protocol_whitelist", "file,pipe", "-noautorotate",
+              "-ss", f"{qa_at_ms / 1000:.3f}", "-f", "mov", "-i", str(source),
+              "-filter_complex", _video_graph(source_probe, band_height, overlay=False), "-map", "[v]",
+              "-frames:v", "1", "-q:v", "3", "-update", "1", str(reference_path)],
+             tools, output_file=reference_path, output_limit=MAX_QA_BYTES)
+        with Image.open(qa_path) as frame, Image.open(reference_path) as reference:
             frame.load()
+            reference.load()
             if frame.size != (1080, 1920) or frame.format != "JPEG":
                 raise PostRenderError("qa_frame_invalid", "final QA frame is not a decodable 1080x1920 JPEG")
+            if reference.size != (1080, 1920):
+                raise PostRenderError("qa_frame_invalid", "source reference frame is not 1080x1920")
             # The delivered pixels must show the caption, not only the receipt.
-            caption_ink_share = _caption_ink_share(overlay_bytes, frame)
+            style = caption_request.style
+            caption_ink_share, caption_ink_pixels = _caption_ink(
+                overlay_bytes, frame, reference, style.background_color if style.background != "none" else None)
+        reference_path.unlink()
+        if caption_ink_pixels < CAPTION_INK_MIN_PIXELS:
+            raise PostRenderError("CAPTION_NOT_DRAWN", "the caption cannot be told apart from the picture behind it")
         if caption_ink_share < CAPTION_INK_MIN_SHARE:
             raise PostRenderError("CAPTION_NOT_DRAWN", "the caption is not visible in the burned QA frame")
         final_sha, final_length = _file_hash(final_path, MAX_FINAL_BYTES)
@@ -484,7 +528,7 @@ def render_post(source_path: Path, output_directory: Path, request: PostRenderRe
             "source_probe": source_probe.__dict__, "final_probe": final_probe.__dict__,
             "decoded_video_frames": frames[-1], "qa_at_ms": qa_at_ms,
             "final_sha256": final_sha, "qa_frame_sha256": qa_sha,
-            "caption_ink_share": round(caption_ink_share, 4),
+            "caption_ink_share": round(caption_ink_share, 4), "caption_ink_pixels": caption_ink_pixels,
         }, sort_keys=True))
         source.unlink()
         return RenderedPost(final_path, qa_path, receipt_path, receipt_json, sha256(receipt_json),

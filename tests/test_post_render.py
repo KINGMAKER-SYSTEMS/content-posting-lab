@@ -539,9 +539,9 @@ def test_frame_fit_without_a_frame_or_unknown_is_rejected_at_the_request_boundar
 
 
 # --- Ink check: the burned frame must show the caption (CAPTION_NOT_DRAWN) -------------------------------------------
-# The check compares the overlay's solid pixels with the QA frame. Thresholds come from real renders on seeno
-# (reports/lane-labglyph.md): a drawn caption measured 0.83-1.00 over every clip and style tried, 0.975 or more on
-# the real portrait; the same render with the overlay left out measured 0.00-0.09 on the real portrait.
+# The check measures CHANGE against the source frame at the same time: where the caption would change the picture,
+# the burned frame must have moved toward the caption's colour. Matching colours prove nothing (white on white).
+# Numbers come from real renders on seeno (reports/lane-labglyph.md, Round 3).
 
 def _decode(directory):
     return json.loads((directory / "decode.json").read_text())
@@ -555,23 +555,36 @@ def _solid_colour_clip(path, colour):
     return path
 
 
+def _noise_clip(path):
+    subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-f", "lavfi", "-i",
+                    "nullsrc=size=1080x1920:rate=30:duration=1.2,geq=random(1)*255:128:128,setsar=1", "-an", "-c:v",
+                    "libx264", "-preset", "ultrafast", "-crf", "18", "-pix_fmt", "yuv420p", "-r", "30", str(path)],
+                   check=True, timeout=60, capture_output=True)
+    return path
+
+
 def _without_overlay(monkeypatch):
-    """Encode exactly as the real graph does, but leave the caption overlay out of it."""
+    """Encode exactly as the real graph does, but leave the caption overlay out of the final video."""
     real_graph = render._video_graph
 
-    def graph(source_probe, frame_height=None):
-        return (real_graph(source_probe, frame_height)
-                .replace("[0:v:0][1:v:0]overlay=0:0:format=auto[v]", "[0:v:0]null[v]")
-                .replace("[delivery][1:v:0]overlay=0:0:format=auto[v]", "[delivery]null[v]"))
+    def graph(source_probe, frame_height=None, overlay=True):
+        # With or without the overlay the graph is the caption-less one: the final video gets no caption.
+        return real_graph(source_probe, frame_height, overlay=False)
     monkeypatch.setattr(render, "_video_graph", graph)
+
+
+def _look_request(clip, **style):
+    sha = render.sha256(clip.read_bytes())
+    return _request_with_caption_style(_NO_FRAME, **style).model_copy(update={"source_sha256": sha})
 
 
 def test_a_normal_render_passes_and_records_how_much_caption_ink_it_shows(real_portrait, tmp_path):
     result = render.render_post(real_portrait, tmp_path / "render",
                                 request(render.sha256(real_portrait.read_bytes())), clock_ms=lambda: NOW)
-    share = _decode(tmp_path / "render")["caption_ink_share"]
-    assert share >= 0.95
-    assert render.CAPTION_INK_MIN_SHARE < share
+    decoded = _decode(tmp_path / "render")
+    assert decoded["caption_ink_share"] >= 0.8
+    assert decoded["caption_ink_pixels"] >= render.CAPTION_INK_MIN_PIXELS
+    assert not (tmp_path / "render" / "reference.jpg").exists()
     # The receipt is unchanged: the share lives in decode.json only.
     assert "caption_ink_share" not in json.loads(result.receipt_json)
 
@@ -587,11 +600,11 @@ def test_a_render_whose_overlay_was_not_applied_is_refused_as_not_drawn(real_por
 
 @pytest.mark.parametrize("frame", ["16:9", "4:3"])
 def test_a_framed_page_render_passes_which_proves_the_overlay_lines_up_with_the_band(real_portrait, tmp_path, frame):
-    # The overlay is laid on the full 1080x1920 frame at 0:0, band and all, so it needs no offset. A check that
-    # compared the wrong rows would see no caption here.
+    # The overlay is laid on the full 1080x1920 frame at 0:0, band and all, so it needs no offset, and the source
+    # reference goes through the same letterbox. A check that compared the wrong rows would see no caption here.
     render.render_post(real_portrait, tmp_path / "render",
                        request(render.sha256(real_portrait.read_bytes()), frame=frame), clock_ms=lambda: NOW)
-    assert _decode(tmp_path / "render")["caption_ink_share"] >= 0.95
+    assert _decode(tmp_path / "render")["caption_ink_share"] >= 0.8
 
 
 def test_a_framed_page_render_without_its_overlay_is_refused_too(real_portrait, monkeypatch, tmp_path):
@@ -607,58 +620,127 @@ def test_a_framed_page_render_without_its_overlay_is_refused_too(real_portrait, 
     {"color": "#ffd60a", "outline": "#000000"},
     {"color": "#0a84ff", "outline": None},
     {"color": "#000000", "outline": None, "background": "highlight", "background_color": "#ffd60a"},
+    {"background": "box", "background_color": "#000000"},
     {"size_pt": 12},
-], ids=["red", "yellow", "blue-no-outline", "highlight", "smallest-size"])
+    {"font": "TikTokSans12pt-Light.ttf", "size_pt": 12, "outline": None},
+    {"font": "TikTokSans16pt-Regular.ttf", "size_pt": 12, "color": "#0a84ff", "outline": None},
+], ids=["red", "yellow", "blue-no-outline", "highlight", "black-box", "smallest-size", "thin-font", "regular-blue"])
 def test_other_looks_pass_on_real_footage_and_are_refused_without_the_overlay(real_portrait, monkeypatch, tmp_path, style):
-    sha = render.sha256(real_portrait.read_bytes())
-    request_for_look = _request_with_caption_style(_NO_FRAME, **style).model_copy(update={"source_sha256": sha})
+    request_for_look = _look_request(real_portrait, **style)
     render.render_post(real_portrait, tmp_path / "drawn", request_for_look, clock_ms=lambda: NOW)
-    assert _decode(tmp_path / "drawn")["caption_ink_share"] >= 0.95
+    assert _decode(tmp_path / "drawn")["caption_ink_share"] >= 0.5
     _without_overlay(monkeypatch)
     with pytest.raises(render.PostRenderError) as error:
         render.render_post(real_portrait, tmp_path / "bare", request_for_look, clock_ms=lambda: NOW)
     assert error.value.code == "CAPTION_NOT_DRAWN"
 
 
+def test_a_thin_coloured_caption_on_noisy_footage_still_passes(tmp_path):
+    # The worst case in the calibration: a 30 px Light blue caption on random noise (about 0.4 of its contrast
+    # reaches the frame). The older colour-match check scored 0.03 here and would have refused a good post.
+    if not shutil.which("ffmpeg"):
+        pytest.skip("ffmpeg is required for actual render proof")
+    clip = _noise_clip(tmp_path / "noise.mp4")
+    render.render_post(clip, tmp_path / "render",
+                       _look_request(clip, font="TikTokSans12pt-Light.ttf", size_pt=12, color="#0a84ff", outline=None),
+                       clock_ms=lambda: NOW)
+    assert _decode(tmp_path / "render")["caption_ink_share"] >= render.CAPTION_INK_MIN_SHARE + 0.05
+
+
 def test_white_text_with_an_outline_on_a_white_clip_passes(tmp_path):
+    # The black outline changes the picture, so the caption is measurable and visible.
     if not shutil.which("ffmpeg"):
         pytest.skip("ffmpeg is required for actual render proof")
     clip = _solid_colour_clip(tmp_path / "white.mp4", "white")
-    sha = render.sha256(clip.read_bytes())
-    render.render_post(clip, tmp_path / "render", request(sha), clock_ms=lambda: NOW)
-    assert _decode(tmp_path / "render")["caption_ink_share"] >= 0.95
+    render.render_post(clip, tmp_path / "render", request(render.sha256(clip.read_bytes())), clock_ms=lambda: NOW)
+    assert _decode(tmp_path / "render")["caption_ink_share"] >= 0.8
 
 
-def test_white_text_with_no_outline_on_a_white_clip_cannot_be_told_from_a_missing_overlay(tmp_path, monkeypatch):
-    # Known blind spot, stated on purpose. The check asks whether the burned frame shows the overlay's own
-    # colour. White on white always does, drawn or not, so this caption passes (share about 1.0) and so would
-    # the same render without its overlay. The caption is not invisible by accident here: the look has no
-    # outline and the clip is white. The check proves the overlay was composited when it can differ from the
-    # clip; it does not judge readability.
+@pytest.mark.parametrize("clip_colour", ["white", "0xf2f2f2"])
+@pytest.mark.parametrize("applied", [True, False], ids=["overlay-applied", "overlay-missing"])
+def test_white_text_with_no_outline_on_a_white_clip_is_refused_as_not_drawn(tmp_path, monkeypatch, clip_colour, applied):
+    # It used to pass whether or not the overlay was applied (white matches white). Now the caption must change
+    # the picture: here it changes nothing, so the post would carry no readable caption and is refused.
+    if not shutil.which("ffmpeg"):
+        pytest.skip("ffmpeg is required for actual render proof")
+    clip = _solid_colour_clip(tmp_path / "bright.mp4", clip_colour)
+    if not applied:
+        _without_overlay(monkeypatch)
+    with pytest.raises(render.PostRenderError) as error:
+        render.render_post(clip, tmp_path / "render", _look_request(clip, outline=None), clock_ms=lambda: NOW)
+    assert error.value.code == "CAPTION_NOT_DRAWN"
+    if applied:
+        assert "cannot be told apart" in str(error.value)
+    assert not (tmp_path / "render").exists()
+
+
+@pytest.mark.parametrize("applied", [True, False], ids=["overlay-applied", "overlay-missing"])
+def test_a_background_box_cannot_stand_in_for_the_caption_text(tmp_path, monkeypatch, applied):
+    # Black text in a WHITE box on a white clip: the box is the clip's own colour and used to count as ink.
+    # Only the glyph pixels are scored, so a missing overlay is refused and a drawn one passes.
     if not shutil.which("ffmpeg"):
         pytest.skip("ffmpeg is required for actual render proof")
     clip = _solid_colour_clip(tmp_path / "white.mp4", "white")
-    sha = render.sha256(clip.read_bytes())
-    plain = _request_with_caption_style(_NO_FRAME, outline=None).model_copy(update={"source_sha256": sha})
-    render.render_post(clip, tmp_path / "drawn", plain, clock_ms=lambda: NOW)
-    assert _decode(tmp_path / "drawn")["caption_ink_share"] >= 0.95
+    look = _look_request(clip, color="#000000", outline=None, background="box", background_color="#ffffff")
+    if applied:
+        render.render_post(clip, tmp_path / "render", look, clock_ms=lambda: NOW)
+        assert _decode(tmp_path / "render")["caption_ink_share"] >= 0.8
+        return
     _without_overlay(monkeypatch)
-    render.render_post(clip, tmp_path / "bare", plain, clock_ms=lambda: NOW)
-    assert _decode(tmp_path / "bare")["caption_ink_share"] >= render.CAPTION_INK_MIN_SHARE
+    with pytest.raises(render.PostRenderError) as error:
+        render.render_post(clip, tmp_path / "render", look, clock_ms=lambda: NOW)
+    assert error.value.code == "CAPTION_NOT_DRAWN"
 
 
-def test_the_ink_share_counts_only_solid_overlay_pixels_in_the_overlays_own_colour():
-    from services.caption_render import render_caption_overlay, CaptionRenderRequest
-    import base64, io
-    caption = CaptionRenderRequest.model_validate({
-        "schema": "content-lab.caption-render-request.v1", "caption": "share check",
-        "style": {**STYLE, "size_pt": 32, "line_balance": 0}})
-    png = base64.b64decode(render_caption_overlay(caption, font_dir=Path(render.__file__).parents[1] / "fonts").overlay.base64)
+def _overlay_for(style_overrides=None, caption="share check"):
+    import base64
+    from services.caption_render import CaptionRenderRequest, render_caption_overlay
+    caption_request = CaptionRenderRequest.model_validate({
+        "schema": "content-lab.caption-render-request.v1", "caption": caption,
+        "style": {**STYLE, "size_pt": 32, "line_balance": 0, **(style_overrides or {})}})
+    fonts = Path(render.__file__).parents[1] / "fonts"
+    return base64.b64decode(render_caption_overlay(caption_request, font_dir=fonts).overlay.base64)
+
+
+def test_the_ink_measure_on_synthetic_frames():
+    import io
+    png = _overlay_for()
+    source = Image.new("RGB", (1080, 1920), (120, 120, 120))
     with Image.open(io.BytesIO(png)) as overlay:
-        same = Image.alpha_composite(Image.new("RGBA", overlay.size, (0, 0, 0, 255)), overlay.convert("RGBA")).convert("RGB")
-    assert render._caption_ink_share(png, same) >= 0.99
-    assert render._caption_ink_share(png, Image.new("RGB", (1080, 1920), (128, 128, 128))) < 0.05
-    # An overlay with no solid pixel at all proves nothing.
+        burned = Image.alpha_composite(source.convert("RGBA"), overlay.convert("RGBA")).convert("RGB")
+    share, pixels = render._caption_ink(png, burned, source)
+    assert share >= 0.99 and pixels > 1000
+    # Nothing burned: the frame is the source.
+    share, pixels = render._caption_ink(png, source, source)
+    assert abs(share) < 0.01 and pixels > 1000
+    # A frame that moved the wrong way scores below zero.
+    inverse = Image.eval(burned, lambda v: 255 - v)
+    assert render._caption_ink(png, inverse, source)[0] < 0
+    # An overlay with no solid pixel proves nothing.
     empty = io.BytesIO()
     Image.new("RGBA", (1080, 1920), (255, 255, 255, 0)).save(empty, format="PNG")
-    assert render._caption_ink_share(empty.getvalue(), same) == 0.0
+    assert render._caption_ink(empty.getvalue(), burned, source) == (0.0, 0)
+
+
+def test_the_ink_measure_scores_glyph_pixels_not_the_box():
+    import io
+    style = {"color": "#000000", "outline": None, "background": "box", "background_color": "#ffffff"}
+    png = _overlay_for(style)
+    source = Image.new("RGB", (1080, 1920), (255, 255, 255))
+    # Burned frame = source: only the white box "matches"; the black glyphs are missing.
+    share, pixels = render._caption_ink(png, source, source, "#ffffff")
+    assert pixels > 1000 and abs(share) < 0.01
+    # Without telling it about the box, the box pixels are not measured either (white on white changes nothing).
+    assert render._caption_ink(png, source, source, None)[1] == pixels
+
+
+def test_text_in_a_box_of_its_own_colour_is_not_a_visible_caption(real_portrait, tmp_path):
+    # White text, no outline, in a white box over dark footage: the box is plainly visible and would pass any score
+    # that counted it, but the words are the box's colour and cannot be read. Only glyph pixels count, so this is
+    # refused rather than posted with an unreadable caption.
+    with pytest.raises(render.PostRenderError) as error:
+        render.render_post(real_portrait, tmp_path / "render",
+                           _look_request(real_portrait, color="#ffffff", outline=None, background="box",
+                                         background_color="#ffffff"), clock_ms=lambda: NOW)
+    assert error.value.code == "CAPTION_NOT_DRAWN"
+    assert "cannot be told apart" in str(error.value)

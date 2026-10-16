@@ -132,17 +132,28 @@
   The local quality-check request carries the same optional `picture_frame`;
   its typed placement and bounds use that picture band and retain full-canvas
   behavior when the field is absent.
-- `services/caption_render.py` first removes Unicode format and zero-width
-  characters (category Cf: soft hyphen, U+200B-U+200D, U+2060, U+FEFF), the same
-  set the Worker's caption admission removes; they draw nothing. It then refuses,
-  and never drops, any caption character the chosen font has no glyph for (emoji, U+FE0F, U+2800, U+3164, kana and the
-  rest: the font would draw its missing-glyph box) with `CAPTION_GLYPH_MISSING`,
-  and a caption with no drawable letter or digit with `CAPTION_NO_TEXT`.
+- `services/caption_render.py` applies one canonical rule, the same one the
+  Worker and the rail use (lane capvisible): NFC, strip Unicode format and
+  zero-width characters (category Cf: soft hyphen, U+200B-U+200F, U+2060, U+FEFF;
+  they draw nothing), then glyph-check what remains. Saved `line_breaks` lines
+  get the same treatment as the caption (plus whitespace collapsed to single
+  spaces). It refuses, and never drops, any remaining character the chosen font
+  has no glyph for (emoji, U+FE0F, U+2800, U+3164, kana and the rest: the font
+  would draw its missing-glyph box) with `CAPTION_GLYPH_MISSING`, and a caption
+  with no drawable letter or digit with `CAPTION_NO_TEXT`. Coverage is read from
+  the font's own cmap table (never from rendered pixels, which depend on Pillow's
+  layout engine), the same source as the Worker's drawable-codepoints table.
+  `tests/fixtures/caption_admission/` holds the Worker's shared vectors and that
+  table, sha-pinned; `Pillow` is pinned in `requirements.txt`.
 - `services/post_render.py` owns local prepared-final rendering and exact artifact
   receipts; control-plane admission remains downstream authority. After the QA
-  frame is cut it checks that the overlay's solid pixels show in the overlay's
-  own colour in that frame (at least 60%); otherwise the job fails
-  `CAPTION_NOT_DRAWN`. All three codes are terminal (not in `RETRY_CODES`).
+  frame is cut it compares that frame with the same source frame at the same time
+  (same delivery graph, no caption): where the caption would change the picture
+  (glyph pixels only, never a background box) the burned frame must have moved at
+  least 40% of the way toward the caption colour, and enough pixels must change
+  to see it at all; otherwise the job fails `CAPTION_NOT_DRAWN`. The measure and
+  pixel count are in `decode.json` (`caption_ink_share`, `caption_ink_pixels`).
+  All three codes are terminal (not in `RETRY_CODES`).
 - `services/post_render_jobs.py` and `routers/post_renders.py` own durable pre-lease
   render jobs, authenticated page-scoped status/artifacts and source acquisition.
 - `docs/post-render-setup.md` owns prepared-render storage, authentication and
@@ -768,8 +779,8 @@
   for durable crash/retry/lock/auth/source-grant and applied-video provenance checks.
 - Run `pytest -q tests/test_post_render.py` for prepared rendering, actual MP4
   decode, treatment-once preservation, byte-budget retry and bounded failures,
-  and the burned-frame caption ink check (`CAPTION_NOT_DRAWN`, share recorded
-  in `decode.json` as `caption_ink_share`).
+  and the burned-frame caption ink check (`CAPTION_NOT_DRAWN`, change against
+  the source frame, recorded in `decode.json` as `caption_ink_share`).
 - Run `pytest -q tests/test_page_frame_geometry.py tests/test_page_frame_cut.py
   tests/test_page_frame_no_frame_identity.py tests/test_page_frame_gate.py
   tests/test_page_frame_render.py` for page-frame table parity, the band-aware

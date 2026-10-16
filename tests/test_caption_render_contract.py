@@ -1,14 +1,16 @@
 import base64
 import hashlib
+import inspect
 import io
 import json
 import shutil
 from pathlib import Path
 
 import pytest
-from PIL import Image
+from PIL import Image, ImageFont, features
 from pydantic import ValidationError
 
+from services import caption_render
 from services.caption_render import (
     CaptionRenderError,
     CaptionRenderRequest,
@@ -794,6 +796,8 @@ def test_caption_empty_is_gone_because_no_input_can_reach_it():
         CaptionRenderRequest.model_validate({**request().model_dump(by_alias=True), "caption": " \u00a0 "})
     with pytest.raises(ValidationError):
         request(line_breaks=[])
+    # The deletion itself: no code path in the module can name the dead code any more.
+    assert "CAPTION_EMPTY" not in inspect.getsource(caption_render)
 
 
 # --- Format and zero-width characters: removed first, like the Worker's captionAdmission -------------------------------
@@ -836,3 +840,183 @@ def test_a_caption_of_only_format_characters_is_no_text(font_dir):
     with pytest.raises(CaptionRenderError) as error:
         render_caption_overlay(caption_request("\u00ad\u200d\u2060\ufeff"), font_dir=font_dir)
     assert error.value.code == "CAPTION_NO_TEXT"
+
+
+# --- Round 3: ordering, saved lines, layout engines, every font ---------------------------------------------------------
+
+@pytest.fixture(params=["basic", "raqm"])
+def drawing_engine(request, monkeypatch):
+    """Draw captions with the named Pillow layout engine (the glyph check reads the font's cmap and ignores it)."""
+    if request.param == "raqm" and not features.check("raqm"):
+        pytest.skip("this host's Pillow has no raqm; the production image may (ffmpeg pulls libass and fribidi)")
+    engine = {"basic": ImageFont.Layout.BASIC, "raqm": ImageFont.Layout.RAQM}[request.param]
+    monkeypatch.setattr(caption_render, "_load_font",
+                        lambda path, size: ImageFont.truetype(str(path), size=size, layout_engine=engine))
+    return request.param
+
+
+@pytest.mark.parametrize("caption,code", [
+    pytest.param("ok\ufe0f fine", "CAPTION_GLYPH_MISSING", id="variation-selector-inside-text"),
+    pytest.param("\u3164", "CAPTION_GLYPH_MISSING", id="hangul-filler-only"),
+    pytest.param("\uffa0", "CAPTION_GLYPH_MISSING", id="halfwidth-hangul-filler-only"),
+    pytest.param("hello\u200b\u3164there", "CAPTION_GLYPH_MISSING", id="filler-between-words"),
+    pytest.param("\u2800", "CAPTION_GLYPH_MISSING", id="braille-blank-only"),
+    pytest.param("good\u00adcaption \u200d\U0001F62D", "CAPTION_GLYPH_MISSING", id="emoji-after-format-characters"),
+])
+def test_the_verdict_is_the_same_under_either_pillow_layout_engine(font_dir, drawing_engine, caption, code):
+    # Raqm (HarfBuzz) can hide a missing default-ignorable character that BASIC layout draws as a box. The probe is
+    # pinned to BASIC, so the refusal does not depend on which engine the host's Pillow drew with.
+    with pytest.raises(CaptionRenderError) as error:
+        render_caption_overlay(caption_request(caption), font_dir=font_dir)
+    assert error.value.code == code
+
+
+def test_glyph_coverage_is_read_from_the_font_table_not_from_rendered_pixels(monkeypatch):
+    # A rendered probe depends on the layout engine; the cmap does not. Nothing may be drawn to decide coverage.
+    def no_drawing(*args, **kwargs):
+        raise AssertionError("the glyph check must not render anything")
+    monkeypatch.setattr(ImageFont.FreeTypeFont, "getmask2", no_drawing)
+    monkeypatch.setattr(ImageFont.FreeTypeFont, "getmask", no_drawing)
+    caption_render._font_codepoints.cache_clear()
+    covered = caption_render._font_codepoints(str(REAL_FONT_DIR / FONT_FILE))
+    assert ord("a") in covered and 0x1F62D not in covered and 0xFE0F not in covered and 0 not in covered
+    caption_render._require_drawable_text(REAL_FONT_DIR / FONT_FILE, ["plain words"])
+    caption_render._font_codepoints.cache_clear()
+
+
+@pytest.mark.parametrize("case", ["as_written", "lower", "upper", "title"])
+@pytest.mark.parametrize("saved_lines", [False, True])
+def test_the_gate_runs_on_the_cased_text_that_is_drawn(font_dir, monkeypatch, case, saved_lines):
+    seen = []
+    real = caption_render._require_drawable_text
+    monkeypatch.setattr(caption_render, "_require_drawable_text", lambda path, lines: seen.append(list(lines)) or real(path, lines))
+    style = {"case": case, "line_balance": 100}
+    if saved_lines:
+        style["line_breaks"] = ["mixed Case words", "seCond line"]
+        render_caption_overlay(caption_request("mixed Case words seCond line", **style), font_dir=font_dir)
+        expected = {"as_written": ["mixed Case words", "seCond line"], "lower": ["mixed case words", "second line"],
+                    "upper": ["MIXED CASE WORDS", "SECOND LINE"], "title": ["Mixed Case Words", "SeCond Line"]}[case]
+    else:
+        render_caption_overlay(caption_request("mixed Case words", **style), font_dir=font_dir)
+        expected = {"as_written": "mixed Case words", "lower": "mixed case words",
+                    "upper": "MIXED CASE WORDS", "title": "Mixed Case Words"}[case]
+    assert len(seen) == 1
+    got = seen[0] if saved_lines else [" ".join(seen[0])]
+    assert got == (expected if saved_lines else [expected])
+
+
+def test_saved_line_breaks_are_normalised_exactly_like_the_caption(font_dir):
+    # The wrap path rebuilds lines from single-space words (tab, NBSP, U+3000, runs of spaces become one space)
+    # and the glyph gate skips space-class characters, so a saved line has to get the same treatment or a
+    # space-class character the font lacks would be drawn as a box unchecked.
+    messy = ["one\u3000 two", "\tthree\u2003\u2003four \u200b", "", "five\u00a0six\u00ad"]
+    caption = " ".join(messy)
+    result = render_caption_overlay(caption_request(caption, line_breaks=messy), font_dir=font_dir)
+    assert [line.text for line in result.plan.lines] == ["one two", "three four", "", "five six"]
+    wrapped = render_caption_overlay(caption_request(caption, line_balance=0), font_dir=font_dir)
+    assert " ".join(line.text for line in wrapped.plan.lines) == "one two three four five six"
+    # A saved line with a real missing glyph is still refused, spaces or not.
+    with pytest.raises(CaptionRenderError) as error:
+        render_caption_overlay(caption_request("one\u3000\u3164 two", line_breaks=["one\u3000\u3164", "two"]), font_dir=font_dir)
+    assert error.value.code == "CAPTION_GLYPH_MISSING"
+
+
+@pytest.mark.parametrize("font", REAL_FONTS)
+@pytest.mark.parametrize("char", ["\u3164", "\uffa0", "\u2800", "\ufe0f", "\u3042", "\U0001F62D"],
+                         ids=["hangul-filler", "halfwidth-filler", "braille-blank", "fe0f", "kana", "emoji"])
+def test_no_installed_font_has_these_characters_and_every_font_has_plain_text(font, char):
+    # The comment in caption_render says these are missing from every TikTokSans file; this is its proof, per font,
+    # for non-emoji characters as well.
+    path = str(REAL_FONT_DIR / font)
+    covered = caption_render._font_codepoints(path)
+    assert ord(char) not in covered
+    assert ord("a") in covered
+    with pytest.raises(CaptionRenderError) as error:
+        render_caption_overlay(caption_request("hello " + char + " there", font=font), font_dir=REAL_FONT_DIR)
+    assert error.value.code == "CAPTION_GLYPH_MISSING"
+
+
+# --- Round 3: NFC first, then Cf; the shared Worker vectors; the cmap against the Worker's table -------------------
+
+VECTOR_DIR = Path(__file__).parent / "fixtures" / "caption_admission"
+# sha256 of the two files exactly as committed on ecfromthedc/rotational-posting-agent, branch tr03p5-capvisible at
+# 6fe81f9cf845866a4e265f9356c9268e4de23449 (control-plane-worker/test/fixtures/caption-admission-vectors.json and
+# control-plane-worker/data/drawable-codepoints.json). The rail copies the vectors byte for byte too.
+VECTORS_SHA256 = "92b416b26990d5d8e4ec647044c33a76c9e256c1976b6862748b24a702fcf929"
+DRAWABLE_TABLE_SHA256 = "423afa4e07d3832a3bb6a37fc67bb623710d5a265fd34a3980f7b8986dc05387"
+
+
+def _vectors():
+    raw = (VECTOR_DIR / "caption-admission-vectors.json").read_bytes()
+    assert hashlib.sha256(raw).hexdigest() == VECTORS_SHA256, "vectors file changed: re-pin it from the Worker branch"
+    return json.loads(raw)["vectors"]
+
+
+def lab_verdict(text, font=FONT_FILE):
+    """None when the Lab admits and draws the text, else the refusal code (REQUEST for a request-level refusal)."""
+    try:
+        render_caption_overlay(caption_request(text, font=font, size_pt=24, line_balance=100), font_dir=REAL_FONT_DIR)
+    except CaptionRenderError as error:
+        return error.code
+    except (ValidationError, UnicodeError):
+        return "REQUEST"
+    return None
+
+
+def test_the_vector_files_are_the_pinned_ones():
+    assert hashlib.sha256((VECTOR_DIR / "caption-admission-vectors.json").read_bytes()).hexdigest() == VECTORS_SHA256
+    assert hashlib.sha256((VECTOR_DIR / "drawable-codepoints.json").read_bytes()).hexdigest() == DRAWABLE_TABLE_SHA256
+    assert len(_vectors()) >= 80
+
+
+def test_every_vector_the_worker_admits_the_lab_admits_and_draws():
+    # Canonical order (Worker and rail): NFC, strip Cf, every other non-whitespace character drawable, a 2+ word.
+    # The Lab only needs a drawable letter or digit, so it is laxer on the word rule; it must never refuse what the
+    # Worker admits, or the Worker would learn a good caption as refused for that look.
+    admitted = [vector for vector in _vectors() if vector["admit"]]
+    assert len(admitted) >= 30
+    for vector in admitted:
+        assert lab_verdict(vector["text"]) is None, (vector["text"], vector["why"])
+
+
+def test_every_vector_the_worker_refuses_for_a_glyph_the_lab_refuses_too():
+    # emoji and character refusals are about the same font table, so the Lab agrees. visible_word refusals are the
+    # Worker's stricter word rule: the Lab's verdict is recorded in the report but not required to match.
+    for vector in _vectors():
+        if vector["rule"] in ("emoji", "character"):
+            assert lab_verdict(vector["text"]) is not None, (vector["text"], vector["why"])
+
+
+@pytest.mark.parametrize("font", REAL_FONTS)
+def test_every_installed_font_gives_the_same_verdict_on_the_vectors(font):
+    for vector in _vectors():
+        if vector["admit"]:
+            assert lab_verdict(vector["text"], font) is None, (font, vector["text"])
+        elif vector["rule"] in ("emoji", "character"):
+            assert lab_verdict(vector["text"], font) is not None, (font, vector["text"])
+
+
+def test_the_labs_font_cmaps_are_exactly_the_workers_drawable_table():
+    table = json.loads((VECTOR_DIR / "drawable-codepoints.json").read_bytes())
+    expected = {code for first, last in table["ranges"] for code in range(first, last + 1)}
+    assert table["intersection_count"] == len(expected) == 910
+    per_font = [caption_render._font_codepoints(str(REAL_FONT_DIR / font)) for font in REAL_FONTS]
+    assert len(per_font) == len(table["fonts"]) == 23
+    # The table was generated from these very font files.
+    for entry in table["fonts"]:
+        assert hashlib.sha256((REAL_FONT_DIR / entry["file"]).read_bytes()).hexdigest() == entry["sha256"], entry["file"]
+    assert frozenset.intersection(*per_font) == expected
+    assert frozenset.union(*per_font) == expected
+
+
+def test_nfc_comes_before_the_format_strip(font_dir):
+    # A decomposed e + acute is the drawn \u00e9 once composed; it must not be probed as two characters.
+    result = render_caption_overlay(caption_request("cafe\u0301 vibes"), font_dir=font_dir)
+    assert " ".join(line.text for line in result.plan.lines) == "caf\u00e9 vibes"
+    # k + caron composes to U+01E9, which the font lacks: refused as the composed character, not hidden.
+    with pytest.raises(CaptionRenderError) as error:
+        render_caption_overlay(caption_request("ok k\u030c"), font_dir=font_dir)
+    assert error.value.code == "CAPTION_GLYPH_MISSING" and error.value.message.endswith(": U+01E9")
+    # Saved lines are composed too.
+    saved = render_caption_overlay(caption_request("cafe\u0301 vibes", line_breaks=["cafe\u0301", "vibes"]), font_dir=font_dir)
+    assert [line.text for line in saved.plan.lines] == ["caf\u00e9", "vibes"]

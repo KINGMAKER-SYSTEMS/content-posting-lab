@@ -1702,8 +1702,20 @@ ________________________________________________________________________________
 time: [08:25P] [10-15-26] EDT; actual UTC: 2026-10-16T00:25:20Z
 agent: [Claude Code] [Sonnet 5.5] [tr03p5 labglyph builder, round 2]
 worktree: [tr03p5-labglyph] /Users/ecfromthedc/dev/tides-ec976d/b5-labglyph
-type: [bug report]: Match the Worker: remove format characters before the glyph gate
+type: [bug report]: Strip format characters before the glyph gate
 area: [backend], [testing]
 
-The Worker's caption admission removes every Unicode Cf character (soft hyphen, U+200B-U+200D, U+2060, U+FEFF) before checking glyphs, but the Lab gate saw the raw text and refused a caption holding one, which the Worker would then learn as refused for that look. `render_caption_overlay` now removes the same set before the glyph gate and before drawing (the picture never showed them). U+FE0F, emoji and the blank fillers are not removed and are still refused.
+The Lab gate saw the raw text and refused a caption holding a Unicode Cf character (soft hyphen, U+200B-U+200D, U+2060, U+FEFF), which draws nothing. `render_caption_overlay` now applies one canonical rule, the one the Worker and rail use (lane capvisible): strip Cf, then glyph-check what remains, before drawing. U+FE0F, emoji and the blank fillers are not Cf and are still refused.
+
+_________________________________________________________________________________
+
+_________________________________________________________________________________
+time: [08:34P] [10-15-26] EDT; actual UTC: 2026-10-16T00:34:57Z
+agent: [Claude Code] [Sonnet 5.5] [tr03p5 labglyph builder, round 3]
+worktree: [tr03p5-labglyph] /Users/ecfromthedc/dev/tides-ec976d/b5-labglyph
+type: [bug report]: Pre-review fixes for the caption glyph gate
+area: [backend], [testing]
+
+Reviews of the glyph gate and ink check, fixed: (1) glyph coverage is now read from the font's cmap table, not from a rendered probe, so the verdict no longer depends on Pillow's layout engine (raqm can hide a missing U+FE0F); Pillow is pinned in requirements.txt. (2) The ink check now measures change against the source frame at the same time (same delivery graph, no caption): glyph pixels only, never a background box, so white text on a white clip, or a missing overlay behind a same-colour box, is refused as CAPTION_NOT_DRAWN, and thin fonts on busy footage pass. (3) NFC before the Cf strip, and saved line_breaks normalised exactly like the caption. (4) The Worker's shared admission vectors and drawable table are pinned as test fixtures; every vector the Worker admits the Lab admits and draws.
+
 _________________________________________________________________________________

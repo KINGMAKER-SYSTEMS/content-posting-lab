@@ -15,6 +15,7 @@ import io
 import json
 import math
 import re
+import struct
 import unicodedata
 from pathlib import Path
 from typing import Callable, Literal
@@ -562,55 +563,93 @@ def _load_font(font_path: Path, size_px: int) -> ImageFont.FreeTypeFont:
         ) from error
 
 
-# A character the font has no glyph for is drawn as the font's own missing-glyph
-# box ("tofu"), and there is no fallback font. Emoji, U+FE0F, U+2800 and U+3164
-# are all missing from every TikTokSans file. The box is real ink, so every
-# later check passes; the caption has to be refused here instead (owner rule,
-# 2026-10-15: no emoji on a caption, and never a post without its caption).
-# U+10FFFD is unassigned, so drawing it always gives the missing-glyph box.
-def _without_format_characters(text: str) -> str:
-    """Remove Unicode format and zero-width characters (category Cf).
+def _normalized(text: str) -> str:
+    """The canonical text rule, shared with the Worker and the rail (lane capvisible).
 
-    The soft hyphen, U+200B-U+200D, U+2060 and U+FEFF are the usual ones. They
-    draw nothing and take no room, so the picture never showed them. The Worker's
-    caption admission (``captionAdmission``) removes the same set before it
-    looks at glyphs, so this keeps the two verdicts the same. U+FE0F and emoji
-    are not format characters and stay for the glyph gate to refuse.
+    1. NFC, so a decomposed "e + U+0301" is the drawn "\u00e9" the font has.
+    2. Remove Unicode format and zero-width characters (category Cf: soft hyphen,
+       U+200B-U+200F, U+202A-U+202E, U+2060-U+2064, U+FEFF). They draw nothing and
+       take no room, so the picture never showed them.
+    3. The glyph check (``_require_drawable_text``) then runs on what remains.
+       U+FE0F, the blank fillers and emoji are not Cf and stay for it to refuse.
     """
 
     if text.isascii():
         return text
-    return "".join(char for char in text if unicodedata.category(char) != "Cf")
+    return "".join(char for char in unicodedata.normalize("NFC", text) if unicodedata.category(char) != "Cf")
 
 
-_NOTDEF_PROBE_CHAR = "\U0010FFFD"
-_GLYPH_PROBE_PX = 64
+def _drawn_line(text: str, text_case: str) -> str:
+    """One saved line as it is drawn: cased, normalised, whitespace as the wrap path leaves it.
+
+    The wrap path rebuilds every line from single-space-separated words, so a saved
+    line gets the same treatment: tab, NBSP, U+3000 and runs of spaces become one
+    space, and no space-class character reaches the glyph gate unchecked.
+    """
+
+    return " ".join(_normalized(_cased(text, text_case)).split())
+
+
+# A character the font has no glyph for is drawn as the font's own missing-glyph
+# box ("tofu"), and there is no fallback font. Emoji, U+FE0F, U+2800, U+3164 and
+# kana are missing from every TikTokSans file. The box is real ink, so every later
+# check passes; the caption has to be refused here instead (owner rule,
+# 2026-10-15: no emoji on a caption, and never a post without its caption).
+# Coverage is read from the font's own cmap table, never from a rendered mask:
+# a rendered probe depends on the Pillow layout engine (raqm can hide a missing
+# default-ignorable character such as U+FE0F), the cmap does not. It is the same
+# source as the Worker's drawable-codepoints table.
 _GLYPH_ERROR_CHARS_MAX = 8
 
 
+def _read_cmap(data: bytes) -> frozenset[int]:
+    """Every code point the font maps to a real glyph (glyph id 0 is the missing-glyph box)."""
+
+    u16 = lambda offset: struct.unpack_from(">H", data, offset)[0]
+    u32 = lambda offset: struct.unpack_from(">I", data, offset)[0]
+    table = None
+    for index in range(u16(4)):
+        record = 12 + 16 * index
+        if data[record:record + 4] == b"cmap":
+            table = u32(record + 8)
+    if table is None:
+        raise ValueError("no cmap table")
+    covered: set[int] = set()
+    for index in range(u16(table + 2)):
+        platform, encoding, offset = u16(table + 4 + 8 * index), u16(table + 6 + 8 * index), u32(table + 8 + 8 * index)
+        if not (platform == 0 or (platform == 3 and encoding in (1, 10))):
+            continue
+        sub = table + offset
+        fmt = u16(sub)
+        if fmt == 4:
+            segments = u16(sub + 6) // 2
+            ends, starts = sub + 14, sub + 16 + 2 * segments
+            deltas, ranges = starts + 2 * segments, starts + 4 * segments
+            for seg in range(segments):
+                end, start, delta, range_offset = u16(ends + 2 * seg), u16(starts + 2 * seg), u16(deltas + 2 * seg), u16(ranges + 2 * seg)
+                for code in range(start, end + 1):
+                    if range_offset == 0:
+                        glyph = (code + delta) & 0xFFFF
+                    else:
+                        glyph = u16(ranges + 2 * seg + range_offset + 2 * (code - start))
+                        glyph = (glyph + delta) & 0xFFFF if glyph else 0
+                    if glyph:
+                        covered.add(code)
+        elif fmt == 12:
+            for group in range(u32(sub + 12)):
+                start, end, glyph = (u32(sub + 16 + 12 * group + step) for step in (0, 4, 8))
+                covered.update(code for code in range(start, end + 1) if glyph + (code - start))
+    if not covered:
+        raise ValueError("cmap maps nothing")
+    return frozenset(covered)
+
+
 @functools.lru_cache(maxsize=64)
-def _glyph_probe(font_path: str) -> tuple[ImageFont.FreeTypeFont, bytes]:
-    font = _load_font(Path(font_path), _GLYPH_PROBE_PX)
-    return font, _glyph_ink(font, _NOTDEF_PROBE_CHAR)[0]
-
-
-def _glyph_ink(font: ImageFont.FreeTypeFont, char: str) -> tuple[bytes, bool]:
-    """The character drawn alone on a small canvas: its pixels, and whether any ink landed."""
-
-    canvas = Image.new("L", (_GLYPH_PROBE_PX * 2, _GLYPH_PROBE_PX * 2), 0)
-    ImageDraw.Draw(canvas).text((_GLYPH_PROBE_PX // 4, _GLYPH_PROBE_PX // 4), char, font=font, fill=255)
-    return canvas.tobytes(), canvas.getbbox() is not None
-
-
-@functools.lru_cache(maxsize=65_536)
-def _glyph_state(font_path: str, char: str) -> str:
-    """``missing`` (the box), ``blank`` (a real glyph with no ink) or ``drawn``."""
-
-    font, notdef = _glyph_probe(font_path)
-    pixels, has_ink = _glyph_ink(font, char)
-    if pixels == notdef:
-        return "missing"
-    return "drawn" if has_ink else "blank"
+def _font_codepoints(font_path: str) -> frozenset[int]:
+    try:
+        return _read_cmap(Path(font_path).read_bytes())
+    except (OSError, ValueError, struct.error) as error:
+        raise CaptionRenderError("CAPTION_FONT_INVALID", "installed font's character table could not be read") from error
 
 
 def _require_drawable_text(font_path: Path, lines: list[str]) -> None:
@@ -620,16 +659,15 @@ def _require_drawable_text(font_path: Path, lines: list[str]) -> None:
     handed back so the caller can use another caption.
     """
 
-    key = str(font_path)
+    covered = _font_codepoints(str(font_path))
     missing: list[str] = []
     readable = False
     for char in dict.fromkeys("".join(lines)):
         if char.isspace():
             continue
-        state = _glyph_state(key, char)
-        if state == "missing":
+        if ord(char) not in covered:
             missing.append(char)
-        elif state == "drawn" and unicodedata.category(char)[0] in "LN":
+        elif unicodedata.category(char)[0] in "LN":
             readable = True
     if missing:
         shown = ", ".join(f"U+{ord(char):04X}" for char in missing[:_GLYPH_ERROR_CHARS_MAX])
@@ -820,8 +858,8 @@ def render_caption_overlay(
             fonts[size] = _load_font(font_path, size)
         return fonts[size]
 
-    rendered_source = _without_format_characters(_cased(request.caption, style.case))
-    lines = ([_without_format_characters(_cased(line, style.case)) for line in style.line_breaks]
+    rendered_source = _normalized(_cased(request.caption, style.case))
+    lines = ([_drawn_line(line, style.case) for line in style.line_breaks]
              if style.line_breaks is not None
              else _wrap_preserving_explicit_newlines(rendered_source, style.line_balance))
     # The wrap always returns a line and the request needs one visible
