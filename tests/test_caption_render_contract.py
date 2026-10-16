@@ -941,10 +941,11 @@ def test_no_installed_font_has_these_characters_and_every_font_has_plain_text(fo
 
 VECTOR_DIR = Path(__file__).parent / "fixtures" / "caption_admission"
 # sha256 of the two files exactly as committed on ecfromthedc/rotational-posting-agent, branch tr03p5-capvisible at
-# 6fe81f9cf845866a4e265f9356c9268e4de23449 (control-plane-worker/test/fixtures/caption-admission-vectors.json and
-# control-plane-worker/data/drawable-codepoints.json). The rail copies the vectors byte for byte too.
+# 6fe81f9c (vectors, control-plane-worker/test/fixtures/caption-admission-vectors.json; unchanged since) and
+# 8e171c9a7167e454963eb914d1e11ceaed8e88cf (the table, control-plane-worker/data/drawable-codepoints.json, whose
+# header embeds the Lab font shas and ranges_sha256). The rail copies the vectors byte for byte too.
 VECTORS_SHA256 = "92b416b26990d5d8e4ec647044c33a76c9e256c1976b6862748b24a702fcf929"
-DRAWABLE_TABLE_SHA256 = "423afa4e07d3832a3bb6a37fc67bb623710d5a265fd34a3980f7b8986dc05387"
+DRAWABLE_TABLE_SHA256 = "104cc07c5b9cafa09e14063f44da46411c35193da06ed00ac4eeb7733a671beb"
 
 
 def _vectors():
@@ -997,17 +998,47 @@ def test_every_installed_font_gives_the_same_verdict_on_the_vectors(font):
             assert lab_verdict(vector["text"], font) is not None, (font, vector["text"])
 
 
-def test_the_labs_font_cmaps_are_exactly_the_workers_drawable_table():
+def _ranges_of(codes):
+    ranges, first, last = [], None, None
+    for code in sorted(codes):
+        if first is None:
+            first = last = code
+        elif code == last + 1:
+            last = code
+        else:
+            ranges.append([first, last])
+            first = last = code
+    ranges.append([first, last])
+    return ranges
+
+
+def test_the_labs_fonts_are_exactly_the_ones_the_workers_drawable_table_was_made_from():
+    # Font provenance tripwire; it never skips. The Worker admits a character only if it is in this table, and the
+    # table is the intersection of the cmaps of the Lab's non-italic TikTokSans fonts. Adding, removing or changing
+    # any font file in fonts/ changes what the Lab can draw, so this test goes red until the table is regenerated
+    # and re-pinned from the Worker branch.
     table = json.loads((VECTOR_DIR / "drawable-codepoints.json").read_bytes())
-    expected = {code for first, last in table["ranges"] for code in range(first, last + 1)}
-    assert table["intersection_count"] == len(expected) == 910
-    per_font = [caption_render._font_codepoints(str(REAL_FONT_DIR / font)) for font in REAL_FONTS]
-    assert len(per_font) == len(table["fonts"]) == 23
-    # The table was generated from these very font files.
-    for entry in table["fonts"]:
-        assert hashlib.sha256((REAL_FONT_DIR / entry["file"]).read_bytes()).hexdigest() == entry["sha256"], entry["file"]
-    assert frozenset.intersection(*per_font) == expected
-    assert frozenset.union(*per_font) == expected
+    listed = {entry["file"]: entry for entry in table["fonts"]}
+    assert len(listed) == len(table["fonts"]) == 23
+    # 1. The same set of files: none added, none removed.
+    assert sorted(listed) == REAL_FONTS, "fonts/ no longer matches the fonts the drawable table was built from"
+    # 2. Each file is byte-for-byte the one in the table's header: sha256 and git blob sha.
+    for name, entry in listed.items():
+        data = (REAL_FONT_DIR / name).read_bytes()
+        assert hashlib.sha256(data).hexdigest() == entry["sha256"], name
+        assert hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest() == entry["git_blob_sha"], name
+    # 3. Re-derive the table body with the Lab's own cmap reader: per font, then the intersection, then its ranges.
+    per_font = {}
+    for name in REAL_FONTS:
+        per_font[name] = caption_render._font_codepoints(str(REAL_FONT_DIR / name))
+        assert len(per_font[name]) == listed[name]["codepoints"], name
+    intersection = frozenset.intersection(*per_font.values())
+    assert frozenset.union(*per_font.values()) == intersection
+    assert _ranges_of(intersection) == table["ranges"]
+    assert len(intersection) == table["intersection_count"] == table["union_count"] == 910
+    # 4. The body hash in the header is the hash of those ranges (compact JSON), so header and body cannot drift.
+    derived = hashlib.sha256(json.dumps(_ranges_of(intersection), separators=(",", ":")).encode()).hexdigest()
+    assert derived == table["ranges_sha256"] == "bdf7498ffadd18531264e8497edda27ab90b1079634f5a339b6633fae8fe1c43"
 
 
 def test_nfc_comes_before_the_format_strip(font_dir):

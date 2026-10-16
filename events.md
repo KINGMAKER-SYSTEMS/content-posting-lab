@@ -1729,3 +1729,13 @@ area: [backend], [testing]
 
 The ink check had one code for two causes. Now `CAPTION_LOW_CONTRAST` means the caption cannot be told apart from this clip (fewer than 64 glyph pixels would change by more than 48 levels, such as white text with no outline on a white clip): a fact about the clip and look. `CAPTION_NOT_DRAWN` is kept for a renderer fault (contrast expected, frame did not change). Both are terminal. `numpy` is declared in requirements.txt (floor only) and imported at the top of post_render.py so a missing install fails at build or import, not at the first render.
 _________________________________________________________________________________
+
+_________________________________________________________________________________
+time: [11:28P] [10-15-26] EDT; actual UTC: 2026-10-16T03:28:25Z
+agent: [Claude Code] [Sonnet 5.5] [tr03p5 labglyph builder, round 5]
+worktree: [tr03p5-labglyph] /Users/ecfromthedc/dev/tides-ec976d/b5-labglyph
+type: [bug report]: Measure the words against their own box
+area: [backend], [testing]
+
+Two review HIGHs on the ink check, one method. The reference frame is now the same source frame and delivery graph with the caption's box or highlight drawn but the words left out (the bare source frame when there is no box). A box alone can no longer prove the words (it is already in the reference), and white words on a dark box over a white clip are measured against the box, so they pass instead of being refused as low contrast. The box itself must also show its colour (60% match), so no overlay at all cannot pass when the clip happens to be the words' colour. `CAPTION_NOT_DRAWN`: words or box missing; `CAPTION_LOW_CONTRAST`: the words cannot be told apart from what is directly behind them. Calibration on 3,150 real renders is in docs/caption-ink-calibration.md and tests/fixtures/caption_ink_calibration/. The Worker's drawable table fixture is re-pinned (header now embeds the font shas), and a no-skip test fails if any Lab font is added, removed or changed.
+_________________________________________________________________________________

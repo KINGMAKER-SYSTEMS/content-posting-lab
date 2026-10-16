@@ -847,6 +847,34 @@ def render_caption_overlay(
     the whole full-screen canvas.
     """
 
+    return _render_caption(request, font_dir=font_dir, fit_rows=fit_rows)[0]
+
+
+def render_caption_with_background(
+    request: CaptionRenderRequest | CaptionRenderRequestV2,
+    *,
+    font_dir: Path,
+    fit_rows: tuple[int, int] | None = None,
+) -> tuple[CaptionRenderResult, bytes | None]:
+    """``render_caption_overlay`` plus the same overlay with the words left out.
+
+    The second value is a transparent 1080x1920 PNG holding only the box or
+    highlight behind the text, placed exactly as in the full overlay (same fit,
+    same size, same inversion), or None when the style has no background. It is
+    what the picture looks like around the words, which the post-render ink
+    check needs in order to tell the words from their background.
+    """
+
+    return _render_caption(request, font_dir=font_dir, fit_rows=fit_rows, want_background=True)
+
+
+def _render_caption(
+    request: CaptionRenderRequest | CaptionRenderRequestV2,
+    *,
+    font_dir: Path,
+    fit_rows: tuple[int, int] | None = None,
+    want_background: bool = False,
+) -> tuple[CaptionRenderResult, bytes | None]:
     style = request.style
     font_path, font_bytes = _resolve_font(font_dir, style.font)
     font_size_px = max(1, round(style.size_pt * _OUTPUT_SCALE))
@@ -943,6 +971,7 @@ def render_caption_overlay(
                         fill=background_fill,
                     )
 
+        background_image = image.copy() if want_background and style.background != "none" else None
         for record in line_records:
             if not record["text"]:
                 continue
@@ -977,6 +1006,8 @@ def render_caption_overlay(
         # down, the first line ends up at the bottom and a left-aligned
         # caption sits against the right margin. A rotation, never a mirror.
         image = image.transpose(Image.Transpose.ROTATE_180)
+        if background_image is not None:
+            background_image = background_image.transpose(Image.Transpose.ROTATE_180)
         for record in line_records:
             record["x_px"] = FRAME_WIDTH - record["x_px"]
             record["center_y_px"] = FRAME_HEIGHT - record["center_y_px"]
@@ -984,6 +1015,11 @@ def render_caption_overlay(
     output = io.BytesIO()
     image.save(output, format="PNG", optimize=False, compress_level=9)
     png_bytes = output.getvalue()
+    background_png = None
+    if background_image is not None:
+        background_output = io.BytesIO()
+        background_image.save(background_output, format="PNG", optimize=False, compress_level=9)
+        background_png = background_output.getvalue()
 
     effective_style = style.model_dump(mode="json", exclude_none=True)
     renderer = {
@@ -1025,4 +1061,4 @@ def render_caption_overlay(
             },
         }
     result_model = CaptionRenderResultV2 if picture_frame is not None else CaptionRenderResult
-    return result_model.model_validate(result_payload)
+    return result_model.model_validate(result_payload), background_png

@@ -147,18 +147,23 @@
   table, sha-pinned; `Pillow` is pinned in `requirements.txt`.
 - `services/post_render.py` owns local prepared-final rendering and exact artifact
   receipts; control-plane admission remains downstream authority. After the QA
-  frame is cut it compares that frame with the same source frame at the same time
-  (same delivery graph, no caption): where the caption would change the picture
-  (glyph pixels only, never a background box) the burned frame must have moved at
-  least 40% of the way toward the caption colour, and enough pixels must change
-  to see it at all. Two different failures: fewer than 64 glyph pixels that the
-  caption would change by more than 48 levels (for example white text with no
-  outline on a white clip) fails `CAPTION_LOW_CONTRAST`, a fact about that clip
-  and look; contrast was expected but the frame did not change fails
-  `CAPTION_NOT_DRAWN`, a renderer fault. The measure and pixel count are in
-  `decode.json` (`caption_ink_share`, `caption_ink_pixels`). All four new codes
-  are terminal (not in `RETRY_CODES`). `numpy` is a direct requirement (floor
-  only; it is imported at the top of `services/post_render.py`).
+  frame is cut it compares that frame with a reference: the same source frame at
+  the same time, through the same delivery graph, with the caption's box or
+  highlight drawn but its words left out (the bare source frame when the style
+  has no background). Where the words would change the reference by more than 48
+  levels, the burned frame must have moved at least 40% of the way toward the
+  words' colour, and a box or highlight must itself show its colour in at least
+  60% of its pixels. So a box alone never proves the words, and white words on a
+  dark box over a white clip are measured against the box and pass. Two different
+  failures: fewer than 64 word pixels that the words would change (white text with
+  no outline on a white clip, text in its own box's colour) fails
+  `CAPTION_LOW_CONTRAST`, a fact about that clip and look; contrast was expected
+  but the frame did not change (words or box missing) fails `CAPTION_NOT_DRAWN`, a
+  renderer fault. The measures are in `decode.json` (`caption_ink_share`,
+  `caption_ink_pixels`, `caption_box_match`). All four new codes are terminal (not
+  in `RETRY_CODES`). `numpy` is a direct requirement (floor only; imported at the
+  top of `services/post_render.py`). The calibration behind the thresholds is in
+  `docs/caption-ink-calibration.md` and `tests/fixtures/caption_ink_calibration/`.
 - `services/post_render_jobs.py` and `routers/post_renders.py` own durable pre-lease
   render jobs, authenticated page-scoped status/artifacts and source acquisition.
 - `docs/post-render-setup.md` owns prepared-render storage, authentication and
@@ -785,7 +790,7 @@
 - Run `pytest -q tests/test_post_render.py` for prepared rendering, actual MP4
   decode, treatment-once preservation, byte-budget retry and bounded failures,
   and the burned-frame caption ink check (`CAPTION_NOT_DRAWN`, `CAPTION_LOW_CONTRAST`, change against
-  the source frame, recorded in `decode.json` as `caption_ink_share`).
+  the box-only reference frame, recorded in `decode.json` as `caption_ink_share`).
 - Run `pytest -q tests/test_page_frame_geometry.py tests/test_page_frame_cut.py
   tests/test_page_frame_no_frame_identity.py tests/test_page_frame_gate.py
   tests/test_page_frame_render.py` for page-frame table parity, the band-aware
