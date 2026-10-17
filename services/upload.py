@@ -112,21 +112,21 @@ def _valid_stored_jobs(value: object) -> bool:
     return True
 
 
-def _conflicting_stored_job_ids(rows: list[object]) -> set[str]:
-    """Find IDs whose saved copies disagree; no copy is authoritative."""
-    first_by_id: dict[str, dict] = {}
-    conflicting_ids: set[str] = set()
+def _duplicate_stored_job_ids(rows: list[object]) -> set[str]:
+    """Hold every repeated ID before a claim can make identical copies disagree."""
+    seen_ids: set[str] = set()
+    duplicate_ids: set[str] = set()
     for row in rows:
         if not isinstance(row, dict):
             continue
         job_id = row.get("job_id")
         if not isinstance(job_id, str) or not job_id:
             continue
-        if job_id in first_by_id and row != first_by_id[job_id]:
-            conflicting_ids.add(job_id)
+        if job_id in seen_ids:
+            duplicate_ids.add(job_id)
         else:
-            first_by_id[job_id] = row
-    return conflicting_ids
+            seen_ids.add(job_id)
+    return duplicate_ids
 
 
 def _quarantine_stored_jobs(rows: list[tuple[int, str, object]]) -> None:
@@ -182,12 +182,12 @@ def _read_stored_jobs(*, _lock_held: bool = False) -> list[dict]:
     valid_jobs: list[dict] = []
     rejected_rows: list[tuple[int, str, object]] = []
     seen_ids: set[str] = set()
-    conflicting_ids = _conflicting_stored_job_ids(jobs)
+    duplicate_ids = _duplicate_stored_job_ids(jobs)
     for index, job in enumerate(jobs):
         reason = _stored_job_error(job, seen_ids)
         if (isinstance(job, dict) and isinstance(job.get("job_id"), str)
-                and job["job_id"] in conflicting_ids):
-            reason = f"job_id {job['job_id']} has conflicting stored rows; reconciliation required"
+                and job["job_id"] in duplicate_ids):
+            reason = f"job_id {job['job_id']} has duplicate stored rows; reconciliation required"
         if reason is not None:
             rejected_rows.append((index, reason, job))
             continue
@@ -273,11 +273,24 @@ def _update_job(job_id: str, updates: dict) -> dict | None:
 # ── Public API ───────────────────────────────────────────────────────────────
 
 def get_all_jobs() -> list[dict]:
-    return _load_jobs()
+    # Held IDs remain visible to callers, but never enter the executable list.
+    with _job_store_write_lock():
+        jobs = _read_stored_jobs(_lock_held=True)
+        rejected = _quarantined_job_rows.get(str(Path(UPLOAD_JOBS_FILE).resolve()), [])
+        duplicate_ids = _duplicate_stored_job_ids(rejected)
+        for row in rejected:
+            if isinstance(row, dict) and isinstance(row.get("job_id"), str) and row["job_id"] in duplicate_ids:
+                jobs.append({
+                    **row,
+                    "status": "held",
+                    "error": "Duplicate stored job ID; reconciliation required before execution or resubmission",
+                })
+                duplicate_ids.remove(row["job_id"])
+        return jobs
 
 
 def get_job(job_id: str) -> dict | None:
-    for job in _load_jobs():
+    for job in get_all_jobs():
         if job["job_id"] == job_id:
             return job
     return None
@@ -327,16 +340,16 @@ def submit_job(
         jobs = _read_stored_jobs(_lock_held=True)
         target = os.path.realpath(video_path)
         stored_rows = [*jobs, *_quarantined_job_rows.get(str(Path(UPLOAD_JOBS_FILE).resolve()), [])]
-        conflicting_ids = _conflicting_stored_job_ids(stored_rows)
+        duplicate_ids = _duplicate_stored_job_ids(stored_rows)
         for existing in stored_rows:
             if (isinstance(existing, dict)
                     and isinstance(existing.get("account_name"), str)
                     and isinstance(existing.get("video_path"), str)
                     and existing["account_name"] == account_name
                     and (existing.get("status") not in ("completed", "cancelled")
-                         or (isinstance(existing.get("job_id"), str) and existing["job_id"] in conflicting_ids))
+                         or (isinstance(existing.get("job_id"), str) and existing["job_id"] in duplicate_ids))
                     and os.path.realpath(existing["video_path"]) == target):
-                # Terminal history permits retries unless another copy conflicts.
+                # Terminal history permits retries unless its ID appears more than once.
                 # Unknown or unresolved state still blocks after quarantine.
                 raise UploadReconciliationRequired(
                     "TikTok upload original attempt requires reconciliation "

@@ -276,8 +276,9 @@
   claim/cancel decision across worker processes, and the conflict creates no
   job or provider action. Completed and cancelled
   history retains its existing resubmission behavior.
-  Conflicting saved copies of one upload ID are all held for reconciliation;
+  Repeated saved copies of one upload ID, even identical rows, are all held for reconciliation;
   no copy may execute or authorize a retry, even if one claims a terminal state.
+  Listing and polling expose the held status without making it executable.
   Other valid jobs remain processable while those source rows are retained.
 - `POST /api/telegram/send` delivers only a media file whose real path is under
   `projects/<project>/<videos|clips|burned|recreate|slideshow-images>/` or the

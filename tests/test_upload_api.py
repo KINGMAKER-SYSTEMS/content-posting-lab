@@ -422,7 +422,7 @@ def test_conflicting_upload_id_blocks_every_copy_and_preserves_other_jobs(
     asyncio.run(upload_svc._process_single_job(disputed["job_id"]))
     assert calls == []
     assert stored.read_bytes() == before
-    assert [job["job_id"] for job in upload_svc.get_all_jobs()] == [good["job_id"]]
+    assert [(job["job_id"], job["status"]) for job in upload_svc.get_all_jobs()] == [(good["job_id"], "queued"), (disputed["job_id"], "held")]
     assert upload_svc.cancel_job(disputed["job_id"]) is None
     assert upload_svc._update_job(disputed["job_id"], {"status": "completed"}) is None
 
@@ -436,15 +436,57 @@ def test_conflicting_upload_id_blocks_every_copy_and_preserves_other_jobs(
     asyncio.run(upload_svc._process_single_job(good["job_id"]))
     assert calls == [good["job_id"]]
     assert upload_svc.get_job(good["job_id"])["status"] == "completed"
-    assert upload_svc.get_job(disputed["job_id"]) is None
+    assert upload_svc.get_job(disputed["job_id"])["status"] == "held"
     saved = json.loads(stored.read_text())
     assert [row for row in saved if row["job_id"] == disputed["job_id"]] == copies
     quarantine = stored.with_name(stored.name + ".quarantine.jsonl")
     records = [json.loads(line) for line in quarantine.read_text().splitlines()]
     assert len(records) == 2
     assert [record["job"] for record in records] == copies
-    assert all("conflicting stored rows" in record["reason"] for record in records)
-    assert f"job_id {disputed['job_id']} has conflicting stored rows" in caplog.text
+    assert all("duplicate stored rows" in record["reason"] for record in records)
+    assert f"job_id {disputed['job_id']} has duplicate stored rows" in caplog.text
+
+
+def test_identical_upload_rows_are_held_before_provider_and_other_submission_runs(
+    sync_client, cookie_dir, monkeypatch, caplog,
+):
+    _write_cookie(cookie_dir, "linked")
+    monkeypatch.setattr(upload_svc.importlib, "import_module", lambda name: _FAKE_UPLOADER)
+    repeated = upload_svc.submit_job(video_path="/tmp/repeated.mp4", account_name="linked")
+    stored = cookie_dir.parent / "upload_jobs.json"
+    stored.write_text(json.dumps([repeated, repeated]))
+    before = stored.read_bytes()
+    calls = []
+    monkeypatch.setattr(upload_svc, "_run_upload_sync", lambda job: calls.append(job["job_id"]) or "Completed")
+
+    async def leave_queued():
+        pass
+
+    monkeypatch.setattr(upload_router, "process_queue", leave_queued)
+    asyncio.run(upload_svc._process_single_job(repeated["job_id"]))
+    assert calls == []
+    assert stored.read_bytes() == before
+    held = sync_client.get(f"/api/upload/jobs/{repeated['job_id']}")
+    assert held.status_code == 200
+    assert held.json()["job"]["status"] == "held"
+    assert "reconciliation" in held.json()["job"]["error"]
+    listed = sync_client.get("/api/upload/jobs").json()["jobs"]
+    assert [(job["job_id"], job["status"]) for job in listed] == [(repeated["job_id"], "held")]
+    retry = sync_client.post("/api/upload/submit", json={"video_path": repeated["video_path"], "account_name": "linked"})
+    assert retry.status_code == 409
+    response = sync_client.post("/api/upload/submit", json={"video_path": "/tmp/good.mp4", "account_name": "linked"})
+    assert response.status_code == 200
+    good_id = response.json()["job"]["job_id"]
+    asyncio.run(upload_svc.process_queue())
+    assert calls == [good_id]
+    assert upload_svc.get_job(good_id)["status"] == "completed"
+    assert upload_svc.get_job(repeated["job_id"])["status"] == "held"
+    assert [row for row in json.loads(stored.read_text()) if row["job_id"] == repeated["job_id"]] == [repeated, repeated]
+    records = [json.loads(line) for line in stored.with_name(stored.name + ".quarantine.jsonl").read_text().splitlines()]
+    assert len(records) == 1
+    assert records[0]["job"] == repeated
+    assert "duplicate stored rows" in records[0]["reason"]
+    assert f"job_id {repeated['job_id']} has duplicate stored rows" in caplog.text
 
 
 def test_upload_claim_cannot_be_cancelled_or_resubmitted_during_browser_call(
