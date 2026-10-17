@@ -666,6 +666,14 @@
   is ambiguous and must never be submitted again. The existing one-time PA
   interruption retry remains bounded across restarts. Processing deadlines do
   not reset; an already-completed prediction may still be read after downtime.
+- `POST /api/control-plane/v1/job-receipts/by-idempotency-key` is a side-effect-free
+  lost-ack read. It requires the app API key and Control Plane bearer, scoped
+  page/lane/idempotency headers, and the exact original job-create JSON body.
+  It returns only the job ID and status when the durable key and canonical
+  request hash match and the saved status is queued, running, completed, or
+  failed. Missing, foreign, archived, mismatched, or legacy-unhashed jobs
+  require reconciliation; malformed saved statuses fail as unavailable. The
+  lookup must not start or resume work.
 - Application shutdown pauses checkpointed generation instead of deleting its
   paid artifacts. Authenticated, exact-page status/idempotency reads resume the
   same active job after replacement. A kernel-held per-job lock prevents two
