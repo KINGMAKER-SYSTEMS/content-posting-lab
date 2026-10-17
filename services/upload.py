@@ -216,6 +216,9 @@ def submit_job(
         "error": None,
     }
 
+    if not _valid_stored_jobs([job]):
+        raise ValueError("invalid upload job")
+
     with _job_store_write_lock():
         jobs = _read_stored_jobs()
         target = os.path.realpath(video_path)

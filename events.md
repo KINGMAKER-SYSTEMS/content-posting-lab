@@ -1737,3 +1737,13 @@ area: [backend], [testing], [review]
 
 Independent review found that executable permission errors and unexpected checker failures could leave a stale healthy tool status and immediately reschedule another subprocess refresh on every probe. The command probe now treats all OS execution errors as unavailable; the refresh resolves individual checker failures to false and stamps the completed check, and cancellation is handled without spurious callback errors. Regression tests cover both failure classes and bounded refresh behavior: 15 focused health/lifespan cases pass. The production Docker image rebuilt, imported app and TgCrypto, and contains no gcc. No push, merge or deployment occurred.
 _________________________________________________________________________________
+
+_________________________________________________________________________________
+time: [2026-10-16] UTC
+agent: [Codex] [cx-l221 builder]
+worktree: [codex/upload-admission-20261012] lane l221
+type: [bug report]: Reject invalid new upload records and prove cross-process claims
+area: [backend], [testing], [review]
+
+Review F1 found that an empty video path was accepted and saved, then rejected by every later strict queue read. New records now pass the existing store validator before persistence; invalid requests return 400 and preserve existing bytes. Tests prove rejection with missing/existing stores and a subsequent valid mocked upload completing. Review F2 found that removing flock escaped the prior suite. Spawned-process tests now pause the first claim before save and compete with a second claim or cancellation. Removing flock causes two fake provider calls or a stale successful cancellation; real locking passes. The reviewed-head empty-path tests fail and the updated 45-case upload/login/cookie/capability suite passes. Merged origin/main 713a0eb into this PR branch, retaining both sides of the events.md append conflict. No real uploader, login, publication, deployment or main-branch merge was performed; hosted upload remains disabled.
+_________________________________________________________________________________

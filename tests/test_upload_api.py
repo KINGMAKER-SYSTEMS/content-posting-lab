@@ -93,6 +93,56 @@ def test_submit_valid_cookie_queues_job(sync_client, cookie_dir, monkeypatch):
     assert r.json()["job"]["status"] == "queued"
 
 
+@pytest.mark.parametrize("existing", [False, True])
+def test_empty_video_path_refused_without_poisoning_queue(
+    sync_client, cookie_dir, monkeypatch, existing,
+):
+    _write_cookie(cookie_dir, "linked")
+    monkeypatch.setattr(upload_svc.importlib, "import_module", lambda name: _FAKE_UPLOADER)
+    calls = []
+    scheduled = []
+
+    async def queue():
+        scheduled.append(True)
+        await upload_svc.process_queue()
+
+    def provider(job):
+        calls.append(job["video_path"])
+        return "Completed"
+
+    monkeypatch.setattr(upload_router, "process_queue", queue)
+    monkeypatch.setattr(upload_svc, "_run_upload_sync", provider)
+    stored = cookie_dir.parent / "upload_jobs.json"
+    if existing:
+        old = upload_svc.submit_job(video_path="/tmp/old.mp4", account_name="other")
+        upload_svc._update_job(old["job_id"], {"status": "completed"})
+    before = stored.read_bytes() if existing else None
+    response = sync_client.post("/api/upload/submit", json={
+        "video_path": "", "account_name": "linked",
+    })
+    assert response.status_code == 400
+    assert (stored.read_bytes() if stored.exists() else None) == before
+    assert scheduled == []
+    assert calls == []
+
+    response = sync_client.post("/api/upload/submit", json={
+        "video_path": "/tmp/valid.mp4", "account_name": "linked",
+    })
+    assert response.status_code == 200
+    # Explicitly drain the real queue even if the request's background task
+    # has not yet run; the claim makes this safe in either ordering.
+    asyncio.run(upload_svc.process_queue())
+    assert calls == ["/tmp/valid.mp4"]
+    assert upload_svc.get_job(response.json()["job"]["job_id"])["status"] == "completed"
+
+
+def test_direct_empty_video_path_refused_before_save(cookie_dir, monkeypatch):
+    monkeypatch.setattr(upload_svc.importlib, "import_module", lambda name: _FAKE_UPLOADER)
+    with pytest.raises(ValueError, match="invalid upload job"):
+        upload_svc.submit_job(video_path="", account_name="linked")
+    assert not (cookie_dir.parent / "upload_jobs.json").exists()
+
+
 def test_submit_without_provider_refuses_before_job_creation(sync_client, cookie_dir, monkeypatch):
     _write_cookie(cookie_dir, "linked")
     monkeypatch.setattr(upload_svc.importlib, "import_module", lambda name: None)
@@ -149,7 +199,6 @@ def test_corrupt_job_store_refuses_without_overwrite(sync_client, cookie_dir, mo
     r = sync_client.post("/api/upload/submit", json={"video_path": "/tmp/x.mp4", "account_name": "linked"})
     assert r.status_code == 503
     assert stored.read_text() == "{broken"
-
 
 @pytest.mark.parametrize("existing", [
     [None],

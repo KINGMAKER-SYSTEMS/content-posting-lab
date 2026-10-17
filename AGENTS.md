@@ -265,7 +265,9 @@
   contract, plus the provider runtime and volume-backed queue migration.
   Local installs retain the checkout-relative queue and must have an importable
   callable uploader; upload submission also requires a job store whose existing
-  records have the queue-readable shape and unique job IDs. Corrupt records are preserved and
+  records have the queue-readable shape and unique job IDs. New records must
+  pass the same shape check before persistence; invalid submissions return 400.
+  Corrupt records are preserved and
   never replaced with an empty queue. Missing prerequisites or failed
   writes return 503; admission never proves a TikTok publication. A queued,
   uploading, or failed job for the same real video path and cookie account
@@ -752,9 +754,10 @@
   HDR encode cases need only ffmpeg/ffprobe; real-master cases additionally
   use the optional `HDR_FIXTURES_DIR` fixture directory.
 
-- Run `pytest -q tests/test_upload_login_account_data.py tests/test_upload_api.py tests/test_upload_cookies.py`
+- Run `pytest -q tests/test_upload_login_account_data.py tests/test_upload_api.py tests/test_upload_locking.py tests/test_upload_cookies.py`
   for literal account transport, injected expressions, login failure responses
-  and existing upload/cookie behavior without launching a browser.
+  and existing upload/cookie behavior without launching a browser. Spawned-process
+  races cover competing claims and cancellation before the winning claim is saved.
 
 - Run `pytest -q tests/test_visual_admission.py` for observed boat-frame OCR
   noise, short readable text, rotated single-frame text, complete coverage,
