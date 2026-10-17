@@ -845,7 +845,10 @@ def _snapshot_page(page: dict[str, Any]) -> dict[str, Any] | None:
     "absent" and raise a blocker instead of guessing a lane or page type.
     """
     page_id = str(page.get("integration_id") or "").strip()
-    handle = str(page.get("name") or "").strip()
+    # TikTok handles are lowercase, and ShipStream's vault registration refuses
+    # any other spelling. Notion titles are typed by hand ("Oceaneyes7764"),
+    # so the handle crosses in the spelling TikTok and the vault use.
+    handle = str(page.get("name") or "").strip().lower()
     if not page_id or not handle:
         # A row with no stable identity cannot be reconciled to anything —
         # including it would give the plane a page it can never address.
@@ -4797,7 +4800,7 @@ def job_by_idempotency_key(
     _reject_prompt_fields(body)
     if body.get("pageId") != x_rt_page_id or body.get("lane") != x_rt_lane:
         raise HTTPException(status_code=400, detail="job scope does not match request headers")
-    if not all(isinstance(body.get(field), str) and body[field].strip()
+    if not all(str(body.get(field) or "").strip()
                for field in ("engine", "lockedRecipeId", "recipeVersion", "policyHash")):
         raise HTTPException(status_code=400, detail="job identity fields are required")
     quantity = body.get("quantity")

@@ -1626,3 +1626,30 @@ async def test_generation_cuts_fill_when_a_candidate_size_is_unprovable(lab, mon
                             "page_frame": "16:9", "frame_fit": "fill"}] * 5
     assert caplog.text.count("its display size is unavailable (timeout)") == 5
     assert all(clip["frameCut"] == {"frame": "16:9", "frameFit": "fill"} for clip in stored["clips"])
+
+
+def test_numeric_policy_hash_create_and_lost_ack_lookup_agree(lab):
+    client, _, started = lab
+    body = job_body(quantity=1, policyHash=123)
+    created = client.post(
+        "/api/control-plane/v1/jobs", json=body, headers=HEADERS,
+    )
+    assert created.status_code == 200
+    job_id = created.json()["jobId"]
+    assert cp._load_jobs()["jobs"][job_id]["policyHash"] == "123"
+    before_lookup = cp._jobs_path().read_bytes()
+
+    recovered = client.post(
+        "/api/control-plane/v1/job-receipts/by-idempotency-key",
+        json=body,
+        headers=HEADERS,
+    )
+
+    assert recovered.status_code == 200
+    assert recovered.json() == {
+        "schema": cp.RESPONSE_SCHEMA,
+        "jobId": job_id,
+        "status": "queued",
+    }
+    assert cp._jobs_path().read_bytes() == before_lookup
+    assert started == [job_id]

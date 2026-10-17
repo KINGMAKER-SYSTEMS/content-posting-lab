@@ -175,6 +175,21 @@ def test_snapshot_carries_the_ontology_and_only_the_ontology(client):
         assert secret not in leaked
 
 
+def test_handle_crosses_lowercase_whatever_the_notion_title_casing(client):
+    # 2026-10-16: Notion title "Oceaneyes7764" reached ShipStream as the
+    # handle and every source import failed with source_registration_invalid.
+    _seed(**{"acct:oceaneyes7764": dict(
+        NOTION_ROW,
+        name="  Oceaneyes7764 ",
+        vault_url="https://shipstream.test/vault/oceaneyes7764",
+    )})
+    [page] = client.get("/api/control-plane/v1/roster", headers=_roster_headers()).json()["pages"]
+    assert page["handle"] == "oceaneyes7764"
+
+    intent, _ = cp._current_master_pages_intent("acct:oceaneyes7764")
+    assert intent["handle"] == "oceaneyes7764"
+
+
 def test_null_fields_are_explicit_never_dropped(client):
     _seed(**{"acct:bare": {"name": "bare.page", "source": "notion", "project": None, "group": None}})
     res = client.get("/api/control-plane/v1/roster", headers=_roster_headers())
