@@ -1659,6 +1659,14 @@ Exact-head full-suite verification of PR #220 exposed a new failure in the exist
 _________________________________________________________________________________
 
 _________________________________________________________________________________
+time: [11:59pm] [10-12-26] EDT; actual UTC: 2026-10-13T03:59:38Z
+agent: [Codex desktop with Mac mini execution] [gpt-6.1-sol] [release owner]
+worktree: [codex/content-lab-job-key-lookup] /Users/risingtidesdev/worktrees/content-lab-job-key-lookup
+type: [bug report]: Read-only lost-ack Content Lab job receipt lookup
+area: [backend], [testing], [review]
+
+A lost create acknowledgment had no side-effect-free way to recover the original job ID: repeating create can validate current intent and resume paid work, while status needs the unknown ID. This isolated candidate adds an authenticated, exact-page/lane/key and original-request-hash receipt lookup that only reads the durable job index and returns job ID/status. Missing, foreign, archived, legacy-unhashed or changed-request rows hold for original-attempt reconciliation; corrupt storage fails closed. Independent source review found and the builder fixed an accepted boolean-quantity compatibility edge. Fifty-seven focused tests pass, including app-level dual authentication; no provider call, production write, push, PR, merge or deployment occurred yet. PR #179 route-auth integration, caller credentials, final-head review/checks and live read-only parity remain release holds. Rollback is a code revision preserving job receipts and idempotency history.
+_________________________________________________________________________________
 time: [04:46am] [10-13-26] EDT; actual UTC: 2026-10-13T08:46:00Z
 agent: [Codex desktop with Mac mini builder] [gpt-6.1-sol] [focused builder]
 worktree: [codex/capabilities-auth-20261013] /private/tmp/content-lab-capabilities-auth
@@ -1667,6 +1675,14 @@ area: [backend], [testing], [review]
 
 The public capability GET accepted a guessable page ID and returned recipe capacity and canonical source identities without the configured Control Plane token. This private candidate applies the existing fail-closed CONTROL_PLANE_TOKEN Bearer check before page intent or job reads, preserves the authorized Worker response, and updates route tests to use the Worker credential. Missing, invalid, browser-key, and unconfigured credentials are covered. No production request, push, merge, or deployment occurred; independent exact-head review and release verification remain required. Rollback is the prior code revision if authorized Worker reads regress.
 _________________________________________________________________________________
+_________________________________________________________________________________
+time: [05:22am] [10-13-26] EDT; actual UTC: 2026-10-13T09:22:26Z
+agent: [Codex desktop with Mac mini builder] [gpt-6.1-sol] [focused builder]
+worktree: [codex/pr223-status-integration-20261013] /private/tmp/content-lab-pr223-status-20261013
+type: [bug report]: Fail closed on corrupt lost-ack receipt status
+area: [backend], [testing], [review]
+
+Independent current-base review found that the read-only original-job lookup accepted an exact-key job row with an arbitrary persisted status, returning an invalid success receipt. This isolated integration candidate preserves current main capability Bearer authentication and both append-only event entries, accepts only the persisted queued/running/completed/failed lifecycle states, and treats other saved status values as unavailable without mutation or provider calls. Exact status and unchanged-store regressions plus 233 relevant control-plane/source tests passed (10 skipped). No push, merge, deployment, or production request occurred; PR #223 remains draft for independent exact-head review, checks, caller compatibility, and live read-only parity. Rollback preserves the durable job/idempotency store; reverting this status check would reopen malformed receipt success.
 
 _________________________________________________________________________________
 time: [10:17am] [10-13-26] EDT; actual UTC: 2026-10-13T14:17:05Z
@@ -1697,3 +1713,30 @@ area: [backend], [testing]
 
 acct:oceaneyes7764's Notion title is "Oceaneyes7764". The roster sent that spelling as the Master Pages handle, and ShipStream refused both source imports with `source_registration_invalid` because vault handles must be lowercase. `_snapshot_page` now lowercases the handle, so the roster projection and the current-intent resolver both carry the TikTok spelling. Only this page and one archived page had mixed-case handles in the control plane, so no other page's intent hash moves. New regression test in `tests/test_control_plane_roster.py` fails on the old code and passes now.
 _________________________________________________________________________________
+
+_________________________________________________________________________________
+time: [9:23pm] [10-16-26] PDT; actual UTC: 2026-10-17T04:23:11Z
+agent: [Codex desktop with Mac mini builder] [gpt-6.1-sol] [focused builder]
+worktree: [codex/content-lab-job-key-lookup] /Users/seenorising/rt-base-wt/e2df-fr/lanes/l223
+type: [bug report]: Keep job receipt lookup aligned with create policy hash normalization
+area: [backend], [testing], [review]
+
+Independent review found the read-only lost-ack lookup rejected numeric policyHash values even though job creation stringifies and accepts them. Lookup now applies the same normalization. A registered-recipe regression creates a job with numeric policyHash, recovers the same queued job from the exact request, and checks the job store and runner starts stay unchanged during lookup. The test fails on the previous validation and passes with this fix. origin/main was merged; events.md retained both sides' append-only entries and no other conflicts occurred. No push, production request, or deployment occurred.
+
+_________________________________________________________________________________
+time: 2026-10-17T04:57:14.851551+00:00
+agent: [Codex] [builder]
+worktree: [codex/content-lab-job-key-lookup] /Users/seenorising/rt-base-wt/e2df-fr/lanes/l223
+type: [bug report]: Share create and receipt lookup identity normalization
+area: [backend], [testing], [review]
+
+Round 2 review found that a numeric top-level pageId accepted by create was still rejected by receipt lookup. Creation, lookup and request hashing now share one normalization helper for pageId, lane, engine, lockedRecipeId, recipeVersion and policyHash, preserving create's existing coercions and exact lane comparison. A registered numeric-page request now recovers its original queued job without changing store bytes or adding a runner start. The numeric policyHash regression remains covered, alongside trimmed recipe identity fields and invalid scope refusals. The focused suite passed 122 tests; reinstating the raw lookup scope comparison compiles and fails the numeric-page recovery assertion. Current main was already merged, so this fix is an ordinary separate commit.
+
+_________________________________________________________________________________
+time: 2026-10-17T05:54:19.864657+00:00
+agent: [Codex] [builder]
+worktree: [codex/content-lab-job-key-lookup] /Users/seenorising/rt-base-wt/e2df-fr/lanes/l223
+type: [bug report]: Guard receipt lookup against the real paid-generation debit API
+area: [testing], [review]
+
+Round 3 review found two no-debit lookup tests patched a nonexistent reserve function with raising=False. Both now patch debit_generation_spend_at with normal attribute-existence checking. A temporary debit injected into lookup passed all seven old guard cases but caused all seven corrected cases to fail by assertion. Removing the mutation restored 122 passing focused tests. Production lookup and both identity fixes are unchanged; the full-head gate follows this separate test-only fix.
