@@ -311,9 +311,10 @@ def submit_job(
                     and isinstance(existing.get("account_name"), str)
                     and isinstance(existing.get("video_path"), str)
                     and existing["account_name"] == account_name
+                    and existing.get("status") not in ("completed", "cancelled")
                     and os.path.realpath(existing["video_path"]) == target):
-                # A retained row with a readable identity may be a post whose
-                # provider outcome is unknown, even if other fields failed validation.
+                # Terminal history permits retries. Unknown or unresolved state
+                # still blocks, even if other fields failed validation.
                 raise UploadReconciliationRequired(
                     "TikTok upload original attempt requires reconciliation "
                     "before resubmission (job %s)" % (existing.get("job_id") or "unknown")

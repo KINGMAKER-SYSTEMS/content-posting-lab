@@ -248,8 +248,9 @@ def test_bad_stored_row_is_quarantined_and_good_job_processes(cookie_dir, monkey
     assert "Quarantined upload job row 1: video_path must be a non-empty string" in caplog.text
 
 
+@pytest.mark.parametrize("status", ["queued", "uploading", "failed", None, "unknown", []])
 def test_quarantined_unresolved_row_blocks_same_account_video_retry(
-    sync_client, cookie_dir, monkeypatch,
+    sync_client, cookie_dir, monkeypatch, status,
 ):
     _write_cookie(cookie_dir, "linked")
     monkeypatch.setattr(upload_svc.importlib, "import_module", lambda name: _FAKE_UPLOADER)
@@ -263,7 +264,7 @@ def test_quarantined_unresolved_row_blocks_same_account_video_retry(
     stored = cookie_dir.parent / "upload_jobs.json"
     unresolved = {
         "job_id": "",
-        "status": "uploading",
+        "status": status,
         "video_path": "/tmp/uncertain.mp4",
         "account_name": "linked",
     }
@@ -343,6 +344,52 @@ def test_unresolved_original_upload_refuses_same_account_video_without_second_jo
     assert original["job_id"] in response.json()["detail"]
     assert stored.read_bytes() == before
     assert len(upload_svc._read_stored_jobs()) == 1
+
+
+@pytest.mark.parametrize("status", ["cancelled", "completed"])
+@pytest.mark.parametrize("malformed", [False, True])
+def test_terminal_upload_allows_same_account_video_retry(
+    sync_client, cookie_dir, monkeypatch, status, malformed,
+):
+    _write_cookie(cookie_dir, "linked")
+    monkeypatch.setattr(upload_svc.importlib, "import_module", lambda name: _FAKE_UPLOADER)
+    calls = []
+    monkeypatch.setattr(upload_svc, "_run_upload_sync", lambda job: calls.append(job["job_id"]) or "Completed")
+
+    async def leave_queued():
+        pass
+
+    monkeypatch.setattr(upload_router, "process_queue", leave_queued)
+    original = upload_svc.submit_job(video_path="/tmp/clip.mp4", account_name="linked", description="old caption")
+    if status == "cancelled":
+        cancelled = sync_client.post(f"/api/upload/jobs/{original['job_id']}/cancel")
+        assert cancelled.status_code == 200
+    else:
+        asyncio.run(upload_svc._process_single_job(original["job_id"]))
+    original = upload_svc.get_job(original["job_id"])
+    assert original["status"] == status
+    stored = cookie_dir.parent / "upload_jobs.json"
+    if malformed:
+        original["job_id"] = ""
+        stored.write_text(json.dumps([original]))
+    calls.clear()
+
+    response = sync_client.post("/api/upload/submit", json={
+        "video_path": "/tmp/other/../clip.mp4", "account_name": "linked", "description": "fixed caption",
+    })
+
+    assert response.status_code == 200
+    retry = response.json()["job"]
+    assert retry["job_id"] != original["job_id"]
+    assert retry["status"] == "queued"
+    assert retry["description"] == "fixed caption"
+    saved = json.loads(stored.read_text())
+    assert len(saved) == 2
+    assert original in saved
+    assert calls == []
+    asyncio.run(upload_svc._process_single_job(retry["job_id"]))
+    assert calls == [retry["job_id"]]
+    assert upload_svc.get_job(retry["job_id"])["status"] == "completed"
 
 
 def test_upload_claim_cannot_be_cancelled_or_resubmitted_during_browser_call(
