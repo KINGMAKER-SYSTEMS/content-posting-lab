@@ -31,6 +31,9 @@ import routers.control_plane as cp
 from routers.control_plane import router
 
 
+pytestmark = pytest.mark.real_route_auth
+
+
 ROSTER_TOKEN = "test-control-plane-token"
 
 
@@ -401,7 +404,10 @@ def test_machine_refresh_requires_lane_and_notion_configuration(client, monkeypa
     import services.notion_pages as notion_pages
 
     monkeypatch.setenv("CONTROL_PLANE_TOKEN", "test-control-plane-token")
-    assert client.post("/api/control-plane/v1/roster/refresh").status_code == 400
+    assert client.post(
+        "/api/control-plane/v1/roster/refresh",
+        headers={"Authorization": f"Bearer {ROSTER_TOKEN}"},
+    ).status_code == 400
     unauthorized = client.post(
         "/api/control-plane/v1/roster/refresh",
         headers={"X-RT-Lane": "content-bucket-control-plane"},
