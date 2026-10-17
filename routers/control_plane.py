@@ -845,7 +845,10 @@ def _snapshot_page(page: dict[str, Any]) -> dict[str, Any] | None:
     "absent" and raise a blocker instead of guessing a lane or page type.
     """
     page_id = str(page.get("integration_id") or "").strip()
-    handle = str(page.get("name") or "").strip()
+    # TikTok handles are lowercase, and ShipStream's vault registration refuses
+    # any other spelling. Notion titles are typed by hand ("Oceaneyes7764"),
+    # so the handle crosses in the spelling TikTok and the vault use.
+    handle = str(page.get("name") or "").strip().lower()
     if not page_id or not handle:
         # A row with no stable identity cannot be reconciled to anything —
         # including it would give the plane a page it can never address.

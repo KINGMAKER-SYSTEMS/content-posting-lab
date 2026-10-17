@@ -1687,3 +1687,13 @@ area: [backend], [testing], [review]
 
 Independent review found that executable permission errors and unexpected checker failures could leave a stale healthy tool status and immediately reschedule another subprocess refresh on every probe. The command probe now treats all OS execution errors as unavailable; the refresh resolves individual checker failures to false and stamps the completed check, and cancellation is handled without spurious callback errors. Regression tests cover both failure classes and bounded refresh behavior: 15 focused health/lifespan cases pass. The production Docker image rebuilt, imported app and TgCrypto, and contains no gcc. No push, merge or deployment occurred.
 _________________________________________________________________________________
+
+_________________________________________________________________________________
+time: [9:14PM] [10-16-26] EDT; actual UTC: 2026-10-17T01:14:55Z
+agent: [Claude Code] [claude-opus-5-5] [Floyd source import]
+worktree: [fix/roster-handle-lowercase-1016] /Users/ecfromthedc/dev/wt/lab-handle-lowercase-1016
+type: [bug report]: Page handles cross to the control plane in lowercase
+area: [backend], [testing]
+
+acct:oceaneyes7764's Notion title is "Oceaneyes7764". The roster sent that spelling as the Master Pages handle, and ShipStream refused both source imports with `source_registration_invalid` because vault handles must be lowercase. `_snapshot_page` now lowercases the handle, so the roster projection and the current-intent resolver both carry the TikTok spelling. Only this page and one archived page had mixed-case handles in the control plane, so no other page's intent hash moves. New regression test in `tests/test_control_plane_roster.py` fails on the old code and passes now.
+_________________________________________________________________________________
