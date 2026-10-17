@@ -7,6 +7,31 @@
 
 ## Ownership
 
+- `routers/recreate.py` confines REST and WebSocket job IDs to one real
+  recreate-directory child before any job write or deletion. Reject encoded
+  parent traversal and symlinked job directories; listing skips unsafe jobs and
+  symlinked frame assets. The browser's UUID job IDs remain supported.
+
+- Recreate LaMa frame cleaning records a private exact-image/mask/version
+  budget-pending identity before the debit and a separate submission intent
+  after debit and before the paid POST, then the returned Replicate prediction
+  ID before polling and the output URL before CDN download. A budget refusal
+  may retry the same debit ID, but the explicit zero-budget emergency stop blocks
+  every first provider POST even if that debit was already committed. A submission
+  intent missing its prediction ID is ambiguous and cannot be resubmitted
+  automatically; known IDs are polled again without another debit. A stable
+  kernel claim prevents concurrent starts and deletion while a job is active.
+  DELETE refuses unresolved receipts after the runner exits. Completed paid-job
+  deletion retains original receipts in a private `.paid-receipts/<job-id>.json`
+  tombstone outside the deleted media directory so stale same-ID starts refuse.
+  Paid replays reuse their saved original frame bytes and can repoll a known
+  prediction without the expired source video or ffprobe. Existing receipt
+  corruption fails closed without another debit or provider POST. The private
+  completed-job tombstone directory must be a real direct project child. Clean frames are
+  verified and atomically published after download. Listing reports complete
+  only when both clean frames exist, and the browser retains a job after a
+  refused DELETE instead of claiming removal.
+
 - `tools/seekable-html-video/render_seekable.cjs` owns seekable HTML-to-MP4 frame capture.
   An explicit `--frames-dir` may be an existing empty, real directory or a
   missing path, which is created; populated or symlink paths are refused.
@@ -60,6 +85,7 @@
   lengths still verify. Preserve the saved speed and video treatment.
   Normalize cut timestamps and extend a fractional missing tail frame to the
   planned output duration; source-window provenance remains unchanged.
+- `GET /api/control-plane/v1/capabilities` requires the existing `CONTROL_PLANE_TOKEN` Bearer credential before reading page intent or job state. A missing server token returns 503; missing, invalid, or browser `APP_API_KEY` credentials return 401. The authorized Worker request and capability response schema stay unchanged.
 - Source cut planning honors the immutable original 60-second minimum for raw
   source libraries and the Worker-supplied global source-window exclusions
   before rendering. Exact page-bound ShipStream masters are already extracted
@@ -169,6 +195,8 @@
 - `services/control_plane_source_imports.py` owns bounded public-HTTPS download,
   exact-byte hashing, media probing, and refillable-master normalization for
   page-scoped source-link intake.
+- `services/job_token_rotation.py` and `scripts/rotate_job_download_token.py`
+  own operator-only rotation of one job's signed download credential.
 - `routers/burn.py` exposes caption rendering and final video compositing.
 - `services/roster_public.py` owns what `/api/roster`, `/api/pipeline` and
   `/api/email` may serialise: an allowlist of roster row fields plus a
@@ -426,6 +454,25 @@
   when their authority repeats the exact Control Plane page id, page handle,
   Notion page id, and replacement eligibility required by the active Master
   Pages projection.
+- Signed job download and thumbnail URLs use one per-job credential. The
+  operator rotation CLI (`python -m services.job_token_rotation`, which is
+  included in the production image) requires an explicit absolute existing job-store path,
+  one job id, a dry-run job revision, and `--apply`; it changes only a terminal
+  live job under the existing cross-process store lock and atomic save. Missing
+  or archived jobs are no-ops, active jobs refuse, and a changed job revision
+  refuses until a new dry-run. Output contains metadata and revisions, never a
+  token. A clip must carry the router-consumed artifact root, source mapping,
+  and clip/thumbnail path, name, SHA-256 and positive byte size. An existing
+  rotation audit must have exactly UTC time, a closed reason and count;
+  malformed or unknown audit fields refuse unchanged instead of discarding
+  history. Applying a rotation requires the
+  job-store's immediate directory to be owned by the operator and inaccessible
+  to group and others; the tool never changes directory permissions. A
+  pre-existing atomic-save temporary file for that writer also refuses rather
+  than being truncated. The stored audit records UTC time, a closed reason and count. A
+  rollback must never restore a previous token; rotate forward again if needed.
+  Already-issued URLs cease to work after rotation, so the operator must
+  coordinate downstream consumers before applying it.
 - A publishable caption render requires exact caption text and a complete page
   style: font, size, color, position, alignment, and line balance.
 - Resolve fonts only from Content Lab's installed, advertised TikTokSans files.
@@ -652,6 +699,16 @@
   `recipes/generation/boat_minimax.v1.json` changes only boat generation;
   preserve unrelated prompt/provider versions and use the existing boat inventory.
 
+- `GET /api/health` reports the most recently completed ffmpeg/yt-dlp
+  executable check. Startup checks both off the event loop before serving.
+  A request after the 60-second freshness interval starts at most one
+  background refresh; concurrent probes return the last completed result
+  without launching their own commands. A failed or missing tool, including
+  an executable permission error, reports degraded after the refresh and
+  records a fresh check time so repeated probes cannot spin new checks.
+  Keep the anonymous provider and budget fields
+  unchanged; readiness remains a separate endpoint.
+
 ## Work Guidance
 
 - The production Docker image uses explicit COPY paths. Include every required
@@ -669,6 +726,10 @@
   module and return the same versioned schema and hashes.
 
 ## Verification
+- Run `pytest -q tests/test_health_tool_latency.py tests/test_smoke.py`
+  for nonblocking single-flight tool refresh, missing-tool degradation and
+  the public health response.
+
 
 - Run `pytest -q tests/test_route_auth_dispatch.py tests/test_route_auth_guard.py tests/test_route_auth_access_jwt.py`
   for effective include prefixes/dependencies, dispatch order, HTTP/websocket
@@ -694,6 +755,10 @@
 - Run `pytest -q tests/test_ytdlp_download_diagnostics.py tests/test_control_plane_source_import_service.py tests/test_control_plane_source_imports.py`
   for private cookie-copy ownership, crash leftovers, failed/cancelled attempts,
   original preservation and existing bounded source intake; subprocesses are stubbed.
+- Run `pytest -q tests/test_job_token_rotation.py` for dry-run secrecy,
+  job-scoped compare-and-set, cross-thread store-lock serialization, archived
+  no-op, malformed metadata/audit refusal, private-directory and temporary-file
+  guards, and old/new download and thumbnail credentials on synthetic artifacts.
 
 - Run `pytest -q tests/test_font_static_headers.py tests/test_static_path_confinement.py`
   for font MIME/cache headers, changed-byte validators and static path containment.
@@ -711,6 +776,7 @@
   noise, short readable text, rotated single-frame text, complete coverage,
   unavailable providers, exact-byte binding, and cached-decision behavior.
 
+- Run `pytest -q tests/test_control_plane_capability_auth.py` for the capability Bearer boundary and unchanged authorized response.
 - Run `pytest -q tests/test_production_image_imports.py` for isolated imports from
   the Dockerfile's backend file selection. Build the Docker image for release;
   its app-import smoke check must pass before deployment. Confirm TgCrypto can

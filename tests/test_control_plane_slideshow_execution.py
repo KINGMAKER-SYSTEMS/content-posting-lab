@@ -287,7 +287,7 @@ def test_capability_and_jobs_bind_master_hash_and_reserve_unique_plans(lab):
     client, _, started, library, payload = lab
     capabilities = client.get(
         "/api/control-plane/v1/capabilities",
-        headers={"X-RT-Page-Id": PAGE_ID},
+        headers={"X-RT-Page-Id": PAGE_ID, "Authorization": f"Bearer {TOKEN}"},
     ).json()["capabilities"]
     row = next(item for item in capabilities if item["recipeId"] == RECIPE_ID)
     assert row["engine"] == ENGINE
@@ -348,7 +348,7 @@ def test_slideshow_admission_returns_409_when_fresh_inventory_is_exhausted(lab):
     assert exhausted.json()["detail"] == "slideshow_inventory_exhausted"
     capabilities = client.get(
         "/api/control-plane/v1/capabilities",
-        headers={"X-RT-Page-Id": PAGE_ID},
+        headers={"X-RT-Page-Id": PAGE_ID, "Authorization": f"Bearer {TOKEN}"},
     ).json()["capabilities"]
     row = next(item for item in capabilities if item["recipeId"] == RECIPE_ID)
     assert row["maxQuantity"] == 0
@@ -634,7 +634,7 @@ def test_slideshow_paths_never_probe_the_ai_video_resolver(lab, monkeypatch):
     monkeypatch.setattr(cp, "resolve_generation_recipe", unexpected_generation_probe)
     capabilities = client.get(
         "/api/control-plane/v1/capabilities",
-        headers={"X-RT-Page-Id": PAGE_ID},
+        headers={"X-RT-Page-Id": PAGE_ID, "Authorization": f"Bearer {TOKEN}"},
     )
     assert capabilities.status_code == 200
     created = client.post(

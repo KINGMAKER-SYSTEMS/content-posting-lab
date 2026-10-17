@@ -1,0 +1,404 @@
+"""Original-attempt receipts prevent repeated paid LaMa creates."""
+
+import asyncio
+import json
+
+import httpx
+import pytest
+
+from providers import replicate
+from routers.recreate import _remove_text_with_retry
+from services import generation_budget
+
+
+IMAGE = "data:image/png;base64,fixture"
+OUTPUT = "https://fixture.example/clean.png"
+
+
+def _provider(monkeypatch):
+    monkeypatch.setitem(replicate.API_KEYS, "replicate", "fixture-token")
+    monkeypatch.setattr(replicate, "_generate_text_mask", lambda _: "fixture-mask")
+    monkeypatch.setattr(generation_budget, "per_gen_cost_usd_by_model", lambda _: 0.405)
+    debits = []
+    monkeypatch.setattr(generation_budget, "debit_generation_spend_at",
+                        lambda *args: debits.append(args[-1]) or True)
+    return debits
+
+
+def test_ambiguous_create_never_posts_or_debits_again(monkeypatch, tmp_path):
+    debits = _provider(monkeypatch)
+    posts = []
+
+    class Client:
+        async def post(self, *args, **kwargs):
+            posts.append(kwargs)
+            raise httpx.ReadTimeout("response lost")
+
+    receipt = tmp_path / "first.json"
+    for _ in range(2):
+        with pytest.raises((httpx.ReadTimeout, RuntimeError)):
+            asyncio.run(_remove_text_with_retry(IMAGE, Client(), "first frame", receipt))
+    assert len(posts) == len(debits) == 1
+    assert json.loads(receipt.read_text())["state"] == "submission_intent"
+
+
+def test_known_prediction_repolls_original_id_without_new_create(monkeypatch, tmp_path):
+    debits = _provider(monkeypatch)
+    posts = []
+    polls = []
+
+    class Response:
+        status_code = 201
+
+        def json(self):
+            return {"id": "prediction-original"}
+
+    class Client:
+        async def post(self, *args, **kwargs):
+            posts.append(kwargs)
+            return Response()
+
+    async def poll(*args, **kwargs):
+        polls.append(args[2])
+        if len(polls) == 1:
+            raise httpx.ReadTimeout("poll lost")
+        return OUTPUT
+
+    monkeypatch.setattr(replicate, "_poll_prediction", poll)
+    receipt = tmp_path / "last.json"
+    with pytest.raises(httpx.ReadTimeout):
+        asyncio.run(_remove_text_with_retry(IMAGE, Client(), "last frame", receipt))
+    assert asyncio.run(_remove_text_with_retry(IMAGE, Client(), "last frame", receipt)) == OUTPUT
+    assert asyncio.run(_remove_text_with_retry(IMAGE, Client(), "last frame", receipt)) == OUTPUT
+    assert posts and len(posts) == len(debits) == 1
+    assert polls == ["prediction-original", "prediction-original"]
+    assert json.loads(receipt.read_text())["state"] == "complete"
+
+
+def test_changed_frame_cannot_reuse_original_prediction(monkeypatch, tmp_path):
+    _provider(monkeypatch)
+    class Client:
+        async def post(self, *args, **kwargs):
+            raise httpx.ReadTimeout("lost")
+    receipt = tmp_path / "first.json"
+    with pytest.raises(httpx.ReadTimeout):
+        asyncio.run(_remove_text_with_retry(IMAGE, Client(), "first frame", receipt))
+    with pytest.raises(RuntimeError, match="input mismatch"):
+        asyncio.run(_remove_text_with_retry(IMAGE + "changed", Client(), "first frame", receipt))
+
+def test_second_start_and_delete_cannot_overlap_owned_job(monkeypatch, tmp_path):
+    from httpx import ASGITransport, AsyncClient
+    from app import app
+    from routers import recreate
+    from services import generation_budget
+
+    monkeypatch.setattr(generation_budget, "jobs_store_path", lambda: tmp_path / "budget.json")
+    monkeypatch.setattr(recreate, "get_project_recreate_dir", lambda project: tmp_path / "recreate")
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    runs = []
+
+    async def owned(*args):
+        runs.append(args)
+        (tmp_path / "recreate" / "same-job").mkdir(parents=True, exist_ok=True)
+        entered.set()
+        await release.wait()
+
+    monkeypatch.setattr(recreate, "_run_pipeline_owned", owned)
+    errors = []
+
+    async def send(*args):
+        errors.append(args)
+
+    monkeypatch.setattr(recreate, "_send", send)
+
+    async def exercise():
+        first = asyncio.create_task(recreate._run_pipeline("same-job", "url", "fixture"))
+        await entered.wait()
+        await recreate._run_pipeline("same-job", "url", "fixture")
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            response = await client.delete("/api/recreate/jobs/same-job", params={"project": "fixture"})
+        release.set()
+        await first
+        return response
+
+    response = asyncio.run(exercise())
+    assert response.status_code == 409
+    assert len(runs) == 1
+    assert errors[0][1] == "error"
+
+@pytest.mark.parametrize("known_id", [False, True])
+def test_delete_refuses_unresolved_paid_attempt_and_replay_is_original(monkeypatch, tmp_path, known_id):
+    from fastapi import HTTPException
+    from routers import recreate
+
+    debits = _provider(monkeypatch)
+    job_dir = tmp_path / "recreate" / "same-job"
+    job_dir.mkdir(parents=True)
+    monkeypatch.setattr(recreate, "get_project_recreate_dir", lambda _: job_dir.parent)
+    posts = []
+    polls = []
+
+    class Response:
+        status_code = 201
+
+        def json(self):
+            return {"id": "original-prediction"}
+
+    class Client:
+        async def post(self, *args, **kwargs):
+            posts.append(kwargs)
+            if not known_id:
+                raise httpx.ReadTimeout("create reply lost")
+            return Response()
+
+    async def poll(*args, **kwargs):
+        polls.append(args[2])
+        raise httpx.ReadTimeout("poll reply lost")
+
+    monkeypatch.setattr(replicate, "_poll_prediction", poll)
+    receipt = job_dir / "first_lama_receipt.json"
+    with pytest.raises(httpx.ReadTimeout):
+        asyncio.run(_remove_text_with_retry(IMAGE, Client(), "first frame", receipt))
+    with pytest.raises(HTTPException) as denied:
+        asyncio.run(recreate.delete_recreate_job("same-job", project="fixture"))
+    assert denied.value.status_code == 409
+    assert receipt.exists()
+    with pytest.raises((RuntimeError, httpx.ReadTimeout)):
+        asyncio.run(_remove_text_with_retry(IMAGE, Client(), "first frame", receipt))
+    assert len(posts) == len(debits) == 1
+    assert polls == (["original-prediction", "original-prediction"] if known_id else [])
+
+
+def test_budget_refusal_retries_same_debit_before_submission_fence(monkeypatch, tmp_path):
+    _provider(monkeypatch)
+    reservations = []
+
+    def reserve(*args):
+        reservations.append(args[-1])
+        return len(reservations) > 1
+
+    monkeypatch.setattr(generation_budget, "debit_generation_spend_at", reserve)
+    posts = []
+
+    class Client:
+        async def post(self, *args, **kwargs):
+            posts.append(kwargs)
+            raise httpx.ReadTimeout("create reply lost")
+
+    receipt = tmp_path / "first_lama_receipt.json"
+    with pytest.raises(RuntimeError, match="generation_daily_budget_reached"):
+        asyncio.run(_remove_text_with_retry(IMAGE, Client(), "first frame", receipt))
+    assert json.loads(receipt.read_text())["state"] == "budget_pending"
+    with pytest.raises(httpx.ReadTimeout):
+        asyncio.run(_remove_text_with_retry(IMAGE, Client(), "first frame", receipt))
+    with pytest.raises(RuntimeError, match="outcome unknown"):
+        asyncio.run(_remove_text_with_retry(IMAGE, Client(), "first frame", receipt))
+    assert len(posts) == 1
+    assert len(reservations) == 2
+    assert reservations[0] == reservations[1]
+
+def test_paid_replay_uses_original_frames_without_redownloading(monkeypatch, tmp_path):
+    from routers import recreate
+    from scraper import frame_extractor
+
+    job_dir = tmp_path / "recreate" / "same-job"
+    job_dir.mkdir(parents=True)
+    (job_dir / "source_video.mp4").write_bytes(b"v" * 1001)
+    (job_dir / "first_frame_original.jpg").write_bytes(b"first-original")
+    (job_dir / "last_frame_original.jpg").write_bytes(b"last-original")
+    (job_dir / "first_lama_receipt.json").write_text('{"state":"polling"}')
+    monkeypatch.setattr(recreate, "get_project_recreate_dir", lambda _: job_dir.parent)
+    calls = []
+
+    async def forbidden(*args, **kwargs):
+        calls.append("source mutation")
+        raise AssertionError("paid replay must not redownload or re-extract")
+
+    async def send(*args):
+        calls.append(args[1])
+
+    async def clean(image, client, label, receipt):
+        return "https://fixture.example/clean.png"
+
+    async def download_clean(client, url, dest, label):
+        dest.write_bytes(b"clean")
+
+    monkeypatch.setattr(frame_extractor, "download_video", forbidden)
+    monkeypatch.setattr(frame_extractor, "extract_frame", forbidden)
+    monkeypatch.setattr(recreate, "_get_video_duration", lambda path: asyncio.sleep(0, result=1.0))
+    monkeypatch.setattr(recreate, "_remove_text_with_retry", clean)
+    monkeypatch.setattr(recreate, "_download_cleaned_image", download_clean)
+    monkeypatch.setattr(recreate, "_send", send)
+    asyncio.run(recreate._run_pipeline_owned("same-job", "https://changed.invalid/new", "fixture"))
+    assert "source mutation" not in calls
+    assert "complete" in calls
+    assert (job_dir / "first_frame_original.jpg").read_bytes() == b"first-original"
+
+def test_committed_debit_budget_pending_respects_zero_stop_before_first_post(monkeypatch, tmp_path):
+    from services.generation_recovery import input_hash
+
+    monkeypatch.setitem(replicate.API_KEYS, "replicate", "fixture-token")
+    monkeypatch.setattr(replicate, "_generate_text_mask", lambda _: "fixture-mask")
+    monkeypatch.setattr(generation_budget, "per_gen_cost_usd_by_model", lambda _: 0.405)
+    store = tmp_path / "jobs.json"
+    monkeypatch.setattr(generation_budget, "jobs_store_path", lambda: store)
+    monkeypatch.setenv("LAB_GENERATION_DAILY_BUDGET_USD", "1")
+    debit_id = "recreate:original-reservation"
+    assert generation_budget.debit_generation_spend_at(store, 0.405, debit_id)
+    receipt = tmp_path / "first_lama_receipt.json"
+    receipt.write_text(json.dumps({
+        "inputHash": input_hash(replicate._LAMA_VERSION,
+                                {"image": IMAGE, "mask": "fixture-mask"}),
+        "debitId": debit_id,
+        "state": "budget_pending",
+    }))
+    posts = []
+
+    class Client:
+        async def post(self, *args, **kwargs):
+            posts.append(kwargs)
+            raise httpx.ReadTimeout("response lost")
+
+    monkeypatch.setenv("LAB_GENERATION_DAILY_BUDGET_USD", "0")
+    with pytest.raises(RuntimeError, match="generation_daily_budget_reached"):
+        asyncio.run(_remove_text_with_retry(IMAGE, Client(), "first frame", receipt))
+    assert posts == []
+    assert json.loads(receipt.read_text())["state"] == "budget_pending"
+    assert generation_budget.spent_usd_at(store) == 0.405
+
+    monkeypatch.setenv("LAB_GENERATION_DAILY_BUDGET_USD", "1")
+    with pytest.raises(httpx.ReadTimeout):
+        asyncio.run(_remove_text_with_retry(IMAGE, Client(), "first frame", receipt))
+    with pytest.raises(RuntimeError, match="outcome unknown"):
+        asyncio.run(_remove_text_with_retry(IMAGE, Client(), "first frame", receipt))
+    assert len(posts) == 1
+    assert generation_budget.spent_usd_at(store) == 0.405
+
+def test_completed_delete_retains_paid_tombstone_and_fences_stale_job_id(monkeypatch, tmp_path):
+    from routers import recreate
+    from services import generation_budget
+
+    job_dir = tmp_path / "recreate" / "same-job"
+    job_dir.mkdir(parents=True)
+    for label in ("first", "last"):
+        (job_dir / f"{label}_lama_receipt.json").write_text(json.dumps({
+            "state": "complete", "debitId": f"recreate:{label}",
+            "predictionId": f"prediction-{label}",
+            "output": f"https://fixture.example/{label}.png",
+        }))
+        (job_dir / f"{label}_frame_clean.png").write_bytes(b"clean")
+    monkeypatch.setattr(recreate, "get_project_recreate_dir", lambda _: job_dir.parent)
+    monkeypatch.setattr(generation_budget, "jobs_store_path", lambda: tmp_path / "jobs.json")
+    assert asyncio.run(recreate.delete_recreate_job("same-job", project="fixture"))["deleted"]
+    assert not job_dir.exists()
+    tombstone = job_dir.parent / ".paid-receipts" / "same-job.json"
+    saved = json.loads(tombstone.read_text())
+    assert saved["receipts"]["first_lama_receipt.json"]["predictionId"] == "prediction-first"
+    assert saved["receipts"]["last_lama_receipt.json"]["predictionId"] == "prediction-last"
+
+    calls = []
+
+    async def forbidden(*args):
+        calls.append("started")
+        raise AssertionError("retired paid job must not restart")
+
+    async def send(*args):
+        calls.append(args[1])
+
+    monkeypatch.setattr(recreate, "_run_pipeline_owned", forbidden)
+    monkeypatch.setattr(recreate, "_send", send)
+    asyncio.run(recreate._run_pipeline("same-job", "https://fixture.example/new", "fixture"))
+    assert calls == ["error"]
+    assert not job_dir.exists()
+
+@pytest.mark.parametrize("payload", ["{}", "null", "[]", "false", "0"])
+def test_corrupt_receipt_never_starts_paid_attempt(monkeypatch, tmp_path, payload):
+    debits = _provider(monkeypatch)
+    posts = []
+
+    class Client:
+        async def post(self, *args, **kwargs):
+            posts.append(kwargs)
+            raise AssertionError("Corrupt receipt must fail closed")
+
+    receipt = tmp_path / "first_lama_receipt.json"
+    receipt.write_text(payload)
+    with pytest.raises(RuntimeError):
+        asyncio.run(_remove_text_with_retry(IMAGE, Client(), "first frame", receipt))
+    assert receipt.read_text() == payload
+    assert debits == posts == []
+
+
+def test_paid_tombstone_parent_symlink_refused_without_deletion(monkeypatch, tmp_path):
+    from fastapi import HTTPException
+    from routers import recreate
+
+    root = tmp_path / "recreate"
+    job_dir = root / "same-job"
+    job_dir.mkdir(parents=True)
+    (job_dir / "first_frame_clean.png").write_bytes(b"clean")
+    (job_dir / "first_lama_receipt.json").write_text(json.dumps({
+        "state": "complete", "predictionId": "original", "debitId": "recreate:original",
+        "output": OUTPUT,
+    }))
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (root / ".paid-receipts").symlink_to(outside, target_is_directory=True)
+    monkeypatch.setattr(recreate, "get_project_recreate_dir", lambda _: root)
+    with pytest.raises(HTTPException) as denied:
+        asyncio.run(recreate.delete_recreate_job("same-job", project="fixture"))
+    assert denied.value.status_code == 500
+    assert job_dir.is_dir()
+    assert not list(outside.iterdir())
+
+
+@pytest.mark.parametrize("source_content", [None, b"changed source"] )
+def test_known_prediction_replay_without_source_or_probe(monkeypatch, tmp_path, source_content):
+    from routers import recreate
+    from scraper import frame_extractor
+    from services.generation_recovery import input_hash
+
+    debits = _provider(monkeypatch)
+    root = tmp_path / "recreate"
+    job_dir = root / "same-job"
+    job_dir.mkdir(parents=True)
+    if source_content is not None:
+        (job_dir / "source_video.mp4").write_bytes(source_content)
+    monkeypatch.setattr(recreate, "get_project_recreate_dir", lambda _: root)
+    calls = []
+    for label in ("first", "last"):
+        frame = job_dir / f"{label}_frame_original.jpg"
+        frame.write_bytes(label.encode())
+        image = recreate._image_to_data_uri(frame)
+        (job_dir / f"{label}_lama_receipt.json").write_text(json.dumps({
+            "inputHash": input_hash(replicate._LAMA_VERSION,
+                                    {"image": image, "mask": "fixture-mask"}),
+            "debitId": f"recreate:{label}", "predictionId": f"prediction-{label}",
+            "state": "polling",
+        }))
+
+    async def forbidden(*args, **kwargs):
+        raise AssertionError("Source download, probe or extraction must not run")
+
+    async def poll(*args, **kwargs):
+        calls.append(args[2])
+        return OUTPUT
+
+    async def downloaded(client, url, dest, label):
+        dest.write_bytes(b"clean")
+
+    async def sent(job_id, event, data):
+        calls.append(event)
+
+    monkeypatch.setattr(frame_extractor, "download_video", forbidden)
+    monkeypatch.setattr(frame_extractor, "extract_frame", forbidden)
+    monkeypatch.setattr(recreate, "_get_video_duration", forbidden)
+    monkeypatch.setattr(replicate, "_poll_prediction", poll)
+    monkeypatch.setattr(recreate, "_download_cleaned_image", downloaded)
+    monkeypatch.setattr(recreate, "_send", sent)
+    asyncio.run(recreate._run_pipeline_owned("same-job", "https://expired.invalid", "fixture"))
+    assert calls.count("prediction-first") == calls.count("prediction-last") == 1
+    assert "complete" in calls
+    assert debits == []

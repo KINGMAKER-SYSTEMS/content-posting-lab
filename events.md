@@ -1618,3 +1618,119 @@ Added the mixed-credential saturation regression. FastAPI runs the synchronous
 route dependency in its thread pool, so the event-loop block was at pre-body
 middleware. Local candidate only; no push, merge, deployment, or live proof.
 _________________________________________________________________________________
+time: [05:57pm] [10-07-26] EDT; actual UTC: 2026-10-07T21:57:54Z
+agent: [codex] [gpt-6.1-sol] [focused builder]
+worktree: [codex/job-signed-url-rotation] /Users/smathdaddy-macbook/content-lab-rotation
+base: [origin/main] fe1f514e2d4323675887da5c05f308fce4b3983f
+type: [bug report]: operator-only per-job signed URL credential rotation preparation
+area: [backend], [testing], [review]
+
+Prepared an offline operator CLI for one explicit terminal live Content Lab job's download/thumbnail credential. It requires an absolute existing private job-store path, dry-run job revision, and explicit apply; a changed target revision refuses under the existing cross-process job-store lock. It writes through the existing atomic save with a private process umask, updates only the selected token plus bounded UTC audit metadata, and never outputs a token. Missing or archived jobs are no-ops; active and malformed jobs refuse. Rollback must rotate forward rather than restore the prior credential. The production Docker image copies services/, so the operator entrypoint is python -m services.job_token_rotation; the scripts/ wrapper is checkout convenience only. Synthetic tests proved dry-run secrecy and no write, other-job preservation, lock blocking, compare-and-set refusal, archived no-op, and old-token 403/new-token FileResponse for both download and thumbnail. Fifty-two focused Content Lab tests passed; local app/module import and module CLI help passed. No historical leaked token, production job store, live endpoint, publication, push, PR, merge or deployment was used. Applying rotation in production would require the exact current store path and downstream URL-consumer coordination; no old token can be recovered from this change.
+_________________________________________________________________________________
+_________________________________________________________________________________
+time: [06:02pm] [10-07-26] EDT
+agent: [codex] [gpt-6.1-sol] [focused builder]
+worktree: [codex/job-signed-url-rotation] /Users/smathdaddy-macbook/content-lab-rotation
+type: [bug report]: harden operator-only job token rotation preparation
+area: [backend], [testing], [review]
+
+Closed exact-head review findings: malformed completed-job clip metadata now gives a bounded secret-free refusal; malformed existing token-rotation audit cannot silently reset the count. The operator apply path requires an owner-only immediate store directory and refuses a pre-existing atomic-save temporary filename before writing, guarding the existing writer's predictable tmp/reopen behavior without modifying the shared writer or production store permissions. Synthetic regressions cover malformed shapes, unchanged bytes and no secret diagnostics, a shared-writable directory, and pre-existing tmp preservation. Sixty-two focused Content Lab tests passed, and the devlog contract was updated. This is local preparation only; no production store/token, push, PR, merge or deployment was used.
+_________________________________________________________________________________
+_________________________________________________________________________________
+time: [05:02am] [10-10-26] EDT; actual UTC: 2026-10-10T09:02:00Z
+agent: [Codex desktop with Mac mini builder] [GPT-6.1] [root release owner]
+worktree: [codex/lab-token-rotation-audit-20261010] /Users/risingtidesdev/worktrees/lab-token-rotation-audit-20261010
+type: [bug report]: Content Lab PR #218 token-rotation metadata refusal repair
+area: [backend], [testing], [review]
+
+Independent exact-head review found that a terminal job with incomplete clip artifacts could pass rotation readiness while the download and thumbnail readers require missing fields, and a malformed prior audit could be overwritten. The private Mac mini repair validates the router-consumed clip/thumbnail fields and requires a closed, UTC-stamped prior audit before changing any token. Malformed or unknown prior audit fields refuse without changing store bytes. Twenty-four focused synthetic tests passed and independent review found no scoped source blocker. The release remains held for final-head verification and the required full production Docker image build. No production store or token was read or rotated; merge, deployment and downstream signed-URL consumer reconciliation remain separate. Rollback before any rotation is code-only; after a real rotation, never restore the old token and rotate forward if needed.
+_________________________________________________________________________________
+
+_________________________________________________________________________________
+time: [06:07am] [10-10-26] EDT; actual UTC: 2026-10-10T10:07:44Z
+agent: [Codex desktop with Mac mini builder] [gpt-6.1-sol] [focused builder]
+worktree: [codex/recreate-path-confinement-20261010] /Users/risingtidesdev/worktrees/content-lab-recreate-path-20261010
+type: [bug report]: Recreate REST/WebSocket job path traversal repair
+area: [backend], [testing], [review]
+
+Disposable API reproduction showed encoded parent job IDs could remove files outside the recreate directory. Recreate now validates one safe real child before pipeline writes or DELETE and skips unsafe listing entries and symlinked frame assets. Direct inner-pipeline, encoded/double-encoded REST and WebSocket, symlink, and valid UUID regressions pass. No provider request, production job deletion, push, merge or deployment occurred. Rollback is the previous code revision; do not restore it while untrusted recreate endpoints are reachable.
+_________________________________________________________________________________
+_________________________________________________________________________________
+time: [06:08am] [10-10-26] EDT; actual UTC: 2026-10-10T10:08:13Z
+agent: [Codex desktop with Mac mini builder] [gpt-6.1-sol] [focused builder]
+worktree: [codex/recreate-ambiguous-20261010] /Users/risingtidesdev/worktrees/content-lab-recreate-ambiguous-20261010
+type: [bug report]: LaMa recreate original-attempt reconciliation
+area: [backend], [testing], [review]
+
+The recreate frame cleaner previously retried every Replicate failure by creating another charged prediction. This private candidate records paid intent, prediction ID and output URL per frame, resumes known IDs without a new debit, and holds unknown submission outcomes for reconciliation. Cross-process job locking fences concurrent starts and DELETE, and the CDN result is verified before atomic publication. No provider or production request, push, PR, merge or deployment occurred; this candidate requires independent exact-head review after integration with the separate recreate path-confinement repair. Forty-eight focused tests passed before the devlog pass. Rollback is a code revision only if durable receipts are preserved; do not delete ambiguous original-attempt receipts.
+_________________________________________________________________________________
+
+_________________________________________________________________________________
+time: [08:05am] [10-10-26] EDT; actual UTC: 2026-10-10T12:05:52Z
+agent: [Codex desktop with Mac mini builder] [gpt-6.1-sol] [focused builder]
+worktree: [codex/recreate-ambiguous-20261010] /Users/risingtidesdev/worktrees/content-lab-recreate-ambiguous-20261010
+type: [bug report]: Recreate LaMa receipt deletion and budget boundary repair
+area: [backend], [testing], [review]
+
+Independent review of the private rebased candidate found DELETE could erase an unresolved paid attempt, and the pre-debit intent made a budget refusal look like an ambiguous provider submission. The private follow-up keeps budget-pending separate from the post-debit submission fence, retries only the same debit before that fence, rejects DELETE while any paid receipt/output remains unresolved, and reuses original video/frame bytes on known-attempt replay. Synthetic POST-timeout, known-ID poll, DELETE, budget-refusal/reset, and source-drift tests pass without provider calls. This remains an unpushed candidate requiring fresh independent review, merge, intended deployment and live verification; unresolved provider-create replies still require original-attempt reconciliation. Rollback must preserve receipt files and the generation-budget ledger.
+_________________________________________________________________________________
+
+_________________________________________________________________________________
+time: [08:16am] [10-10-26] EDT; actual UTC: 2026-10-10T12:16:34Z
+agent: [Codex desktop with Mac mini builder] [gpt-6.1-sol] [focused builder]
+worktree: [codex/recreate-ambiguous-20261010] /Users/risingtidesdev/worktrees/content-lab-recreate-ambiguous-20261010
+type: [bug report]: Recreate emergency-stop and completed-deletion replay fence
+area: [backend], [frontend], [testing], [review]
+
+Fresh independent review found that a committed original debit could bypass the explicit zero emergency stop before a first Replicate POST, that completed-job deletion allowed stale same-ID paid replay, and that one clean frame was displayed as a complete saved job. The private candidate checks current emergency-stop policy before the first POST, retains completed paid receipt identities in a private tombstone before asset deletion, refuses stale same-ID start, requires both clean frames for complete, and leaves a refused DELETE visible in the browser. Real-ledger zero-stop/re-enable and completed-deletion replay tests accompany Python and frontend checks. No provider or production operation, push, PR, merge or deployment occurred. Rollback must retain private receipt/tombstone and budget-ledger state; legacy jobs without receipts cannot reconstruct paid identities.
+_________________________________________________________________________________
+
+_________________________________________________________________________________
+time: [08:35am] [10-10-26] EDT; actual UTC: 2026-10-10T12:35:00Z
+agent: [Codex desktop with Mac mini builder] [gpt-6.1-sol] [focused builder]
+worktree: [codex/recreate-ambiguous-20261010] /Users/risingtidesdev/worktrees/content-lab-recreate-ambiguous-20261010
+type: [bug report]: Recreate receipt corruption and source-independent recovery
+area: [backend], [testing], [review]
+
+Independent review found that a falsy JSON receipt could be treated as absent and start a new paid prediction. The private candidate now rejects existing malformed receipt content without changing its bytes or debiting, refuses a symlinked completed-job tombstone directory, and repolls known prediction IDs from preserved original frames even if the source video is unavailable. Synthetic corrupt-receipt, symlink, and expired-source regressions passed without a provider call. No push, PR, merge or deployment occurred. Rollback must preserve private receipts, tombstones and the generation-budget ledger; unknown provider-create outcomes still require original-attempt reconciliation.
+_________________________________________________________________________________
+
+_________________________________________________________________________________
+time: [08:56am] [10-10-26] EDT; actual UTC: 2026-10-10T12:56:04Z
+agent: [Codex desktop with Mac mini execution] [gpt-6.1-sol] [release owner]
+worktree: [codex/recreate-ambiguous-20261010] /Users/risingtidesdev/worktrees/content-lab-recreate-ambiguous-20261010
+type: [bug report]: Preserve paid-generation import boundary while locking recreate jobs
+area: [backend], [testing], [review]
+
+Exact-head full-suite verification of PR #220 exposed a new failure in the existing paid-generation router import contract: the recreate router imported the budget module solely to choose its kernel-lock path. The lock is now anchored to the stable recreate-project directory without importing or invoking the budget gate from the router. The existing import-boundary test and 49 recreate recovery tests pass. This changes no provider submission, receipt, or budget behavior. Root AGENTS.md remains current because the stable cross-process claim contract is unchanged; no child AGENTS.md governs the router. The branch head needs fresh independent review and checks before merge.
+_________________________________________________________________________________
+
+_________________________________________________________________________________
+time: [04:46am] [10-13-26] EDT; actual UTC: 2026-10-13T08:46:00Z
+agent: [Codex desktop with Mac mini builder] [gpt-6.1-sol] [focused builder]
+worktree: [codex/capabilities-auth-20261013] /private/tmp/content-lab-capabilities-auth
+type: [bug report]: Require service Bearer before capability disclosure
+area: [backend], [testing], [review]
+
+The public capability GET accepted a guessable page ID and returned recipe capacity and canonical source identities without the configured Control Plane token. This private candidate applies the existing fail-closed CONTROL_PLANE_TOKEN Bearer check before page intent or job reads, preserves the authorized Worker response, and updates route tests to use the Worker credential. Missing, invalid, browser-key, and unconfigured credentials are covered. No production request, push, merge, or deployment occurred; independent exact-head review and release verification remain required. Rollback is the prior code revision if authorized Worker reads regress.
+_________________________________________________________________________________
+
+_________________________________________________________________________________
+time: [10:17am] [10-13-26] EDT; actual UTC: 2026-10-13T14:17:05Z
+agent: [Codex desktop with Mac mini builder] [gpt-6.1-sol] [focused builder]
+worktree: [codex/health-tool-latency-20261013] /private/tmp/content-lab-health-tool-latency-20261013
+type: [bug report]: Bound public health tool probes
+area: [backend], [testing], [review]
+
+The public health handler synchronously spawned ffmpeg and yt-dlp with separate five-second timeouts on every probe, stalling the event loop and producing intermittent multi-second health latency. This candidate checks both concurrently off the event loop at startup, then returns the last completed result while a stale request starts a single bounded refresh. Missing tools still yield degraded status after refresh; provider and budget fields are unchanged. Thirteen focused health/lifespan tests pass. The production Docker image builds, imports app and TgCrypto, and contains no gcc. No push, merge or deployment occurred. Rollback is the prior app revision if health status regresses.
+_________________________________________________________________________________
+
+_________________________________________________________________________________
+time: [10:20am] [10-13-26] EDT; actual UTC: 2026-10-13T14:20:05Z
+agent: [Codex desktop with Mac mini builder] [gpt-6.1-sol] [focused builder]
+worktree: [codex/health-tool-latency-20261013] /private/tmp/content-lab-health-tool-latency-20261013
+type: [bug report]: Fail closed when a health tool cannot execute
+area: [backend], [testing], [review]
+
+Independent review found that executable permission errors and unexpected checker failures could leave a stale healthy tool status and immediately reschedule another subprocess refresh on every probe. The command probe now treats all OS execution errors as unavailable; the refresh resolves individual checker failures to false and stamps the completed check, and cancellation is handled without spurious callback errors. Regression tests cover both failure classes and bounded refresh behavior: 15 focused health/lifespan cases pass. The production Docker image rebuilt, imported app and TgCrypto, and contains no gcc. No push, merge or deployment occurred.
+_________________________________________________________________________________

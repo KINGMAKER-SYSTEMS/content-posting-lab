@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import logging
 import os
@@ -75,7 +76,7 @@ def _check_command(command: list[str]) -> bool:
         return True
     except (
         subprocess.CalledProcessError,
-        FileNotFoundError,
+        OSError,
         subprocess.TimeoutExpired,
     ):
         return False
@@ -87,6 +88,47 @@ def _check_ffmpeg() -> bool:
 
 def _check_ytdlp() -> bool:
     return _check_command(["yt-dlp", "--version"])
+
+
+# Health reports the last completed tool check. A stale result starts one
+# bounded refresh without making every public probe launch subprocesses.
+_TOOL_CHECK_INTERVAL = 60.0
+_tool_status = (False, False)
+_tool_checked_at = 0.0
+_tool_refresh_task: asyncio.Task | None = None
+
+
+async def _refresh_tool_status() -> None:
+    global _tool_status, _tool_checked_at
+    results = await asyncio.gather(
+        asyncio.to_thread(_check_ffmpeg),
+        asyncio.to_thread(_check_ytdlp),
+        return_exceptions=True,
+    )
+    for name, result in zip(("ffmpeg", "yt-dlp"), results):
+        if isinstance(result, BaseException):
+            log.warning("%s health check failed: %s", name, result)
+    _tool_status = tuple(result is True for result in results)
+    _tool_checked_at = time.monotonic()
+
+
+def _schedule_tool_refresh() -> None:
+    global _tool_refresh_task
+    if time.monotonic() - _tool_checked_at < _TOOL_CHECK_INTERVAL:
+        return
+    if _tool_refresh_task is not None and not _tool_refresh_task.done():
+        return
+    _tool_refresh_task = asyncio.create_task(_refresh_tool_status())
+
+    def report_failure(task: asyncio.Task) -> None:
+        try:
+            task.result()
+        except asyncio.CancelledError:
+            return
+        except Exception:
+            log.exception("health tool refresh failed")
+
+    _tool_refresh_task.add_done_callback(report_failure)
 
 
 def _api_key_status() -> dict[str, bool]:
@@ -174,8 +216,8 @@ async def lifespan(app: FastAPI):
         import logging
         logging.getLogger(__name__).warning(f"agenticnews init failed: {e}")
 
-    ffmpeg_ok = _check_ffmpeg()
-    ytdlp_ok = _check_ytdlp()
+    await _refresh_tool_status()
+    ffmpeg_ok, ytdlp_ok = _tool_status
     _log_startup_validation(ffmpeg_ok, ytdlp_ok)
 
     # Start Telegram bot if token configured
@@ -343,8 +385,8 @@ async def list_projects_no_trailing_slash():
 
 @app.get("/api/health")
 async def health_check():
-    ffmpeg_ok = _check_ffmpeg()
-    ytdlp_ok = _check_ytdlp()
+    _schedule_tool_refresh()
+    ffmpeg_ok, ytdlp_ok = _tool_status
     providers = _provider_status()
     budget_status = generation_budget_status()
     return {

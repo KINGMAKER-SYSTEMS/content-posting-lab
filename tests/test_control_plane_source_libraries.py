@@ -210,7 +210,7 @@ def test_auth_lane_hash_and_body_fail_without_capability(lab):
     assert _upload(client, manifest, clip, b"x" * clip.bytes).status_code == 409
     capabilities = client.get(
         "/api/control-plane/v1/capabilities",
-        headers={"X-RT-Page-Id": PAGE_ID},
+        headers={"X-RT-Page-Id": PAGE_ID, "Authorization": f"Bearer {TOKEN}"},
     ).json()["capabilities"]
     assert all(item["recipeId"] != "pov-dirt-bike:master" for item in capabilities)
     assert not (manifest and (Path(source_libraries.PROJECTS_DIR) / LIBRARY_ID / "prompts.json").exists())
@@ -243,7 +243,7 @@ def test_partial_finalize_refuses_then_exact_retry_is_idempotent_and_atomic(lab)
 
     capabilities = client.get(
         "/api/control-plane/v1/capabilities",
-        headers={"X-RT-Page-Id": PAGE_ID},
+        headers={"X-RT-Page-Id": PAGE_ID, "Authorization": f"Bearer {TOKEN}"},
     ).json()["capabilities"]
     assert all(
         item["recipeId"] not in {"pov-dirt-bike:master", LIBRARY_ID}

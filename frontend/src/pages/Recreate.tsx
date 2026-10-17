@@ -34,6 +34,7 @@ interface FrameState {
 
 interface PastJob {
   job_id: string;
+  status: 'complete' | 'incomplete';
   first_clean: string | null;
   last_clean: string | null;
   first_original: string | null;
@@ -248,16 +249,23 @@ export function RecreatePage() {
       lastClean: job.last_clean || null,
     });
     setGeneratedPrompt(null);
-    setComplete(true);
+    setComplete(job.status === 'complete' && Boolean(job.first_clean && job.last_clean));
     setLogs([]);
   };
 
   const deletePastJob = async (jobId: string) => {
     if (!activeProjectName) return;
     try {
-      await fetch(apiUrl(`/api/recreate/jobs/${jobId}?project=${encodeURIComponent(activeProjectName)}`), {
+      const response = await fetch(apiUrl(`/api/recreate/jobs/${jobId}?project=${encodeURIComponent(activeProjectName)}`), {
         method: 'DELETE',
       });
+      if (!response.ok) {
+        if (response.status === 409) {
+          addNotification('error', 'Cannot delete an unresolved job');
+          return;
+        }
+        throw new Error('Delete failed');
+      }
       setPastJobs((prev) => prev.filter((j) => j.job_id !== jobId));
     } catch {
       addNotification('error', 'Failed to delete job');

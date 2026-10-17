@@ -149,7 +149,7 @@ def test_registered_dossier_is_advertised_and_queues_new_media_only(lab, monkeyp
     client, _, started = lab
     capabilities = client.get(
         "/api/control-plane/v1/capabilities",
-        headers={"X-RT-Page-Id": PAGE_ID},
+        headers={"X-RT-Page-Id": PAGE_ID, "Authorization": f"Bearer {TOKEN}"},
     ).json()["capabilities"]
     expected = recipe_publication()
     assert {
@@ -303,7 +303,7 @@ def test_capability_reaches_zero_when_every_active_prompt_is_reserved(lab, statu
 
     capabilities = client.get(
         "/api/control-plane/v1/capabilities",
-        headers={"X-RT-Page-Id": PAGE_ID},
+        headers={"X-RT-Page-Id": PAGE_ID, "Authorization": f"Bearer {TOKEN}"},
     ).json()["capabilities"]
     assert capabilities == [{
         "recipeId": "truck-scenic:master",
@@ -344,7 +344,7 @@ def test_completed_prompt_space_can_refill_with_new_job_without_reusing_media(la
     cp.atomic_save(cp._jobs_path(), store)
 
     capabilities = client.get(
-        "/api/control-plane/v1/capabilities", headers={"X-RT-Page-Id": PAGE_ID},
+        "/api/control-plane/v1/capabilities", headers={"X-RT-Page-Id": PAGE_ID, "Authorization": f"Bearer {TOKEN}"},
     ).json()["capabilities"]
     assert capabilities[0]["maxQuantity"] > 0
     headers = {**HEADERS, "Idempotency-Key": "refill-completed-prompt-space"}
@@ -379,7 +379,7 @@ def test_master_pages_strategy_change_withdraws_old_capability_and_job(lab, monk
 
     capabilities = client.get(
         "/api/control-plane/v1/capabilities",
-        headers={"X-RT-Page-Id": PAGE_ID},
+        headers={"X-RT-Page-Id": PAGE_ID, "Authorization": f"Bearer {TOKEN}"},
     ).json()["capabilities"]
     assert capabilities == [{
         "recipeId": "pov-night-core:master",
@@ -503,13 +503,13 @@ def test_canonical_page_queues_from_one_exact_notion_bound_operational_publicati
 
     operational_capabilities = client.get(
         "/api/control-plane/v1/capabilities",
-        headers={"X-RT-Page-Id": operational_id},
+        headers={"X-RT-Page-Id": operational_id, "Authorization": f"Bearer {TOKEN}"},
     ).json()["capabilities"]
     assert len(operational_capabilities) == 1
 
     capabilities = client.get(
         "/api/control-plane/v1/capabilities",
-        headers={"X-RT-Page-Id": PAGE_ID},
+        headers={"X-RT-Page-Id": PAGE_ID, "Authorization": f"Bearer {TOKEN}"},
     ).json()["capabilities"]
     assert capabilities == [{
         "recipeId": publication["recipeId"],
