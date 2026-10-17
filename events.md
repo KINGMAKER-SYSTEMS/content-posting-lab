@@ -1717,3 +1717,23 @@ area: [backend], [testing], [review]
 
 Integrated PR221 with actual main 89b5831, preserving the newly merged Control Plane capability Bearer gate and append-only root events. The prior upload store validation rejected duplicate job IDs but still allowed a new queued upload for the same account/video while an original persisted job was uploading or had a failed browser outcome. Submission now holds queued, uploading, and failed same-target attempts for original-outcome reconciliation with HTTP 409 and no new queue write or provider launch. The local queue read/modify/write and queued-to-uploading/cancel transitions share a stable cross-process file lock so cancellation cannot mislabel an active Post as safe to resubmit. Focused upload/cookie and merged capability-auth tests pass 40, including path-normalized duplicate admission, byte-for-byte unchanged storage and an in-flight fake browser call. This is an isolated unpushed candidate; independent final-head review, hosted checks, local single-writer limits, and any live outcome remain release holds. No browser Post or production publication was attempted.
 _________________________________________________________________________________
+
+_________________________________________________________________________________
+time: [10:17am] [10-13-26] EDT; actual UTC: 2026-10-13T14:17:05Z
+agent: [Codex desktop with Mac mini builder] [gpt-6.1-sol] [focused builder]
+worktree: [codex/health-tool-latency-20261013] /private/tmp/content-lab-health-tool-latency-20261013
+type: [bug report]: Bound public health tool probes
+area: [backend], [testing], [review]
+
+The public health handler synchronously spawned ffmpeg and yt-dlp with separate five-second timeouts on every probe, stalling the event loop and producing intermittent multi-second health latency. This candidate checks both concurrently off the event loop at startup, then returns the last completed result while a stale request starts a single bounded refresh. Missing tools still yield degraded status after refresh; provider and budget fields are unchanged. Thirteen focused health/lifespan tests pass. The production Docker image builds, imports app and TgCrypto, and contains no gcc. No push, merge or deployment occurred. Rollback is the prior app revision if health status regresses.
+_________________________________________________________________________________
+
+_________________________________________________________________________________
+time: [10:20am] [10-13-26] EDT; actual UTC: 2026-10-13T14:20:05Z
+agent: [Codex desktop with Mac mini builder] [gpt-6.1-sol] [focused builder]
+worktree: [codex/health-tool-latency-20261013] /private/tmp/content-lab-health-tool-latency-20261013
+type: [bug report]: Fail closed when a health tool cannot execute
+area: [backend], [testing], [review]
+
+Independent review found that executable permission errors and unexpected checker failures could leave a stale healthy tool status and immediately reschedule another subprocess refresh on every probe. The command probe now treats all OS execution errors as unavailable; the refresh resolves individual checker failures to false and stamps the completed check, and cancellation is handled without spurious callback errors. Regression tests cover both failure classes and bounded refresh behavior: 15 focused health/lifespan cases pass. The production Docker image rebuilt, imported app and TgCrypto, and contains no gcc. No push, merge or deployment occurred.
+_________________________________________________________________________________
