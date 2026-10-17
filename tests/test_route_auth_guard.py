@@ -297,11 +297,11 @@ TABLE = {
     ('GET', '/api/agenticnews/stats'): ('READ', 'A', 'operator read, no PII/spend (gated with its router)'),
     ('POST', '/api/agenticnews/editor-timelines'): ('WRITE', 'A', ''),
     ('POST', '/api/agenticnews/editor-timelines/{project_id}/import-abn'): ('WRITE', 'A', ''),
-    ('GET', '/api/agenticnews/editor-timelines/{project_id}'): ('READ', 'A', 'operator read, no PII/spend (gated with its router)'),
+    ('GET', '/api/agenticnews/editor-timelines/{project_id}'): ('WRITE', 'A', 'imports, migrates or prunes the saved editor project; side-effect GET'),
     ('GET', '/api/agenticnews/editor-timelines/{project_id}/asset-health'): ('READ', 'A', 'operator read, no PII/spend (gated with its router)'),
     ('POST', '/api/agenticnews/editor-timelines/{project_id}/commands'): ('WRITE', 'A', ''),
     ('POST', '/api/agenticnews/editor-timelines/{project_id}/commands/revert-last'): ('WRITE', 'A', ''),
-    ('GET', '/api/agenticnews/editor-timelines/{project_id}/openshot'): ('READ', 'A', 'operator read, no PII/spend (gated with its router)'),
+    ('GET', '/api/agenticnews/editor-timelines/{project_id}/openshot'): ('WRITE', 'A', 'imports, migrates or prunes the saved editor project; side-effect GET'),
     ('GET', '/api/agenticnews/editor-render/capabilities'): ('READ', 'A', 'operator read, no PII/spend (gated with its router)'),
     ('POST', '/api/agenticnews/editor-render/{project_id}/render'): ('WRITE', 'A', ''),
     ('POST', '/api/agenticnews/editor-render/{project_id}/frame'): ('WRITE', 'A', ''),
@@ -421,7 +421,7 @@ def sentinel(monkeypatch):
     for key in MUST_KEYS:
         route = s.find_route(app, *key)
         dependant = route.dependant
-        if isinstance(route, APIWebSocketRoute):
+        if isinstance(getattr(route, "original_route", route), APIWebSocketRoute):
             ws_param = dependant.websocket_param_name
 
             async def record_ws(__key=key, __ws=ws_param, **kwargs):
@@ -865,7 +865,11 @@ def test_side_effect_gets_get_the_csrf_check(configured, monkeypatch):
         if isinstance(getattr(r, "original_route", r), APIRoute)
         for m in r.methods if m == "GET" and getattr(r.endpoint, "route_auth_side_effect", False)
     }
-    assert side_effect_gets == {("GET", "/api/clipper/jobs/{job_id}/download-all")}
+    assert side_effect_gets == {
+        ("GET", "/api/clipper/jobs/{job_id}/download-all"),
+        ("GET", "/api/agenticnews/editor-timelines/{project_id}"),
+        ("GET", "/api/agenticnews/editor-timelines/{project_id}/openshot"),
+    }
     assert all(TABLE[k][0] in ("WRITE", "MONEY") for k in side_effect_gets)
     import routers.clipper as clipper
 

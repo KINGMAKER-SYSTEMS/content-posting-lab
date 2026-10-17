@@ -146,7 +146,7 @@ def route_keys(app) -> list[tuple[str, str]]:
         original = getattr(route, "original_route", route)
         if isinstance(original, APIRoute):
             keys.extend((m, route.path) for m in sorted(route.methods))
-        elif isinstance(route, APIWebSocketRoute):
+        elif isinstance(original, APIWebSocketRoute):
             keys.append(("WS", route.path))
         elif isinstance(route, Mount):
             keys.append(("MOUNT", route.path))
@@ -162,7 +162,7 @@ def find_route(app, method: str, path: str):
         original = getattr(route, "original_route", route)
         if isinstance(original, APIRoute) and route.path == path and method in route.methods:
             return route
-        if method == "WS" and isinstance(route, APIWebSocketRoute) and route.path == path:
+        if method == "WS" and isinstance(original, APIWebSocketRoute) and route.path == path:
             return route
     raise KeyError((method, path))
 

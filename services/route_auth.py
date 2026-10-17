@@ -324,7 +324,7 @@ def effective_routes(routes_owner):
         starlette_route = getattr(context, "starlette_route", None)
         if starlette_route is not None:
             yield starlette_route
-        elif isinstance(getattr(context, "original_route", context), routing.APIRoute):
+        elif isinstance(getattr(context, "original_route", context), (routing.APIRoute, routing.APIWebSocketRoute)):
             yield context
         else:
             yield getattr(context, "original_route", context)

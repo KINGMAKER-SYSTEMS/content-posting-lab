@@ -241,7 +241,10 @@
   an unclassified route fails CI. An Access-authenticated write or websocket
   also needs `Sec-Fetch-Site: same-origin` or an Origin in LAB_ALLOWED_ORIGINS
   (403 otherwise: CSRF via the login cookie); a GET that changes state is
-  marked `@side_effect_get` and checked the same way. `RouteAuthMiddleware`
+  marked `@side_effect_get` and checked the same way, including editor timeline
+  loading and OpenShot export, which may persist project imports/migrations.
+  Telegram poster bind/unbind require Access login, without a second Mini App
+  agent key. `RouteAuthMiddleware`
   enforces the route's dependency, and header-only checks marked
   `before_body` (Mini App agent key, initData), before the body is read. `/api/miniapp/agent/*`
   fails closed (503) without MINIAPP_AGENT_KEY.
@@ -731,7 +734,7 @@
   the public health response.
 
 
-- Run `pytest -q tests/test_route_auth_dispatch.py tests/test_route_auth_guard.py tests/test_route_auth_access_jwt.py`
+- Run `pytest -q tests/test_route_auth_dispatch.py tests/test_route_auth_guard.py tests/test_route_auth_access_jwt.py tests/test_route_auth_editor_and_binding.py`
   for effective include prefixes/dependencies, dispatch order, HTTP/websocket
   pre-body authentication, public mounts and legacy flat-router compatibility.
 

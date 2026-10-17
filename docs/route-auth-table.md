@@ -49,8 +49,10 @@ set it to the Lab's Access hostname, e.g. `https://lab.<zone>`; the match is exa
 case-sensitive, as browsers send it, and never list `null`). Anything else is 403 and
 the handler never runs. Plain GETs are not checked (a cross-site page cannot read the
 response), except GETs that change state, which are marked `@side_effect_get` and
-checked like writes: today only `GET /api/clipper/jobs/{id}/download-all` (it backfills
-clips to R2). Bearer and Hub-key callers are not cookie-borne and need no Origin. Set the
+checked like writes: `GET /api/clipper/jobs/{id}/download-all` (it backfills
+clips to R2), plus `GET /api/agenticnews/editor-timelines/{project_id}` and its
+`/openshot` export (both may import, migrate or prune a saved editor project).
+Bearer and Hub-key callers are not cookie-borne and need no Origin. Set the
 Access application's cookie to **SameSite=Lax (or Strict) and HttpOnly** as defence in
 depth.
 
@@ -380,11 +382,11 @@ UI = the Lab frontend calls this path (grep of `frontend/src`, path-level).
 | `GET` | `/api/agenticnews/stats` | READ | Access JWT |  |  | operator read, no PII/spend (gated with its router) |
 | `POST` | `/api/agenticnews/editor-timelines` | WRITE | Access JWT |  |  |  |
 | `POST` | `/api/agenticnews/editor-timelines/{project_id}/import-abn` | WRITE | Access JWT |  |  |  |
-| `GET` | `/api/agenticnews/editor-timelines/{project_id}` | READ | Access JWT | yes |  | operator read, no PII/spend (gated with its router) |
+| `GET` | `/api/agenticnews/editor-timelines/{project_id}` | WRITE | Access JWT | yes |  | imports, migrates or prunes the saved editor project; side-effect GET |
 | `GET` | `/api/agenticnews/editor-timelines/{project_id}/asset-health` | READ | Access JWT | yes |  | operator read, no PII/spend (gated with its router) |
 | `POST` | `/api/agenticnews/editor-timelines/{project_id}/commands` | WRITE | Access JWT | yes |  |  |
 | `POST` | `/api/agenticnews/editor-timelines/{project_id}/commands/revert-last` | WRITE | Access JWT | yes |  |  |
-| `GET` | `/api/agenticnews/editor-timelines/{project_id}/openshot` | READ | Access JWT |  |  | operator read, no PII/spend (gated with its router) |
+| `GET` | `/api/agenticnews/editor-timelines/{project_id}/openshot` | WRITE | Access JWT | yes |  | imports, migrates or prunes the saved editor project; side-effect GET |
 | `GET` | `/api/agenticnews/editor-render/capabilities` | READ | Access JWT |  |  | operator read, no PII/spend (gated with its router) |
 | `POST` | `/api/agenticnews/editor-render/{project_id}/render` | WRITE | Access JWT | yes |  |  |
 | `POST` | `/api/agenticnews/editor-render/{project_id}/frame` | WRITE | Access JWT | yes |  |  |
