@@ -1731,3 +1731,12 @@ type: [bug report]: Share create and receipt lookup identity normalization
 area: [backend], [testing], [review]
 
 Round 2 review found that a numeric top-level pageId accepted by create was still rejected by receipt lookup. Creation, lookup and request hashing now share one normalization helper for pageId, lane, engine, lockedRecipeId, recipeVersion and policyHash, preserving create's existing coercions and exact lane comparison. A registered numeric-page request now recovers its original queued job without changing store bytes or adding a runner start. The numeric policyHash regression remains covered, alongside trimmed recipe identity fields and invalid scope refusals. The focused suite passed 122 tests; reinstating the raw lookup scope comparison compiles and fails the numeric-page recovery assertion. Current main was already merged, so this fix is an ordinary separate commit.
+
+_________________________________________________________________________________
+time: 2026-10-17T05:54:19.864657+00:00
+agent: [Codex] [builder]
+worktree: [codex/content-lab-job-key-lookup] /Users/seenorising/rt-base-wt/e2df-fr/lanes/l223
+type: [bug report]: Guard receipt lookup against the real paid-generation debit API
+area: [testing], [review]
+
+Round 3 review found two no-debit lookup tests patched a nonexistent reserve function with raising=False. Both now patch debit_generation_spend_at with normal attribute-existence checking. A temporary debit injected into lookup passed all seven old guard cases but caused all seven corrected cases to fail by assertion. Removing the mutation restored 122 passing focused tests. Production lookup and both identity fixes are unchanged; the full-head gate follows this separate test-only fix.

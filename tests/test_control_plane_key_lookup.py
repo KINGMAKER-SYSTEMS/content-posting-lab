@@ -82,7 +82,7 @@ def test_lost_ack_lookup_returns_only_safe_receipt_without_side_effects(lookup, 
     monkeypatch.setattr(cp, "_load_jobs", unexpected)
     monkeypatch.setattr(cp, "_save_jobs", unexpected)
     monkeypatch.setattr(cp, "_start_dossier_generation", unexpected)
-    monkeypatch.setattr(cp.generation_budget, "reserve", unexpected, raising=False)
+    monkeypatch.setattr(cp.generation_budget, "debit_generation_spend_at", unexpected)
     response = post(client, headers, body)
     assert response.status_code == 200
     assert response.json() == {
@@ -160,7 +160,7 @@ def test_invalid_persisted_status_holds_without_side_effects(lookup, monkeypatch
         raise AssertionError("corrupt status lookup must not mutate or call providers")
     monkeypatch.setattr(cp, "_save_jobs", unexpected)
     monkeypatch.setattr(cp, "_start_dossier_generation", unexpected)
-    monkeypatch.setattr(cp.generation_budget, "reserve", unexpected, raising=False)
+    monkeypatch.setattr(cp.generation_budget, "debit_generation_spend_at", unexpected)
     response = post(client, headers, body)
     assert response.status_code == 503
     assert response.json()["detail"] == "job store temporarily unavailable"
