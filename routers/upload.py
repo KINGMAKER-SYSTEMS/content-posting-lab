@@ -11,6 +11,8 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from services.upload import (
+    UploadUnavailable,
+    UploadReconciliationRequired,
     cancel_job,
     get_all_jobs,
     get_cookie_status,
@@ -18,6 +20,8 @@ from services.upload import (
     get_queue_stats,
     list_cookie_files,
     process_queue,
+    require_upload_admission,
+    require_upload_runtime,
     submit_job,
 )
 
@@ -58,20 +62,34 @@ async def submit_upload(req: SubmitRequest):
             detail=f"Cookies expired for account '{req.account_name}'. Re-login required.",
         )
 
-    job = submit_job(
-        video_path=req.video_path,
-        account_name=req.account_name,
-        description=req.description,
-        hashtags=req.hashtags,
-        sound_name=req.sound_name,
-        sound_aud_vol=req.sound_aud_vol,
-        schedule_time=req.schedule_time,
-        schedule_day=req.schedule_day,
-        copyrightcheck=req.copyrightcheck,
-        headless=req.headless,
-        stealth=req.stealth,
-        proxy=req.proxy,
-    )
+    try:
+        require_upload_admission()
+    except UploadUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    try:
+        job = submit_job(
+            video_path=req.video_path,
+            account_name=req.account_name,
+            description=req.description,
+            hashtags=req.hashtags,
+            sound_name=req.sound_name,
+            sound_aud_vol=req.sound_aud_vol,
+            schedule_time=req.schedule_time,
+            schedule_day=req.schedule_day,
+            copyrightcheck=req.copyrightcheck,
+            headless=req.headless,
+            stealth=req.stealth,
+            proxy=req.proxy,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except UploadReconciliationRequired as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except UploadUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(status_code=503, detail="TikTok upload is unavailable: job storage write failed") from exc
 
     # Start queue processing in background
     asyncio.create_task(process_queue())
@@ -102,7 +120,12 @@ async def poll_job(job_id: str):
 @router.post("/jobs/{job_id}/cancel")
 async def cancel_upload(job_id: str):
     """Cancel a queued upload job."""
-    job = cancel_job(job_id)
+    try:
+        job = cancel_job(job_id)
+    except UploadUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(status_code=503, detail="TikTok upload is unavailable: job storage write failed") from exc
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
     if job["status"] != "cancelled":
@@ -137,6 +160,11 @@ async def trigger_login(account_name: str):
     Opens a visible browser window for manual login. The user must complete
     the login flow manually. Cookies are saved to TK_cookies_{account}.json.
     """
+    try:
+        require_upload_runtime()
+    except UploadUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
     # Run login in a subprocess so it doesn't block the event loop
     # tiktokautouploader opens a browser window for manual login on first run
     try:
