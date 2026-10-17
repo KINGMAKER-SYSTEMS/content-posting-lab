@@ -1685,6 +1685,56 @@ area: [backend], [testing], [review]
 Independent current-base review found that the read-only original-job lookup accepted an exact-key job row with an arbitrary persisted status, returning an invalid success receipt. This isolated integration candidate preserves current main capability Bearer authentication and both append-only event entries, accepts only the persisted queued/running/completed/failed lifecycle states, and treats other saved status values as unavailable without mutation or provider calls. Exact status and unchanged-store regressions plus 233 relevant control-plane/source tests passed (10 skipped). No push, merge, deployment, or production request occurred; PR #223 remains draft for independent exact-head review, checks, caller compatibility, and live read-only parity. Rollback preserves the durable job/idempotency store; reverting this status check would reopen malformed receipt success.
 
 _________________________________________________________________________________
+time: [12:34pm] [10-12-26] EDT; actual UTC: 2026-10-12T16:34:00Z
+agent: [Codex desktop with Mac mini tests] [gpt-6.1-sol] [focused builder]
+worktree: [codex/upload-admission-20261012] /private/tmp/cpl-upload-admission-20261012
+type: [bug report]: Refuse upload jobs without executor and durable receipt storage
+area: [backend], [frontend], [testing]
+
+The private candidate makes /api/upload/submit return 503 before creating a job on Railway because this in-process queue has no cross-worker claim or original-attempt reconciliation; local admission refuses a missing uploader or corrupt queue without changing the existing file. The Distribution action shows the API's unavailable reason instead of a false queued success. Local checkout-relative storage stays supported. Mac mini isolated-worktree upload API/cookie/login tests pass 26/26 without browser or upload calls. Frontend build is unverified because this isolated checkout has no node_modules and the Mac mini has no npm binary; no production upload, push, PR, merge or deployment occurred. Rollback is to revert this admission/UI change while preserving the existing queue file; enabling hosted uploads additionally requires provisioning the provider runtime, a volume-backed queue, cross-worker claims and reconciliation of original attempts and any prior queue.
+_________________________________________________________________________________
+
+_________________________________________________________________________________
+time: [12:37pm] [10-12-26] EDT; actual UTC: 2026-10-12T16:37:00Z
+agent: [Codex desktop with Mac mini tests] [gpt-6.1-sol] [focused builder]
+worktree: [codex/upload-admission-20261012] /private/tmp/cpl-upload-admission-20261012
+type: [bug report]: Reject malformed stored upload jobs and unavailable login before subprocess
+area: [backend], [testing], [review]
+
+Independent review found a malformed but JSON-list queue such as [null] passed the first admission gate, returned a newly queued job, then crashed the queue worker. Admission and the final pre-append read now validate the existing queue-readable record shapes and preserve malformed bytes on refusal. The adjacent cookie-login route now uses the same hosted/provider runtime gate before subprocess creation, so the hosted image without the provider cannot falsely report login started. Synthetic malformed-list and no-spawn tests exercise both paths without any provider or publication call. The private candidate still needs fresh review and release verification; setting a volume path alone cannot safely enable hosted posting without original-attempt reconciliation and claims.
+_________________________________________________________________________________
+
+_________________________________________________________________________________
+time: [12:38pm] [10-12-26] EDT; actual UTC: 2026-10-12T16:38:26Z
+agent: [Codex desktop with Mac mini tests] [gpt-6.1-sol] [focused builder]
+worktree: [codex/upload-admission-20261012] /private/tmp/cpl-upload-admission-20261012
+type: [bug report]: Finalize malformed-queue and login admission regression verification
+area: [backend], [frontend], [testing]
+
+The corrected private candidate validates required queue-readable fields on queued and terminal rows before new jobs are appended, and refuses a malformed JSON list without overwriting its bytes. The existing-job status update path now uses the same strict read to avoid replacing corrupt state. The hosted login route rejects before launching a subprocess; local fake-subprocess tests preserve literal account transport. On an isolated current-main Mac mini checkout, the upload API/cookie/login tests passed 33/33 with no real provider or browser action. Frontend TypeScript project build and Vite production build also passed using an existing matching-lockfile node_modules tree and the task-bundled Node binary; no dependency install or shared-checkout edits. This supersedes the earlier build-unverified note. The candidate remains private and unpushed pending fresh independent review, release checks, and live proof.
+_________________________________________________________________________________
+
+_________________________________________________________________________________
+time: [12:40pm] [10-12-26] EDT; actual UTC: 2026-10-12T16:40:00Z
+agent: [Codex desktop with Mac mini tests] [gpt-6.1-sol] [focused builder]
+worktree: [codex/upload-admission-20261012] /private/tmp/cpl-upload-admission-20261012
+type: [bug report]: Reject duplicate upload job identities before queue admission
+area: [backend], [testing], [review]
+
+Fresh independent review found that a stored completed row followed by a queued row sharing the same job_id passed shape validation; process_queue would select the queued row while get_job returned the completed one, then loop without advancing. The private candidate now rejects repeated IDs as corrupt before either admitting or appending a new job and preserves the existing bytes. Synthetic duplicate-ID regression and the upload API/cookie/login suite passed 34/34 on an isolated Mac mini current-main checkout; frontend TypeScript/Vite build passed there with matching-lockfile existing dependencies. Logs: /tmp/cpl-upload-admission-tests-20261012-1640.log and /tmp/cpl-upload-admission-frontend-build-20261012-1640.log on macmini-ip. No upload, provider action, push, PR, merge or deployment occurred. Fresh independent head review remains required.
+_________________________________________________________________________________
+
+_________________________________________________________________________________
+time: [05:24am] [10-13-26] EDT
+agent: [Codex desktop with Mac mini execution] [gpt-6.1-sol] [focused PR221 repair]
+worktree: [codex/pr221-original-attempt-fence] /private/tmp/content-lab-pr221-original-attempt-fence
+type: [bug report]: prevent a second TikTok upload submission during unresolved original attempt
+area: [backend], [testing], [review]
+
+Integrated PR221 with actual main 89b5831, preserving the newly merged Control Plane capability Bearer gate and append-only root events. The prior upload store validation rejected duplicate job IDs but still allowed a new queued upload for the same account/video while an original persisted job was uploading or had a failed browser outcome. Submission now holds queued, uploading, and failed same-target attempts for original-outcome reconciliation with HTTP 409 and no new queue write or provider launch. The local queue read/modify/write and queued-to-uploading/cancel transitions share a stable cross-process file lock so cancellation cannot mislabel an active Post as safe to resubmit. Focused upload/cookie and merged capability-auth tests pass 40, including path-normalized duplicate admission, byte-for-byte unchanged storage and an in-flight fake browser call. This is an isolated unpushed candidate; independent final-head review, hosted checks, local single-writer limits, and any live outcome remain release holds. No browser Post or production publication was attempted.
+_________________________________________________________________________________
+
+_________________________________________________________________________________
 time: [10:17am] [10-13-26] EDT; actual UTC: 2026-10-13T14:17:05Z
 agent: [Codex desktop with Mac mini builder] [gpt-6.1-sol] [focused builder]
 worktree: [codex/health-tool-latency-20261013] /private/tmp/content-lab-health-tool-latency-20261013
@@ -1740,3 +1790,11 @@ type: [bug report]: Guard receipt lookup against the real paid-generation debit 
 area: [testing], [review]
 
 Round 3 review found two no-debit lookup tests patched a nonexistent reserve function with raising=False. Both now patch debit_generation_spend_at with normal attribute-existence checking. A temporary debit injected into lookup passed all seven old guard cases but caused all seven corrected cases to fail by assertion. Removing the mutation restored 122 passing focused tests. Production lookup and both identity fixes are unchanged; the full-head gate follows this separate test-only fix.
+time: [2026-10-16] UTC
+agent: [Codex] [cx-l221 builder]
+worktree: [codex/upload-admission-20261012] lane l221
+type: [bug report]: Reject invalid new upload records and prove cross-process claims
+area: [backend], [testing], [review]
+
+Review F1 found that an empty video path was accepted and saved, then rejected by every later strict queue read. New records now pass the existing store validator before persistence; invalid requests return 400 and preserve existing bytes. Tests prove rejection with missing/existing stores and a subsequent valid mocked upload completing. Review F2 found that removing flock escaped the prior suite. Spawned-process tests now pause the first claim before save and compete with a second claim or cancellation. Removing flock causes two fake provider calls or a stale successful cancellation; real locking passes. The reviewed-head empty-path tests fail and the updated 45-case upload/login/cookie/capability suite passes. Merged origin/main 713a0eb into this PR branch, retaining both sides of the events.md append conflict. No real uploader, login, publication, deployment or main-branch merge was performed; hosted upload remains disabled.
+_________________________________________________________________________________

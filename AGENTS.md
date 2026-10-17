@@ -257,6 +257,31 @@
 - `routers/upload.py` passes the legacy cookie-login account to its static
   Python subprocess runner as an argv value. Request values must never be
   interpolated into executable source; the exact account argument is preserved.
+- TikTok upload and cookie-login admission refuse Railway before queue writes
+  or login subprocess creation:
+  a mounted JSON file alone cannot coordinate worker claims or reconcile an
+  ambiguous browser Post after a crash. Enabling hosted uploads requires a
+  durable original-attempt receipt/reconciliation and single-writer claim
+  contract, plus the provider runtime and volume-backed queue migration.
+  Local installs retain the checkout-relative queue and must have an importable
+  callable uploader; upload submission also requires a job store whose existing
+  records have the queue-readable shape and unique job IDs. New records must
+  pass the same shape check before persistence; invalid submissions return 400.
+  Corrupt records are preserved and
+  never replaced with an empty queue. Missing prerequisites or failed
+  writes return 503; admission never proves a TikTok publication. A queued,
+  uploading, or failed job for the same real video path and cookie account
+  blocks another submission with 409 until the original attempt is reconciled;
+  a stable local file lock serializes queue writes and the queued-to-uploading
+  claim/cancel decision across worker processes, and the conflict creates no
+  job or provider action. Completed and cancelled
+  history retains its existing resubmission behavior.
+  Repeated saved copies of one upload ID, even identical rows, are all held for reconciliation;
+  no copy may execute or authorize a retry, even if one claims a terminal state.
+  Listing and polling expose the held status without making it executable.
+  The Uploads tab shows held records in their own section with the reconciliation
+  reason and no cancel/retry actions; held records suppress the empty-queue invitation.
+  Other valid jobs remain processable while those source rows are retained.
 - `POST /api/telegram/send` delivers only a media file whose real path is under
   `projects/<project>/<videos|clips|burned|recreate|slideshow-images>/` or the
   legacy `output`/`burn_output` dirs. The volume root beside those dirs holds
@@ -743,9 +768,10 @@
   HDR encode cases need only ffmpeg/ffprobe; real-master cases additionally
   use the optional `HDR_FIXTURES_DIR` fixture directory.
 
-- Run `pytest -q tests/test_upload_login_account_data.py tests/test_upload_api.py tests/test_upload_cookies.py`
+- Run `pytest -q tests/test_upload_login_account_data.py tests/test_upload_api.py tests/test_upload_locking.py tests/test_upload_cookies.py`
   for literal account transport, injected expressions, login failure responses
-  and existing upload/cookie behavior without launching a browser.
+  and existing upload/cookie behavior without launching a browser. Spawned-process
+  races cover competing claims and cancellation before the winning claim is saved.
 
 - Run `pytest -q tests/test_visual_admission.py` for observed boat-frame OCR
   noise, short readable text, rotated single-frame text, complete coverage,
