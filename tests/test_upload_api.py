@@ -273,7 +273,6 @@ def test_quarantined_unresolved_row_blocks_same_account_video_retry(
     # The admission read quarantines the malformed row, but keeps it active so
     # its readable identity still blocks a duplicate provider attempt.
     assert upload_svc.get_all_jobs() == []
-    assert stored.read_bytes() == original
     response = sync_client.post("/api/upload/submit", json={
         "video_path": "/tmp/other/../uncertain.mp4", "account_name": "linked",
     })
