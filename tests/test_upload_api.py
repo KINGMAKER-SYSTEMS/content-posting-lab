@@ -189,17 +189,20 @@ def test_hosted_volume_store_alone_does_not_enable_upload(sync_client, cookie_di
     assert not store.exists()
 
 
-def test_corrupt_job_store_refuses_without_overwrite(sync_client, cookie_dir, monkeypatch):
+def test_corrupt_job_store_refuses_with_recovery_steps(sync_client, cookie_dir, monkeypatch, caplog):
     _write_cookie(cookie_dir, "linked")
     monkeypatch.setattr(upload_svc.importlib, "import_module", lambda name: _FAKE_UPLOADER)
     stored = cookie_dir.parent / "upload_jobs.json"
     stored.write_text("{broken")
     r = sync_client.post("/api/upload/submit", json={"video_path": "/tmp/x.mp4", "account_name": "linked"})
     assert r.status_code == 503
+    for text in (str(stored.resolve()), "Inspect the file", "fix it", "restore it from a backup", "then retry"):
+        assert text in r.json()["detail"]
+        assert text in caplog.text
     assert stored.read_text() == "{broken"
 
 @pytest.mark.parametrize("existing", [None, {"jobs": []}, "not-a-list"])
-def test_non_list_job_store_refuses_without_overwrite(sync_client, cookie_dir, monkeypatch, existing):
+def test_non_list_job_store_refuses_with_recovery_steps(sync_client, cookie_dir, monkeypatch, existing, caplog):
     _write_cookie(cookie_dir, "linked")
     monkeypatch.setattr(upload_svc.importlib, "import_module", lambda name: _FAKE_UPLOADER)
     stored = cookie_dir.parent / "upload_jobs.json"
@@ -208,7 +211,9 @@ def test_non_list_job_store_refuses_without_overwrite(sync_client, cookie_dir, m
 
     r = sync_client.post("/api/upload/submit", json={"video_path": "/tmp/x.mp4", "account_name": "linked"})
     assert r.status_code == 503
-    assert "job storage is unreadable" in r.json()["detail"]
+    for text in (str(stored.resolve()), "Inspect the file", "fix it", "restore it from a backup", "then retry"):
+        assert text in r.json()["detail"]
+        assert text in caplog.text
     assert stored.read_text() == original
 
 
@@ -218,6 +223,7 @@ def test_bad_stored_row_is_quarantined_and_good_job_processes(cookie_dir, monkey
     bad = {**good, "job_id": "bad-row", "video_path": ""}
     stored = cookie_dir.parent / "upload_jobs.json"
     stored.write_text(json.dumps([good, bad]))
+    original = stored.read_bytes()
     calls = []
     monkeypatch.setattr(upload_svc, "_run_upload_sync", lambda job: calls.append(job["job_id"]) or "Completed")
 
@@ -226,18 +232,91 @@ def test_bad_stored_row_is_quarantined_and_good_job_processes(cookie_dir, monkey
     except upload_svc.UploadUnavailable:
         listed_jobs = []
     assert [job["job_id"] for job in listed_jobs] == [good["job_id"]]
+    assert stored.read_bytes() == original
     asyncio.run(upload_svc._process_single_job(good["job_id"]))
 
     assert calls == [good["job_id"]]
     assert upload_svc.get_job(good["job_id"])["status"] == "completed"
     saved = json.loads(stored.read_text())
-    assert len(saved) == 1
+    assert len(saved) == 2
     assert saved[0]["job_id"] == good["job_id"]
     assert saved[0]["status"] == "completed"
+    assert saved[1] == bad
     quarantine = stored.with_name(stored.name + ".quarantine.jsonl")
     records = [json.loads(line) for line in quarantine.read_text().splitlines()]
     assert records == [{"row_index": 1, "reason": "video_path must be a non-empty string", "job": bad}]
     assert "Quarantined upload job row 1: video_path must be a non-empty string" in caplog.text
+
+
+def test_quarantined_unresolved_row_blocks_same_account_video_retry(
+    sync_client, cookie_dir, monkeypatch,
+):
+    _write_cookie(cookie_dir, "linked")
+    monkeypatch.setattr(upload_svc.importlib, "import_module", lambda name: _FAKE_UPLOADER)
+    calls = []
+    monkeypatch.setattr(upload_svc, "_run_upload_sync", lambda job: calls.append(job) or "Completed")
+
+    async def unexpected_queue_run():
+        pytest.fail("blocked duplicate scheduled the upload queue")
+    monkeypatch.setattr(upload_router, "process_queue", unexpected_queue_run)
+
+    stored = cookie_dir.parent / "upload_jobs.json"
+    unresolved = {
+        "job_id": "",
+        "status": "uploading",
+        "video_path": "/tmp/uncertain.mp4",
+        "account_name": "linked",
+    }
+    stored.write_text(json.dumps([unresolved]))
+    original = stored.read_bytes()
+
+    # The admission read quarantines the malformed row, but keeps it active so
+    # its readable identity still blocks a duplicate provider attempt.
+    assert upload_svc.get_all_jobs() == []
+    assert stored.read_bytes() == original
+    response = sync_client.post("/api/upload/submit", json={
+        "video_path": "/tmp/other/../uncertain.mp4", "account_name": "linked",
+    })
+
+    assert response.status_code == 409
+    assert "original attempt requires reconciliation" in response.json()["detail"]
+    assert "unknown" in response.json()["detail"]
+    assert stored.read_bytes() == original
+    assert calls == []
+    quarantine = stored.with_name(stored.name + ".quarantine.jsonl")
+    assert len(quarantine.read_text().splitlines()) == 1
+
+
+def test_quarantine_write_failure_keeps_valid_job_available(cookie_dir, monkeypatch, caplog):
+    monkeypatch.setattr(upload_svc, "require_upload_runtime", lambda: None)
+    good = upload_svc.submit_job(video_path="/tmp/good.mp4", account_name="linked")
+    bad = {**good, "job_id": "bad-row", "video_path": ""}
+    stored = cookie_dir.parent / "upload_jobs.json"
+    stored.write_text(json.dumps([good, bad]))
+    original = stored.read_bytes()
+
+    def fail_quarantine(_rows):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(upload_svc, "_quarantine_stored_jobs", fail_quarantine)
+    calls = []
+    monkeypatch.setattr(upload_svc, "_run_upload_sync", lambda job: calls.append(job["job_id"]) or "Completed")
+
+    try:
+        listed_jobs = upload_svc.get_all_jobs()
+    except OSError:
+        listed_jobs = []
+    assert [job["job_id"] for job in listed_jobs] == [good["job_id"]]
+    assert stored.read_bytes() == original
+    assert str(stored.with_name(stored.name + ".quarantine.jsonl").resolve()) in caplog.text
+    assert "row 1: video_path must be a non-empty string" in caplog.text
+
+    asyncio.run(upload_svc._process_single_job(good["job_id"]))
+    assert calls == [good["job_id"]]
+    persisted = json.loads(stored.read_text())
+    assert persisted[0]["job_id"] == good["job_id"]
+    assert persisted[0]["status"] == "completed"
+    assert persisted[1] == bad
 
 
 @pytest.mark.parametrize("status", ["queued", "uploading", "failed"])

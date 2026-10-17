@@ -33,6 +33,7 @@ _queue_lock = asyncio.Lock()
 _active_job_id: str | None = None
 _queue_running = False
 logger = logging.getLogger(__name__)
+_quarantined_job_rows: dict[str, list[object]] = {}
 
 
 class UploadUnavailable(RuntimeError):
@@ -114,10 +115,25 @@ def _valid_stored_jobs(value: object) -> bool:
 def _quarantine_stored_jobs(rows: list[tuple[int, str, object]]) -> None:
     """Append rejected rows to an audit file while the job-store lock is held."""
     quarantine_path = Path(f"{UPLOAD_JOBS_FILE}.quarantine.jsonl")
-    with quarantine_path.open("a", encoding="utf-8") as handle:
+    with quarantine_path.open("a+", encoding="utf-8") as handle:
+        handle.seek(0)
+        existing = set()
+        for line in handle:
+            try:
+                record = json.loads(line)
+            except ValueError:
+                continue
+            job_key = json.dumps(record.get("job"), ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+            existing.add((record.get("reason"), job_key))
+        handle.seek(0, os.SEEK_END)
         for index, reason, job in rows:
             record = {"row_index": index, "reason": reason, "job": job}
-            handle.write(json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n")
+            line = json.dumps(record, ensure_ascii=False, separators=(",", ":"))
+            job_key = json.dumps(job, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+            dedupe_key = (reason, job_key)
+            if dedupe_key not in existing:
+                handle.write(line + "\n")
+                existing.add(dedupe_key)
             logger.error("Quarantined upload job row %d: %s", index, reason)
         handle.flush()
         os.fsync(handle.fileno())
@@ -128,18 +144,23 @@ def _read_stored_jobs(*, _lock_held: bool = False) -> list[dict]:
         with _job_store_write_lock():
             return _read_stored_jobs(_lock_held=True)
     path = Path(UPLOAD_JOBS_FILE)
+    path_key = str(path.resolve())
     if not path.exists():
+        _quarantined_job_rows.pop(path_key, None)
         return []
+    recovery = (
+        f"Upload job file {path_key} is unreadable. Inspect the file, fix it or restore it from a backup, then retry."
+    )
     try:
         with path.open(encoding="utf-8") as handle:
             jobs = json.load(handle)
     except (OSError, ValueError):
         # An unreadable file may hide an in-flight claim; starting empty could duplicate a post.
-        logger.exception("Upload job file is corrupt or unreadable; refusing to start an empty queue")
-        raise UploadUnavailable("TikTok upload is unavailable: job storage is unreadable") from None
+        logger.exception("%s", recovery)
+        raise UploadUnavailable(f"TikTok upload is unavailable: {recovery}") from None
     if not isinstance(jobs, list):
-        logger.error("Upload job file root is not a list; refusing to start an empty queue")
-        raise UploadUnavailable("TikTok upload is unavailable: job storage is unreadable")
+        logger.error("%s", recovery)
+        raise UploadUnavailable(f"TikTok upload is unavailable: {recovery}")
 
     valid_jobs: list[dict] = []
     rejected_rows: list[tuple[int, str, object]] = []
@@ -153,10 +174,23 @@ def _read_stored_jobs(*, _lock_held: bool = False) -> list[dict]:
         seen_ids.add(job["job_id"])
 
     if rejected_rows:
-        # A valid list may contain an interrupted or malformed row. Preserve the
-        # valid jobs and quarantine only the rows that failed their own checks.
-        _quarantine_stored_jobs(rejected_rows)
-        _save_jobs(valid_jobs)
+        # Keep rejected source rows in place: one may be an unresolved claim whose
+        # provider outcome is unknown. Quarantine is an audit copy, not deletion.
+        _quarantined_job_rows[path_key] = [job for _index, _reason, job in rejected_rows]
+        try:
+            _quarantine_stored_jobs(rejected_rows)
+        except OSError:
+            quarantine_path = Path(f"{UPLOAD_JOBS_FILE}.quarantine.jsonl").resolve()
+            reasons = "; ".join(f"row {index}: {reason}" for index, reason, _job in rejected_rows)
+            logger.exception(
+                "Could not write upload quarantine file %s for %s; leaving job store %s unchanged and continuing with valid rows",
+                quarantine_path,
+                reasons,
+                path_key,
+            )
+            return valid_jobs
+    else:
+        _quarantined_job_rows.pop(path_key, None)
     return valid_jobs
 
 
@@ -197,8 +231,9 @@ def _load_jobs() -> list[dict]:
 def _save_jobs(jobs: list[dict]) -> None:
     # ATOMIC write (tmp + rename) via the shared store — a raw open('w')+dump left the upload-job
     # queue truncated/wiped if the process crashed mid-write (a P0). default=str keeps datetimes
-    # serializable.
-    atomic_save(UPLOAD_JOBS_FILE, jobs, default=str)
+    # serializable. Keep quarantined source rows active for duplicate checks.
+    rejected_rows = _quarantined_job_rows.get(str(Path(UPLOAD_JOBS_FILE).resolve()), [])
+    atomic_save(UPLOAD_JOBS_FILE, [*jobs, *rejected_rows], default=str)
 
 
 def _update_job(job_id: str, updates: dict) -> dict | None:
@@ -270,17 +305,18 @@ def submit_job(
     with _job_store_write_lock():
         jobs = _read_stored_jobs(_lock_held=True)
         target = os.path.realpath(video_path)
-        for existing in jobs:
-            if (existing["account_name"] == account_name
-                    and os.path.realpath(existing["video_path"]) == target
-                    and existing["status"] in {"queued", "uploading", "failed"}):
-                # `uploading` may have posted before a crash; even a failed
-                # browser call can have an unknown provider outcome. Never
-                # enqueue a second same-target Post until the original job is
-                # reconciled. A queued duplicate likewise needs no new job.
+        stored_rows = [*jobs, *_quarantined_job_rows.get(str(Path(UPLOAD_JOBS_FILE).resolve()), [])]
+        for existing in stored_rows:
+            if (isinstance(existing, dict)
+                    and isinstance(existing.get("account_name"), str)
+                    and isinstance(existing.get("video_path"), str)
+                    and existing["account_name"] == account_name
+                    and os.path.realpath(existing["video_path"]) == target):
+                # A retained row with a readable identity may be a post whose
+                # provider outcome is unknown, even if other fields failed validation.
                 raise UploadReconciliationRequired(
                     "TikTok upload original attempt requires reconciliation "
-                    "before resubmission (job %s)" % existing["job_id"]
+                    "before resubmission (job %s)" % (existing.get("job_id") or "unknown")
                 )
         jobs.append(job)
         _save_jobs(jobs)
