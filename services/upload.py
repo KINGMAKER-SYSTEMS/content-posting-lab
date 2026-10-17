@@ -50,7 +50,11 @@ def _job_store_write_lock():
     with lock_for(UPLOAD_JOBS_FILE):
         # The JSON file is replaced atomically, so its inode cannot be the lock.
         # A stable sidecar coordinates read/check/append with other processes.
-        with open(f"{UPLOAD_JOBS_FILE}.lock", "a+b") as handle:
+        try:
+            handle = open(f"{UPLOAD_JOBS_FILE}.lock", "a+b")
+        except OSError as exc:
+            raise UploadUnavailable("TikTok upload is unavailable: job storage lock could not be opened") from exc
+        with handle:
             fcntl.flock(handle, fcntl.LOCK_EX)
             try:
                 yield

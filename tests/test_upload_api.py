@@ -16,6 +16,7 @@ CWD). We point it at a tmp dir per-test so the suite neither reads real
 """
 
 import asyncio
+import builtins
 import json
 import threading
 import time
@@ -139,6 +140,47 @@ def test_direct_empty_video_path_refused_before_save(cookie_dir, monkeypatch):
     with pytest.raises(ValueError, match="invalid upload job"):
         upload_svc.submit_job(video_path="", account_name="linked")
     assert not (cookie_dir.parent / "upload_jobs.json").exists()
+
+
+@pytest.mark.parametrize("fail_at", [1, 3])
+def test_lock_open_failure_returns_storage_unavailable_without_mutation(
+    sync_client, cookie_dir, monkeypatch, fail_at,
+):
+    _write_cookie(cookie_dir, "linked")
+    monkeypatch.setattr(upload_svc.importlib, "import_module", lambda name: _FAKE_UPLOADER)
+    upload_svc.submit_job(video_path="/tmp/existing.mp4", account_name="linked")
+    stored = cookie_dir.parent / "upload_jobs.json"
+    before = stored.read_bytes()
+    lock_opens = 0
+    calls = []
+    scheduled = []
+
+    def fail_lock_open(path, *args, **kwargs):
+        nonlocal lock_opens
+        if str(path) == f"{upload_svc.UPLOAD_JOBS_FILE}.lock":
+            lock_opens += 1
+            if lock_opens == fail_at:
+                raise PermissionError("lock access denied")
+        return builtins.open(path, *args, **kwargs)
+
+    async def queue():
+        scheduled.append(True)
+
+    monkeypatch.setattr(upload_svc, "open", fail_lock_open, raising=False)
+    monkeypatch.setattr(upload_svc, "_run_upload_sync", lambda job: calls.append(job["job_id"]) or "Completed")
+    monkeypatch.setattr(upload_router, "process_queue", queue)
+    monkeypatch.setattr(sync_client._transport, "raise_server_exceptions", False)
+    response = sync_client.post("/api/upload/submit", json={"video_path": "/tmp/new.mp4", "account_name": "linked"})
+    assert response.status_code == 503
+    assert "job storage" in response.json()["detail"]
+    assert "unavailable" in response.json()["detail"]
+    assert stored.read_bytes() == before
+    assert scheduled == []
+    assert calls == []
+    lock_opens = fail_at - 1
+    with pytest.raises(upload_svc.UploadUnavailable, match="job storage"):
+        with upload_svc._job_store_write_lock():
+            pytest.fail("unavailable lock must not enter the critical section")
 
 
 def test_submit_without_provider_refuses_before_job_creation(sync_client, cookie_dir, monkeypatch):
