@@ -112,6 +112,23 @@ def _valid_stored_jobs(value: object) -> bool:
     return True
 
 
+def _conflicting_stored_job_ids(rows: list[object]) -> set[str]:
+    """Find IDs whose saved copies disagree; no copy is authoritative."""
+    first_by_id: dict[str, dict] = {}
+    conflicting_ids: set[str] = set()
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        job_id = row.get("job_id")
+        if not isinstance(job_id, str) or not job_id:
+            continue
+        if job_id in first_by_id and row != first_by_id[job_id]:
+            conflicting_ids.add(job_id)
+        else:
+            first_by_id[job_id] = row
+    return conflicting_ids
+
+
 def _quarantine_stored_jobs(rows: list[tuple[int, str, object]]) -> None:
     """Append rejected rows to an audit file while the job-store lock is held."""
     quarantine_path = Path(f"{UPLOAD_JOBS_FILE}.quarantine.jsonl")
@@ -165,8 +182,12 @@ def _read_stored_jobs(*, _lock_held: bool = False) -> list[dict]:
     valid_jobs: list[dict] = []
     rejected_rows: list[tuple[int, str, object]] = []
     seen_ids: set[str] = set()
+    conflicting_ids = _conflicting_stored_job_ids(jobs)
     for index, job in enumerate(jobs):
         reason = _stored_job_error(job, seen_ids)
+        if (isinstance(job, dict) and isinstance(job.get("job_id"), str)
+                and job["job_id"] in conflicting_ids):
+            reason = f"job_id {job['job_id']} has conflicting stored rows; reconciliation required"
         if reason is not None:
             rejected_rows.append((index, reason, job))
             continue
@@ -306,15 +327,17 @@ def submit_job(
         jobs = _read_stored_jobs(_lock_held=True)
         target = os.path.realpath(video_path)
         stored_rows = [*jobs, *_quarantined_job_rows.get(str(Path(UPLOAD_JOBS_FILE).resolve()), [])]
+        conflicting_ids = _conflicting_stored_job_ids(stored_rows)
         for existing in stored_rows:
             if (isinstance(existing, dict)
                     and isinstance(existing.get("account_name"), str)
                     and isinstance(existing.get("video_path"), str)
                     and existing["account_name"] == account_name
-                    and existing.get("status") not in ("completed", "cancelled")
+                    and (existing.get("status") not in ("completed", "cancelled")
+                         or (isinstance(existing.get("job_id"), str) and existing["job_id"] in conflicting_ids))
                     and os.path.realpath(existing["video_path"]) == target):
-                # Terminal history permits retries. Unknown or unresolved state
-                # still blocks, even if other fields failed validation.
+                # Terminal history permits retries unless another copy conflicts.
+                # Unknown or unresolved state still blocks after quarantine.
                 raise UploadReconciliationRequired(
                     "TikTok upload original attempt requires reconciliation "
                     "before resubmission (job %s)" % (existing.get("job_id") or "unknown")

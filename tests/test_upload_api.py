@@ -392,6 +392,61 @@ def test_terminal_upload_allows_same_account_video_retry(
     assert upload_svc.get_job(retry["job_id"])["status"] == "completed"
 
 
+@pytest.mark.parametrize("reverse", [False, True])
+@pytest.mark.parametrize("other_status,other_path", [
+    ("uploading", "/tmp/conflict.mp4"),
+    ("completed", "/tmp/other-copy.mp4"),
+    ("cancelled", "/tmp/other-copy.mp4"),
+    ("queued", "/tmp/other-copy.mp4"),
+    (None, "/tmp/other-copy.mp4"),
+])
+def test_conflicting_upload_id_blocks_every_copy_and_preserves_other_jobs(
+    sync_client, cookie_dir, monkeypatch, caplog, reverse, other_status, other_path,
+):
+    _write_cookie(cookie_dir, "linked")
+    monkeypatch.setattr(upload_svc.importlib, "import_module", lambda name: _FAKE_UPLOADER)
+    disputed = upload_svc.submit_job(video_path="/tmp/conflict.mp4", account_name="linked")
+    good = upload_svc.submit_job(video_path="/tmp/good.mp4", account_name="linked")
+    other = {**disputed, "status": other_status, "video_path": other_path}
+    copies = [other, disputed] if reverse else [disputed, other]
+    stored = cookie_dir.parent / "upload_jobs.json"
+    stored.write_text(json.dumps([*copies, good]))
+    before = stored.read_bytes()
+    calls = []
+    monkeypatch.setattr(upload_svc, "_run_upload_sync", lambda job: calls.append(job["job_id"]) or "Completed")
+
+    async def leave_queued():
+        pass
+
+    monkeypatch.setattr(upload_router, "process_queue", leave_queued)
+    asyncio.run(upload_svc._process_single_job(disputed["job_id"]))
+    assert calls == []
+    assert stored.read_bytes() == before
+    assert [job["job_id"] for job in upload_svc.get_all_jobs()] == [good["job_id"]]
+    assert upload_svc.cancel_job(disputed["job_id"]) is None
+    assert upload_svc._update_job(disputed["job_id"], {"status": "completed"}) is None
+
+    for path in dict.fromkeys([disputed["video_path"], other_path]):
+        response = sync_client.post("/api/upload/submit", json={"video_path": path, "account_name": "linked"})
+        assert response.status_code == 409
+        assert disputed["job_id"] in response.json()["detail"]
+    assert calls == []
+    assert stored.read_bytes() == before
+
+    asyncio.run(upload_svc._process_single_job(good["job_id"]))
+    assert calls == [good["job_id"]]
+    assert upload_svc.get_job(good["job_id"])["status"] == "completed"
+    assert upload_svc.get_job(disputed["job_id"]) is None
+    saved = json.loads(stored.read_text())
+    assert [row for row in saved if row["job_id"] == disputed["job_id"]] == copies
+    quarantine = stored.with_name(stored.name + ".quarantine.jsonl")
+    records = [json.loads(line) for line in quarantine.read_text().splitlines()]
+    assert len(records) == 2
+    assert [record["job"] for record in records] == copies
+    assert all("conflicting stored rows" in record["reason"] for record in records)
+    assert f"job_id {disputed['job_id']} has conflicting stored rows" in caplog.text
+
+
 def test_upload_claim_cannot_be_cancelled_or_resubmitted_during_browser_call(
     cookie_dir, monkeypatch,
 ):
