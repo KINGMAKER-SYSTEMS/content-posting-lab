@@ -9,6 +9,7 @@ import fcntl
 import glob
 import importlib
 import json
+import logging
 import os
 import random
 import time
@@ -19,7 +20,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from services.json_store import atomic_load, atomic_save, lock_for
+from services.json_store import atomic_save, lock_for
 
 UPLOAD_JOBS_FILE = os.getenv("CONTENT_LAB_UPLOAD_JOBS_FILE", "upload_jobs.json")
 COOKIE_DIR = "."  # TK_cookies_{account}.json stored in project root
@@ -31,6 +32,7 @@ _executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="tiktok-upload"
 _queue_lock = asyncio.Lock()
 _active_job_id: str | None = None
 _queue_running = False
+logger = logging.getLogger(__name__)
 
 
 class UploadUnavailable(RuntimeError):
@@ -55,61 +57,106 @@ def _job_store_write_lock():
                 fcntl.flock(handle, fcntl.LOCK_UN)
 
 
+def _stored_job_error(job: object, seen_ids: set[str]) -> str | None:
+    """Return the first queue-safety check that a stored row fails."""
+    statuses = {"queued", "uploading", "completed", "failed", "cancelled"}
+    if not isinstance(job, dict):
+        return "row must be an object"
+    if not isinstance(job.get("job_id"), str) or not job["job_id"]:
+        return "job_id must be a non-empty string"
+    if job["job_id"] in seen_ids:
+        return "job_id is duplicated"
+    if not isinstance(job.get("status"), str) or job["status"] not in statuses:
+        return "status is invalid"
+    for key in ("video_path", "account_name"):
+        if not isinstance(job.get(key), str) or not job[key]:
+            return f"{key} must be a non-empty string"
+    if job["status"] == "queued":
+        required = (
+            "description", "hashtags", "sound_name", "sound_aud_vol",
+            "schedule_time", "schedule_day", "copyrightcheck", "headless",
+            "stealth", "proxy",
+        )
+        missing = next((key for key in required if key not in job), None)
+        if missing:
+            return f"{missing} is required for a queued job"
+        if not isinstance(job.get("description"), str):
+            return "description must be a string"
+        if not isinstance(job.get("hashtags"), list) or not all(isinstance(tag, str) for tag in job["hashtags"]):
+            return "hashtags must be a list of strings"
+        for key in ("sound_name", "schedule_time"):
+            if job.get(key) is not None and not isinstance(job[key], str):
+                return f"{key} must be a string or null"
+        if not isinstance(job.get("sound_aud_vol"), str):
+            return "sound_aud_vol must be a string"
+        if job.get("schedule_day") is not None and type(job["schedule_day"]) is not int:
+            return "schedule_day must be an integer or null"
+        for key in ("copyrightcheck", "headless", "stealth"):
+            if type(job.get(key)) is not bool:
+                return f"{key} must be a boolean"
+        if job.get("proxy") is not None and not isinstance(job["proxy"], dict):
+            return "proxy must be an object or null"
+    return None
+
+
 def _valid_stored_jobs(value: object) -> bool:
     """Check fields the queue reads before accepting another mutation."""
     if not isinstance(value, list):
         return False
-    statuses = {"queued", "uploading", "completed", "failed", "cancelled"}
     seen_ids: set[str] = set()
     for job in value:
-        if not isinstance(job, dict):
-            return False
-        if not isinstance(job.get("job_id"), str) or not job["job_id"]:
-            return False
-        if job["job_id"] in seen_ids:
+        if _stored_job_error(job, seen_ids) is not None:
             return False
         seen_ids.add(job["job_id"])
-        if not isinstance(job.get("status"), str) or job["status"] not in statuses:
-            return False
-        if not all(isinstance(job.get(key), str) and job[key] for key in ("video_path", "account_name")):
-            return False
-        if job["status"] == "queued":
-            if not all(key in job for key in (
-                "description", "hashtags", "sound_name", "sound_aud_vol",
-                "schedule_time", "schedule_day", "copyrightcheck", "headless",
-                "stealth", "proxy",
-            )):
-                return False
-            if not isinstance(job.get("description"), str):
-                return False
-            if not isinstance(job.get("hashtags"), list) or not all(isinstance(tag, str) for tag in job["hashtags"]):
-                return False
-            for key in ("sound_name", "schedule_time"):
-                if job.get(key) is not None and not isinstance(job[key], str):
-                    return False
-            if not isinstance(job.get("sound_aud_vol"), str):
-                return False
-            if job.get("schedule_day") is not None and type(job["schedule_day"]) is not int:
-                return False
-            if not all(type(job.get(key)) is bool for key in ("copyrightcheck", "headless", "stealth")):
-                return False
-            if job.get("proxy") is not None and not isinstance(job["proxy"], dict):
-                return False
     return True
 
 
-def _read_stored_jobs() -> list[dict]:
+def _quarantine_stored_jobs(rows: list[tuple[int, str, object]]) -> None:
+    """Append rejected rows to an audit file while the job-store lock is held."""
+    quarantine_path = Path(f"{UPLOAD_JOBS_FILE}.quarantine.jsonl")
+    with quarantine_path.open("a", encoding="utf-8") as handle:
+        for index, reason, job in rows:
+            record = {"row_index": index, "reason": reason, "job": job}
+            handle.write(json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n")
+            logger.error("Quarantined upload job row %d: %s", index, reason)
+        handle.flush()
+        os.fsync(handle.fileno())
+
+
+def _read_stored_jobs(*, _lock_held: bool = False) -> list[dict]:
+    if not _lock_held:
+        with _job_store_write_lock():
+            return _read_stored_jobs(_lock_held=True)
     path = Path(UPLOAD_JOBS_FILE)
     if not path.exists():
         return []
     try:
         with path.open(encoding="utf-8") as handle:
             jobs = json.load(handle)
-        if not _valid_stored_jobs(jobs):
-            raise ValueError("invalid upload job record")
     except (OSError, ValueError):
+        logger.exception("Upload job file is corrupt or unreadable; refusing to start an empty queue")
         raise UploadUnavailable("TikTok upload is unavailable: job storage is unreadable") from None
-    return jobs
+    if not isinstance(jobs, list):
+        logger.error("Upload job file root is not a list; refusing to start an empty queue")
+        raise UploadUnavailable("TikTok upload is unavailable: job storage is unreadable")
+
+    valid_jobs: list[dict] = []
+    rejected_rows: list[tuple[int, str, object]] = []
+    seen_ids: set[str] = set()
+    for index, job in enumerate(jobs):
+        reason = _stored_job_error(job, seen_ids)
+        if reason is not None:
+            rejected_rows.append((index, reason, job))
+            continue
+        valid_jobs.append(job)
+        seen_ids.add(job["job_id"])
+
+    if rejected_rows:
+        # A valid list may contain an interrupted or malformed row. Preserve the
+        # valid jobs and quarantine only the rows that failed their own checks.
+        _quarantine_stored_jobs(rejected_rows)
+        _save_jobs(valid_jobs)
+    return valid_jobs
 
 
 def require_upload_runtime() -> None:
@@ -143,7 +190,7 @@ def require_upload_admission() -> None:
 # ── Job persistence ──────────────────────────────────────────────────────────
 
 def _load_jobs() -> list[dict]:
-    return atomic_load(UPLOAD_JOBS_FILE, default=[])
+    return _read_stored_jobs()
 
 
 def _save_jobs(jobs: list[dict]) -> None:
@@ -157,7 +204,7 @@ def _update_job(job_id: str, updates: dict) -> dict | None:
     # Serialize the local queue read/modify/write with submissions so a status
     # transition cannot clobber a newly admitted job across local processes.
     with _job_store_write_lock():
-        jobs = _read_stored_jobs()
+        jobs = _read_stored_jobs(_lock_held=True)
         for job in jobs:
             if job["job_id"] == job_id:
                 job.update(updates)
@@ -220,7 +267,7 @@ def submit_job(
         raise ValueError("invalid upload job")
 
     with _job_store_write_lock():
-        jobs = _read_stored_jobs()
+        jobs = _read_stored_jobs(_lock_held=True)
         target = os.path.realpath(video_path)
         for existing in jobs:
             if (existing["account_name"] == account_name
@@ -242,7 +289,7 @@ def submit_job(
 def cancel_job(job_id: str) -> dict | None:
     """Cancel only a job that remains queued under the upload claim lock."""
     with _job_store_write_lock():
-        jobs = _read_stored_jobs()
+        jobs = _read_stored_jobs(_lock_held=True)
         for job in jobs:
             if job["job_id"] != job_id:
                 continue
@@ -346,7 +393,7 @@ async def _process_single_job(job_id: str) -> None:
     global _active_job_id
 
     with _job_store_write_lock():
-        jobs = _read_stored_jobs()
+        jobs = _read_stored_jobs(_lock_held=True)
         job = next((row for row in jobs if row["job_id"] == job_id), None)
         if not job or job["status"] != "queued":
             return

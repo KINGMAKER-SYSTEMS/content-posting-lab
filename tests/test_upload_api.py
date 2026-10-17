@@ -37,8 +37,7 @@ def cookie_dir(tmp_path, monkeypatch):
     d = tmp_path / "cookies"
     d.mkdir()
     monkeypatch.setattr(upload_svc, "COOKIE_DIR", str(d))
-    # upload_jobs.json is loaded/saved relative to CWD via atomic_load/atomic_save;
-    # run the whole test from the tmp dir so we never touch a real queue file.
+    # The job store is relative to CWD; isolate the locked read/write path here.
     monkeypatch.chdir(tmp_path)
     return d
 
@@ -199,14 +198,8 @@ def test_corrupt_job_store_refuses_without_overwrite(sync_client, cookie_dir, mo
     assert r.status_code == 503
     assert stored.read_text() == "{broken"
 
-@pytest.mark.parametrize("existing", [
-    [None],
-    ["not-a-job"],
-    [{"job_id": "old", "status": []}],
-    [{"job_id": "old", "status": "queued"}],
-    [{"job_id": "old", "status": "completed"}],
-])
-def test_malformed_job_list_refuses_without_overwrite(sync_client, cookie_dir, monkeypatch, existing):
+@pytest.mark.parametrize("existing", [None, {"jobs": []}, "not-a-list"])
+def test_non_list_job_store_refuses_without_overwrite(sync_client, cookie_dir, monkeypatch, existing):
     _write_cookie(cookie_dir, "linked")
     monkeypatch.setattr(upload_svc.importlib, "import_module", lambda name: _FAKE_UPLOADER)
     stored = cookie_dir.parent / "upload_jobs.json"
@@ -219,20 +212,32 @@ def test_malformed_job_list_refuses_without_overwrite(sync_client, cookie_dir, m
     assert stored.read_text() == original
 
 
-def test_duplicate_job_ids_refuse_without_overwrite(sync_client, cookie_dir, monkeypatch):
-    _write_cookie(cookie_dir, "linked")
-    monkeypatch.setattr(upload_svc.importlib, "import_module", lambda name: _FAKE_UPLOADER)
-    original_job = upload_svc.submit_job(video_path="/tmp/old.mp4", account_name="linked")
-    completed = {**original_job, "status": "completed"}
-    queued = {**original_job, "status": "queued"}
+def test_bad_stored_row_is_quarantined_and_good_job_processes(cookie_dir, monkeypatch, caplog):
+    monkeypatch.setattr(upload_svc, "require_upload_runtime", lambda: None)
+    good = upload_svc.submit_job(video_path="/tmp/good.mp4", account_name="linked")
+    bad = {**good, "job_id": "bad-row", "video_path": ""}
     stored = cookie_dir.parent / "upload_jobs.json"
-    original = json.dumps([completed, queued])
-    stored.write_text(original)
+    stored.write_text(json.dumps([good, bad]))
+    calls = []
+    monkeypatch.setattr(upload_svc, "_run_upload_sync", lambda job: calls.append(job["job_id"]) or "Completed")
 
-    r = sync_client.post("/api/upload/submit", json={"video_path": "/tmp/new.mp4", "account_name": "linked"})
-    assert r.status_code == 503
-    assert "job storage is unreadable" in r.json()["detail"]
-    assert stored.read_text() == original
+    try:
+        listed_jobs = upload_svc.get_all_jobs()
+    except upload_svc.UploadUnavailable:
+        listed_jobs = []
+    assert [job["job_id"] for job in listed_jobs] == [good["job_id"]]
+    asyncio.run(upload_svc._process_single_job(good["job_id"]))
+
+    assert calls == [good["job_id"]]
+    assert upload_svc.get_job(good["job_id"])["status"] == "completed"
+    saved = json.loads(stored.read_text())
+    assert len(saved) == 1
+    assert saved[0]["job_id"] == good["job_id"]
+    assert saved[0]["status"] == "completed"
+    quarantine = stored.with_name(stored.name + ".quarantine.jsonl")
+    records = [json.loads(line) for line in quarantine.read_text().splitlines()]
+    assert records == [{"row_index": 1, "reason": "video_path must be a non-empty string", "job": bad}]
+    assert "Quarantined upload job row 1: video_path must be a non-empty string" in caplog.text
 
 
 @pytest.mark.parametrize("status", ["queued", "uploading", "failed"])

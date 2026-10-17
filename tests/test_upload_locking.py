@@ -2,6 +2,7 @@
 
 import asyncio
 from contextlib import contextmanager
+import fcntl
 import multiprocessing
 
 import pytest
@@ -41,8 +42,8 @@ def _contender(store, job_id, operation, attempting, read, release_read, results
         with lock():
             yield
 
-    def pause_read():
-        jobs = load()
+    def pause_read(*, _lock_held=False):
+        jobs = load(_lock_held=_lock_held)
         read.set()
         assert release_read.wait(15)
         return jobs
@@ -59,6 +60,16 @@ def _contender(store, job_id, operation, attempting, read, release_read, results
         results.put(("claim", "finished"))
     else:
         results.put(("cancel", upload_svc.cancel_job(job_id)["status"]))
+
+
+def _store_lock_is_held(store):
+    with open(f"{store}.lock", "a+b") as handle:
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return True
+        fcntl.flock(handle, fcntl.LOCK_UN)
+        return False
 
 
 @pytest.mark.parametrize("operation", ["claim", "cancel"])
@@ -91,11 +102,16 @@ def test_process_claim_serializes_competing_transition(tmp_path, monkeypatch, op
         contender.start()
         processes.append(contender)
         assert attempting.wait(15)
-        # Give a lockless contender time to read; correctness is asserted from
-        # provider calls and persisted state, not from elapsed time.
-        read.wait(1)
+        if _store_lock_is_held(store):
+            # The real lock keeps the contender out until the owner saves.
+            assert not read.is_set()
+        else:
+            # A lockless build must reach and pause after its stale read before
+            # the owner is allowed to save.
+            assert read.wait(15)
         release_claim.set()
         assert started.wait(15)
+        assert read.wait(15)
         release_read.set()
         contender.join(15)
         assert contender.exitcode == 0
