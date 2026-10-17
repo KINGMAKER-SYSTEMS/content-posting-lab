@@ -386,7 +386,7 @@ UI = the Lab frontend calls this path (grep of `frontend/src`, path-level).
 | `GET` | `/api/agenticnews/editor-timelines/{project_id}/asset-health` | READ | Access JWT | yes |  | operator read, no PII/spend (gated with its router) |
 | `POST` | `/api/agenticnews/editor-timelines/{project_id}/commands` | WRITE | Access JWT | yes |  |  |
 | `POST` | `/api/agenticnews/editor-timelines/{project_id}/commands/revert-last` | WRITE | Access JWT | yes |  |  |
-| `GET` | `/api/agenticnews/editor-timelines/{project_id}/openshot` | WRITE | Access JWT | yes |  | imports, migrates or prunes the saved editor project; side-effect GET |
+| `GET` | `/api/agenticnews/editor-timelines/{project_id}/openshot` | WRITE | Access JWT |  |  | imports, migrates or prunes the saved editor project; side-effect GET |
 | `GET` | `/api/agenticnews/editor-render/capabilities` | READ | Access JWT |  |  | operator read, no PII/spend (gated with its router) |
 | `POST` | `/api/agenticnews/editor-render/{project_id}/render` | WRITE | Access JWT | yes |  |  |
 | `POST` | `/api/agenticnews/editor-render/{project_id}/frame` | WRITE | Access JWT | yes |  |  |
