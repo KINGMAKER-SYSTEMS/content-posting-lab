@@ -11,7 +11,9 @@ allow_credential_keys; a page's own alias/rule/signup/password never are.
 
 Every route that can change where a page's mail goes -- adding a destination,
 deleting a forwarding rule, (re)creating a page alias -- requires the machine
-credential (``require_control_plane_auth``). Unauthenticated, those three
+credential or an operator (``require_access_or_control_plane_token``:
+CONTROL_PLANE_TOKEN as Bearer or X-API-Key, or a verified Cloudflare Access
+JWT; never the browser-bundled APP_API_KEY). Unauthenticated, those three
 routes chained into an account takeover: add and verify an attacker address,
 delete a page's rule, recreate the same alias forwarding to the attacker, and
 receive the page's TikTok password-reset mail.
@@ -37,8 +39,8 @@ from services.roster_public import (
     CredentialGuardRoute,
     allow_credential_keys,
     public_page,
-    require_control_plane_auth,
 )
+from services.route_auth import require_access_or_control_plane_token
 
 logger = logging.getLogger(__name__)
 
@@ -146,7 +148,7 @@ async def email_status():
 # ── Rules ────────────────────────────────────────────────────────────────────
 
 
-@router.delete("/rules/{rule_id}", dependencies=[Depends(require_control_plane_auth)])
+@router.delete("/rules/{rule_id}", dependencies=[Depends(require_access_or_control_plane_token)])
 async def delete_email_rule(rule_id: str, integration_id: str | None = None):
     """Delete an email routing rule and optionally unlink from roster page."""
     _require_configured()
@@ -229,7 +231,7 @@ def _refuse_silent_repoint(req: AutoCreateRequest, full_alias: str, destination:
             )
 
 
-@router.post("/auto-create", dependencies=[Depends(require_control_plane_auth)])
+@router.post("/auto-create", dependencies=[Depends(require_access_or_control_plane_token)])
 @allow_credential_keys("alias")  # the alias this request just created
 async def auto_create_for_page(req: AutoCreateRequest):
     """Auto-generate an email alias for a roster page and create the CF rule.
@@ -295,7 +297,7 @@ async def auto_create_for_page(req: AutoCreateRequest):
 # ── Destinations ─────────────────────────────────────────────────────────────
 
 
-@router.get("/destinations", dependencies=[Depends(require_control_plane_auth)])
+@router.get("/destinations", dependencies=[Depends(require_access_or_control_plane_token)])
 @allow_credential_keys("email")  # team inboxes the operator mints aliases to
 async def get_destinations():
     """List destination addresses (the team's real inboxes).
@@ -315,7 +317,7 @@ class AddDestinationRequest(BaseModel):
     email: str
 
 
-@router.post("/destinations", dependencies=[Depends(require_control_plane_auth)])
+@router.post("/destinations", dependencies=[Depends(require_access_or_control_plane_token)])
 @allow_credential_keys("email")  # the address this request just added
 async def add_destination_address(req: AddDestinationRequest):
     """Add a new destination address (triggers CF verification email).

@@ -1570,6 +1570,53 @@ type: [bug report]: Align frame-aware caption quality checks
 area: [backend] [testing] [review]
 
 Reviewed PR #216 against current main and retained the Mini App authorization repair. The local quality-check endpoint now accepts the same picture frame used to render the caption and evaluates its position against that band, including the renderer's minimal anchor adjustment. Frame-relative top/middle/bottom coverage and invalid-frame controls accompany the repair; the existing 253 focused renderer, gate and prepared-final tests passed before the correction. No phone input or runtime installation was performed.
+
+_________________________________________________________________________________
+time: [10:45PM] [10-04-26]
+agent: [codex] [gpt-6] [posting_dependencies]
+worktree: [sec/lab-route-auth; /tmp/rt-merge-lab217]
+type: [refactor]: PR #179
+area: [review]
+Integrated current Mini App key/page authorization, indexed generation budget, frame-aware captions, source-manifest casing, identity tests and frame-cut contracts into the route-auth candidate. Added classification for current retention/lifecycle/readiness endpoints and the same operator auth on caption-render/v2 as v1; retained current main credential tests and configured-key fixtures. The full focused auth/credential suite passed 1,161 tests with one optional skipped route; the latest current-main head passed 952 tests with that same optional skip. Deployment still requires a real Cloudflare Access ingress and server caller credentials; no fail-open activation switch or invented credentials were added. Owning contracts and route table remain current; child index unchanged.
+
+_________________________________________________________________________________
+
+time: [01:07 AM EDT] [05-10-26]
+agent: [Codex desktop] [gpt-6.1]
+worktree: [sec/lab-route-auth; /private/tmp/content-posting-lab-pr179-health]
+type: [bug report]: PR #179 page health authorization
+area: [review] [testing]
+
+Restricted GET /api/pipeline/{integration_id}/health to Cloudflare Access because its per-page response exposed setup, storage-count, cookie, and Telegram topic state while issuing an R2 list. Added route classification and regression coverage proving anonymous requests stop before page/R2/cookie/topic reads and Access-authenticated requests retain the metrics. Builder reported 1,010 tests passed and one skipped plus a credential sweep; independent review of candidate 85dea6cadcd9e757965d7e18f087f976354fff9d found no concrete issue. Reviewer could not rerun tests on its host (Python 3.9 syntax incompatibility; Python 3.12 without pytest). Candidate is not yet pushed; hosted checks, final-head review, merge, and deployment remain pending.
+_________________________________________________________________________________
+
+_________________________________________________________________________________
+time: [10:40am EDT] [13-10-26]
+agent: [codex desktop] [gpt-6.1-sol] [contentlab_pr179_jwks_builder]
+worktree: [codex/pr179-jwks-async-local] [/private/tmp/codex-lab179-jwks-20261013]
+type: [bug report]: Draft PR #179 Access JWKS pre-body latency
+area: [backend] [testing]
+
+Moved presented Cloudflare Access JWT authorization off the ASGI event loop while retaining
+pre-body failure and a per-process eight-lookup cap. Slow/unavailable certs no longer block
+unrelated public routes. Added concurrent outage and saturation regressions; retained fail-closed
+503 behavior. Local candidate only: no push, merge, deployment, or live verification.
+_________________________________________________________________________________
+
+_________________________________________________________________________________
+time: [10:45am EDT] [13-10-26]
+agent: [codex desktop] [gpt-6.1-sol] [contentlab_pr179_jwks_builder]
+worktree: [codex/pr179-jwks-async-local] [/private/tmp/codex-lab179-jwks-20261013]
+type: [bug report]: Preserve machine auth during Access cert saturation
+area: [backend] [testing]
+
+Independent review found that eight stalled Access cert lookups could make a mixed
+Access-plus-Worker request return 503 before checking its valid Worker token.
+Machine credentials now take precedence in authorization and bypass the Access
+lookup cap when valid; an Access-only request still fails closed at saturation.
+Added the mixed-credential saturation regression. FastAPI runs the synchronous
+route dependency in its thread pool, so the event-loop block was at pre-body
+middleware. Local candidate only; no push, merge, deployment, or live proof.
 _________________________________________________________________________________
 time: [05:57pm] [10-07-26] EDT; actual UTC: 2026-10-07T21:57:54Z
 agent: [codex] [gpt-6.1-sol] [focused builder]
@@ -1687,3 +1734,30 @@ area: [backend], [testing], [review]
 
 Independent review found that executable permission errors and unexpected checker failures could leave a stale healthy tool status and immediately reschedule another subprocess refresh on every probe. The command probe now treats all OS execution errors as unavailable; the refresh resolves individual checker failures to false and stamps the completed check, and cancellation is handled without spurious callback errors. Regression tests cover both failure classes and bounded refresh behavior: 15 focused health/lifespan cases pass. The production Docker image rebuilt, imported app and TgCrypto, and contains no gcc. No push, merge or deployment occurred.
 _________________________________________________________________________________
+
+_________________________________________________________________________________
+time: [2026-10-16]
+agent: [Codex] [builder cx-l179]
+worktree: [sec/lab-route-auth] [e2df-fr/lanes/l179]
+type: [bug report]: PR #179 editor CSRF and operator binding repair
+area: [backend] [testing] [review]
+
+Marked editor timeline loading and OpenShot export as side-effect GETs because both may persist imported, migrated or cache-pruned projects. Access callers now require the existing same-site check on these routes. Poster bind/unbind use their declared Access login without also demanding the server Mini App agent key. Six real-handler regressions failed at reviewed head and passed with the repairs; compiling reverts reproduce both failures. Focused verification also exposed FastAPI's websocket RouteContext losing include prefixes in the shared route adapter; retain that context like HTTP and unwrap only for test type checks. The existing pre-body websocket regression kills its revert. Merged origin/main into the candidate branch, retaining both event histories and the shared Worker bearer capability check. Full-suite comparisons and exact evidence are recorded in the builder report; no PR merge, deployment, live provider call or posting operation was performed.
+
+_________________________________________________________________________________
+time: [2026-10-16]
+agent: [Codex] [builder cx-l179]
+worktree: [sec/lab-route-auth] [e2df-fr/lanes/l179]
+type: [testing]: Keep merged capability credential tests on real authentication
+area: [testing] [review]
+
+The capability-auth regression brought in from main must opt out of this branch's legacy handler-test auth bypass. Marked it real_route_auth so its unauthorized-data-read assertion exercises the shared Worker dependency. The production bearer requirement is unchanged. The focused auth, editor and Telegram set passed 1,044 tests with one skip; full-suite comparison remains in the builder report. Corrected the OpenShot route table's unchanged UI-caller column while retaining its new WRITE classification. No merge or deployment was performed.
+
+_________________________________________________________________________________
+time: [2026-10-16]
+agent: [Codex] [builder cx-l179]
+worktree: [sec/lab-route-auth] [e2df-fr/lanes/l179]
+type: [testing]: Exercise roster contracts with the real Worker credential
+area: [testing] [review]
+
+The full base/head gate exposed three existing roster authorization assertions that inherited the legacy handler-test auth bypass on this branch. Opted the roster module into real route authentication and supplied its valid Worker bearer when testing the separate missing-lane error. The roster, capability-auth and new editor/binding regression set passes 27 tests. No production behavior changed; the final full comparison is recorded in the builder report. No PR merge or deployment was performed.
