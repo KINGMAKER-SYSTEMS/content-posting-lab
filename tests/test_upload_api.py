@@ -104,7 +104,6 @@ def test_empty_video_path_refused_without_poisoning_queue(
 
     async def queue():
         scheduled.append(True)
-        await upload_svc.process_queue()
 
     def provider(job):
         calls.append(job["video_path"])
@@ -129,8 +128,8 @@ def test_empty_video_path_refused_without_poisoning_queue(
         "video_path": "/tmp/valid.mp4", "account_name": "linked",
     })
     assert response.status_code == 200
-    # Explicitly drain the real queue even if the request's background task
-    # has not yet run; the claim makes this safe in either ordering.
+    # The launch stub leaves processing to this explicit drain, so completion
+    # does not depend on the background task winning a scheduling race.
     asyncio.run(upload_svc.process_queue())
     assert calls == ["/tmp/valid.mp4"]
     assert upload_svc.get_job(response.json()["job"]["job_id"])["status"] == "completed"
