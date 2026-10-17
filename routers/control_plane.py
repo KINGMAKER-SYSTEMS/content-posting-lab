@@ -4311,15 +4311,16 @@ async def create_job(
         raise HTTPException(status_code=400, detail=f"unknown job fields: {', '.join(unknown)}")
     _reject_prompt_fields(body)
 
-    page_id = str(body.get("pageId") or "")
+    identity = _normalize_job_identity(body)
+    page_id = identity["pageId"]
     if page_id != x_rt_page_id:
         raise HTTPException(status_code=400, detail="body pageId must match X-RT-Page-Id")
-    if body.get("lane") != x_rt_lane:
+    if identity["lane"] != x_rt_lane:
         raise HTTPException(status_code=400, detail="body lane must match X-RT-Lane")
-    engine = str(body.get("engine") or "").strip()
-    recipe_id = str(body.get("lockedRecipeId") or "").strip()
-    recipe_version = str(body.get("recipeVersion") or "").strip()
-    policy_hash = str(body.get("policyHash") or "").strip()
+    engine = identity["engine"]
+    recipe_id = identity["lockedRecipeId"]
+    recipe_version = identity["recipeVersion"]
+    policy_hash = identity["policyHash"]
     if not recipe_id or not recipe_version or not policy_hash:
         raise HTTPException(status_code=400, detail="lockedRecipeId, recipeVersion and policyHash are required")
     quantity = body.get("quantity")
@@ -4449,7 +4450,7 @@ async def create_job(
         common = {
             "jobId": job_id, "idempotencyKey": idempotency_key,
             "jobRequestHash": job_request_hash,
-            "pageId": page_id, "lane": str(body.get("lane") or x_rt_lane),
+            "pageId": page_id, "lane": identity["lane"],
             "engine": engine, "recipeId": recipe_id,
             "recipeVersion": recipe_version, "policyHash": policy_hash,
             "recipePublicationPageId": publication_page_id,
@@ -4753,21 +4754,31 @@ def _source_import_active_deadline_expired(job: dict[str, Any]) -> bool:
     ).total_seconds() >= SOURCE_IMPORT_ACTIVE_DEADLINE_SECONDS
 
 
+def _normalize_job_identity(body: dict[str, Any]) -> dict[str, Any]:
+    """Share create's scope coercions with receipt lookup and request hashing."""
+    return {
+        "pageId": str(body.get("pageId") or ""),
+        "lane": body.get("lane"),
+        "engine": str(body.get("engine") or "").strip(),
+        "lockedRecipeId": str(body.get("lockedRecipeId") or "").strip(),
+        "recipeVersion": str(body.get("recipeVersion") or "").strip(),
+        "policyHash": str(body.get("policyHash") or "").strip(),
+    }
+
+
 def _job_request_hash(
     body: dict[str, Any], *, page_id: str, lane: str,
     master_pages: dict[str, Any],
 ) -> str:
     """Fingerprint the immutable, canonical create request without IO."""
+    identity = _normalize_job_identity(body)
     canonical = {
+        **identity,
         "pageId": page_id,
-        "lane": str(body.get("lane") or lane),
-        "engine": str(body.get("engine") or "").strip(),
-        "lockedRecipeId": str(body.get("lockedRecipeId") or "").strip(),
-        "recipeVersion": str(body.get("recipeVersion") or "").strip(),
+        "lane": str(identity["lane"] or lane),
         "quantity": body.get("quantity"),
         "constraints": body.get("constraints") or {},
         "sourceIsolation": body.get("sourceIsolation") or None,
-        "policyHash": str(body.get("policyHash") or "").strip(),
         "masterPages": master_pages,
         "masterPagesHash": body["masterPagesHash"],
     }
@@ -4798,9 +4809,10 @@ def job_by_idempotency_key(
     if unknown:
         raise HTTPException(status_code=400, detail=f"unknown job fields: {', '.join(unknown)}")
     _reject_prompt_fields(body)
-    if body.get("pageId") != x_rt_page_id or body.get("lane") != x_rt_lane:
+    identity = _normalize_job_identity(body)
+    if identity["pageId"] != x_rt_page_id or identity["lane"] != x_rt_lane:
         raise HTTPException(status_code=400, detail="job scope does not match request headers")
-    if not all(str(body.get(field) or "").strip()
+    if not all(identity[field]
                for field in ("engine", "lockedRecipeId", "recipeVersion", "policyHash")):
         raise HTTPException(status_code=400, detail="job identity fields are required")
     quantity = body.get("quantity")
@@ -4819,7 +4831,7 @@ def job_by_idempotency_key(
         body.get("masterPages"), body.get("masterPagesHash"),
         expected_page_id=x_rt_page_id,
     )
-    if master_pages is None or master_pages["contentEngine"] != str(body["engine"]).strip():
+    if master_pages is None or master_pages["contentEngine"] != identity["engine"]:
         raise HTTPException(status_code=400, detail="invalid job Master Pages identity")
     request_hash = _job_request_hash(
         body, page_id=x_rt_page_id, lane=x_rt_lane, master_pages=master_pages,
