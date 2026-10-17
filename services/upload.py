@@ -134,6 +134,7 @@ def _read_stored_jobs(*, _lock_held: bool = False) -> list[dict]:
         with path.open(encoding="utf-8") as handle:
             jobs = json.load(handle)
     except (OSError, ValueError):
+        # An unreadable file may hide an in-flight claim; starting empty could duplicate a post.
         logger.exception("Upload job file is corrupt or unreadable; refusing to start an empty queue")
         raise UploadUnavailable("TikTok upload is unavailable: job storage is unreadable") from None
     if not isinstance(jobs, list):
