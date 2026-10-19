@@ -28,7 +28,7 @@ These are source observations, not deployment acceptance.
 | `KINGMAKER-SYSTEMS/syzygy` | `c7dd0fea35665706396e6ca18aa6430a72591d27` | `docs/AGENTIC-USE.md`, `/api/v1/render`, owner-scoped job reads and render downloads |
 | `KINGMAKER-SYSTEMS/content-posting-lab` | `50a4fe4` | Stable Syzygy library selection, deterministic plans, idempotent render submit, bounded polling, source observations and slideshow receipts |
 | `KINGMAKER-SYSTEMS/rotational-posting-agent` | `b0cc66cc9d15aa4ffc91c0ebd97a75015f221735` | `control-plane-worker/src/adapters/contentLabClient.js` validates incoming artifacts |
-| `KINGMAKER-SYSTEMS/north-star-artists-dashboard` | `f897ce9a` | `hosted/src/http/media.rs` owns upload completion; `hosted/editorial-renderer/SERVICE.md` and `docs/SYSTEM-MAP.md` describe existing editorial preparation and its separate acceptance gates |
+| `KINGMAKER-SYSTEMS/north-star-artists-dashboard` | `1a5d069a` | `hosted/src/http/media.rs` owns upload completion; `hosted/src/http/distro.rs` admits Ready Library clips into existing review; editorial rendering is a separate source/occurrence-bound flow |
 
 The public Syzygy `/readyz` returned `ok: true` and the full 40-character commit
 above. This proves that health response only; no authenticated render or transfer
@@ -62,8 +62,13 @@ stubbed local encoding keep this a contract test, not live render acceptance.
    producer revision fix and consumer recognition before live acceptance.
 2. **Northstar output intake.** No `syzygy` references were found in tracked
    Northstar main at the baseline. First prove importing a completed render
-   through its existing tenant-owned upload flow; determine the smallest
-   server-side adapter only after checking active Distro work. Never infer a
+   through its existing tenant-owned upload flow. Normal uploaded finished clips
+   already enter rotation through `POST /t/{tenant}/distro/rotation` with
+   `action=add`, a media UUID, expected revision and tenant/session-bound CSRF.
+   `distro_library_intake` verifies owned Ready media, immutable R2 version and
+   SHA-256, then creates the content version for existing per-destination review.
+   It neither requires nor creates an original-source registration. Intake does
+   not approve publication or change the rotation's pause state. Never infer a
    Northstar tenant from a Syzygy artist label, page name or shared key. Keep
    private bytes, checksum verification, retry identity and review authority
    in the existing media contract. Northstar's editorial renderer already
@@ -74,9 +79,12 @@ stubbed local encoding keep this a contract test, not live render acceptance.
    preserve its origin and render identity rather than using
    `library_register_r2_upload` to relabel it. The existing browser media routes
    derive authority from the authenticated tenant/session and CSRF flow;
-   server-to-server import identity and provenance retention still need an
-   explicit integration design. A shared credential or upload URL alone is
-   not that design.
+   a direct Studio handoff still needs an explicit account-linking flow.
+   A shared credential or upload URL alone is not tenant authority. Automatic
+   receipt association is a separate enhancement: the ordinary media schema has
+   no generic creation receipt field. Retain Syzygy job/revision/output evidence
+   separately rather than encoding provenance in filenames or pretending it is
+   original footage.
    `hosted/src/operator_media_client.rs::OperatorMediaUploader::upload_session`
    already implements hashed multipart transfer into private R2. Reuse it if
    operator intake is chosen, but do not claim it is an available importer:
@@ -86,11 +94,13 @@ stubbed local encoding keep this a contract test, not live render acceptance.
    media is reserved against a source, recipe, schedule and occurrence;
    `editorial_finish_render` requires that reservation and a live lease, and
    `editorial_guard_content` prevents using it as a rotation original.
-   The next slice therefore needs an explicit tenant-owned external creation
-   receipt/admission retaining Syzygy owner, job, revision, output hash and
-   retry identity before composing with existing upload. Do not manufacture
-   an editorial occurrence to fit an external render. Check overlapping
-   original/style PR #471 and large-media transport PR #459 before editing.
+   Neither unfinished operator import nor editorial reservation is a prerequisite
+   for the existing user-driven upload/review journey. Do not manufacture an
+   editorial occurrence or add a new admission system to fit an external render.
+   `hosted/tests/ui-product-walk.cjs` already uploads a finished synthetic MP4,
+   verifies private playback, adds it to rotation and saves review content without
+   source registration. Reuse this proof before adding another fixture. Check
+   overlapping original/style PR #471 and large-media transport PR #459 before editing.
 3. **Acceptance.** Test owner isolation, interrupted transfer, exact-byte
    provenance, duplicate retries, deleted source and downstream refusal before
    a separately authorized real render/import. Record local, PR/CI, merged,
