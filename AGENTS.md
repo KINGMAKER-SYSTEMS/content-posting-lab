@@ -198,6 +198,10 @@
 - `services/job_token_rotation.py` and `scripts/rotate_job_download_token.py`
   own operator-only rotation of one job's signed download credential.
 - `routers/burn.py` exposes caption rendering and final video compositing.
+  `POST /api/burn/import-tos` requires the server-only `CONTROL_PLANE_TOKEN`
+  Bearer credential before any Supabase read or project CSV write. An unset or
+  blank token returns 503; missing, wrong, or browser `APP_API_KEY` credentials
+  return 401. Other Burn routes keep their existing authentication contracts.
 - `services/roster_public.py` owns what `/api/roster`, `/api/pipeline` and
   `/api/email` may serialise: an allowlist of roster row fields plus a
   credential-key scrub (`CredentialGuardRoute`) applied to every response of
@@ -229,7 +233,8 @@
   `_patch_page` refuses non-canonical ids before any request. Alias-collision 409s never echo the alias.
 - `burn_server.py` exposes the same typed caption-render route on the posting
   Mac's canonical port-8002 Burn runtime for Rail consumption.
-- `events.md` is the repository's append-only chronological ledger.
+- `events/` holds new append-only chronological entries, one unique file per
+  change; the legacy root `events.md` is frozen history.
 - `SCHEMA.md` describes the current Editor Bay timeline, edit-command, ABN import,
   and render-cache contracts; `services/editor_timeline.py` and `routers/agenticnews.py` own the implementation.
 
@@ -772,7 +777,9 @@
 
 - Run `pytest -q tests/test_caption_render_contract.py` for the typed caption
   contract and `pytest -q tests/test_burn_and_captions_api.py` for Burn API
-  regressions. Run `pytest -q tests/test_burn_quality_gate.py` for legacy and
+  regressions. Run `pytest -q tests/test_burn_import_tos_auth.py` for the
+  server-only TOS import credential and side-effect boundary. Run
+  `pytest -q tests/test_burn_quality_gate.py` for legacy and
   typed overlay placement gates. Run the control-plane recipe, generation, and
   source-execution test files together when changing a Dossier recipe schema.
 - Run `node --test tools/gh-capture/target_policy.test.cjs` for GitHub URL,
