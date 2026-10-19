@@ -201,7 +201,9 @@
   `POST /api/burn/import-tos` requires the server-only `CONTROL_PLANE_TOKEN`
   Bearer credential before any Supabase read or project CSV write. An unset or
   blank token returns 503; missing, wrong, or browser `APP_API_KEY` credentials
-  return 401. Other Burn routes keep their existing authentication contracts.
+  return 401. `app.py` passes this exact POST through its browser-key middleware
+  to the route's machine guard even when `APP_API_KEY` is configured. Other Burn
+  routes keep their existing authentication contracts.
 - `services/roster_public.py` owns what `/api/roster`, `/api/pipeline` and
   `/api/email` may serialise: an allowlist of roster row fields plus a
   credential-key scrub (`CredentialGuardRoute`) applied to every response of

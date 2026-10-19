@@ -88,3 +88,49 @@ def test_import_accepts_machine_token_with_app_key_unset(sync_client, monkeypatc
     assert len(calls) == 1
     assert calls[0][0] == "https://supabase.invalid/rest/v1/tos_captions"
     assert (isolated_projects_root / PROJECT / "captions" / "tos-campaign-1" / "captions.csv").exists()
+
+
+def test_import_machine_bearer_survives_configured_browser_middleware(
+    sync_client, monkeypatch, isolated_projects_root
+):
+    monkeypatch.setattr(app_module, "_APP_API_KEY", "browser-facing-key")
+    monkeypatch.setenv("APP_API_KEY", "browser-facing-key")
+    monkeypatch.setenv("CONTROL_PLANE_TOKEN", TOKEN)
+    monkeypatch.setenv("SUPABASE_URL", "https://supabase.invalid")
+    monkeypatch.setenv("SUPABASE_SERVICE_KEY", "test-service-key")
+    calls = []
+
+    class Response:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return []
+
+    def fake_get(*args, **kwargs):
+        calls.append((args, kwargs))
+        return Response()
+
+    monkeypatch.setattr(requests, "get", fake_get)
+    params = {"project": PROJECT}
+    assert sync_client.post(URL, params=params).status_code == 401
+    assert sync_client.post(URL, params=params, headers={"X-API-Key": "browser-facing-key"}).status_code == 401
+    assert sync_client.post(
+        URL, params=params,
+        headers={"Authorization": "Bearer wrong", "X-API-Key": "browser-facing-key"},
+    ).status_code == 401
+    assert calls == []
+    assert not (isolated_projects_root / PROJECT).exists()
+
+    response = sync_client.post(
+        URL, params=params, headers={"Authorization": f"Bearer {TOKEN}"}
+    )
+    assert response.status_code == 200
+    assert response.json()["imported"] == 0
+    assert len(calls) == 1
+
+    # The exact-path treatment does not relax the rest of the API.
+    assert sync_client.get("/api/projects").status_code == 401
+    assert sync_client.get(
+        "/api/projects", headers={"X-API-Key": "browser-facing-key"}
+    ).status_code == 200
