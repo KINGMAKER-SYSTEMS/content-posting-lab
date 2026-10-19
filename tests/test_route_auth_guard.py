@@ -95,7 +95,7 @@ TABLE = {
     ('GET', '/api/video/jobs'): ('READ', 'A', 'operator read, no PII/spend (gated with its router)'),
     ('GET', '/api/video/jobs/{job_id}'): ('READ', 'A', 'operator read, no PII/spend (gated with its router)'),
     ('DELETE', '/api/video/jobs/{job_id}'): ('WRITE', 'A', ''),
-    ('GET', '/api/video/jobs/{job_id}/download-all'): ('READ', 'A', 'operator read, no PII/spend (gated with its router)'),
+    ('GET', '/api/video/jobs/{job_id}/download-all'): ('WRITE', 'A', 'creates a temporary ZIP archive; side-effect GET needs the Access origin check'),
     ('POST', '/api/video/bulk-download'): ('WRITE', 'A', ''),
     ('POST', '/api/video/bulk-delete'): ('WRITE', 'A', ''),
     ('POST', '/api/video/color-correct'): ('WRITE', 'A', ''),
@@ -115,7 +115,7 @@ TABLE = {
     ('GET', '/api/burn/batches'): ('READ', 'A', 'operator read, no PII/spend (gated with its router)'),
     ('PATCH', '/api/burn/batches/{batch_id}/rename'): ('WRITE', 'A', ''),
     ('PATCH', '/api/burn/folders/rename'): ('WRITE', 'A', ''),
-    ('GET', '/api/burn/zip/{batch_id}'): ('READ', 'A', 'operator read, no PII/spend (gated with its router)'),
+    ('GET', '/api/burn/zip/{batch_id}'): ('WRITE', 'A', 'creates a temporary ZIP archive; side-effect GET needs the Access origin check'),
     ('GET', '/api/projects/'): ('READ', 'A', 'operator read, no PII/spend (gated with its router)'),
     ('POST', '/api/projects/'): ('WRITE', 'A', ''),
     ('POST', '/api/projects'): ('WRITE', 'A', ''),
@@ -858,14 +858,15 @@ def test_miniapp_agent_patch_is_503_before_the_body_when_the_key_is_unset(config
 
 
 def test_side_effect_gets_get_the_csrf_check(configured, monkeypatch):
-    """GET /api/clipper/jobs/{id}/download-all backfills clips to R2, so a cross-site
-    GET riding the login cookie is refused like a write (review NIT a)."""
+    """State-changing GETs refuse cross-site Access cookies before their handlers."""
     side_effect_gets = {
         (m, r.path) for r in route_auth.effective_routes(app)
         if isinstance(getattr(r, "original_route", r), APIRoute)
         for m in r.methods if m == "GET" and getattr(r.endpoint, "route_auth_side_effect", False)
     }
     assert side_effect_gets == {
+        ("GET", "/api/video/jobs/{job_id}/download-all"),
+        ("GET", "/api/burn/zip/{batch_id}"),
         ("GET", "/api/clipper/jobs/{job_id}/download-all"),
         ("GET", "/api/agenticnews/editor-timelines/{project_id}"),
         ("GET", "/api/agenticnews/editor-timelines/{project_id}/openshot"),
@@ -881,6 +882,13 @@ def test_side_effect_gets_get_the_csrf_check(configured, monkeypatch):
         assert client.get(url, headers=headers).status_code == 403
     assert reached == []
     assert client.get(url, headers={**JWT(), "Sec-Fetch-Site": "same-origin"}).status_code not in (401, 403, 503)
+    for guarded_url in (
+        "/api/video/jobs/nonexistent/download-all",
+        "/api/burn/zip/nonexistent?project=zip-guard",
+    ):
+        for headers in ({**JWT(), "Sec-Fetch-Site": "cross-site"}, {**JWT(), "Origin": "https://evil.example"}, JWT()):
+            assert client.get(guarded_url, headers=headers).status_code == 403
+        assert client.get(guarded_url, headers={**JWT(), "Sec-Fetch-Site": "same-origin"}).status_code not in (401, 403, 503)
     # an ordinary gated GET is not a write: no origin signal needed
     assert client.get("/api/clipper/jobs", headers=JWT()).status_code == 200
 

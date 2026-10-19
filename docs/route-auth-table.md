@@ -181,7 +181,7 @@ UI = the Lab frontend calls this path (grep of `frontend/src`, path-level).
 | `GET` | `/api/video/jobs` | READ | Access JWT | yes |  | operator read, no PII/spend (gated with its router) |
 | `GET` | `/api/video/jobs/{job_id}` | READ | Access JWT | yes | prompt/batch scripts (prompting-agent, ocean harness, content-distro, telegram-distro) | operator read, no PII/spend (gated with its router) |
 | `DELETE` | `/api/video/jobs/{job_id}` | WRITE | Access JWT | yes |  |  |
-| `GET` | `/api/video/jobs/{job_id}/download-all` | READ | Access JWT |  |  | operator read, no PII/spend (gated with its router) |
+| `GET` | `/api/video/jobs/{job_id}/download-all` | WRITE | Access JWT |  |  | creates a temporary ZIP archive; side-effect GET needs the Access origin check |
 | `POST` | `/api/video/bulk-download` | WRITE | Access JWT |  |  |  |
 | `POST` | `/api/video/bulk-delete` | WRITE | Access JWT |  |  |  |
 | `POST` | `/api/video/color-correct` | WRITE | Access JWT |  |  |  |
@@ -200,7 +200,7 @@ UI = the Lab frontend calls this path (grep of `frontend/src`, path-level).
 | `GET` | `/api/burn/batches` | READ | Access JWT | yes |  | operator read, no PII/spend (gated with its router) |
 | `PATCH` | `/api/burn/batches/{batch_id}/rename` | WRITE | Access JWT | yes |  |  |
 | `PATCH` | `/api/burn/folders/rename` | WRITE | Access JWT | yes |  |  |
-| `GET` | `/api/burn/zip/{batch_id}` | READ | Access JWT | yes |  | operator read, no PII/spend (gated with its router) |
+| `GET` | `/api/burn/zip/{batch_id}` | WRITE | Access JWT | yes |  | creates a temporary ZIP archive; side-effect GET needs the Access origin check |
 | `GET` | `/api/projects/` | READ | Access JWT | yes | reconcile_lab_projects.py (launchd daily 07:15) | operator read, no PII/spend (gated with its router) |
 | `POST` | `/api/projects/` | WRITE | Access JWT | yes | prompt/batch scripts (prompting-agent, ocean harness, content-distro, telegram-distro) |  |
 | `POST` | `/api/projects` | WRITE | Access JWT | yes |  |  |

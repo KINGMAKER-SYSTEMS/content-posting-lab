@@ -243,6 +243,8 @@
   (403 otherwise: CSRF via the login cookie); a GET that changes state is
   marked `@side_effect_get` and checked the same way, including editor timeline
   loading and OpenShot export, which may persist project imports/migrations.
+  Video and Burn archive downloads also create temporary ZIP files and require
+  the same operator origin check.
   Telegram poster bind/unbind require Access login, without a second Mini App
   agent key. `RouteAuthMiddleware`
   enforces the route's dependency, and header-only checks marked
@@ -261,7 +263,10 @@
   when available, with the earlier lazy-include and flat-route fallbacks retained.
 - `burn_server.py` exposes the same typed caption-render route on the posting
   Mac's canonical port-8002 Burn runtime for Rail consumption.
-- `events.md` is the repository's append-only chronological ledger.
+- `events/` is the repository's append-only chronological event log. Add one
+  `YYYY-MM-DD-HHMM-<branch-slug>.md` file per meaningful change, committed on
+  the work branch with its `worktree:` ref. Existing root `events.md` is frozen
+  history; read it before `events/` entries and never append to or edit it.
 - `SCHEMA.md` describes the current Editor Bay timeline, edit-command, ABN import,
   and render-cache contracts; `services/editor_timeline.py` and `routers/agenticnews.py` own the implementation.
 

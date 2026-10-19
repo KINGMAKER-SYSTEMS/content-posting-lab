@@ -41,7 +41,7 @@ from services.caption_render import (
 from services.ffmpeg import TIKTOK_ENCODE_ARGS, build_cc_filter
 from services.fsutil import is_within, safe_unlink
 from services.json_store import atomic_load, atomic_save
-from services.route_auth import require_access
+from services.route_auth import require_access, side_effect_get
 
 log = logging.getLogger("burn")
 
@@ -771,6 +771,7 @@ async def rename_folder(
 
 
 @router.get("/zip/{batch_id}", dependencies=_OPERATOR)
+@side_effect_get  # creates a temporary archive; require an operator origin signal
 async def download_burn_zip(
     batch_id: str,
     project: str = Query(..., description="Project name"),

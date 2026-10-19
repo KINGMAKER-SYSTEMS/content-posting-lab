@@ -23,6 +23,7 @@ from services import generation_budget
 from services.ffmpeg import is_default_cc, run_color_correct
 from services.fsutil import is_within as _contained_in, safe_unlink
 from services.json_store import atomic_save
+from services.route_auth import side_effect_get
 
 log = logging.getLogger("video")
 
@@ -649,6 +650,7 @@ async def delete_job(job_id: str, project: str = "quick-test"):
 
 
 @router.get("/jobs/{job_id}/download-all")
+@side_effect_get  # creates a temporary archive; require an operator origin signal
 async def download_all(job_id: str):
     if job_id not in jobs:
         raise HTTPException(status_code=404, detail="Job not found")
