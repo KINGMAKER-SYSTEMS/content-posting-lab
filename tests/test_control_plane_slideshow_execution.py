@@ -35,7 +35,7 @@ ENGINE = "sourced_slideshow"
 NICHE = "meme"
 LIBRARY_ID = f"syzygy:{LANE}:{SUBJECT}"
 RECIPE_ID = f"{FORMAT}:master"
-RENDERER_REVISION = "d" * 64
+RENDERER_REVISION = "d" * 40
 
 
 def _library(count: int = 5) -> SyzygyLibrary:
