@@ -48,8 +48,10 @@ must preserve full 40- or 64-character lowercase revisions while retaining exact
    and HTTP serializer with synthetic media and complete caption context.
    142 adapter tests and eight replenishment cases passed: both engines reach
    inventory and retain the existing page, recipe and byte checks. Full local
-   Worker verification is pending; the PR is draft, unmerged and undeployed.
-   Finish that gate and release before claiming live end-to-end delivery.
+   `TZ=UTC npm test` exited 0: 10,948 passed, 9 skipped and one existing TODO.
+   The PR merged as `3669bd27a71eb7d1311a9e8f27c1fe8f00ed42b9`; deployment and
+   live render-to-inventory acceptance remain unverified. Release both the
+   producer revision fix and consumer recognition before live acceptance.
 2. **Northstar output intake.** No `syzygy` references were found in tracked
    Northstar main at the baseline. First prove importing a completed render
    through its existing tenant-owned upload flow; determine the smallest
