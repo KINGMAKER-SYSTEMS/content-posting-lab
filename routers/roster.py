@@ -8,7 +8,7 @@ email, password, forwarding address, email alias/rule). None of them is ever
 serialised by this router -- every row goes through
 services.roster_public.public_page and every JSON body through
 scrub_credentials (see _CredentialGuardRoute). Routes that no unauthenticated
-UI calls require the machine credential (require_roster_auth).
+DELETE requires the Control Plane token, never the browser APP_API_KEY.
 """
 
 import os
@@ -32,9 +32,8 @@ from services.roster_public import (
     CredentialGuardRoute,
     public_page,
     public_pages,
-    require_roster_auth,
 )
-from services.route_auth import require_access, require_access_or_hub
+from services.route_auth import require_access, require_access_or_hub, require_control_plane_token
 
 # Regex to strip emoji and other non-alphanumeric/space characters for dedup matching
 _EMOJI_RE = re.compile(
@@ -114,7 +113,7 @@ async def update_page(integration_id: str, req: UpdatePageRequest):
     return {"page": public_page(entry)}
 
 
-@router.delete("/{integration_id}", dependencies=[Depends(require_roster_auth)])
+@router.delete("/{integration_id}", dependencies=[Depends(require_control_plane_token)])
 async def delete_page(integration_id: str):
     """Remove a page from the roster. Machine credential required: no UI calls this."""
     removed = remove_page(integration_id)

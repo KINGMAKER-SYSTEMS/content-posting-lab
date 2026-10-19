@@ -264,6 +264,9 @@ def require_callers(*callers: str, worker_token_in_x_api_key: bool = False) -> C
 
 # The only instances routes use (the CI guard reads ``route_auth_callers``).
 require_worker = require_callers(WORKER)
+# Preserve the Control Plane's X-API-Key caller without admitting the public
+# browser APP_API_KEY on machine-only mutations.
+require_control_plane_token = require_callers(WORKER, worker_token_in_x_api_key=True)
 require_access = require_callers(ACCESS)
 require_access_or_hub = require_callers(ACCESS, HUB)
 # Email routing (#176): CONTROL_PLANE_TOKEN as Bearer or X-API-Key, or an operator.
@@ -271,6 +274,7 @@ require_access_or_control_plane_token = require_callers(ACCESS, WORKER, worker_t
 
 ALL_DEPENDENCIES = (
     require_worker,
+    require_control_plane_token,
     require_access,
     require_access_or_hub,
     require_access_or_control_plane_token,

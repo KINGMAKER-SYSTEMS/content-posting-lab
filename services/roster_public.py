@@ -15,9 +15,8 @@ whenever APP_API_KEY is unset (as in production). So:
   camelCase, kebab, dotted or upper-case spellings. It is a key-name backstop
   for a route that forgets ``public_page``, not a replacement for it: a
   credential value under an innocent key is only stopped by the allowlist.
-* ``require_roster_auth`` guards routes no unauthenticated UI calls. It accepts
-  the Control Plane bearer (CONTROL_PLANE_TOKEN) or the app key (APP_API_KEY)
-  and fails closed (503) when neither is configured.
+* ``services.route_auth.require_control_plane_token`` protects roster DELETE
+  with the Control Plane bearer or X-API-Key, never the browser APP_API_KEY.
 * The email-routing routes are guarded by
   ``services.route_auth.require_access_or_control_plane_token``.
 """
@@ -30,7 +29,7 @@ import os
 import re
 from typing import Any, Callable
 
-from fastapi import Header, HTTPException, Request
+from fastapi import Request
 from fastapi.responses import JSONResponse, Response
 from fastapi.routing import APIRoute
 
@@ -219,15 +218,6 @@ class CredentialGuardRoute(APIRoute):
         return guarded
 
 
-def _configured_tokens() -> list[bytes]:
-    tokens = []
-    for name in ("CONTROL_PLANE_TOKEN", "APP_API_KEY"):
-        token = (os.getenv(name) or "").strip()
-        if token:
-            tokens.append(token.encode("utf-8"))
-    return tokens
-
-
 def _credential_matches(
     tokens: list[bytes],
     authorization: str | None,
@@ -245,19 +235,6 @@ def _credential_matches(
             if hmac.compare_digest(candidate, token):
                 matched = True
     return matched
-
-
-def require_roster_auth(
-    authorization: str | None = Header(default=None),
-    x_api_key: str | None = Header(default=None),
-) -> None:
-    """FastAPI dependency: the caller must present a configured machine credential."""
-    tokens = _configured_tokens()
-    if not tokens:
-        raise HTTPException(status_code=503, detail="Roster authentication is not configured")
-    if _credential_matches(tokens, authorization, x_api_key):
-        return None
-    raise HTTPException(status_code=401, detail="Invalid or missing roster credential")
 
 
 def has_control_plane_credential(authorization: object, x_api_key: object) -> bool:

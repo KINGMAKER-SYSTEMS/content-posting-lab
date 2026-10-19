@@ -141,7 +141,6 @@ from services.route_auth import require_worker
 from services.master_pages_contract import SCHEMA as MASTER_PAGES_SCHEMA, canonical_intent, exact_intent, intent_hash
 from services.page_frame import VERTICAL_FRAME, resolved_frame
 from services import generation_budget, moderation_retry
-from services.roster_public import require_roster_auth
 from services.source_treatment import (
     derived_source_treatment,
     recovery_treatment_matches,

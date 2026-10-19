@@ -150,7 +150,7 @@ TABLE = {
     ('GET', '/api/roster/'): ('PII-READ', 'A|H', 'roster/poster/account data'),
     ('GET', '/api/roster/project/{project_name}'): ('PII-READ', 'A', 'roster/poster/account data'),
     ('PUT', '/api/roster/{integration_id}'): ('WRITE', 'A', ''),
-    ('DELETE', '/api/roster/{integration_id}'): ('TOKEN', '', 'require_roster_auth (CONTROL_PLANE_TOKEN or APP_API_KEY; 503 unset)'),
+    ('DELETE', '/api/roster/{integration_id}'): ('WRITE', 'W', 'machine-only roster deletion; CONTROL_PLANE_TOKEN as Bearer or X-API-Key'),
     ('GET', '/api/roster/duplicates'): ('PII-READ', 'A', 'roster/poster/account data'),
     ('POST', '/api/roster/dedup'): ('WRITE', 'A', ''),
     ('GET', '/api/roster/sync-notion/status'): ('PUBLIC', '', 'last-sync status only'),
@@ -470,10 +470,9 @@ REFUSED = {401, 403, 1008}
 
 
 def _wrong_sets_for(key):
-    """Wrong credentials for this route. The email-routing routes keep #176's
-    CONTROL_PLANE_TOKEN-in-X-API-Key form, so that one set is right for them."""
+    """Exclude the valid X-API-Key form on routes that admit the Worker token."""
     sets = s.wrong_header_sets()
-    if key in EMAIL_ROUTING:
+    if key in WORKER_X_API_KEY_ROUTES:
         sets.pop("worker-token-as-x-api-key")
     return sets
 
@@ -482,6 +481,7 @@ EMAIL_ROUTING = {
     ("DELETE", "/api/email/rules/{rule_id}"), ("POST", "/api/email/auto-create"),
     ("GET", "/api/email/destinations"), ("POST", "/api/email/destinations"),
 }
+WORKER_X_API_KEY_ROUTES = EMAIL_ROUTING | {("DELETE", "/api/roster/{integration_id}")}
 
 
 @pytest.mark.parametrize("key", MUST_KEYS, ids=lambda k: f"{k[0]} {k[1]}")

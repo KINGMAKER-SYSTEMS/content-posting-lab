@@ -205,8 +205,9 @@
   may only echo values the request itself created. The Slack pipeline handoff
   says "see Notion" instead of carrying the password. Signup email, password, forwarding address, email
   alias/rule/destination and notes stay in the roster cache and never cross
-  HTTP there. It also owns the roster machine credential (CONTROL_PLANE_TOKEN
-  or APP_API_KEY) required on roster routes no unauthenticated UI calls.
+  HTTP there. Roster DELETE uses `route_auth.require_control_plane_token`:
+  CONTROL_PLANE_TOKEN as Bearer or X-API-Key, never browser APP_API_KEY. It
+  fails closed before deletion when the machine token is unconfigured.
 - `routers/email_routing.py` routes that can change where a page's mail goes
   (POST /destinations, DELETE /rules/{id}, POST /auto-create) require
   `route_auth.require_access_or_control_plane_token` (CONTROL_PLANE_TOKEN as

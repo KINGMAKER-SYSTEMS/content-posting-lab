@@ -248,7 +248,7 @@ UI = the Lab frontend calls this path (grep of `frontend/src`, path-level).
 | `GET` | `/api/roster/` | PII-READ | Access JWT or Hub x-api-key | yes | Hub Flask+Rust | roster/poster/account data |
 | `GET` | `/api/roster/project/{project_name}` | PII-READ | Access JWT | yes |  | roster/poster/account data |
 | `PUT` | `/api/roster/{integration_id}` | WRITE | Access JWT | yes |  |  |
-| `DELETE` | `/api/roster/{integration_id}` | TOKEN | - |  |  | require_roster_auth (CONTROL_PLANE_TOKEN or APP_API_KEY; 503 unset) |
+| `DELETE` | `/api/roster/{integration_id}` | WRITE | Worker bearer | yes | Control Plane | machine-only roster deletion; CONTROL_PLANE_TOKEN as Bearer or X-API-Key |
 | `GET` | `/api/roster/duplicates` | PII-READ | Access JWT | yes |  | roster/poster/account data |
 | `POST` | `/api/roster/dedup` | WRITE | Access JWT | yes |  |  |
 | `GET` | `/api/roster/sync-notion/status` | PUBLIC | - |  |  | last-sync status only |
