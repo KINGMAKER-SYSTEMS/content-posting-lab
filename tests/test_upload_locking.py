@@ -72,6 +72,66 @@ def _store_lock_is_held(store):
         return False
 
 
+def _account_owner(store, job_id, entered, release, results):
+    upload_svc.UPLOAD_JOBS_FILE = store
+
+    def provider(job):
+        results.put(("provider", job["job_id"]))
+        entered.set()
+        assert release.wait(15)
+        return "Completed"
+
+    upload_svc._run_upload_sync = provider
+    asyncio.run(upload_svc._process_single_job(job_id))
+
+
+def _account_contender(store, job_id, results):
+    upload_svc.UPLOAD_JOBS_FILE = store
+    upload_svc._run_upload_sync = lambda job: results.put(("provider", job["job_id"])) or "Completed"
+    results.put(("claimed", asyncio.run(upload_svc._process_single_job(job_id))))
+
+
+def test_different_job_ids_same_account_do_not_overlap_provider(tmp_path, monkeypatch):
+    """The first durable claim blocks a second process after the store lock releases."""
+    store = str(tmp_path / "upload_jobs.json")
+    monkeypatch.setattr(upload_svc, "UPLOAD_JOBS_FILE", store)
+    monkeypatch.setattr(upload_svc, "require_upload_runtime", lambda: None)
+    first = upload_svc.submit_job(video_path="/tmp/first.mp4", account_name="linked")
+    second = upload_svc.submit_job(video_path="/tmp/second.mp4", account_name="linked")
+    ctx = multiprocessing.get_context("spawn")
+    entered, release = ctx.Event(), ctx.Event()
+    results = ctx.Queue()
+    owner = ctx.Process(target=_account_owner, args=(store, first["job_id"], entered, release, results))
+    contender = ctx.Process(target=_account_contender, args=(store, second["job_id"], results))
+    try:
+        owner.start()
+        assert entered.wait(15)
+        contender.start()
+        contender.join(15)
+        assert contender.exitcode == 0
+        assert results.get(timeout=5) == ("provider", first["job_id"])
+        assert results.get(timeout=5) == ("claimed", False)
+        assert upload_svc.get_job(second["job_id"])["status"] == "queued"
+        release.set()
+        owner.join(15)
+        assert owner.exitcode == 0
+        assert upload_svc.get_job(first["job_id"])["status"] == "held"
+        # The return is ambiguous even after the original process exits.
+        monkeypatch.setattr(upload_svc, "_run_upload_sync", lambda job: pytest.fail("second provider call"))
+        assert asyncio.run(upload_svc._process_single_job(second["job_id"])) is False
+        assert upload_svc.get_job(second["job_id"])["status"] == "queued"
+        assert results.empty()
+    finally:
+        release.set()
+        for process in (owner, contender):
+            process.join(2)
+            if process.is_alive():
+                process.terminate()
+                process.join(5)
+        results.close()
+        results.join_thread()
+
+
 @pytest.mark.parametrize("operation", ["claim", "cancel"])
 def test_process_claim_serializes_competing_transition(tmp_path, monkeypatch, operation):
     """Pause before saving the winning claim, while the other process enters.
@@ -125,7 +185,9 @@ def test_process_claim_serializes_competing_transition(tmp_path, monkeypatch, op
         release_provider.set()
         owner.join(15)
         assert owner.exitcode == 0
-        assert upload_svc.get_job(job["job_id"])["status"] == "completed"
+        # A bare provider acknowledgement has no canonical video proof.
+        assert upload_svc.get_job(job["job_id"])["status"] == "held"
+        assert upload_svc.get_job(job["job_id"])["provider_result"] == "Completed"
     finally:
         release_claim.set()
         release_read.set()

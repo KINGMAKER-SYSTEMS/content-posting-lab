@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import random
+import re
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -19,6 +20,7 @@ from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from services.json_store import atomic_save, lock_for
 
@@ -64,7 +66,7 @@ def _job_store_write_lock():
 
 def _stored_job_error(job: object, seen_ids: set[str]) -> str | None:
     """Return the first queue-safety check that a stored row fails."""
-    statuses = {"queued", "uploading", "completed", "failed", "cancelled"}
+    statuses = {"queued", "uploading", "held", "completed", "failed", "cancelled"}
     if not isinstance(job, dict):
         return "row must be an object"
     if not isinstance(job.get("job_id"), str) or not job["job_id"]:
@@ -274,6 +276,49 @@ def _update_job(job_id: str, updates: dict) -> dict | None:
     return None
 
 
+def _account_has_active_upload(jobs: list[dict], account_name: str, job_id: str) -> bool:
+    """A saved claim outlives its store lock, process, and browser session."""
+    rejected = _quarantined_job_rows.get(str(Path(UPLOAD_JOBS_FILE).resolve()), [])
+    return any(
+        isinstance(row, dict)
+        and row.get("job_id") != job_id
+        and row.get("account_name") == account_name
+        and row.get("status") in {"uploading", "held"}
+        for row in [*jobs, *rejected]
+    )
+
+
+def _has_runnable_queued_job() -> bool:
+    with _job_store_write_lock():
+        jobs = _read_stored_jobs(_lock_held=True)
+        return any(
+            row["status"] == "queued"
+            and not _account_has_active_upload(jobs, row["account_name"], row["job_id"])
+            for row in jobs
+        )
+
+
+def _has_canonical_video_receipt(job: dict) -> bool:
+    """Only a durable canonical TikTok ID and matching URL resolve a Post."""
+    video_id = job.get("video_id")
+    video_url = job.get("video_url")
+    if not isinstance(video_id, str) or not re.fullmatch(r"[0-9]+", video_id):
+        return False
+    if not isinstance(video_url, str):
+        return False
+    try:
+        parsed = urlsplit(video_url)
+    except ValueError:
+        return False
+    return (
+        parsed.scheme == "https"
+        and parsed.netloc in {"tiktok.com", "www.tiktok.com"}
+        and re.fullmatch(r"/@[^/]+/video/" + re.escape(video_id), parsed.path) is not None
+        and not parsed.query
+        and not parsed.fragment
+    )
+
+
 # ── Public API ───────────────────────────────────────────────────────────────
 
 def get_all_jobs() -> list[dict]:
@@ -350,11 +395,12 @@ def submit_job(
                     and isinstance(existing.get("account_name"), str)
                     and isinstance(existing.get("video_path"), str)
                     and existing["account_name"] == account_name
-                    and (existing.get("status") not in ("completed", "cancelled")
+                    and (existing.get("status") != "cancelled"
+                         and not (existing.get("status") == "completed" and _has_canonical_video_receipt(existing))
                          or (isinstance(existing.get("job_id"), str) and existing["job_id"] in duplicate_ids))
                     and os.path.realpath(existing["video_path"]) == target):
-                # Terminal history permits retries unless its ID appears more than once.
-                # Unknown or unresolved state still blocks after quarantine.
+                # Only cancelled or canonically proven completed history permits
+                # explicit resubmission; unresolved history stays a barrier.
                 raise UploadReconciliationRequired(
                     "TikTok upload original attempt requires reconciliation "
                     "before resubmission (job %s)" % (existing.get("job_id") or "unknown")
@@ -466,7 +512,7 @@ def _run_upload_sync(job: dict) -> str:
         return f"Error: {e}"
 
 
-async def _process_single_job(job_id: str) -> None:
+async def _process_single_job(job_id: str) -> bool:
     """Process a single upload job in the thread pool."""
     global _active_job_id
 
@@ -474,9 +520,13 @@ async def _process_single_job(job_id: str) -> None:
         jobs = _read_stored_jobs(_lock_held=True)
         job = next((row for row in jobs if row["job_id"] == job_id), None)
         if not job or job["status"] != "queued":
-            return
-        # Persist the claim before the browser call. A lost outcome stays
-        # uploading and admission will refuse the same target.
+            return False
+        if _account_has_active_upload(jobs, job["account_name"], job_id):
+            # Other processes may execute a different video on this account.
+            # The durable claim, not a process-local mutex, is the guard.
+            return False
+        # Persist the claim before the browser call. A lost outcome remains
+        # uploading until reconciled and admission refuses the same target.
         job.update({"status": "uploading", "started_at": datetime.now().isoformat()})
         _save_jobs(jobs)
 
@@ -485,10 +535,17 @@ async def _process_single_job(job_id: str) -> None:
         loop = asyncio.get_event_loop()
         result = await loop.run_in_executor(_executor, _run_upload_sync, job)
         now = datetime.now().isoformat()
-        if result == "Completed":
-            _update_job(job_id, {"status": "completed", "completed_at": now})
-        else:
-            _update_job(job_id, {"status": "failed", "completed_at": now, "error": result})
+        # The provider's bare "Completed" is not a canonical TikTok URL/video
+        # ID. It may follow an ambiguous browser Post. Preserve the original
+        # claim and provider return for reconciliation; never permit an
+        # automatic or same-target resubmission on this evidence alone.
+        _update_job(job_id, {
+            "status": "held",
+            "error": f"Provider outcome requires reconciliation: {result}",
+            "provider_result": result,
+            "provider_result_at": now,
+        })
+        return True
     finally:
         _active_job_id = None
 
@@ -504,24 +561,24 @@ async def process_queue() -> None:
 
     try:
         while True:
-            # Find next queued job
+            # A queued job may belong to an account with an unresolved claim in
+            # another process. Try each row once and leave blocked rows queued.
             jobs = _load_jobs()
-            next_job = None
-            for job in jobs:
-                if job["status"] == "queued":
-                    next_job = job
-                    break
-
-            if not next_job:
+            queued = [job for job in jobs if job["status"] == "queued"]
+            if not queued:
                 break
-
-            await _process_single_job(next_job["job_id"])
+            processed = False
+            for job in queued:
+                if await _process_single_job(job["job_id"]):
+                    processed = True
+                    break
+            if not processed:
+                break
 
             # Random delay between uploads (anti-rate-limit)
             delay = random.uniform(DEFAULT_DELAY_MIN, DEFAULT_DELAY_MAX)
             # Check if there are more queued jobs before sleeping
-            remaining = [j for j in _load_jobs() if j["status"] == "queued"]
-            if remaining:
+            if _has_runnable_queued_job():
                 await asyncio.sleep(delay)
     finally:
         _queue_running = False

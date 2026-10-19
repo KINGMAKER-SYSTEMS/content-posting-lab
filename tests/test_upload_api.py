@@ -132,7 +132,7 @@ def test_empty_video_path_refused_without_poisoning_queue(
     # does not depend on the background task winning a scheduling race.
     asyncio.run(upload_svc.process_queue())
     assert calls == ["/tmp/valid.mp4"]
-    assert upload_svc.get_job(response.json()["job"]["job_id"])["status"] == "completed"
+    assert upload_svc.get_job(response.json()["job"]["job_id"])["status"] == "held"
 
 
 def test_direct_empty_video_path_refused_before_save(cookie_dir, monkeypatch):
@@ -140,6 +140,63 @@ def test_direct_empty_video_path_refused_before_save(cookie_dir, monkeypatch):
     with pytest.raises(ValueError, match="invalid upload job"):
         upload_svc.submit_job(video_path="", account_name="linked")
     assert not (cookie_dir.parent / "upload_jobs.json").exists()
+
+
+def test_bare_completed_preserves_receipt_and_blocks_same_account_queue(cookie_dir, monkeypatch):
+    monkeypatch.setattr(upload_svc, "require_upload_runtime", lambda: None)
+    first = upload_svc.submit_job(video_path="/tmp/first.mp4", account_name="linked")
+    second = upload_svc.submit_job(video_path="/tmp/second.mp4", account_name="linked")
+    calls = []
+    monkeypatch.setattr(upload_svc, "_run_upload_sync", lambda job: calls.append(job["job_id"]) or "Completed")
+    asyncio.run(upload_svc.process_queue())
+
+    assert calls == [first["job_id"]]
+    saved = upload_svc.get_job(first["job_id"])
+    assert saved["status"] == "held"
+    assert saved["completed_at"] is None
+    assert saved["provider_result"] == "Completed"
+    assert saved["provider_result_at"]
+    assert "reconciliation" in saved["error"]
+    assert upload_svc.get_job(second["job_id"])["status"] == "queued"
+    assert upload_svc.get_queue_stats()["uploading"] == 0
+    # Read from durable JSON again as a fresh process would; held is a valid
+    # record, not quarantine corruption or an active browser call.
+    upload_svc._quarantined_job_rows.clear()
+    assert [row["status"] for row in upload_svc._read_stored_jobs()] == ["held", "queued"]
+    assert asyncio.run(upload_svc._process_single_job(second["job_id"])) is False
+    with pytest.raises(upload_svc.UploadReconciliationRequired):
+        upload_svc.submit_job(video_path="/tmp/first.mp4", account_name="linked")
+    # Another account can still make progress without replaying the first Post.
+    unrelated = upload_svc.submit_job(video_path="/tmp/other.mp4", account_name="unrelated")
+    asyncio.run(upload_svc.process_queue())
+    assert calls == [first["job_id"], unrelated["job_id"]]
+
+
+def test_legacy_completed_without_canonical_receipt_cannot_be_replayed(cookie_dir, monkeypatch):
+    monkeypatch.setattr(upload_svc, "require_upload_runtime", lambda: None)
+    original = upload_svc.submit_job(video_path="/tmp/legacy.mp4", account_name="linked")
+    upload_svc._update_job(original["job_id"], {"status": "completed", "completed_at": "2026-10-01T00:00:00"})
+    with pytest.raises(upload_svc.UploadReconciliationRequired, match=original["job_id"]):
+        upload_svc.submit_job(video_path="/tmp/legacy.mp4", account_name="linked")
+    assert len(upload_svc.get_all_jobs()) == 1
+
+
+@pytest.mark.parametrize("video_url", [
+    "https://tiktok.com.evil.test/@linked/video/1234567890123456789",
+    "https://www.tiktok.com/@linked/video/9999999999999999999",
+    "http://www.tiktok.com/@linked/video/1234567890123456789",
+    "https://www.tiktok.com/@linked/video/1234567890123456789?share=1",
+])
+def test_completed_with_noncanonical_receipt_still_requires_reconciliation(
+    cookie_dir, monkeypatch, video_url,
+):
+    monkeypatch.setattr(upload_svc, "require_upload_runtime", lambda: None)
+    original = upload_svc.submit_job(video_path="/tmp/legacy.mp4", account_name="linked")
+    upload_svc._update_job(original["job_id"], {
+        "status": "completed", "video_id": "1234567890123456789", "video_url": video_url,
+    })
+    with pytest.raises(upload_svc.UploadReconciliationRequired):
+        upload_svc.submit_job(video_path="/tmp/legacy.mp4", account_name="linked")
 
 
 @pytest.mark.parametrize("fail_at", [1, 3])
@@ -278,11 +335,11 @@ def test_bad_stored_row_is_quarantined_and_good_job_processes(cookie_dir, monkey
     asyncio.run(upload_svc._process_single_job(good["job_id"]))
 
     assert calls == [good["job_id"]]
-    assert upload_svc.get_job(good["job_id"])["status"] == "completed"
+    assert upload_svc.get_job(good["job_id"])["status"] == "held"
     saved = json.loads(stored.read_text())
     assert len(saved) == 2
     assert saved[0]["job_id"] == good["job_id"]
-    assert saved[0]["status"] == "completed"
+    assert saved[0]["status"] == "held"
     assert saved[1] == bad
     quarantine = stored.with_name(stored.name + ".quarantine.jsonl")
     records = [json.loads(line) for line in quarantine.read_text().splitlines()]
@@ -357,7 +414,7 @@ def test_quarantine_write_failure_keeps_valid_job_available(cookie_dir, monkeypa
     assert calls == [good["job_id"]]
     persisted = json.loads(stored.read_text())
     assert persisted[0]["job_id"] == good["job_id"]
-    assert persisted[0]["status"] == "completed"
+    assert persisted[0]["status"] == "held"
     assert persisted[1] == bad
 
 
@@ -407,7 +464,10 @@ def test_terminal_upload_allows_same_account_video_retry(
         cancelled = sync_client.post(f"/api/upload/jobs/{original['job_id']}/cancel")
         assert cancelled.status_code == 200
     else:
-        asyncio.run(upload_svc._process_single_job(original["job_id"]))
+        upload_svc._update_job(original["job_id"], {
+            "status": "completed", "video_id": "1234567890123456789",
+            "video_url": "https://www.tiktok.com/@linked/video/1234567890123456789",
+        })
     original = upload_svc.get_job(original["job_id"])
     assert original["status"] == status
     stored = cookie_dir.parent / "upload_jobs.json"
@@ -431,7 +491,7 @@ def test_terminal_upload_allows_same_account_video_retry(
     assert calls == []
     asyncio.run(upload_svc._process_single_job(retry["job_id"]))
     assert calls == [retry["job_id"]]
-    assert upload_svc.get_job(retry["job_id"])["status"] == "completed"
+    assert upload_svc.get_job(retry["job_id"])["status"] == "held"
 
 
 @pytest.mark.parametrize("reverse", [False, True])
@@ -448,7 +508,7 @@ def test_conflicting_upload_id_blocks_every_copy_and_preserves_other_jobs(
     _write_cookie(cookie_dir, "linked")
     monkeypatch.setattr(upload_svc.importlib, "import_module", lambda name: _FAKE_UPLOADER)
     disputed = upload_svc.submit_job(video_path="/tmp/conflict.mp4", account_name="linked")
-    good = upload_svc.submit_job(video_path="/tmp/good.mp4", account_name="linked")
+    good = upload_svc.submit_job(video_path="/tmp/good.mp4", account_name="unrelated")
     other = {**disputed, "status": other_status, "video_path": other_path}
     copies = [other, disputed] if reverse else [disputed, other]
     stored = cookie_dir.parent / "upload_jobs.json"
@@ -477,7 +537,7 @@ def test_conflicting_upload_id_blocks_every_copy_and_preserves_other_jobs(
 
     asyncio.run(upload_svc._process_single_job(good["job_id"]))
     assert calls == [good["job_id"]]
-    assert upload_svc.get_job(good["job_id"])["status"] == "completed"
+    assert upload_svc.get_job(good["job_id"])["status"] == "held"
     assert upload_svc.get_job(disputed["job_id"])["status"] == "held"
     saved = json.loads(stored.read_text())
     assert [row for row in saved if row["job_id"] == disputed["job_id"]] == copies
@@ -521,7 +581,7 @@ def test_identical_upload_rows_are_held_before_provider_and_other_submission_run
     good_id = response.json()["job"]["job_id"]
     asyncio.run(upload_svc.process_queue())
     assert calls == [good_id]
-    assert upload_svc.get_job(good_id)["status"] == "completed"
+    assert upload_svc.get_job(good_id)["status"] == "held"
     assert upload_svc.get_job(repeated["job_id"])["status"] == "held"
     assert [row for row in json.loads(stored.read_text()) if row["job_id"] == repeated["job_id"]] == [repeated, repeated]
     records = [json.loads(line) for line in stored.with_name(stored.name + ".quarantine.jsonl").read_text().splitlines()]
@@ -562,7 +622,7 @@ def test_upload_claim_cannot_be_cancelled_or_resubmitted_during_browser_call(
 
     asyncio.run(exercise())
     assert calls == [original["job_id"]]
-    assert upload_svc.get_job(original["job_id"])["status"] == "completed"
+    assert upload_svc.get_job(original["job_id"])["status"] == "held"
 
 
 # ── check_cookie ──────────────────────────────────────────────────────────────

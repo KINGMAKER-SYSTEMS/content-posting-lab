@@ -229,7 +229,10 @@
   `_patch_page` refuses non-canonical ids before any request. Alias-collision 409s never echo the alias.
 - `burn_server.py` exposes the same typed caption-render route on the posting
   Mac's canonical port-8002 Burn runtime for Rail consumption.
-- `events.md` is the repository's append-only chronological ledger.
+- `events/` is the repository's append-only chronological event log. Add one
+  `YYYY-MM-DD-HHMM-<branch-slug>.md` file per meaningful change, committed on
+  the work branch with its `worktree:` ref. Existing root `events.md` is frozen
+  history; read it before `events/` entries and never append to or edit it.
 - `SCHEMA.md` describes the current Editor Bay timeline, edit-command, ABN import,
   and render-cache contracts; `services/editor_timeline.py` and `routers/agenticnews.py` own the implementation.
 
@@ -270,12 +273,17 @@
   Corrupt records are preserved and
   never replaced with an empty queue. Missing prerequisites or failed
   writes return 503; admission never proves a TikTok publication. A queued,
-  uploading, or failed job for the same real video path and cookie account
+  uploading, held, failed, or unproved completed job for the same real video path and cookie account
   blocks another submission with 409 until the original attempt is reconciled;
   a stable local file lock serializes queue writes and the queued-to-uploading
-  claim/cancel decision across worker processes, and the conflict creates no
-  job or provider action. Completed and cancelled
-  history retains its existing resubmission behavior.
+  claim/cancel decision across worker processes. An unresolved uploading or held
+  claim also bars another provider call for that account, even for a different
+  queued job or process. A bare provider `Completed` or error return becomes a
+  durable held result with its original claim and return retained; it cannot
+  establish posting success or authorize a repeat. A completed row permits
+  explicit resubmission only with a matching canonical TikTok URL/video ID;
+  cancelled history retains its existing resubmission behavior. A conflict
+  creates no job or provider action.
   Repeated saved copies of one upload ID, even identical rows, are all held for reconciliation;
   no copy may execute or authorize a retry, even if one claims a terminal state.
   Listing and polling expose the held status without making it executable.
