@@ -247,7 +247,9 @@
   the same operator origin check. Split-origin fetches may present cross-site
   or same-site Fetch Metadata only when their exact browser Origin is in
   `LAB_ALLOWED_ORIGINS`; navigations with no Origin remain refused. The Burn UI
-  downloads via credentialed fetch and Blob; the API's `CORS_ORIGINS` must
+  uses browser-managed streaming on the API origin and a user-activated save
+  picker plus credentialed stream-to-disk fetch on a split origin. Browsers
+  without that picker need same-origin ingress. The API's `CORS_ORIGINS` must
   contain the trusted UI origin, and Access cookie delivery must be verified.
   Telegram poster bind/unbind require Access login, without a second Mini App
   agent key. `RouteAuthMiddleware`

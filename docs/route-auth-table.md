@@ -56,12 +56,15 @@ checked like writes: Video and Burn ZIP downloads (temporary archives),
 `GET /api/clipper/jobs/{id}/download-all` (it backfills clips to R2), plus
 `GET /api/agenticnews/editor-timelines/{project_id}` and its `/openshot`
 export (both may import, migrate or prune a saved editor project). The Burn UI
-uses credentialed fetch and downloads the returned Blob, so a split-origin
-browser sends its real Origin instead of navigating directly to the API. That
-deployment also needs its exact UI origin in `CORS_ORIGINS` and a valid Access
-cookie on the API host; a cross-site SameSite=Lax/Strict cookie will not travel
-from a Vercel hostname to an unrelated Railway hostname, so that topology
-remains on hold until the established Access ingress supports it.
+keeps browser-managed streaming for a same-origin API. For split-origin APIs,
+it opens a user-activated save picker before fetching, then pipes the
+credentialed response stream directly to the selected file without creating a
+multi-GB Blob. Browsers without a save picker show an explicit error; they must
+use same-origin ingress for ZIP downloads. Split deployment also needs its
+exact UI origin in `CORS_ORIGINS` and a valid Access cookie on the API host. A
+cross-site SameSite=Lax/Strict cookie will not travel from a Vercel hostname to
+an unrelated Railway hostname, so that topology remains on hold until the
+established Access ingress supports it.
 Bearer and Hub-key callers are not cookie-borne and need no Origin. Set the
 Access application's cookie to **SameSite=Lax (or Strict) and HttpOnly** as defence in
 depth.
