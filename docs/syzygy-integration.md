@@ -38,15 +38,18 @@ must preserve full 40- or 64-character lowercase revisions while retaining exact
 
 ## Next integration work
 
-1. **Control Plane artifact contract.** The current `validateArtifactSource`
+1. **Control Plane artifact contract.** At the main baseline, `validateArtifactSource`
    dispatches any `sourceLibraryId` to source-DNA validation, whose exact field
    set is incompatible with Content Lab's
    `content-lab.syzygy-slideshow-source.v1`. There is no Syzygy-specific branch.
-   Add closed validation for the existing emitted manifest before claiming
-   end-to-end delivery. Exercise a real producer-shaped fixture through the
-   consumer, plus cross-page, changed-recipe, wrong-hash and incomplete-receipt
-   refusals. Preserve existing source-DNA validation. Check current ownership
-   and the Worker repository's delivery restrictions first.
+   [PR #1113](https://github.com/KINGMAKER-SYSTEMS/rotational-posting-agent/pull/1113)
+   at `7152217cde55c2e9751a3d92ffb9cebea6dedfdd` adds that recognition. Its
+   producer fixture was captured from the actual offline Content Lab runner
+   and HTTP serializer with synthetic media and complete caption context.
+   142 adapter tests and eight replenishment cases passed: both engines reach
+   inventory and retain the existing page, recipe and byte checks. Full local
+   Worker verification is pending; the PR is draft, unmerged and undeployed.
+   Finish that gate and release before claiming live end-to-end delivery.
 2. **Northstar output intake.** No `syzygy` references were found in tracked
    Northstar main at the baseline. First prove importing a completed render
    through its existing tenant-owned upload flow; determine the smallest
@@ -55,7 +58,15 @@ must preserve full 40- or 64-character lowercase revisions while retaining exact
    private bytes, checksum verification, retry identity and review authority
    in the existing media contract. Northstar's editorial renderer already
    performs distribution preparation; do not replace or duplicate it merely
-   to introduce Syzygy.
+   to introduce Syzygy. `docs/R2-UPLOAD-SOURCE-PROVENANCE.md` explicitly excludes
+   generated identities and generated-byte reuploads from original-source
+   registration. A Syzygy render is a completed creation, not original footage:
+   preserve its origin and render identity rather than using
+   `library_register_r2_upload` to relabel it. The existing browser media routes
+   derive authority from the authenticated tenant/session and CSRF flow;
+   server-to-server import identity and provenance retention still need an
+   explicit integration design. A shared credential or upload URL alone is
+   not that design.
 3. **Acceptance.** Test owner isolation, interrupted transfer, exact-byte
    provenance, duplicate retries, deleted source and downstream refusal before
    a separately authorized real render/import. Record local, PR/CI, merged,
