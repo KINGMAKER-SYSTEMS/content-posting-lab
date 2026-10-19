@@ -28,13 +28,21 @@ These are source observations, not deployment acceptance.
 | `KINGMAKER-SYSTEMS/syzygy` | `c7dd0fea35665706396e6ca18aa6430a72591d27` | `docs/AGENTIC-USE.md`, `/api/v1/render`, owner-scoped job reads and render downloads |
 | `KINGMAKER-SYSTEMS/content-posting-lab` | `50a4fe4` | Stable Syzygy library selection, deterministic plans, idempotent render submit, bounded polling, source observations and slideshow receipts |
 | `KINGMAKER-SYSTEMS/rotational-posting-agent` | `b0cc66cc9d15aa4ffc91c0ebd97a75015f221735` | `control-plane-worker/src/adapters/contentLabClient.js` validates incoming artifacts |
-| `KINGMAKER-SYSTEMS/north-star-artists-dashboard` | `a8911516` | `hosted/src/http/media.rs` owns upload completion; `hosted/editorial-renderer/SERVICE.md` and `docs/SYSTEM-MAP.md` describe existing editorial preparation and its separate acceptance gates |
+| `KINGMAKER-SYSTEMS/north-star-artists-dashboard` | `f897ce9a` | `hosted/src/http/media.rs` owns upload completion; `hosted/editorial-renderer/SERVICE.md` and `docs/SYSTEM-MAP.md` describe existing editorial preparation and its separate acceptance gates |
 
 The public Syzygy `/readyz` returned `ok: true` and the full 40-character commit
 above. This proves that health response only; no authenticated render or transfer
 was executed. Its revision is a Git object ID, not a media SHA-256. Content Lab
 must preserve full 40- or 64-character lowercase revisions while retaining exact
 64-character media and recipe checksums.
+
+`test_runner_uses_real_syzygy_http_adapter` exercises the existing Content Lab
+runner through its actual revision, render-submit, polling, download and
+source-observation adapters. Its offline HTTP responses follow the Syzygy
+`render.rs` public job/result shapes at the baseline above. It checks one render
+submission, source hashes before/after, retained job/revision provenance and
+that the Syzygy credential is not sent to source storage. Synthetic output and
+stubbed local encoding keep this a contract test, not live render acceptance.
 
 ## Next integration work
 
@@ -69,6 +77,20 @@ must preserve full 40- or 64-character lowercase revisions while retaining exact
    server-to-server import identity and provenance retention still need an
    explicit integration design. A shared credential or upload URL alone is
    not that design.
+   `hosted/src/operator_media_client.rs::OperatorMediaUploader::upload_session`
+   already implements hashed multipart transfer into private R2. Reuse it if
+   operator intake is chosen, but do not claim it is an available importer:
+   `PROGRESS-OPERATOR-MEDIA.md` and `scripts/reachability-allow.txt` record its
+   absent execute caller, and the required `distro_import_media_edge` SQL
+   authority is absent from current migrations. Existing editorial generated
+   media is reserved against a source, recipe, schedule and occurrence;
+   `editorial_finish_render` requires that reservation and a live lease, and
+   `editorial_guard_content` prevents using it as a rotation original.
+   The next slice therefore needs an explicit tenant-owned external creation
+   receipt/admission retaining Syzygy owner, job, revision, output hash and
+   retry identity before composing with existing upload. Do not manufacture
+   an editorial occurrence to fit an external render. Check overlapping
+   original/style PR #471 and large-media transport PR #459 before editing.
 3. **Acceptance.** Test owner isolation, interrupted transfer, exact-byte
    provenance, duplicate retries, deleted source and downstream refusal before
    a separately authorized real render/import. Record local, PR/CI, merged,
