@@ -44,6 +44,19 @@ submission, source hashes before/after, retained job/revision provenance and
 that the Syzygy credential is not sent to source storage. Synthetic output and
 stubbed local encoding keep this a contract test, not live render acceptance.
 
+**Rendered-source identity is not yet proven.** Syzygy source rechecked at
+`d79ef2ae` contains `library_fetch.rs::cache_state`, which accepts cached media
+when its byte length matches the index. Its existing regression
+`a_same_size_replacement_is_not_caught_and_this_is_the_known_limit` demonstrates
+that an old cached image survives a same-size replacement. Content Lab hashes
+the public source before and after rendering, but those observations do not
+prove Syzygy rendered those bytes. The existing `library_media.content_hash`
+offers a verification seam; a fix needs to bind cached and fetched media to it
+and retain explicit mismatch refusal. The consumer's observed hashes also need
+to bind the requested render: verifying against an older index entry alone
+cannot prove it matches the source Content Lab just observed. Until then, receipt acceptance and source
+observations must not be described as exact rendered-source verification.
+
 ## Next integration work
 
 1. **Control Plane artifact contract.** At the main baseline, `validateArtifactSource`
@@ -101,6 +114,16 @@ stubbed local encoding keep this a contract test, not live render acceptance.
    verifies private playback, adds it to rotation and saves review content without
    source registration. Reuse this proof before adding another fixture. Check
    overlapping original/style PR #471 and large-media transport PR #459 before editing.
+   The local walk passed against runtime source `1a5d069a` after repairing two
+   stale test assumptions in [Northstar PR #511](https://github.com/KINGMAKER-SYSTEMS/north-star-artists-dashboard/pull/511):
+   the reload button label and explicit opt-in for default-off fan inputs.
+   It passed 141 route/viewport checks and 17 analytics panels, with zero browser
+   errors; upload, private playback, rotation intake, draft save and deletion
+   passed while publish attempts and enabled schedules stayed zero. This used
+   PostgreSQL 17 and real Rust routes with local Access/Postiz/R2 stand-ins and
+   a synthetic finished MP4. It proves reuse of the consumer journey, not a
+   direct Studio handoff, Syzygy-rendered bytes or live deployment. The test PR
+   remains unmerged pending the repository's required build-host checks.
 3. **Acceptance.** Test owner isolation, interrupted transfer, exact-byte
    provenance, duplicate retries, deleted source and downstream refusal before
    a separately authorized real render/import. Record local, PR/CI, merged,
