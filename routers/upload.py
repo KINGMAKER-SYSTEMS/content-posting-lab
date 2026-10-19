@@ -103,15 +103,21 @@ async def submit_upload(req: SubmitRequest):
 @router.get("/jobs")
 async def list_jobs():
     """List all upload jobs."""
-    jobs = get_all_jobs()
-    stats = get_queue_stats()
+    try:
+        jobs = get_all_jobs()
+        stats = get_queue_stats()
+    except UploadUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     return {"jobs": jobs, "stats": stats}
 
 
 @router.get("/jobs/{job_id}")
 async def poll_job(job_id: str):
     """Get status of a specific upload job."""
-    job = get_job(job_id)
+    try:
+        job = get_job(job_id)
+    except UploadUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
     return {"job": job}

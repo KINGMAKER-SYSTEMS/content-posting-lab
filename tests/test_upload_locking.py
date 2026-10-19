@@ -94,6 +94,7 @@ def _account_contender(store, job_id, results):
 def test_different_job_ids_same_account_do_not_overlap_provider(tmp_path, monkeypatch):
     """The first durable claim blocks a second process after the store lock releases."""
     store = str(tmp_path / "upload_jobs.json")
+    (tmp_path / "upload_jobs.json").write_text("[]")
     monkeypatch.setattr(upload_svc, "UPLOAD_JOBS_FILE", store)
     monkeypatch.setattr(upload_svc, "require_upload_runtime", lambda: None)
     first = upload_svc.submit_job(video_path="/tmp/first.mp4", account_name="linked")
@@ -140,6 +141,7 @@ def test_process_claim_serializes_competing_transition(tmp_path, monkeypatch, op
     retains a stale queued snapshot and either posts twice or cancels a Post.
     """
     store = str(tmp_path / "upload_jobs.json")
+    (tmp_path / "upload_jobs.json").write_text("[]")
     monkeypatch.setattr(upload_svc, "UPLOAD_JOBS_FILE", store)
     monkeypatch.setattr(upload_svc, "require_upload_runtime", lambda: None)
     job = upload_svc.submit_job(video_path="/tmp/clip.mp4", account_name="linked")

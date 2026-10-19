@@ -40,6 +40,7 @@ def cookie_dir(tmp_path, monkeypatch):
     monkeypatch.setattr(upload_svc, "COOKIE_DIR", str(d))
     # The job store is relative to CWD; isolate the locked read/write path here.
     monkeypatch.chdir(tmp_path)
+    (tmp_path / "upload_jobs.json").write_text("[]")
     return d
 
 
@@ -115,12 +116,12 @@ def test_empty_video_path_refused_without_poisoning_queue(
     if existing:
         old = upload_svc.submit_job(video_path="/tmp/old.mp4", account_name="other")
         upload_svc._update_job(old["job_id"], {"status": "completed"})
-    before = stored.read_bytes() if existing else None
+    before = stored.read_bytes()
     response = sync_client.post("/api/upload/submit", json={
         "video_path": "", "account_name": "linked",
     })
     assert response.status_code == 400
-    assert (stored.read_bytes() if stored.exists() else None) == before
+    assert stored.read_bytes() == before
     assert scheduled == []
     assert calls == []
 
@@ -139,7 +140,7 @@ def test_direct_empty_video_path_refused_before_save(cookie_dir, monkeypatch):
     monkeypatch.setattr(upload_svc.importlib, "import_module", lambda name: _FAKE_UPLOADER)
     with pytest.raises(ValueError, match="invalid upload job"):
         upload_svc.submit_job(video_path="", account_name="linked")
-    assert not (cookie_dir.parent / "upload_jobs.json").exists()
+    assert (cookie_dir.parent / "upload_jobs.json").read_text() == "[]"
 
 
 def test_bare_completed_preserves_receipt_and_blocks_same_account_queue(cookie_dir, monkeypatch):
@@ -199,6 +200,60 @@ def test_completed_with_noncanonical_receipt_still_requires_reconciliation(
         upload_svc.submit_job(video_path="/tmp/legacy.mp4", account_name="linked")
 
 
+def test_deleted_job_store_after_claim_refuses_restart_and_replay(cookie_dir, monkeypatch):
+    monkeypatch.setattr(upload_svc, "require_upload_runtime", lambda: None)
+    original = upload_svc.submit_job(video_path="/tmp/claim.mp4", account_name="linked")
+    upload_svc._update_job(original["job_id"], {"status": "held", "provider_result": "Completed"})
+    store = cookie_dir.parent / "upload_jobs.json"
+    store.unlink()
+    upload_svc._quarantined_job_rows.clear()  # simulate a fresh process
+    calls = []
+    monkeypatch.setattr(upload_svc, "_run_upload_sync", lambda job: calls.append(job))
+
+    with pytest.raises(upload_svc.UploadUnavailable, match="job store.*missing"):
+        upload_svc.submit_job(video_path="/tmp/claim.mp4", account_name="linked")
+    with pytest.raises(upload_svc.UploadUnavailable, match="job store.*missing"):
+        asyncio.run(upload_svc.process_queue())
+    assert calls == []
+    assert not store.exists()
+
+
+def test_missing_job_store_requires_explicit_empty_provisioning(sync_client, cookie_dir, monkeypatch):
+    monkeypatch.setattr(upload_svc, "require_upload_runtime", lambda: None)
+    store = cookie_dir.parent / "upload_jobs.json"
+    store.unlink()
+    with pytest.raises(upload_svc.UploadUnavailable, match="explicitly provision an empty"):
+        upload_svc.submit_job(video_path="/tmp/new.mp4", account_name="linked")
+    for route in ("/api/upload/jobs", "/api/upload/jobs/unknown"):
+        response = sync_client.get(route)
+        assert response.status_code == 503
+        assert "job store" in response.json()["detail"]
+    store.write_text("[]")
+    assert upload_svc.submit_job(video_path="/tmp/new.mp4", account_name="linked")["status"] == "queued"
+
+
+@pytest.mark.parametrize("invalid_status", [None, "unknown", []])
+def test_quarantined_same_account_attempt_blocks_different_video(
+    cookie_dir, monkeypatch, invalid_status,
+):
+    monkeypatch.setattr(upload_svc, "require_upload_runtime", lambda: None)
+    good = upload_svc.submit_job(video_path="/tmp/new.mp4", account_name="linked")
+    bad = {
+        "job_id": "old-unresolved", "status": invalid_status,
+        "video_path": "/tmp/prior.mp4", "account_name": "linked",
+    }
+    store = cookie_dir.parent / "upload_jobs.json"
+    store.write_text(json.dumps([bad, good]))
+    calls = []
+    monkeypatch.setattr(upload_svc, "_run_upload_sync", lambda job: calls.append(job))
+    assert asyncio.run(upload_svc._process_single_job(good["job_id"])) is False
+    with pytest.raises(upload_svc.UploadReconciliationRequired, match="old-unresolved"):
+        upload_svc.submit_job(video_path="/tmp/different.mp4", account_name="linked")
+    assert calls == []
+    assert upload_svc.get_job(good["job_id"])["status"] == "queued"
+    assert json.loads(store.read_text()) == [bad, good]
+
+
 @pytest.mark.parametrize("fail_at", [1, 3])
 def test_lock_open_failure_returns_storage_unavailable_without_mutation(
     sync_client, cookie_dir, monkeypatch, fail_at,
@@ -246,7 +301,7 @@ def test_submit_without_provider_refuses_before_job_creation(sync_client, cookie
     r = sync_client.post("/api/upload/submit", json={"video_path": "/tmp/x.mp4", "account_name": "linked"})
     assert r.status_code == 503
     assert "provider runtime" in r.json()["detail"]
-    assert not (cookie_dir.parent / "upload_jobs.json").exists()
+    assert (cookie_dir.parent / "upload_jobs.json").read_text() == "[]"
 
 
 def test_broken_provider_import_refuses_before_job_creation(sync_client, cookie_dir, monkeypatch):
@@ -258,7 +313,7 @@ def test_broken_provider_import_refuses_before_job_creation(sync_client, cookie_
     monkeypatch.setattr(upload_svc.importlib, "import_module", _broken_import)
     r = sync_client.post("/api/upload/submit", json={"video_path": "/tmp/x.mp4", "account_name": "linked"})
     assert r.status_code == 503
-    assert not (cookie_dir.parent / "upload_jobs.json").exists()
+    assert (cookie_dir.parent / "upload_jobs.json").read_text() == "[]"
 
 
 def test_hosted_ephemeral_store_refuses_before_job_creation(sync_client, cookie_dir, monkeypatch):
@@ -269,7 +324,7 @@ def test_hosted_ephemeral_store_refuses_before_job_creation(sync_client, cookie_
     r = sync_client.post("/api/upload/submit", json={"video_path": "/tmp/x.mp4", "account_name": "linked"})
     assert r.status_code == 503
     assert "durable upload reconciliation" in r.json()["detail"]
-    assert not (cookie_dir.parent / "upload_jobs.json").exists()
+    assert (cookie_dir.parent / "upload_jobs.json").read_text() == "[]"
 
 
 def test_hosted_volume_store_alone_does_not_enable_upload(sync_client, cookie_dir, monkeypatch):
@@ -318,8 +373,8 @@ def test_non_list_job_store_refuses_with_recovery_steps(sync_client, cookie_dir,
 
 def test_bad_stored_row_is_quarantined_and_good_job_processes(cookie_dir, monkeypatch, caplog):
     monkeypatch.setattr(upload_svc, "require_upload_runtime", lambda: None)
-    good = upload_svc.submit_job(video_path="/tmp/good.mp4", account_name="linked")
-    bad = {**good, "job_id": "bad-row", "video_path": ""}
+    good = upload_svc.submit_job(video_path="/tmp/good.mp4", account_name="unrelated")
+    bad = {**good, "job_id": "bad-row", "video_path": "", "account_name": "linked"}
     stored = cookie_dir.parent / "upload_jobs.json"
     stored.write_text(json.dumps([good, bad]))
     original = stored.read_bytes()
@@ -388,8 +443,8 @@ def test_quarantined_unresolved_row_blocks_same_account_video_retry(
 
 def test_quarantine_write_failure_keeps_valid_job_available(cookie_dir, monkeypatch, caplog):
     monkeypatch.setattr(upload_svc, "require_upload_runtime", lambda: None)
-    good = upload_svc.submit_job(video_path="/tmp/good.mp4", account_name="linked")
-    bad = {**good, "job_id": "bad-row", "video_path": ""}
+    good = upload_svc.submit_job(video_path="/tmp/good.mp4", account_name="unrelated")
+    bad = {**good, "job_id": "bad-row", "video_path": "", "account_name": "linked"}
     stored = cookie_dir.parent / "upload_jobs.json"
     stored.write_text(json.dumps([good, bad]))
     original = stored.read_bytes()
@@ -447,7 +502,7 @@ def test_unresolved_original_upload_refuses_same_account_video_without_second_jo
 
 @pytest.mark.parametrize("status", ["cancelled", "completed"])
 @pytest.mark.parametrize("malformed", [False, True])
-def test_terminal_upload_allows_same_account_video_retry(
+def test_only_valid_terminal_upload_allows_same_account_video_retry(
     sync_client, cookie_dir, monkeypatch, status, malformed,
 ):
     _write_cookie(cookie_dir, "linked")
@@ -479,6 +534,13 @@ def test_terminal_upload_allows_same_account_video_retry(
     response = sync_client.post("/api/upload/submit", json={
         "video_path": "/tmp/other/../clip.mp4", "account_name": "linked", "description": "fixed caption",
     })
+
+    if malformed:
+        assert response.status_code == 409
+        assert "reconciliation" in response.json()["detail"]
+        assert json.loads(stored.read_text()) == [original]
+        assert calls == []
+        return
 
     assert response.status_code == 200
     retry = response.json()["job"]
@@ -576,7 +638,8 @@ def test_identical_upload_rows_are_held_before_provider_and_other_submission_run
     assert [(job["job_id"], job["status"]) for job in listed] == [(repeated["job_id"], "held")]
     retry = sync_client.post("/api/upload/submit", json={"video_path": repeated["video_path"], "account_name": "linked"})
     assert retry.status_code == 409
-    response = sync_client.post("/api/upload/submit", json={"video_path": "/tmp/good.mp4", "account_name": "linked"})
+    _write_cookie(cookie_dir, "unrelated")
+    response = sync_client.post("/api/upload/submit", json={"video_path": "/tmp/good.mp4", "account_name": "unrelated"})
     assert response.status_code == 200
     good_id = response.json()["job"]["job_id"]
     asyncio.run(upload_svc.process_queue())

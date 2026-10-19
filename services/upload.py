@@ -169,8 +169,14 @@ def _read_stored_jobs(*, _lock_held: bool = False) -> list[dict]:
     path = Path(UPLOAD_JOBS_FILE)
     path_key = str(path.resolve())
     if not path.exists():
-        _quarantined_job_rows.pop(path_key, None)
-        return []
+        # Absence is indistinguishable from a lost queue containing an earlier
+        # browser claim. Operators must provision a real empty [] file before
+        # the first submission; a deleted file never silently reinitializes.
+        raise UploadUnavailable(
+            f"TikTok upload is unavailable: job store {path_key} is missing. "
+            "Inspect and restore the original queue or explicitly provision an empty [] store "
+            "only after ruling out prior upload attempts."
+        )
     recovery = (
         f"Upload job file {path_key} is unreadable. Inspect the file, fix it or restore it from a backup, then retry."
     )
@@ -278,13 +284,24 @@ def _update_job(job_id: str, updates: dict) -> dict | None:
 
 def _account_has_active_upload(jobs: list[dict], account_name: str, job_id: str) -> bool:
     """A saved claim outlives its store lock, process, and browser session."""
+    if any(
+        row["job_id"] != job_id
+        and row["account_name"] == account_name
+        and row["status"] in {"uploading", "held"}
+        for row in jobs
+    ):
+        return True
+    # A quarantined row's invalid shape/status cannot establish that the
+    # provider was never called. Even a saved terminal label may be one of
+    # multiple conflicting copies, so hold this account for reconciliation.
+    return _quarantined_account_attempt(account_name) is not None
+
+
+def _quarantined_account_attempt(account_name: str) -> dict | None:
     rejected = _quarantined_job_rows.get(str(Path(UPLOAD_JOBS_FILE).resolve()), [])
-    return any(
-        isinstance(row, dict)
-        and row.get("job_id") != job_id
-        and row.get("account_name") == account_name
-        and row.get("status") in {"uploading", "held"}
-        for row in [*jobs, *rejected]
+    return next(
+        (row for row in rejected if isinstance(row, dict) and row.get("account_name") == account_name),
+        None,
     )
 
 
@@ -387,6 +404,12 @@ def submit_job(
 
     with _job_store_write_lock():
         jobs = _read_stored_jobs(_lock_held=True)
+        unresolved = _quarantined_account_attempt(account_name)
+        if unresolved is not None:
+            raise UploadReconciliationRequired(
+                "TikTok upload original attempt requires reconciliation before another "
+                "submission on this account (job %s)" % (unresolved.get("job_id") or "unknown")
+            )
         target = os.path.realpath(video_path)
         stored_rows = [*jobs, *_quarantined_job_rows.get(str(Path(UPLOAD_JOBS_FILE).resolve()), [])]
         duplicate_ids = _duplicate_stored_job_ids(stored_rows)

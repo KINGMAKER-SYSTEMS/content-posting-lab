@@ -272,13 +272,18 @@
   pass the same shape check before persistence; invalid submissions return 400.
   Corrupt records are preserved and
   never replaced with an empty queue. Missing prerequisites or failed
-  writes return 503; admission never proves a TikTok publication. A queued,
+  writes return 503; the job store itself must be explicitly provisioned as
+  an empty `[]` file for first use. If it is missing later, admission, queue
+  processing, listing and polling fail closed until the original history is
+  restored or an operator rules out prior attempts before provisioning anew.
+  Admission never proves a TikTok publication. A queued,
   uploading, held, failed, or unproved completed job for the same real video path and cookie account
   blocks another submission with 409 until the original attempt is reconciled;
   a stable local file lock serializes queue writes and the queued-to-uploading
   claim/cancel decision across worker processes. An unresolved uploading or held
   claim also bars another provider call for that account, even for a different
-  queued job or process. A bare provider `Completed` or error return becomes a
+  queued job or process. A quarantined row with a readable account but invalid
+  status likewise blocks that account until reconciled. A bare provider `Completed` or error return becomes a
   durable held result with its original claim and return retained; it cannot
   establish posting success or authorize a repeat. A completed row permits
   explicit resubmission only with a matching canonical TikTok URL/video ID;
