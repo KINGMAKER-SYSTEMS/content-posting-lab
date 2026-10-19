@@ -34,6 +34,22 @@ export function staticUrl(path: string): string {
   return BASE ? `${BASE}${path}` : path;
 }
 
+/** Download an authenticated API file through fetch so split-deploy browsers
+ * send their Origin and Access cookie. A top-level link navigation sends neither.
+ */
+export async function downloadApiFile(path: string, filename: string): Promise<void> {
+  const response = await fetch(apiUrl(path), { credentials: 'include' });
+  if (!response.ok) throw new Error(`Download failed (${response.status})`);
+  const url = URL.createObjectURL(await response.blob());
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+}
+
 /**
  * Add the API key header (when one is configured) to a RequestInit, for
  * callers that use fetch() directly instead of fetchApi.

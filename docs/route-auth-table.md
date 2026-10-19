@@ -35,23 +35,33 @@ and its tests use dummy values only.
 | **H**: Campaign Hub proxies | `X-API-Key: <key>`, constant-time. Not `APP_API_KEY` | `LAB_HUB_API_KEY` (new) | Hub env `CONTENT_LAB_HUB_API_KEY` (new, same value) in the Flask and Rust Hub services. Code change needed in both: Flask `blueprints/sound_assignments.py` `_proxy` and Rust `crates/api/src/content_lab.rs` send no headers today |
 | **A**: operators (and scripts) through Cloudflare Access | `Cf-Access-Jwt-Assertion`, verified: RS256 signature against `<team>/cdn-cgi/access/certs`, `aud` = the Lab Access app's AUD tag, `iss` = the team domain, `exp`/`iat` required. The unverified header, `Cf-Access-Authenticated-User-Email` or any other identity header is never trusted | `LAB_ACCESS_TEAM_DOMAIN` (`https://<team>.cloudflareaccess.com`) and `LAB_ACCESS_AUD` (the Lab Access application's AUD tag; comma-separated for several) | Browsers: an Access login on the Lab hostname. Scripts: an Access service token (`CF-Access-Client-Id/Secret`, e.g. `RT_ACCESS_CLIENT_ID/SECRET`) against the Access-protected hostname; Access then adds the JWT. Scripts also send `Origin: <Lab origin>` on writes (next section) |
 
-No secret is baked into the frontend bundle. The UI keeps calling same-origin
-`/api/*`; Cloudflare adds the JWT at the edge.
+No secret is baked into the frontend bundle. The UI resolves `/api/*` through
+`VITE_API_URL` when split-deployed; Cloudflare adds the JWT at the protected
+API edge only when the browser sends a valid Access cookie for that host.
 
 ### CSRF on the Access class
 
 The edge adds the JWT from the operator's `CF_Authorization` login cookie, so a
 cross-site form POST or websocket from another page would arrive with a valid JWT.
-An Access-authenticated write or websocket is therefore admitted only with
-`Sec-Fetch-Site: same-origin` (every current browser sends it on the UI's own
-fetches) or an `Origin` listed in `LAB_ALLOWED_ORIGINS` (Lab env, comma-separated;
-set it to the Lab's Access hostname, e.g. `https://lab.<zone>`; the match is exact and
-case-sensitive, as browsers send it, and never list `null`). Anything else is 403 and
+An Access-authenticated write, websocket or side-effect GET is therefore admitted only with
+`Sec-Fetch-Site: same-origin` (same-origin UI fetches) or an `Origin` listed in
+`LAB_ALLOWED_ORIGINS` (Lab env, comma-separated; include the exact trusted UI
+origin for split deployment and the Lab Access hostname when needed). A
+cross-site or same-site fetch with an exact allowlisted Origin is admitted;
+navigation without Origin, `null`, and any other Origin remain refused. The
+match is exact and case-sensitive; do not list a parent domain or wildcard. Anything else is 403 and
 the handler never runs. Plain GETs are not checked (a cross-site page cannot read the
 response), except GETs that change state, which are marked `@side_effect_get` and
-checked like writes: `GET /api/clipper/jobs/{id}/download-all` (it backfills
-clips to R2), plus `GET /api/agenticnews/editor-timelines/{project_id}` and its
-`/openshot` export (both may import, migrate or prune a saved editor project).
+checked like writes: Video and Burn ZIP downloads (temporary archives),
+`GET /api/clipper/jobs/{id}/download-all` (it backfills clips to R2), plus
+`GET /api/agenticnews/editor-timelines/{project_id}` and its `/openshot`
+export (both may import, migrate or prune a saved editor project). The Burn UI
+uses credentialed fetch and downloads the returned Blob, so a split-origin
+browser sends its real Origin instead of navigating directly to the API. That
+deployment also needs its exact UI origin in `CORS_ORIGINS` and a valid Access
+cookie on the API host; a cross-site SameSite=Lax/Strict cookie will not travel
+from a Vercel hostname to an unrelated Railway hostname, so that topology
+remains on hold until the established Access ingress supports it.
 Bearer and Hub-key callers are not cookie-borne and need no Origin. Set the
 Access application's cookie to **SameSite=Lax (or Strict) and HttpOnly** as defence in
 depth.

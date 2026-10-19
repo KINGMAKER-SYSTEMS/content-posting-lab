@@ -184,11 +184,13 @@ def test_access_writes_need_a_same_origin_signal(monkeypatch):
         jwt_only = {"Cf-Access-Jwt-Assertion": s.mint()}
         for extra in ({}, {"Origin": "https://evil.example"}, {"Sec-Fetch-Site": "cross-site"},
                       {"Sec-Fetch-Site": "same-site"}, {"Origin": "null"},
-                      {"Sec-Fetch-Site": "cross-site", "Origin": s.LAB_ORIGIN}):
+                      {"Sec-Fetch-Site": "cross-site", "Origin": "https://evil.example"}):
             assert client.post("/x", headers={**jwt_only, **extra}).status_code == 403, (dep.__name__, extra)
         assert calls == []
         assert client.post("/x", headers={**jwt_only, "Sec-Fetch-Site": "same-origin"}).status_code == 200
         assert client.post("/x", headers={**jwt_only, "Origin": s.LAB_ORIGIN}).status_code == 200
+        for site in ("cross-site", "same-site"):
+            assert client.post("/x", headers={**jwt_only, "Sec-Fetch-Site": site, "Origin": s.LAB_ORIGIN}).status_code == 200
         monkeypatch.delenv("LAB_ALLOWED_ORIGINS")
         assert client.post("/x", headers={**jwt_only, "Origin": s.LAB_ORIGIN}).status_code == 403
         monkeypatch.setenv("LAB_ALLOWED_ORIGINS", s.LAB_ORIGIN)

@@ -244,7 +244,11 @@
   marked `@side_effect_get` and checked the same way, including editor timeline
   loading and OpenShot export, which may persist project imports/migrations.
   Video and Burn archive downloads also create temporary ZIP files and require
-  the same operator origin check.
+  the same operator origin check. Split-origin fetches may present cross-site
+  or same-site Fetch Metadata only when their exact browser Origin is in
+  `LAB_ALLOWED_ORIGINS`; navigations with no Origin remain refused. The Burn UI
+  downloads via credentialed fetch and Blob; the API's `CORS_ORIGINS` must
+  contain the trusted UI origin, and Access cookie delivery must be verified.
   Telegram poster bind/unbind require Access login, without a second Mini App
   agent key. `RouteAuthMiddleware`
   enforces the route's dependency, and header-only checks marked

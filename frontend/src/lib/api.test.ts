@@ -8,6 +8,34 @@ async function loadApi(key: string | undefined) {
 
 afterEach(() => {
   vi.unstubAllEnvs();
+  vi.unstubAllGlobals();
+  vi.restoreAllMocks();
+  vi.useRealTimers();
+});
+
+describe('downloadApiFile', () => {
+  it('fetches split-origin ZIP bytes with cookies before starting a local download', async () => {
+    vi.stubEnv('VITE_API_URL', 'https://lab.example.invalid');
+    const blob = new Blob(['zip-bytes'], { type: 'application/zip' });
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, blob: async () => blob });
+    vi.stubGlobal('fetch', fetchMock);
+    Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: vi.fn(() => 'blob:zip-test') });
+    Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: vi.fn() });
+    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+
+    const { downloadApiFile } = await loadApi(undefined);
+    vi.useFakeTimers();
+    await downloadApiFile('/api/burn/zip/batch?project=one', 'burned_batch.zip');
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'https://lab.example.invalid/api/burn/zip/batch?project=one',
+      { credentials: 'include' },
+    );
+    expect(click).toHaveBeenCalledOnce();
+    expect((click.mock.contexts[0] as unknown as HTMLAnchorElement).download).toBe('burned_batch.zip');
+    vi.runAllTimers();
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:zip-test');
+  });
 });
 
 describe('withApiKey', () => {

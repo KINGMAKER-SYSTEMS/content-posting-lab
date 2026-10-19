@@ -25,12 +25,12 @@ Status codes: 503 when none of the route's caller classes is configured
 for a cross-origin Access-authenticated write. The handler never runs.
 
 CSRF: the edge adds the Access JWT from the operator's login cookie, so a
-cross-site form POST or websocket from another page would arrive with a valid
-JWT. An Access-authenticated unsafe request (POST/PUT/PATCH/DELETE, or any
-websocket) therefore also needs a same-origin signal: ``Sec-Fetch-Site:
-same-origin``, or an ``Origin`` listed in ``LAB_ALLOWED_ORIGINS``
-(comma-separated, e.g. the Lab's Access hostname). Bearer and Hub-key callers
-are not cookie-borne and need neither.
+cross-site form POST or websocket from another page could arrive with a valid
+JWT. An Access-authenticated unsafe request (POST/PUT/PATCH/DELETE, websocket,
+or a side-effect GET) therefore needs ``Sec-Fetch-Site: same-origin`` or an
+exact ``Origin`` listed in ``LAB_ALLOWED_ORIGINS`` (including a trusted split
+UI origin when configured). A cross-site navigation without Origin is refused.
+Bearer and Hub-key callers are not cookie-borne and need neither.
 
 ``RouteAuthMiddleware`` runs the same check before routing hands the request
 to FastAPI, so an unauthenticated body is never parsed (no 422, no multipart
@@ -179,11 +179,14 @@ def _presented_valid(conn: HTTPConnection, caller: str, worker_token_in_x_api_ke
 def _same_origin(conn: HTTPConnection) -> bool:
     """True when the request carries a same-origin signal (see the module docstring)."""
     site = conn.headers.get("sec-fetch-site", "").strip().lower()
-    if site:
-        return site == "same-origin"
+    if site == "same-origin":
+        return True
     origin = conn.headers.get("origin", "").strip()
-    allowed = {o.strip().rstrip("/") for o in _env(ENV_ALLOWED_ORIGINS).split(",") if o.strip()}
-    return bool(origin) and origin.rstrip("/") in allowed
+    allowed = {o.strip() for o in _env(ENV_ALLOWED_ORIGINS).split(",") if o.strip()}
+    # A split-deployed browser fetch carries cross-site/same-site metadata and
+    # its own immutable Origin. Admit only an exact configured UI origin; a
+    # cross-site navigation with no Origin remains refused.
+    return bool(origin) and origin in allowed
 
 
 def side_effect_get(endpoint):

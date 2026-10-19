@@ -795,14 +795,15 @@ def test_cross_origin_access_writes_are_refused(key, configured, sentinel):
     for label, headers in {
         "foreign origin": {**JWT(), "Origin": "https://evil.example"},
         "cross-site fetch metadata": {**JWT(), "Sec-Fetch-Site": "cross-site", "Origin": "https://evil.example"},
-        "same-site sibling": {**JWT(), "Sec-Fetch-Site": "same-site", "Origin": s.LAB_ORIGIN},
+        "same-site sibling": {**JWT(), "Sec-Fetch-Site": "same-site", "Origin": "https://sibling.example.invalid"},
         "no origin signal": JWT(),
         "null origin": {**JWT(), "Origin": "null"},
     }.items():
         r = client.request(method, s.fill(path), headers=headers, **form)
         assert r.status_code == 403, f"{key} {label} -> {r.status_code}"
     assert sentinel == []
-    for headers in ({**JWT(), "Sec-Fetch-Site": "same-origin"}, {**JWT(), "Origin": s.LAB_ORIGIN}):
+    for headers in ({**JWT(), "Sec-Fetch-Site": "same-origin"}, {**JWT(), "Origin": s.LAB_ORIGIN},
+                    {**JWT(), "Sec-Fetch-Site": "cross-site", "Origin": s.LAB_ORIGIN}):
         assert _send(client, key, headers) in (200, 422)
 
 
@@ -889,6 +890,7 @@ def test_side_effect_gets_get_the_csrf_check(configured, monkeypatch):
         for headers in ({**JWT(), "Sec-Fetch-Site": "cross-site"}, {**JWT(), "Origin": "https://evil.example"}, JWT()):
             assert client.get(guarded_url, headers=headers).status_code == 403
         assert client.get(guarded_url, headers={**JWT(), "Sec-Fetch-Site": "same-origin"}).status_code not in (401, 403, 503)
+        assert client.get(guarded_url, headers={**JWT(), "Sec-Fetch-Site": "cross-site", "Origin": s.LAB_ORIGIN}).status_code not in (401, 403, 503)
     # an ordinary gated GET is not a write: no origin signal needed
     assert client.get("/api/clipper/jobs", headers=JWT()).status_code == 200
 
