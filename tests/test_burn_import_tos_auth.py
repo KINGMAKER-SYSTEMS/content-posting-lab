@@ -90,6 +90,28 @@ def test_import_accepts_machine_token_with_app_key_unset(sync_client, monkeypatc
     assert (isolated_projects_root / PROJECT / "captions" / "tos-campaign-1" / "captions.csv").exists()
 
 
+def test_import_refuses_generic_supabase_key_before_side_effects(
+    sync_client, monkeypatch, isolated_projects_root
+):
+    monkeypatch.setattr(app_module, "_APP_API_KEY", None)
+    monkeypatch.setenv("CONTROL_PLANE_TOKEN", TOKEN)
+    monkeypatch.setenv("SUPABASE_URL", "https://supabase.invalid")
+    monkeypatch.delenv("SUPABASE_SERVICE_KEY", raising=False)
+    monkeypatch.setenv("SUPABASE_KEY", "public-generic-key")
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("generic key reached a side effect")
+
+    monkeypatch.setattr(requests, "get", forbidden)
+    monkeypatch.setattr(project_manager, "get_project_caption_dir", forbidden)
+    response = sync_client.post(
+        URL, params={"project": PROJECT}, headers={"Authorization": f"Bearer {TOKEN}"}
+    )
+    assert response.status_code == 503
+    assert response.json() == {"error": "SUPABASE_URL / SUPABASE_SERVICE_KEY not configured"}
+    assert not (isolated_projects_root / PROJECT).exists()
+
+
 def test_import_machine_bearer_survives_configured_browser_middleware(
     sync_client, monkeypatch, isolated_projects_root
 ):

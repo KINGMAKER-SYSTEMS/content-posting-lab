@@ -324,7 +324,7 @@ async def import_tos_captions(
 
     Writes one source CSV per song under captions/tos-<slug>/ so the burn UI
     (and search) can use them. Works on the deployed volume — needs SUPABASE_URL
-    and SUPABASE_SERVICE_KEY/SUPABASE_KEY env vars.
+    and a server-held SUPABASE_SERVICE_KEY env var.
     """
     if not (os.environ.get("CONTROL_PLANE_TOKEN") or "").strip():
         raise HTTPException(503, "Content Lab control-plane credential is not configured")
@@ -336,9 +336,12 @@ async def import_tos_captions(
     from project_manager import get_project_caption_dir
 
     url = (os.getenv("SUPABASE_URL") or "").rstrip("/")
-    key = (os.getenv("SUPABASE_SERVICE_KEY") or os.getenv("SUPABASE_KEY") or "").strip()
+    key = (os.getenv("SUPABASE_SERVICE_KEY") or "").strip()
     if not (url and key):
-        return JSONResponse({"error": "SUPABASE_URL / SUPABASE_KEY not configured"}, status_code=400)
+        return JSONResponse(
+            {"error": "SUPABASE_URL / SUPABASE_SERVICE_KEY not configured"},
+            status_code=503,
+        )
 
     try:
         r = _requests.get(

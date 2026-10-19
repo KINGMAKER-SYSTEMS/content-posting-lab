@@ -203,7 +203,10 @@
   blank token returns 503; missing, wrong, or browser `APP_API_KEY` credentials
   return 401. `app.py` passes this exact POST through its browser-key middleware
   to the route's machine guard even when `APP_API_KEY` is configured. Other Burn
-  routes keep their existing authentication contracts.
+  routes keep their existing authentication contracts. The import reads the
+  TOS corpus only with server-held `SUPABASE_SERVICE_KEY`; a generic
+  `SUPABASE_KEY` never substitutes for it. Missing URL or service key returns
+  503 before the Supabase request or project write.
 - `services/roster_public.py` owns what `/api/roster`, `/api/pipeline` and
   `/api/email` may serialise: an allowlist of roster row fields plus a
   credential-key scrub (`CredentialGuardRoute`) applied to every response of
