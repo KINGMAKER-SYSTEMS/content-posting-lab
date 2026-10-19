@@ -252,6 +252,11 @@
   picker plus credentialed stream-to-disk fetch on a split origin. Browsers
   without that picker need same-origin ingress. The API's `CORS_ORIGINS` must
   contain the trusted UI origin, and Access cookie delivery must be verified.
+  The auth cutover releases only with the operator frontend and API behind
+  the same Access-protected origin: ordinary UI fetches do not include
+  cross-origin credentials, and an unrelated-host SameSite=Lax/Strict Access
+  cookie cannot supply them. A split-origin UI needs separate end-to-end
+  browser credential, CORS and cookie verification before release.
   Telegram poster bind/unbind require Access login, without a second Mini App
   agent key. `RouteAuthMiddleware`
   enforces the route's dependency, and header-only checks marked

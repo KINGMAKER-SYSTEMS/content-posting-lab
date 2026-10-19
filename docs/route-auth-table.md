@@ -64,7 +64,12 @@ use same-origin ingress for ZIP downloads. Split deployment also needs its
 exact UI origin in `CORS_ORIGINS` and a valid Access cookie on the API host. A
 cross-site SameSite=Lax/Strict cookie will not travel from a Vercel hostname to
 an unrelated Railway hostname, so that topology remains on hold until the
-established Access ingress supports it.
+established Access ingress supports it. Ordinary Lab UI requests also use
+`fetch(apiUrl(...))` without `credentials: 'include'`, so the credentialed ZIP
+helper does not make a split-origin UI functional by itself. Release this auth
+cutover only when the operator frontend and API are served from the same
+Access-protected origin; a split-origin release needs a separate end-to-end
+browser credential and CORS implementation and verification.
 Bearer and Hub-key callers are not cookie-borne and need no Origin. Set the
 Access application's cookie to **SameSite=Lax (or Strict) and HttpOnly** as defence in
 depth.
