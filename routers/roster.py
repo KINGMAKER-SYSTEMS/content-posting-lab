@@ -8,7 +8,7 @@ email, password, forwarding address, email alias/rule). None of them is ever
 serialised by this router -- every row goes through
 services.roster_public.public_page and every JSON body through
 scrub_credentials (see _CredentialGuardRoute). Routes that no unauthenticated
-UI calls require the machine credential (require_roster_auth).
+DELETE requires the Control Plane token, never the browser APP_API_KEY.
 """
 
 import os
@@ -32,8 +32,8 @@ from services.roster_public import (
     CredentialGuardRoute,
     public_page,
     public_pages,
-    require_roster_auth,
 )
+from services.route_auth import require_access, require_access_or_hub, require_control_plane_token
 
 # Regex to strip emoji and other non-alphanumeric/space characters for dedup matching
 _EMOJI_RE = re.compile(
@@ -66,13 +66,13 @@ class UpdatePageRequest(BaseModel):
     drive_folder_url: str | None = None
 
 
-@router.get("/")
+@router.get("/", dependencies=[Depends(require_access_or_hub)])
 async def list_roster():
     """List all pages in the roster."""
     return {"pages": public_pages(list_all_pages())}
 
 
-@router.get("/project/{project_name}")
+@router.get("/project/{project_name}", dependencies=[Depends(require_access)])
 async def get_project_pages(project_name: str):
     """List pages assigned to a specific project, enriched with staging topic status."""
     from services.telegram import get_staging_group
@@ -94,7 +94,7 @@ async def get_project_pages(project_name: str):
     return {"pages": enriched}
 
 
-@router.put("/{integration_id}")
+@router.put("/{integration_id}", dependencies=[Depends(require_access)])
 async def update_page(integration_id: str, req: UpdatePageRequest):
     """Assign or update a page in the roster."""
     data: dict = {}
@@ -113,7 +113,7 @@ async def update_page(integration_id: str, req: UpdatePageRequest):
     return {"page": public_page(entry)}
 
 
-@router.delete("/{integration_id}", dependencies=[Depends(require_roster_auth)])
+@router.delete("/{integration_id}", dependencies=[Depends(require_control_plane_token)])
 async def delete_page(integration_id: str):
     """Remove a page from the roster. Machine credential required: no UI calls this."""
     removed = remove_page(integration_id)
@@ -125,7 +125,7 @@ async def delete_page(integration_id: str):
 # ── Dedup ────────────────────────────────────────────────────────────────
 
 
-@router.get("/duplicates")
+@router.get("/duplicates", dependencies=[Depends(require_access)])
 async def find_duplicates():
     """Audit roster for duplicate page names.
 
@@ -196,7 +196,7 @@ async def find_duplicates():
     }
 
 
-@router.post("/dedup")
+@router.post("/dedup", dependencies=[Depends(require_access)])
 async def dedup_roster():
     """Remove duplicate roster entries that share the same name.
 
@@ -314,7 +314,7 @@ async def notion_sync_status():
     return {"configured": is_configured()}
 
 
-@router.post("/sync-notion")
+@router.post("/sync-notion", dependencies=[Depends(require_access)])
 async def sync_from_notion():
     """Pull account roster from Notion Master Pages DB.
 
@@ -350,7 +350,7 @@ async def sync_from_notion():
     }
 
 
-@router.post("/sync")
+@router.post("/sync", dependencies=[Depends(require_access)])
 async def sync_integrations():
     """[DEPRECATED] Postiz sync — kept as alias to /sync-notion for backwards compat.
 

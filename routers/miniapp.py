@@ -20,12 +20,14 @@ server key is unset, they remain unavailable (503) rather than opening access.
 import hmac
 import os
 
-from fastapi import APIRouter, Header, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
+from starlette.requests import HTTPConnection
 from pydantic import BaseModel
 
 from services import content_requests
 from services.miniapp_auth import AuthError, resolve_poster_from_request
 from services.poster_content import poster_summary, videos_for_poster
+from services.route_auth import before_body
 
 router = APIRouter()
 
@@ -33,6 +35,7 @@ router = APIRouter()
 # ── Auth helper ──────────────────────────────────────────────────────
 
 
+@before_body
 def _require_poster(request: Request) -> dict:
     """Resolve the authenticated poster or raise an HTTP error.
 
@@ -71,6 +74,12 @@ def _poster_page(poster: dict, page_id: str) -> dict:
         if page.get("integration_id") == page_id:
             return page
     raise HTTPException(status_code=404, detail="page not found")
+
+
+@before_body
+def _agent_key_gate(conn: HTTPConnection) -> None:
+    """Header-only agent-key check before parsing a request body."""
+    _require_agent_key(conn.headers.get("x-agent-key"))
 
 
 # ── Request bodies ───────────────────────────────────────────────────
@@ -121,9 +130,12 @@ async def my_requests(request: Request, status: str | None = Query(default=None)
 
 
 @router.post("/requests", status_code=201)
-async def create_request(request: Request, body: ContentRequestBody):
-    """File a content request for the calling poster."""
-    poster = _require_poster(request)
+async def create_request(body: ContentRequestBody, poster: dict = Depends(_require_poster)):
+    """File a content request for the calling poster.
+
+    initData is checked as a dependency, so an anonymous caller is refused
+    before the body is validated (401, never 422).
+    """
     if not (body.text or "").strip():
         raise HTTPException(status_code=400, detail="text is required")
 
@@ -146,7 +158,7 @@ async def create_request(request: Request, body: ContentRequestBody):
 # ── Agent-facing endpoints ───────────────────────────────────────────
 
 
-@router.get("/agent/requests")
+@router.get("/agent/requests", dependencies=[Depends(_agent_key_gate)])
 async def agent_list_requests(
     status: str | None = Query(default="open"),
     poster_id: str | None = Query(default=None),
@@ -163,7 +175,7 @@ async def agent_list_requests(
     }
 
 
-@router.patch("/agent/requests/{request_id}")
+@router.patch("/agent/requests/{request_id}", dependencies=[Depends(_agent_key_gate)])
 async def agent_update_request(
     request_id: str,
     body: AgentUpdateBody,

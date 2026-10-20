@@ -199,6 +199,7 @@ def test_sync_status_is_unchanged(client, monkeypatch):
     {"X-API-Key": "wrong-token"},
     {"Authorization": "Bearer "},
 ])
+@pytest.mark.real_route_auth
 def test_delete_unauthenticated_is_401_and_deletes_nothing(client, headers):
     _seed_credentialed()
     r = client.delete("/api/roster/acct1", headers=headers)
@@ -209,6 +210,7 @@ def test_delete_unauthenticated_is_401_and_deletes_nothing(client, headers):
     assert roster.get_page("acct1") is not None
 
 
+@pytest.mark.real_route_auth
 def test_delete_with_control_plane_bearer_is_unchanged(client):
     _seed_credentialed()
     r = client.delete("/api/roster/acct1", headers={"Authorization": f"Bearer {TOKEN}"})
@@ -219,20 +221,25 @@ def test_delete_with_control_plane_bearer_is_unchanged(client):
     assert r.status_code == 404
 
 
-def test_delete_accepts_x_api_key_and_app_api_key(client, monkeypatch):
+@pytest.mark.real_route_auth
+def test_delete_accepts_control_plane_x_api_key_but_rejects_browser_app_key(client, monkeypatch):
     _seed_credentialed("a1")
     _seed_credentialed("a2")
     r = client.delete("/api/roster/a1", headers={"X-API-Key": TOKEN})
     assert r.status_code == 200
     monkeypatch.setenv("APP_API_KEY", "app-key-not-a-secret")
     r = client.delete("/api/roster/a2", headers={"Authorization": "Bearer app-key-not-a-secret"})
-    assert r.status_code == 200
-    assert roster.list_all_pages() == []
+    assert r.status_code == 401
+    assert roster.get_page("a2") is not None
+    r = client.delete("/api/roster/a2", headers={"X-API-Key": "app-key-not-a-secret"})
+    assert r.status_code == 401
+    assert roster.get_page("a2") is not None
 
 
+@pytest.mark.real_route_auth
 def test_delete_fails_closed_when_no_credential_is_configured(client, monkeypatch):
     monkeypatch.delenv("CONTROL_PLANE_TOKEN", raising=False)
-    monkeypatch.delenv("APP_API_KEY", raising=False)
+    monkeypatch.setenv("APP_API_KEY", "public-browser-key")
     _seed_credentialed()
     r = client.delete("/api/roster/acct1", headers={"Authorization": "Bearer "})
     assert r.status_code == 503
@@ -242,6 +249,7 @@ def test_delete_fails_closed_when_no_credential_is_configured(client, monkeypatc
     assert roster.get_page("acct1") is not None
 
 
+@pytest.mark.real_route_auth
 def test_non_ascii_credential_is_rejected_not_crashed(client):
     _seed_credentialed()
     r = client.delete("/api/roster/acct1", headers={"X-API-Key": "tökén".encode("utf-8")})

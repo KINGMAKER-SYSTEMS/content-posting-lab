@@ -15,13 +15,10 @@ whenever APP_API_KEY is unset (as in production). So:
   camelCase, kebab, dotted or upper-case spellings. It is a key-name backstop
   for a route that forgets ``public_page``, not a replacement for it: a
   credential value under an innocent key is only stopped by the allowlist.
-* ``require_roster_auth`` guards routes no unauthenticated UI calls. It accepts
-  the Control Plane bearer (CONTROL_PLANE_TOKEN) or the app key (APP_API_KEY)
-  and fails closed (503) when neither is configured.
-* ``require_control_plane_auth`` guards the email-routing routes that can
-  add forwarding destinations or delete/recreate a page's forwarding rule.
-  It accepts only CONTROL_PLANE_TOKEN (never the browser-bundled APP_API_KEY)
-  and fails closed (503) when CONTROL_PLANE_TOKEN is not configured.
+* ``services.route_auth.require_control_plane_token`` protects roster DELETE
+  with the Control Plane bearer or X-API-Key, never the browser APP_API_KEY.
+* The email-routing routes are guarded by
+  ``services.route_auth.require_access_or_control_plane_token``.
 """
 
 from __future__ import annotations
@@ -32,7 +29,7 @@ import os
 import re
 from typing import Any, Callable
 
-from fastapi import Header, HTTPException, Request
+from fastapi import Request
 from fastapi.responses import JSONResponse, Response
 from fastapi.routing import APIRoute
 
@@ -221,15 +218,6 @@ class CredentialGuardRoute(APIRoute):
         return guarded
 
 
-def _configured_tokens() -> list[bytes]:
-    tokens = []
-    for name in ("CONTROL_PLANE_TOKEN", "APP_API_KEY"):
-        token = (os.getenv(name) or "").strip()
-        if token:
-            tokens.append(token.encode("utf-8"))
-    return tokens
-
-
 def _credential_matches(
     tokens: list[bytes],
     authorization: str | None,
@@ -249,24 +237,12 @@ def _credential_matches(
     return matched
 
 
-def require_roster_auth(
-    authorization: str | None = Header(default=None),
-    x_api_key: str | None = Header(default=None),
-) -> None:
-    """FastAPI dependency: the caller must present a configured machine credential."""
-    tokens = _configured_tokens()
-    if not tokens:
-        raise HTTPException(status_code=503, detail="Roster authentication is not configured")
-    if _credential_matches(tokens, authorization, x_api_key):
-        return None
-    raise HTTPException(status_code=401, detail="Invalid or missing roster credential")
-
-
 def has_control_plane_credential(authorization: object, x_api_key: object) -> bool:
     """True only when CONTROL_PLANE_TOKEN is configured and the caller presents it.
 
-    Non-raising form of ``require_control_plane_auth`` for routes that are
-    anonymous in general but must refuse one dangerous case without the token.
+    Non-raising CONTROL_PLANE_TOKEN check for a route that admits operators in
+    general but must refuse one dangerous case without the token (the /intake
+    tamper guard).
     Non-string inputs (e.g. an unresolved FastAPI ``Header`` default when a
     handler is called directly) count as absent.
     """
@@ -279,25 +255,3 @@ def has_control_plane_credential(authorization: object, x_api_key: object) -> bo
         x_api_key if isinstance(x_api_key, str) else None,
     )
 
-
-def require_control_plane_auth(
-    authorization: str | None = Header(default=None),
-    x_api_key: str | None = Header(default=None),
-) -> None:
-    """FastAPI dependency for routes that can re-point account mail (email routing).
-
-    Accepts ONLY CONTROL_PLANE_TOKEN (Bearer or X-API-Key, constant time) and
-    fails closed (503) when it is unset or blank. APP_API_KEY is deliberately
-    NOT accepted: the frontend bakes it into its public bundle
-    (VITE_APP_API_KEY), so honouring it here would reopen the forwarding
-    takeover to anyone who reads the bundle.
-    """
-    control_plane = (os.getenv("CONTROL_PLANE_TOKEN") or "").strip()
-    if not control_plane:
-        raise HTTPException(
-            status_code=503,
-            detail="Email routing authentication is not configured (CONTROL_PLANE_TOKEN)",
-        )
-    if _credential_matches([control_plane.encode("utf-8")], authorization, x_api_key):
-        return None
-    raise HTTPException(status_code=401, detail="Invalid or missing machine credential")

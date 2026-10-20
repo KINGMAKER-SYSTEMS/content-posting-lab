@@ -1,6 +1,6 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { FolderOpenIcon, FlameIcon } from '@phosphor-icons/react';
-import { apiUrl, staticUrl } from '../lib/api';
+import { apiUrl, downloadApiFile, staticUrl } from '../lib/api';
 import { EmptyState, LazyVideo, ProgressBar } from '../components';
 import { AssignToPagesDialog } from '../components/AssignToPagesDialog';
 import { useWorkflowStore } from '../stores/workflowStore';
@@ -1121,12 +1121,17 @@ export function BurnPage() {
     }
   }, [projectName, loadData, addNotification]);
 
-  const downloadBatchZip = useCallback((bId: string) => {
+  const downloadBatchZip = useCallback(async (bId: string) => {
     if (!projectName) return;
-    const a = document.createElement('a');
-    a.href = apiUrl(`/api/burn/zip/${encodeURIComponent(bId)}?project=${encodeURIComponent(projectName)}`);
-    a.download = `burned_${bId}.zip`; a.click();
-  }, [projectName]);
+    try {
+      await downloadApiFile(
+        `/api/burn/zip/${encodeURIComponent(bId)}?project=${encodeURIComponent(projectName)}`,
+        `burned_${bId}.zip`,
+      );
+    } catch (error) {
+      addNotification('error', error instanceof Error ? error.message : 'Download failed');
+    }
+  }, [projectName, addNotification]);
 
   const hasPairs = pairs.length > 0;
 

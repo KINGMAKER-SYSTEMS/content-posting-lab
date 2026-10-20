@@ -205,21 +205,27 @@
   may only echo values the request itself created. The Slack pipeline handoff
   says "see Notion" instead of carrying the password. Signup email, password, forwarding address, email
   alias/rule/destination and notes stay in the roster cache and never cross
-  HTTP there. It also owns the roster machine credential (CONTROL_PLANE_TOKEN
-  or APP_API_KEY) required on roster routes no unauthenticated UI calls.
+  HTTP there. Roster DELETE uses `route_auth.require_control_plane_token`:
+  CONTROL_PLANE_TOKEN as Bearer or X-API-Key, never browser APP_API_KEY. It
+  fails closed before deletion when the machine token is unconfigured.
 - `routers/email_routing.py` routes that can change where a page's mail goes
   (POST /destinations, DELETE /rules/{id}, POST /auto-create) require
-  `require_control_plane_auth` (CONTROL_PLANE_TOKEN only, never the
-  browser-bundled APP_API_KEY; fails closed when unset), normalise the
+  `route_auth.require_access_or_control_plane_token` (CONTROL_PLANE_TOKEN as
+  Bearer or X-API-Key, or a verified Cloudflare Access JWT for the operator
+  UI; never the browser-bundled APP_API_KEY; fails closed when unset), normalise the
   destination once and send that value to Cloudflare, honour the optional EMAIL_DESTINATION_DOMAINS allowlist, and
   auto-create never re-points an alias a roster page records without
-  `replace: true`. Pipeline mint-alias calls the CF service directly and is
-  not gated by these routes.
+  `replace: true`. Pipeline mint-alias calls the CF service directly; it is
+  operator-only (Access), not gated by these routes.
   GET /destinations (the team's real inbox addresses) requires the same
   credential; only GET /status stays anonymous.
 - `services/slack.py` pipeline handoffs never carry the login email, password
   or free-text notes; those fields point at Notion.
-- `routers/pipeline.py` /intake refuses (generic 409) an anonymous intake for
+- `routers/pipeline.py` /mint-alias and /intake are operator-only (Access JWT).
+  `GET /api/pipeline/{integration_id}/health` is also operator-only because it
+  returns page-specific setup, storage, cookie, and Telegram state; it is not a
+  public liveness endpoint.
+  /intake refuses (generic 409) an intake without CONTROL_PLANE_TOKEN for
   a handle that already has a roster page (either `acct:` id form) or with a
   `notion_page_id` of a roster page that is not an unfinished step-1
   placeholder (placeholder completion must carry its own alias);
@@ -227,9 +233,52 @@
   (`services.notion_pages.canonical_notion_page_id`, 32 lowercase hex; else
   400) and that value is used for the check and every Notion call;
   `_patch_page` refuses non-canonical ids before any request. Alias-collision 409s never echo the alias.
+- `services/route_auth.py` owns per-route caller auth that fails closed on its
+  own, independent of APP_API_KEY: Worker (CONTROL_PLANE_TOKEN bearer), Hub
+  (X-API-Key = LAB_HUB_API_KEY) and operators via a verified Cloudflare Access
+  JWT (LAB_ACCESS_TEAM_DOMAIN + LAB_ACCESS_AUD). 503 when unconfigured, 401 on
+  a missing or wrong credential. Every served route is classified in
+  `tests/test_route_auth_guard.py` (reviewed copy: `docs/route-auth-table.md`);
+  an unclassified route fails CI. An Access-authenticated write or websocket
+  also needs `Sec-Fetch-Site: same-origin` or an Origin in LAB_ALLOWED_ORIGINS
+  (403 otherwise: CSRF via the login cookie); a GET that changes state is
+  marked `@side_effect_get` and checked the same way, including editor timeline
+  loading and OpenShot export, which may persist project imports/migrations.
+  Video and Burn archive downloads also create temporary ZIP files and require
+  the same operator origin check. Split-origin fetches may present cross-site
+  or same-site Fetch Metadata only when their exact browser Origin is in
+  `LAB_ALLOWED_ORIGINS`; navigations with no Origin remain refused. The Burn UI
+  uses browser-managed streaming on the API origin and a user-activated save
+  picker plus credentialed stream-to-disk fetch on a split origin. Browsers
+  without that picker need same-origin ingress. The API's `CORS_ORIGINS` must
+  contain the trusted UI origin, and Access cookie delivery must be verified.
+  The auth cutover releases only with the operator frontend and API behind
+  the same Access-protected origin: ordinary UI fetches do not include
+  cross-origin credentials, and an unrelated-host SameSite=Lax/Strict Access
+  cookie cannot supply them. A split-origin UI needs separate end-to-end
+  browser credential, CORS and cookie verification before release.
+  Telegram poster bind/unbind require Access login, without a second Mini App
+  agent key. `RouteAuthMiddleware`
+  enforces the route's dependency, and header-only checks marked
+  `before_body` (Mini App agent key, initData), before the body is read. `/api/miniapp/agent/*`
+  fails closed (503) without MINIAPP_AGENT_KEY.
+  Access JWT verification may fetch JWKS through blocking PyJWKClient on a
+  cache miss; pre-body middleware runs presented Access checks off the ASGI
+  loop with at most eight concurrent lookups per app process. A saturated
+  lookup limit refuses with 503 before reading the body; an otherwise valid
+  Worker or Hub credential remains available without a JWKS lookup even when
+  an Access header is also present. Missing/invalid
+  credentials and unavailable certs keep their existing fail-closed results.
+  Middleware and auth inventory resolve FastAPI's effective include contexts
+  in dispatch order, retaining combined prefixes and include-level dependencies
+  for HTTP and websocket checks before body parsing. Use the public iterator
+  when available, with the earlier lazy-include and flat-route fallbacks retained.
 - `burn_server.py` exposes the same typed caption-render route on the posting
   Mac's canonical port-8002 Burn runtime for Rail consumption.
-- `events.md` is the repository's append-only chronological ledger.
+- `events/` is the repository's append-only chronological event log. Add one
+  `YYYY-MM-DD-HHMM-<branch-slug>.md` file per meaningful change, committed on
+  the work branch with its `worktree:` ref. Existing root `events.md` is frozen
+  history; read it before `events/` entries and never append to or edit it.
 - `SCHEMA.md` describes the current Editor Bay timeline, edit-command, ABN import,
   and render-cache contracts; `services/editor_timeline.py` and `routers/agenticnews.py` own the implementation.
 
@@ -701,6 +750,10 @@
   for nonblocking single-flight tool refresh, missing-tool degradation and
   the public health response.
 
+
+- Run `pytest -q tests/test_route_auth_dispatch.py tests/test_route_auth_guard.py tests/test_route_auth_access_jwt.py tests/test_route_auth_editor_and_binding.py`
+  for effective include prefixes/dependencies, dispatch order, HTTP/websocket
+  pre-body authentication, public mounts and legacy flat-router compatibility.
 
 - Run `node --test tools/seekable-html-video/frame_directory.test.cjs` for caller-directory preservation, exclusive writes, directory replacement, cleanup ownership, and managed temporary-directory cleanup.
 
