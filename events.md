@@ -1697,3 +1697,20 @@ area: [backend], [testing]
 
 acct:oceaneyes7764's Notion title is "Oceaneyes7764". The roster sent that spelling as the Master Pages handle, and ShipStream refused both source imports with `source_registration_invalid` because vault handles must be lowercase. `_snapshot_page` now lowercases the handle, so the roster projection and the current-intent resolver both carry the TikTok spelling. Only this page and one archived page had mixed-case handles in the control plane, so no other page's intent hash moves. New regression test in `tests/test_control_plane_roster.py` fails on the old code and passes now.
 _________________________________________________________________________________
+
+_________________________________________________________________________________
+time: [2026-10-20T06:49Z]
+agent: [DeepSeek remote builder; Codex independent review] [deepseek-v4-pro] [source identity alias]
+worktree: [codex/between-source-identity-alias-1020] /Users/seenorising/rt-work/between-source-identity-alias-1020
+type: [config]: Retain Between The Lines source under its recreated automation identity
+area: [backend], [testing]
+
+Added a new source-DNA manifest for acct:between-the-lines66. Only libraryId and
+pageId differ from the retained old-tt manifest; every master record and its
+storage/provenance fields remain equal, including the 800-second, 205190968-byte
+master SHA 3816ff5c4c79d73eff1694cc21f3644aff18bb68c3a97ca5b8306316feda1314.
+The old manifest bytes remain unchanged. Five new regression tests verify the
+identity-only delta and current-page ingredient eligibility. Independent remote
+verification: 29 source-registry, ingredient and packaged-import tests pass.
+No source-media bytes were downloaded, copied, modified or rendered. No deployment.
+_________________________________________________________________________________
