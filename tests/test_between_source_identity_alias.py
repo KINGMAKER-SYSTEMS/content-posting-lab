@@ -65,7 +65,7 @@ def test_alias_preserves_master_identity_source_window_and_provenance():
     assert master.bytes == MASTER_BYTES
     assert master.sha256 == MASTER_SHA256
     assert master.source_offset_ms == 0
-    # The masters array is byte-for-byte identical: only page scope changed.
+    # Master records and provenance remain equal: only page scope changed.
     assert alias.masters == original.masters
 
 
