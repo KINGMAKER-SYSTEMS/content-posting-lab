@@ -14,12 +14,10 @@
     }
   },
   "pageTreatments": {
-    "culture-core": {
-      "cutStyle": "fast_sixteenth",
-      "cutCount": 60,
-      "framesPerCut": 6,
-      "cutsPerSecond": 5,
-      "targetSeconds": 12
+    "acct:culture-core-1": {
+      "cutMode": "cut_style",
+      "cuts": 60,
+      "audioSectionEnd": 12
     }
   },
   "output": {
