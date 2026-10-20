@@ -127,7 +127,7 @@ def _resolve_timing(request: TimedPostRenderRequest) -> tuple[dict, list[dict]]:
 
 def _validate_phrases(phrases, duration_ms: int) -> list[dict]:
     if not isinstance(phrases, list) or len(phrases) != 7:
-        raise PostRenderError("lyric_phrases_invalid", "lyric timing must carry at least one phrase")
+        raise PostRenderError("lyric_phrases_invalid", "lyric timing must carry exactly seven phrases")
     validated = []
     previous_end = -1
     for phrase in phrases:

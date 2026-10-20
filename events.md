@@ -1729,3 +1729,5 @@ proof. Legacy format records/executor bytes and static renderer remain unchanged
 This is draft integration: Worker producer/admission support, full/image gates,
 publication/hardware and release remain separate. No paid render or deployment.
 _________________________________________________________________________________
+
+11:15 — Independent Burnt v2 review: durable output authority now refuses a self-consistent receipt/decode duration outside the registered 20-second timing set’s existing 34 ms tolerance, including non-integer values. The renderer already enforced 20 seconds; this closes the durable acceptance backstop while leaving v1 unchanged. Five negative queued-row cases failed before the fix; three tolerance controls remained valid. Affected renderer/durable suites pass 117 tests, including real FFmpeg output. Exact-head broader qualification, full suite, image and release gates remain separate. No deployment or paid render.

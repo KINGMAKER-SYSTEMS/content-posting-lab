@@ -89,3 +89,48 @@ def test_actual_managed_v2_worker_produces_persistent_verified_receipt(actual_so
     assert all(e['maxMeanGlyphError']<=35 for e in receipt['phrase_frame_evidence'])
     reopened=jobs.PostRenderJobs(service.root,clock_ms=lambda:NOW)
     assert reopened.status(accepted['id'])['receipt_sha256']==sha256(service.artifact(accepted['id'],'receipt').read_bytes())
+
+
+@pytest.mark.parametrize("duration", [1000, 19965, 20035, True, 20000.0])
+def test_durable_timed_authority_rejects_wrong_duration_even_when_decode_agrees(tmp_path, duration):
+    """A real queued v2 row cannot bless self-consistent but wrong temporal facts."""
+    service = jobs.PostRenderJobs(tmp_path / "jobs", clock_ms=lambda: NOW)
+    body = jobs.RenderJobSubmission.model_validate(submission())
+    accepted = service.enqueue(body, "duration-refusal")
+    row = service._row(accepted["id"])
+    authority = _duration_authority(body.request, duration)
+    with pytest.raises(jobs.RenderJobError, match="receipt_binding_mismatch"):
+        service._validate_output_authority(row, authority)
+
+
+@pytest.mark.parametrize("duration", [19966, 20000, 20034])
+def test_durable_timed_authority_keeps_existing_34ms_delivery_tolerance(tmp_path, duration):
+    service = jobs.PostRenderJobs(tmp_path / "jobs", clock_ms=lambda: NOW)
+    body = jobs.RenderJobSubmission.model_validate(submission())
+    accepted = service.enqueue(body, "duration-positive")
+    authority = _duration_authority(body.request, duration)
+    assert service._validate_output_authority(service._row(accepted["id"]), authority) is authority
+
+
+def _duration_authority(request, duration):
+    import math
+    _, phrases = _resolve_timing(request)
+    receipt = {key: getattr(request, key) for key in (
+        "slot_id", "slot_payload_sha256", "page_id", "program_id", "device_serial", "account",
+        "source_sha256", "caption_sha256", "treatment_sha256", "renderer_id", "renderer_version",
+        "lyric_timing_set_id", "lyric_timing_sha256", "sound_id", "source_program_id", "source_program_sha256")}
+    receipt.update(schema="posting-prepared-artifact/v2", final_sha256="b" * 64,
+        final_byte_length=1024, qa_frame_sha256="c" * 64,
+        final_object_key="posting/final/" + "b" * 64 + ".mp4", mime_type="video/mp4",
+        width=1080, height=1920, completed_at_ms=NOW, duration_ms=duration,
+        phrases=[{**phrase, "pngSha256": "e" * 64} for phrase in phrases],
+        phrase_frame_evidence=[{"phraseIndex": index, "frame": frame,
+            "maxMeanGlyphError": 0, "sha256": "d" * 64}
+            for index in (0, len(phrases) - 1)
+            for frame in sorted({math.ceil(phrases[index]["startMs"] * 30 / 1000),
+                                 math.ceil(phrases[index]["endMs"] * 30 / 1000) - 1})])
+    return {"schema": jobs.OUTPUT_AUTHORITY_SCHEMA, "receipt": receipt,
+        "receipt_sha256": sha256(json.dumps(receipt, sort_keys=True, separators=(",", ":")).encode()),
+        "decode": {"final_sha256": "b" * 64, "qa_frame_sha256": "c" * 64,
+                   "decoded_video_frames": 600, "final_probe": {"duration_ms": duration}},
+        "final_sha256": "b" * 64, "qa_frame_sha256": "c" * 64, "final_byte_length": 1024}

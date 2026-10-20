@@ -28,7 +28,9 @@ from services.post_render import (
     PostRenderError, PostRenderRequest, RenderedPost, render_post, sha256, source_visual_matches,
 )
 
-from services.post_render_timed import TimedPostRenderRequest, render_timed_post, _resolve_timing
+from services.post_render_timed import (
+    DURATION_TOLERANCE_MS, TimedPostRenderRequest, render_timed_post, _resolve_timing,
+)
 
 
 def render_prepared_post(source, output, request, **kwargs):
@@ -600,6 +602,10 @@ class PostRenderJobs:
             raise RenderJobError("receipt_binding_mismatch")
         if isinstance(request, TimedPostRenderRequest):
             timing, phrases = _resolve_timing(request)
+            duration = receipt.get("duration_ms")
+            if (type(duration) is not int
+                    or abs(duration - timing["durationMs"]) > DURATION_TOLERANCE_MS):
+                raise RenderJobError("receipt_binding_mismatch")
             for field in ("lyric_timing_set_id", "lyric_timing_sha256", "sound_id", "source_program_id", "source_program_sha256"):
                 if receipt.get(field) != getattr(request, field):
                     raise RenderJobError("receipt_binding_mismatch")
