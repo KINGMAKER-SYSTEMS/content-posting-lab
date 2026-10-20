@@ -1,7 +1,7 @@
 # Current reviewed implementation
 
 Scoped image-video is integrated into the existing typed slideshow admission and
-runner path in this branch. Remote focused suite: **243 passed in4.91s**. Tests
+runner path in this branch. Remote focused suite: **245 passed in4.85s**. Tests
 capture Syzygy request and actual grade-call parameters; no live render occurred.
 Both pages require brightness.85 exactly once, source words/audio remain blank,
 and only their pinned originals are accepted. Missing source index/live metadata,
@@ -125,3 +125,5 @@ The existing run_color_correct boundary receives brightness-15% exactly once;
 treatment receipt and pinned source provenance are produced only after that boundary
 returns successfully and output is hashed. Tests use captured external boundaries
 and do not claim a live media render, index, deployment, or posting admission.
+
+Final catalog check: page-specific minimum/template counts are3 for PenPal and1 for Twin; both typed catalog fixtures verified.

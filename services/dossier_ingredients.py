@@ -824,6 +824,13 @@ def _slideshow_ingredients(
             library_status = "unavailable"
         try:
             treatment_binding = slideshow_treatment_capability(profile.format_slug)
+            if profile.format_slug == "image-video":
+                from services.control_plane_image_video import image_video_plan
+                photo = image_video_plan(master_pages.get("pageId"))
+                if photo is not None:
+                    count = len(photo["media"])
+                    treatment_binding = {**treatment_binding, "minimumLibraryItems": count,
+                        "templates": [{"slug": "page-photo-hold", "mediaCount": count}]}
         except ValueError:
             treatment_binding = None
     else:

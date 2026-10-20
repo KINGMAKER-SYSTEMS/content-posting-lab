@@ -68,3 +68,16 @@ async def test_tampered_reserved_photo_plan_refuses_before_media_work(image_lab,
     monkeypatch.setattr(cp,'observe_library_media',forbidden);monkeypatch.setattr(cp,'submit_syzygy_render',forbidden)
     await cp._run_syzygy_slideshow(job_id);job=cp._load_jobs()['jobs'][job_id]
     assert job['status']=='failed' and job['error']=='slideshow_plan_invalid';assert called==[]
+
+
+def test_catalog_advertises_actual_page_photo_count(image_lab):
+    _,_,payload,photo=image_lab
+    from services.content_engine_registry import load_engine_registry
+    from services.dossier_ingredients import _slideshow_ingredients
+    profiles,_=load_engine_registry()
+    entries=_slideshow_ingredients(profiles["image-video"],json.loads(payload["recipeSpecCanonical"])["masterPages"])
+    bindings={x["ingredientId"]:x["binding"] for x in entries}
+    count=len(photo["media"])
+    assert bindings["image-library"]["minimumLibraryItems"]==count
+    assert bindings["slideshow-treatment"]["minimumLibraryItems"]==count
+    assert bindings["slideshow-treatment"]["templates"]==[{"slug":"page-photo-hold","mediaCount":count}]
