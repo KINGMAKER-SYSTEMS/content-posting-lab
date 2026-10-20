@@ -1,0 +1,31 @@
+{
+  "schema": "content-lab.syzygy-slideshow-executor.v1",
+  "executorId": "syzygy-slideshow",
+  "source": "syzygy_r2_library",
+  "selection": "deterministic_variety_without_replacement",
+  "reservation": "active_jobs_and_completed_outputs",
+  "formats": {
+    "ugc-slideshow": {
+      "lane": "ugc",
+      "minimumLibraryItems": 3,
+      "templates": [
+        {"slug": "clean-slideshow", "mediaCount": 3}
+      ]
+    }
+  },
+  "pageTreatments": {
+    "acct:culture-core-1": {
+      "cutMode": "cut_style",
+      "cuts": 60,
+      "audioSectionEnd": 12
+    }
+  },
+  "output": {
+    "container": "video/mp4",
+    "aspectRatio": "9:16",
+    "width": 1080,
+    "height": 1920,
+    "encodePreset": "tiktok_delivery_v1",
+    "audioPolicy": "campaign_sound_bound_downstream"
+  }
+}

@@ -1113,6 +1113,83 @@
         "sounds": "page_binding_required"
       },
       "definitionGaps": []
+    },
+    "ugc-slideshow": {
+      "contentNiche": "slideshow",
+      "contentEngine": "sourced_slideshow",
+      "materialSource": "image_library",
+      "assetType": "video/mp4",
+      "definitionStatus": "complete",
+      "creativeAuthority": {
+        "kind": "slideshow_renderer",
+        "id": "syzygy-slideshow",
+        "version": "sha256:ba7bf964383c00d93ed5f6074334d73218321c7593151defadaab02c6694c482"
+      },
+      "dimensions": {
+        "subject": {
+          "status": "defined",
+          "rule": "Every frame comes from the exact page-scoped Syzygy UGC photo library; another page's media may not substitute for it.",
+          "authority": "production.sourceLibraryId"
+        },
+        "setting": {
+          "status": "defined",
+          "rule": "Settings remain those present in the approved page-scoped R2 photos or clips selected for the render.",
+          "authority": "artifact.source.media"
+        },
+        "shotGrammar": {
+          "status": "defined",
+          "rule": "A neutral vertical five-item sequence uses the clean-slideshow template and its exact ordered media count.",
+          "authority": "syzygy-slideshow.formats.ugc-slideshow.templates"
+        },
+        "lighting": {
+          "status": "defined",
+          "rule": "Lighting comes from the selected approved media and the locked Dossier colour treatment; the renderer does not invent a different visual source.",
+          "authority": "artifact.source.media+dossier.treatment"
+        },
+        "motion": {
+          "status": "defined",
+          "rule": "Motion is limited to the selected source clips and the chosen Syzygy slideshow template transitions.",
+          "authority": "syzygy-slideshow.selection"
+        },
+        "duration": {
+          "status": "defined",
+          "rule": "The Syzygy executor renders the closed template sequence as a vertical short-form video and records its exact output duration in technical QA.",
+          "authority": "syzygy-slideshow.output"
+        },
+        "textPolicy": {
+          "status": "defined",
+          "rule": "The visual render introduces no page caption, hook, or lyric copy. The UGC format is submitted with an explicit blank hook (empty text, position none), empty lyrics, and no captions so the neutral background carries no baked text; the page caption bank is bound downstream by Control Plane.",
+          "authority": "syzygy-slideshow.output.audioPolicy"
+        },
+        "negativeRules": {
+          "status": "defined",
+          "rule": "Reject missing, changed, cross-page, repeated-plan, or unproven library media, and any output that bakes a caption, hook, lyric, or original-audio into the neutral background; output must pass technical, provenance, text-layout, and duplicate review.",
+          "authority": "syzygy-slideshow.reservation+reviewGates"
+        },
+        "referenceExamples": {
+          "status": "defined",
+          "rule": "The exact object keys, byte counts, ETags when available, and SHA-256 observations used by each render are preserved in its artifact source manifest.",
+          "authority": "artifact.source.media"
+        }
+      },
+      "output": {
+        "aspectRatio": "9:16",
+        "container": "video/mp4",
+        "durationPolicy": "executor_bound",
+        "audioPolicy": "campaign_sound_bound_downstream"
+      },
+      "reviewAuthority": "syzygy-slideshow.output+artifact.source.media",
+      "reviewGates": [
+        "technical_video",
+        "rights_and_provenance",
+        "text_layout",
+        "duplicate_and_never_reuse"
+      ],
+      "distribution": {
+        "captions": "page_binding_required",
+        "sounds": "page_binding_required"
+      },
+      "definitionGaps": []
     }
   }
 }
