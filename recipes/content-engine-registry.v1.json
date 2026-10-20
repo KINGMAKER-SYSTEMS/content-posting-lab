@@ -98,7 +98,7 @@
       "maxQuantity": 0
     },
     "pov-night-core": {
-      "contentNiche": "POV — Night Core",
+      "contentNiche": "POV \u2014 Night Core",
       "contentEngine": "sourced_video",
       "materialSource": "source_library",
       "assetType": "video/mp4",
@@ -122,7 +122,7 @@
       "maxQuantity": 0
     },
     "pov-scenic": {
-      "contentNiche": "POV — Scenic",
+      "contentNiche": "POV \u2014 Scenic",
       "contentEngine": "sourced_video",
       "materialSource": "source_library",
       "assetType": "video/mp4",
@@ -180,6 +180,18 @@
       "executorVersion": "sha256:1c800420efd659f1f0a38608f6e34d3a38d16da53a43cdf8cc27c67f7cb0440e",
       "formatContractVersion": "sha256:9b13a25a76ece570244c08bc7dc316f15818113b6cc8352916c7a0bc1f50b65f",
       "maxQuantity": 10
+    },
+    "lyric-video": {
+      "contentNiche": "lyric-edits",
+      "contentEngine": "lyrics_slideshows",
+      "materialSource": "lyric_image_library",
+      "assetType": "video/mp4",
+      "executionStatus": "commissioned",
+      "executorKind": "slideshow_renderer",
+      "executorId": "syzygy-slideshow",
+      "executorVersion": "sha256:78da457008391bd873dbc23c57fc7621f9707b8e139781e8d98cea4cdb9f65c9",
+      "formatContractVersion": "sha256:380e6688c1344dc227fb3099fad375fa4016107b363526f19736b53ffed97234",
+      "maxQuantity": 1
     }
   }
 }

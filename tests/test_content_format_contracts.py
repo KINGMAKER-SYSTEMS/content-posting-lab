@@ -92,7 +92,7 @@ def test_every_known_format_has_a_strict_contract_and_registry_binding():
     contracts, _ = load_format_contracts()
     profiles, _ = load_engine_registry()
     assert set(contracts) == set(profiles) == {
-        "boat-lake", "coffee-tok", "construction-scenic", "lyric-edits",
+        "boat-lake", "coffee-tok", "construction-scenic", "lyric-edits", "lyric-video",
         "meme-slideshow", "pov-dirt-bike", "pov-dusk-core",
         "pov-club", "pov-night-core", "pov-night-core-ai", "pov-scenic",
         "silhouette-truck", "truck-scenic", "truck-ugc", "ugc-slideshow",
@@ -110,7 +110,7 @@ def test_only_complete_hash_bound_formats_are_commissioned():
         slug for slug, profile in profiles.items()
         if profile.execution_status == "commissioned"
     } == {
-        "boat-lake", "coffee-tok", "lyric-edits", "meme-slideshow",
+        "boat-lake", "coffee-tok", "lyric-edits", "lyric-video", "meme-slideshow",
         "pov-club", "pov-dirt-bike", "pov-night-core", "pov-scenic", "silhouette-truck",
         "truck-scenic", "ugc-slideshow",
     }

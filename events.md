@@ -1714,3 +1714,18 @@ identity-only delta and current-page ingredient eligibility. Independent remote
 verification: 29 source-registry, ingredient and packaged-import tests pass.
 No source-media bytes were downloaded, copied, modified or rendered. No deployment.
 _________________________________________________________________________________
+
+2026-10-20
+type: [feature]: Add a scoped managed timed-lyric backend for Burnt Mill Road
+area: [backend], [testing]
+
+Added a separate immutable20s27-window/20-video source program and page-owned
+Heavy Foot timing selection. The typed prepared renderer2 creates timed PNG
+phrases over silent already-treated source, checks decoded edge-phrase glyphs,
+and records a v2 receipt. Durable jobs preserve v1 behavior and reject foreign
+sound/timing/source-program identities. Actual background execution emits a
+source-bound lyricTiming capsule; artifact reads reject missing/stale producer
+proof. Legacy format records/executor bytes and static renderer remain unchanged.
+This is draft integration: Worker producer/admission support, full/image gates,
+publication/hardware and release remain separate. No paid render or deployment.
+_________________________________________________________________________________
