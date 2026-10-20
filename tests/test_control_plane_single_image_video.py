@@ -92,3 +92,29 @@ async def test_direct_submission_also_refuses_other_pages_format_before_http(ima
         await iv.submit_image_video_render(photo,page_id=photo['pageId'],
             recipe_version=payload['recipeVersion'],request_json=forbidden,format_slug=other)
     assert called == []
+
+
+def test_same_request_rechecks_live_image_library_without_file_or_intent_change(image_lab,monkeypatch):
+    client,library,payload,_=image_lab
+    import routers.control_plane as cp
+    reads=[]
+    def available(*args,**kwargs):
+        reads.append('available')
+        return library
+    monkeypatch.setattr(cp,'load_syzygy_library',available)
+    headers=base.headers('same-image-capability-request')
+    first=client.get('/api/control-plane/v1/capabilities',headers=headers)
+    assert first.status_code==200
+    row=next(x for x in first.json()['capabilities'] if x['recipeId']==base.RECIPE_ID)
+    assert row['engine']==base.ENGINE and row['maxQuantity']==1
+    assert reads==['available']
+    def unavailable(*args,**kwargs):
+        reads.append('unavailable')
+        raise ss.SyzygyUnavailable('live library is temporarily unavailable')
+    monkeypatch.setattr(cp,'load_syzygy_library',unavailable)
+    # Same publication, current intent, request, jobs and on-disk files. Only
+    # the live library changed, which a file-keyed cache cannot detect.
+    second=client.get('/api/control-plane/v1/capabilities',headers=headers)
+    assert second.status_code==200
+    assert all(x['recipeId']!=base.RECIPE_ID for x in second.json()['capabilities'])
+    assert reads==['available','unavailable']
