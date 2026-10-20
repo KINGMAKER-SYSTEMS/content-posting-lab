@@ -168,6 +168,18 @@
       "executorVersion": null,
       "formatContractVersion": "sha256:18e41f914afada14bbf46f5abe18bf1f3885ad680bd24bda908b417191110aae",
       "maxQuantity": 0
+    },
+    "ugc-slideshow": {
+      "contentNiche": "slideshow",
+      "contentEngine": "sourced_slideshow",
+      "materialSource": "image_library",
+      "assetType": "video/mp4",
+      "executionStatus": "commissioned",
+      "executorKind": "slideshow_renderer",
+      "executorId": "syzygy-slideshow",
+      "executorVersion": "sha256:3f82826985e4b9c0c950f7798ac36225c0fed3d0fda37730a49050e87af28ee7",
+      "formatContractVersion": "sha256:6ca9a51ad8131e9379b95434ce3c4d826a3cc039fe2b77b9e956b42b59dc5033",
+      "maxQuantity": 10
     }
   }
 }

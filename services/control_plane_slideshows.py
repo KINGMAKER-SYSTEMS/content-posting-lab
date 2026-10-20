@@ -30,6 +30,15 @@ EXECUTOR_PATH = (
     Path(__file__).resolve().parents[1]
     / "recipes/executors/syzygy-slideshow.v1.json"
 )
+# The UGC format uses a scoped executor file with the same schema and
+# executorId. The original file's bytes (and therefore the lyric-edits and
+# meme-slideshow profile hashes) stay unchanged; only `ugc-slideshow` resolves
+# the scoped copy.
+UGC_FORMAT_SLUG = "ugc-slideshow"
+UGC_EXECUTOR_PATH = (
+    Path(__file__).resolve().parents[1]
+    / "recipes/executors/syzygy-slideshow-ugc.v1.json"
+)
 EXECUTOR_SCHEMA = "content-lab.syzygy-slideshow-executor.v1"
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 LIBRARY_ID = re.compile(r"^syzygy:[a-z0-9][a-z0-9-]{0,63}:[a-z0-9][a-z0-9-]{0,99}$")
@@ -100,14 +109,19 @@ class SlideshowRecipe:
     engine_profile_hash: str = ""
 
 
-def _executor_contract() -> tuple[dict[str, Any], str]:
-    raw = EXECUTOR_PATH.read_bytes()
+def _executor_contract(format_slug: str | None = None) -> tuple[dict[str, Any], str]:
+    path = UGC_EXECUTOR_PATH if format_slug == UGC_FORMAT_SLUG else EXECUTOR_PATH
+    raw = path.read_bytes()
     value = json.loads(raw)
     if (
         not isinstance(value, dict)
-        or set(value) != {
+        or not {
             "schema", "executorId", "source", "selection", "reservation",
             "formats", "output",
+        }.issubset(value)
+        or set(value) - {
+            "schema", "executorId", "source", "selection", "reservation",
+            "formats", "output", "pageTreatments",
         }
         or value.get("schema") != EXECUTOR_SCHEMA
         or value.get("executorId") != "syzygy-slideshow"
@@ -125,6 +139,31 @@ def _executor_contract() -> tuple[dict[str, Any], str]:
         }
     ):
         raise ValueError("Syzygy slideshow executor contract is invalid")
+    # pageTreatments is optional server-owned config: a page_id -> closed cut
+    # policy mapping that never binds the render wire. It is not a protocol.
+    treatments = value.get("pageTreatments", {})
+    if not isinstance(treatments, dict):
+        raise ValueError("Syzygy slideshow executor pageTreatments is invalid")
+    for page_id, treatment in treatments.items():
+        if (
+            not isinstance(page_id, str)
+            or not page_id.strip()
+            or not isinstance(treatment, dict)
+            or set(treatment) != {
+                "cutStyle", "cutCount", "framesPerCut", "cutsPerSecond",
+                "targetSeconds",
+            }
+            or treatment.get("cutStyle") != "fast_sixteenth"
+            or not isinstance(treatment.get("cutCount"), int)
+            or not 1 <= treatment["cutCount"] <= 240
+            or not isinstance(treatment.get("framesPerCut"), int)
+            or not 1 <= treatment["framesPerCut"] <= 60
+            or not isinstance(treatment.get("cutsPerSecond"), (int, float))
+            or not 0 < treatment["cutsPerSecond"] <= 60
+            or not isinstance(treatment.get("targetSeconds"), (int, float))
+            or not 0 < treatment["targetSeconds"] <= 60
+        ):
+            raise ValueError("Syzygy slideshow executor pageTreatment is invalid")
     for format_slug, config in value["formats"].items():
         if (
             not isinstance(format_slug, str)
@@ -152,7 +191,7 @@ def _executor_contract() -> tuple[dict[str, Any], str]:
 
 
 def slideshow_treatment_capability(format_slug: str) -> dict[str, Any]:
-    executor, digest = _executor_contract()
+    executor, digest = _executor_contract(format_slug)
     config = executor["formats"].get(format_slug)
     if not isinstance(config, dict):
         raise ValueError("Syzygy slideshow format is not registered")
@@ -177,7 +216,7 @@ def _subject(handle: Any) -> str | None:
 def slideshow_library_address(
     profile: MaterialProfile, master_pages: dict[str, Any],
 ) -> tuple[str, str, str] | None:
-    executor, digest = _executor_contract()
+    executor, digest = _executor_contract(profile.format_slug)
     if profile.executor_version != f"sha256:{digest}":
         return None
     config = executor["formats"].get(profile.format_slug)
@@ -326,7 +365,7 @@ def resolve_slideshow_recipe(
         or profile.content_engine != engine
     ):
         return None
-    executor, digest = _executor_contract()
+    executor, digest = _executor_contract(profile.format_slug)
     if profile.executor_version != f"sha256:{digest}":
         return None
     master_pages = spec.get("masterPages")
@@ -388,6 +427,30 @@ def plan_slideshows(
         or any(not SHA256.fullmatch(item) for item in unavailable_signatures)
     ):
         return []
+    # The UGC format is a curated page library: the first mediaCount objects in
+    # the library's ordinal order form the one and only plan. No offset/stride
+    # permutation would be legal (it would reorder the curated arc), so there
+    # is never "variety" to synthesize — an exhausted ordered set stays
+    # exhausted until the operator ships a new curated set.
+    if recipe.format_slug == UGC_FORMAT_SLUG:
+        template = recipe.templates[0]
+        objects_in_order = list(library.objects)
+        if template.media_count > len(objects_in_order):
+            return []
+        selected = objects_in_order[: template.media_count]
+        identity = {
+            "templateSlug": template.slug,
+            "mediaKeys": [item.key for item in selected],
+        }
+        canonical = json.dumps(identity, sort_keys=True, separators=(",", ":"))
+        signature = hashlib.sha256(canonical.encode()).hexdigest()
+        if signature in unavailable_signatures:
+            return []
+        return [{
+            **identity,
+            "signature": signature,
+            "librarySnapshotHash": library.snapshot_hash,
+        }]
     objects = list(library.objects)
     candidates: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -429,6 +492,44 @@ def plan_slideshows(
         if len(planned) == count:
             break
     return planned
+
+
+def ugc_page_cut_policy(page_id: str) -> dict[str, Any] | None:
+    """Return the staged server-owned fast-cut policy for one page, if any.
+
+    The policy is config only: it describes the Culture Core cadence the
+    operator intends Syzygy to render. It never binds the render wire, so an
+    unknown page keeps the generic UGC clean-slideshow behavior unchanged.
+    """
+    if not isinstance(page_id, str) or not page_id.strip():
+        return None
+    try:
+        executor, _ = _executor_contract(UGC_FORMAT_SLUG)
+    except (OSError, ValueError, json.JSONDecodeError):
+        return None
+    treatment = executor.get("pageTreatments", {}).get(page_id)
+    return dict(treatment) if isinstance(treatment, dict) else None
+
+
+def ugc_fast_cut_cadence(
+    *, cut_count: int, frames_per_cut: int, fps: int = 30,
+) -> list[float]:
+    """Pure cadence helper: evenly spaced cut boundaries for a fast UGC burst.
+
+    Returns cut_count boundary timestamps (seconds) using frames_per_cut frames
+    per cut at the given fps. No Syzygy wire field is derived here; the parent
+    will pin the exact render payload once Syzygy's fast-cut contract lands.
+    """
+    if (
+        not isinstance(cut_count, int) or isinstance(cut_count, bool)
+        or cut_count <= 0
+        or not isinstance(frames_per_cut, int) or isinstance(frames_per_cut, bool)
+        or frames_per_cut <= 0
+        or not isinstance(fps, int) or isinstance(fps, bool) or fps <= 0
+    ):
+        return []
+    step = frames_per_cut / fps
+    return [round(index * step, 6) for index in range(cut_count)]
 
 
 def syzygy_idempotency_key(*parts: str) -> str:
@@ -488,6 +589,7 @@ async def syzygy_revision() -> str:
 
 async def submit_syzygy_render(
     plan: dict[str, Any], *, page_id: str, recipe_version: str,
+    format_slug: str | None = None,
 ) -> tuple[str, str]:
     media = []
     for object_key in plan.get("mediaKeys", []):
@@ -502,6 +604,20 @@ async def submit_syzygy_render(
         "media": media,
         "audio": {"section_start": 0, "section_end": 15},
     }
+    if format_slug == UGC_FORMAT_SLUG:
+        # The neutral UGC background must carry no baked copy or source audio.
+        # Syzygy's builtin template style fills absent keys, so these explicit
+        # blank values suppress hook/lyric/caption text and original audio.
+        spec.update({
+            "hook": {"text": "", "position": "none"},
+            "lyrics": [],
+            "captions": {"position": "none"},
+            "textCards": [],
+            "text_cards": [],
+            "lyrics_lrc": "",
+            "lyrics_required": False,
+            "uses_original_audio": False,
+        })
     key = syzygy_idempotency_key(
         page_id, recipe_version, plan["signature"], "render-v1",
     )

@@ -404,8 +404,8 @@ def _fake_syzygy_boundary(monkeypatch, library, *, mutate=False):
             result.append(row)
         return result
 
-    async def fake_submit(plan, *, page_id, recipe_version):
-        calls["submit"].append((plan, page_id, recipe_version))
+    async def fake_submit(plan, *, page_id, recipe_version, format_slug=None):
+        calls["submit"].append((plan, page_id, recipe_version, format_slug))
         return f"render-job-{len(calls['submit']):04d}", "draft"
 
     async def fake_poll(render_job_id):
