@@ -9,15 +9,269 @@
       "lane": "ugc",
       "minimumLibraryItems": 3,
       "templates": [
-        {"slug": "clean-slideshow", "mediaCount": 3}
+        {
+          "slug": "clean-slideshow",
+          "mediaCount": 3
+        }
       ]
     }
   },
   "pageTreatments": {
     "acct:culture-core-1": {
-      "cutMode": "cut_style",
-      "cuts": 60,
-      "audioSectionEnd": 12
+      "curatedVideoPlan": {
+        "lane": "slideshow-webweaving",
+        "audioSectionEnd": 12,
+        "muted": true,
+        "speed": 1,
+        "cropMode": "cover",
+        "sources": [
+          {
+            "file": "tk-v-0005.mp4",
+            "sha256": "b0db2446862b4e0f789688a9500304bdbb83e558fe8ccdebcd96568923c99d5e",
+            "bytes": 5237433,
+            "duration": 12.0
+          },
+          {
+            "file": "ytal-v-0012.mp4",
+            "sha256": "28b721c76288b5ecd6f78437d59c89162bf25e92aaac1934d14bff28c3e96975",
+            "bytes": 4125502,
+            "duration": 8.5085
+          },
+          {
+            "file": "ytal-v-0014.mp4",
+            "sha256": "2ba7832152cd68451ca8fcc9122bea60bf1066001bb304eeb36bb96bcad4ce07",
+            "bytes": 4387384,
+            "duration": 6.006
+          },
+          {
+            "file": "ytal-v-0002.mp4",
+            "sha256": "d425ebd704c00e458efcbae3fed83748c7aec0751578c192fc4d23cbf65a23e7",
+            "bytes": 7791757,
+            "duration": 8.0
+          },
+          {
+            "file": "ytal-v-0007.mp4",
+            "sha256": "4befac6bc711b7333a287e9e2bf44ca463cc225cca0a2ce341200c0a67f501e7",
+            "bytes": 3581347,
+            "duration": 6.0
+          },
+          {
+            "file": "ytal-v-0017.mp4",
+            "sha256": "60e0f3f8b55538a5b05afbceaa2dc774a8b3999def2f7fe22208f99655a27c35",
+            "bytes": 3126853,
+            "duration": 6.006
+          },
+          {
+            "file": "ytal-v-0006.mp4",
+            "sha256": "1a5d5e2e6bd94abdceac972dfdb20300910097356801451be7d7dd331b1fb0bb",
+            "bytes": 2741037,
+            "duration": 4.5
+          },
+          {
+            "file": "ytal-v-0003.mp4",
+            "sha256": "1e4b177b4635404ce09d8ce26615376784f7862b0d01bf70d191093c05655e47",
+            "bytes": 5126638,
+            "duration": 7.0
+          },
+          {
+            "file": "ytal-v-0009.mp4",
+            "sha256": "8c970d9fc11292af471ea33ae45c9938b74092813cf090ba49d0978e4946c8e2",
+            "bytes": 3160623,
+            "duration": 5.5
+          },
+          {
+            "file": "ytal-v-0013.mp4",
+            "sha256": "2e1e4e6209a72ea91ceb41b8430857d9a4665399671e2de1afbbc22519d88970",
+            "bytes": 2661762,
+            "duration": 5.5055
+          },
+          {
+            "file": "ytal-v-0008.mp4",
+            "sha256": "1d13175d1a395af05d4872060be2780d60b0000de2f900de1f55a7165fca2990",
+            "bytes": 4233299,
+            "duration": 6.5
+          },
+          {
+            "file": "ytal-v-0001.mp4",
+            "sha256": "87112f63ca91eac20e0aefaabc8697ebccc89e56e932222f063757ccf07ec8db",
+            "bytes": 4979012,
+            "duration": 8.0
+          },
+          {
+            "file": "tk-v-0006.mp4",
+            "sha256": "5935ebc300f5992f25748a0ffdd28d8383ec6b432c1803ee6e5b38cc90c4dd1d",
+            "bytes": 2523086,
+            "duration": 8.0
+          },
+          {
+            "file": "ytal-v-0011.mp4",
+            "sha256": "bbbca2581c344bd6cb31add5d7c9dc8e856842c8fe1754d7f60aa5ebc1372765",
+            "bytes": 2243910,
+            "duration": 5.0
+          },
+          {
+            "file": "ytal-v-0004.mp4",
+            "sha256": "9b0e14b9935aa5e5709cd88bbf654d37b2dfbb41bc9ebe647b5de0316cd9d965",
+            "bytes": 5402539,
+            "duration": 8.0
+          }
+        ],
+        "windows": [
+          {
+            "source": "tk-v-0005.mp4",
+            "sourceStart": 0,
+            "sourceEnd": 0.8,
+            "outputStart": 0,
+            "outputEnd": 0.8,
+            "focalX": 0.5
+          },
+          {
+            "source": "ytal-v-0012.mp4",
+            "sourceStart": 4.1,
+            "sourceEnd": 5.3,
+            "outputStart": 0.8,
+            "outputEnd": 2.0,
+            "focalX": 0.25
+          },
+          {
+            "source": "tk-v-0005.mp4",
+            "sourceStart": 9.4,
+            "sourceEnd": 9.8,
+            "outputStart": 2.0,
+            "outputEnd": 2.4,
+            "focalX": 0.5
+          },
+          {
+            "source": "ytal-v-0014.mp4",
+            "sourceStart": 0.6,
+            "sourceEnd": 1.0,
+            "outputStart": 2.4,
+            "outputEnd": 2.8,
+            "focalX": 0.43
+          },
+          {
+            "source": "ytal-v-0002.mp4",
+            "sourceStart": 1.4,
+            "sourceEnd": 1.6,
+            "outputStart": 2.8,
+            "outputEnd": 3.0,
+            "focalX": 0.53
+          },
+          {
+            "source": "ytal-v-0007.mp4",
+            "sourceStart": 0.2,
+            "sourceEnd": 0.4,
+            "outputStart": 3.0,
+            "outputEnd": 3.2,
+            "focalX": 0.29
+          },
+          {
+            "source": "ytal-v-0017.mp4",
+            "sourceStart": 0.3,
+            "sourceEnd": 1.1,
+            "outputStart": 3.2,
+            "outputEnd": 4.0,
+            "focalX": 0.4
+          },
+          {
+            "source": "ytal-v-0006.mp4",
+            "sourceStart": 1,
+            "sourceEnd": 1.4,
+            "outputStart": 4.0,
+            "outputEnd": 4.4,
+            "focalX": 0.65
+          },
+          {
+            "source": "ytal-v-0003.mp4",
+            "sourceStart": 0.4,
+            "sourceEnd": 0.6,
+            "outputStart": 4.4,
+            "outputEnd": 4.6,
+            "focalX": 0.68
+          },
+          {
+            "source": "ytal-v-0009.mp4",
+            "sourceStart": 0.8,
+            "sourceEnd": 1.6,
+            "outputStart": 4.6,
+            "outputEnd": 5.4,
+            "focalX": 0.57
+          },
+          {
+            "source": "ytal-v-0013.mp4",
+            "sourceStart": 0.6,
+            "sourceEnd": 1.0,
+            "outputStart": 5.4,
+            "outputEnd": 5.8,
+            "focalX": 0.36
+          },
+          {
+            "source": "ytal-v-0008.mp4",
+            "sourceStart": 1.6,
+            "sourceEnd": 2.4,
+            "outputStart": 5.8,
+            "outputEnd": 6.6,
+            "focalX": 0.57
+          },
+          {
+            "source": "ytal-v-0001.mp4",
+            "sourceStart": 3.2,
+            "sourceEnd": 3.4,
+            "outputStart": 6.6,
+            "outputEnd": 6.8,
+            "focalX": 0.6
+          },
+          {
+            "source": "ytal-v-0002.mp4",
+            "sourceStart": 4.8,
+            "sourceEnd": 5.2,
+            "outputStart": 6.8,
+            "outputEnd": 7.2,
+            "focalX": 0.59
+          },
+          {
+            "source": "ytal-v-0014.mp4",
+            "sourceStart": 2,
+            "sourceEnd": 2.8,
+            "outputStart": 7.2,
+            "outputEnd": 8.0,
+            "focalX": 0.43
+          },
+          {
+            "source": "tk-v-0006.mp4",
+            "sourceStart": 3.8,
+            "sourceEnd": 4.4,
+            "outputStart": 8.0,
+            "outputEnd": 8.6,
+            "focalX": 0.5
+          },
+          {
+            "source": "ytal-v-0007.mp4",
+            "sourceStart": 4.8,
+            "sourceEnd": 5.6,
+            "outputStart": 8.6,
+            "outputEnd": 9.4,
+            "focalX": 0.58
+          },
+          {
+            "source": "ytal-v-0011.mp4",
+            "sourceStart": 1.2,
+            "sourceEnd": 2.2,
+            "outputStart": 9.4,
+            "outputEnd": 10.4,
+            "focalX": 0.38
+          },
+          {
+            "source": "ytal-v-0004.mp4",
+            "sourceStart": 6.4,
+            "sourceEnd": 8.0,
+            "outputStart": 10.4,
+            "outputEnd": 12.0,
+            "focalX": 0.5
+          }
+        ],
+        "subject": "culture-core-1"
+      }
     }
   },
   "output": {

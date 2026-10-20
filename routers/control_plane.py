@@ -107,6 +107,10 @@ from services.control_plane_sources import (
 )
 from services.control_plane_slideshows import (
     SyzygyError,
+    UGC_FORMAT_SLUG,
+    curated_plan_for_recipe,
+    curated_plan_signature,
+    requires_curated_video_plan,
     download_syzygy_artifact,
     load_recipe_library,
     load_syzygy_library,
@@ -116,6 +120,7 @@ from services.control_plane_slideshows import (
     resolve_slideshow_recipe,
     submit_syzygy_render,
     syzygy_revision,
+    ugc_encode_args,
 )
 from services.control_plane_source_imports import (
     MAX_CONCURRENT_SOURCE_IMPORTS,
@@ -3780,7 +3785,56 @@ async def _run_syzygy_slideshow(job_id: str) -> None:
                 if isinstance(template_slug, str)
                 else None
             )
-            if (
+            curated = requires_curated_video_plan(recipe)
+            if curated and not isinstance(plan.get("windows"), list):
+                raise RuntimeError("slideshow_plan_invalid")
+            if not curated and "windows" in plan:
+                raise RuntimeError("slideshow_plan_invalid")
+            if curated:
+                canonical = curated_plan_for_recipe(recipe, library)
+                if canonical is None:
+                    raise RuntimeError("slideshow_plan_invalid")
+                if (
+                    signature != canonical["signature"]
+                    or signature != curated_plan_signature(plan)
+                    or media_keys != canonical["mediaKeys"]
+                    or any(
+                        not isinstance(window, dict)
+                        or window.get("key") is None
+                        for window in plan["windows"]
+                    )
+                ):
+                    raise RuntimeError("slideshow_plan_invalid")
+                # Unique 15-key media for observation/receipt, plus full windows.
+                if len(set(media_keys)) != len(media_keys):
+                    raise RuntimeError("slideshow_plan_invalid")
+                pinned_by_key = {
+                    window["key"]: (window["sourceSha256"], window["sourceBytes"])
+                    for window in plan["windows"]
+                }
+                if len(pinned_by_key) != len(media_keys):
+                    raise RuntimeError("slideshow_plan_invalid")
+                valid = (
+                    not isinstance(signature, str)
+                    or not re.fullmatch(r"[0-9a-f]{64}", signature)
+                    or not isinstance(snapshot_hash, str)
+                    or not re.fullmatch(r"[0-9a-f]{64}", snapshot_hash)
+                    or not isinstance(planned_media, list)
+                    or [
+                        item.get("objectKey") if isinstance(item, dict) else None
+                        for item in planned_media
+                    ] != media_keys
+                    or any(
+                        not isinstance(item.get("bytes"), int)
+                        or isinstance(item.get("bytes"), bool)
+                        or item.get("bytes") <= 0
+                        for item in planned_media
+                        if isinstance(item, dict)
+                    )
+                )
+                if valid:
+                    raise RuntimeError("slideshow_plan_invalid")
+            elif (
                 template is None
                 or not isinstance(media_keys, list)
                 or len(media_keys) != template.media_count
@@ -3811,6 +3865,19 @@ async def _run_syzygy_slideshow(job_id: str) -> None:
                 if bytes_by_key.get(item["objectKey"]) != item["bytes"]:
                     raise RuntimeError("slideshow_library_object_changed")
             before = await observe_library_media(library, media_keys)
+            if curated:
+                # Verify observed bytes are the pinned bytes AND the observed
+                # SHA matches the pinned source SHA before any paid POST.
+                observed = {row["objectKey"]: row for row in before}
+                for key in media_keys:
+                    row = observed.get(key)
+                    pinned_sha, pinned_bytes = pinned_by_key[key]
+                    if (
+                        row is None
+                        or row["sha256"] != pinned_sha
+                        or row["bytes"] != pinned_bytes
+                    ):
+                        raise RuntimeError("slideshow_source_sha_mismatch")
             # The renderer may roll between plans; each artifact records the
             # exact revision observed immediately before its own submission.
             renderer_revision = await syzygy_revision()
@@ -3827,10 +3894,15 @@ async def _run_syzygy_slideshow(job_id: str) -> None:
             if after != before:
                 raise RuntimeError("slideshow_source_mutated_during_render")
             destination = treated_root / f"slideshow-{index:04d}.mp4"
+            encode_args = (
+                ugc_encode_args(recipe.encode_preset)
+                if recipe.format_slug == UGC_FORMAT_SLUG
+                else delivery_encode_args(recipe.encode_preset)
+            )
             await run_color_correct(
                 str(raw_render), str(destination), color_correction,
                 scale=None,
-                encode_args=delivery_encode_args(recipe.encode_preset),
+                encode_args=encode_args,
                 playback_speed=clip_speed,
                 clip_crop=clip_crop,
                 clip_crop_size=(recipe.output_width, recipe.output_height),

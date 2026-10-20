@@ -1123,12 +1123,12 @@
       "creativeAuthority": {
         "kind": "slideshow_renderer",
         "id": "syzygy-slideshow",
-        "version": "sha256:ba7bf964383c00d93ed5f6074334d73218321c7593151defadaab02c6694c482"
+        "version": "sha256:1c800420efd659f1f0a38608f6e34d3a38d16da53a43cdf8cc27c67f7cb0440e"
       },
       "dimensions": {
         "subject": {
           "status": "defined",
-          "rule": "Every frame comes from the exact page-scoped Syzygy UGC photo library; another page's media may not substitute for it.",
+          "rule": "Every frame comes from the exact page-scoped Syzygy library of approved photos or source clip windows; another page's media may not substitute for it.",
           "authority": "production.sourceLibraryId"
         },
         "setting": {
@@ -1138,8 +1138,8 @@
         },
         "shotGrammar": {
           "status": "defined",
-          "rule": "A neutral vertical five-item sequence uses the clean-slideshow template and its exact ordered media count.",
-          "authority": "syzygy-slideshow.formats.ugc-slideshow.templates"
+          "rule": "Generic UGC pages render a neutral vertical clean-slideshow sequence using the template's exact ordered media count; the Culture Core page renders an operator-approved curated video montage of ordered source clip windows instead of a fixed photo cycle.",
+          "authority": "syzygy-slideshow.formats.ugc-slideshow.templates+pageTreatments.curatedVideoPlan"
         },
         "lighting": {
           "status": "defined",

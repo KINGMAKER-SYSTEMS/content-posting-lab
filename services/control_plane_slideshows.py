@@ -35,13 +35,27 @@ EXECUTOR_PATH = (
 # meme-slideshow profile hashes) stay unchanged; only `ugc-slideshow` resolves
 # the scoped copy.
 UGC_FORMAT_SLUG = "ugc-slideshow"
+# Lab plan identity, not an applied Syzygy builtin template.
+CURATED_VIDEO_PLAN_SLUG = "curated-video-montage"
 UGC_EXECUTOR_PATH = (
     Path(__file__).resolve().parents[1]
     / "recipes/executors/syzygy-slideshow-ugc.v1.json"
 )
 EXECUTOR_SCHEMA = "content-lab.syzygy-slideshow-executor.v1"
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
+# The Syzygy renderer reports its deployed revision on /readyz. It may be a
+# full 64-hex SHA-256 or a 40-hex git object id; both are accepted as an opaque
+# renderer revision. The strict 64-hex ``SHA256`` pattern above remains the only
+# validator for plan signatures and source hashes, which must always be full
+# SHA-256 digests.
+RENDERER_REVISION = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
 LIBRARY_ID = re.compile(r"^syzygy:[a-z0-9][a-z0-9-]{0,63}:[a-z0-9][a-z0-9-]{0,99}$")
+# The curated video library lane. Generic UGC photo pages resolve the format's
+# ``ugc`` lane; a page with a closed curatedVideoPlan resolves this canonical
+# clips lane so its library keys are
+# ``slideshow-webweaving/<subject>/clips/<file>``.
+CURATED_VIDEO_LANE = "slideshow-webweaving"
+SOURCE_FILENAME = re.compile(r"^[a-z0-9][a-z0-9_-]{0,199}\.[a-z0-9]{1,10}$")
 OBJECT_KEY = re.compile(
     r"^[a-z0-9][a-z0-9-]{0,63}/[a-z0-9][a-z0-9-]{0,99}/"
     r"(?:photos|clips)/[a-z0-9][a-z0-9_-]{0,199}\.[a-z0-9]{1,10}$"
@@ -109,6 +123,163 @@ class SlideshowRecipe:
     engine_profile_hash: str = ""
 
 
+def _parse_curated_video_plan(value: Any) -> dict[str, Any]:
+    """Validate and normalize one closed curatedVideoPlan page treatment.
+
+    The tracked executor carries ordered source clip windows
+    with pinned SHA-256/bytes/duration. Anything malformed, nonfinite, negative,
+    overrunning its source duration or non-contiguous fails closed. The executor
+    version and stored plan signature bind the approved order.
+    """
+    if not isinstance(value, dict) or set(value) != {
+        "lane", "subject", "audioSectionEnd", "muted", "speed", "cropMode", "sources", "windows",
+    }:
+        raise ValueError("curatedVideoPlan fields are invalid")
+    lane = value.get("lane")
+    if (
+        not isinstance(lane, str)
+        or not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", lane)
+    ):
+        raise ValueError("curatedVideoPlan lane is invalid")
+    subject = value.get("subject")
+    if not isinstance(subject, str) or not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,99}", subject):
+        raise ValueError("curatedVideoPlan subject is invalid")
+    audio_end = value.get("audioSectionEnd")
+    if (
+        isinstance(audio_end, bool)
+        or not isinstance(audio_end, (int, float))
+        or not math.isfinite(audio_end)
+        or not 0 < audio_end <= 60
+    ):
+        raise ValueError("curatedVideoPlan audioSectionEnd is invalid")
+    if value.get("muted") is not True:
+        raise ValueError("curatedVideoPlan muted must be true")
+    speed = value.get("speed")
+    if (
+        isinstance(speed, bool)
+        or not isinstance(speed, (int, float))
+        or not math.isfinite(speed)
+        or speed != 1
+    ):
+        raise ValueError("curatedVideoPlan speed is invalid")
+    if value.get("cropMode") != "cover":
+        raise ValueError("curatedVideoPlan cropMode is invalid")
+
+    sources = value.get("sources")
+    if not isinstance(sources, list) or not sources or len(sources) > 1_000:
+        raise ValueError("curatedVideoPlan sources are invalid")
+    by_file: dict[str, dict[str, Any]] = {}
+    for source in sources:
+        if (
+            not isinstance(source, dict)
+            or set(source) != {"file", "sha256", "bytes", "duration"}
+            or not isinstance(source.get("file"), str)
+            or not SOURCE_FILENAME.fullmatch(source["file"])
+            or not isinstance(source.get("sha256"), str)
+            or not SHA256.fullmatch(source["sha256"])
+            or not isinstance(source.get("bytes"), int)
+            or isinstance(source.get("bytes"), bool)
+            or source["bytes"] <= 0
+            or isinstance(source.get("duration"), bool)
+            or not isinstance(source.get("duration"), (int, float))
+            or not math.isfinite(source["duration"])
+            or source["duration"] <= 0
+        ):
+            raise ValueError("curatedVideoPlan source is invalid")
+        if source["file"] in by_file:
+            raise ValueError("curatedVideoPlan sources are not unique")
+        by_file[source["file"]] = source
+
+    windows = value.get("windows")
+    if not isinstance(windows, list) or not windows or len(windows) > 1_000:
+        raise ValueError("curatedVideoPlan windows are invalid")
+    previous_end = 0.0
+    for index, window in enumerate(windows):
+        if (
+            not isinstance(window, dict)
+            or set(window) != {
+                "source", "sourceStart", "sourceEnd", "outputStart", "outputEnd", "focalX",
+            }
+            or not isinstance(window.get("source"), str)
+            or window["source"] not in by_file
+        ):
+            raise ValueError("curatedVideoPlan window is invalid")
+        source = by_file[window["source"]]
+        bounds = (
+            window.get("sourceStart"), window.get("sourceEnd"),
+            window.get("outputStart"), window.get("outputEnd"), window.get("focalX"),
+        )
+        if any(
+            isinstance(num, bool) or not isinstance(num, (int, float)) or not math.isfinite(num)
+            for num in bounds
+        ):
+            raise ValueError("curatedVideoPlan window bound is invalid")
+        source_start, source_end, output_start, output_end, focal_x = bounds
+        if (
+            source_start < 0
+            or source_end <= source_start
+            or source_end > source["duration"] + 1e-9
+            or output_start < 0
+            or output_end <= output_start
+            or output_end > audio_end + 1e-9
+            or not 0 <= focal_x <= 1
+            or abs((source_end - source_start) - (output_end - output_start)) > 1e-9
+        ):
+            raise ValueError("curatedVideoPlan window bounds are invalid")
+        if index == 0:
+            if output_start != 0:
+                raise ValueError("curatedVideoPlan windows do not start at zero")
+        elif abs(output_start - previous_end) > 1e-9:
+            raise ValueError("curatedVideoPlan windows are not contiguous")
+        previous_end = output_end
+    if abs(previous_end - audio_end) > 1e-9:
+        raise ValueError("curatedVideoPlan windows do not cover the audio section")
+    return {
+        "lane": lane,
+        "subject": subject,
+        "audioSectionEnd": audio_end,
+        "muted": value["muted"],
+        "speed": speed,
+        "cropMode": value["cropMode"],
+        "sources": [dict(item) for item in sources],
+        "windows": [dict(item) for item in windows],
+    }
+
+
+def curated_plan_signature(plan: dict[str, Any]) -> str:
+    """SHA-256 identity of a curated video plan.
+
+    Binds the ordered unique media keys, the full ordered window list (source
+    key, bounds, crop focus, pinned SHA/bytes/duration), and the render
+    constants, so a stored job plan can be replayed exactly without rereading
+    executor config.
+    """
+    identity = {
+        "templateSlug": plan["templateSlug"],
+        "mediaKeys": list(plan["mediaKeys"]),
+        "muted": plan["muted"],
+        "speed": plan["speed"],
+        "cropMode": plan["cropMode"],
+        "audioSectionEnd": plan["audioSectionEnd"],
+        "windows": [
+            {
+                "key": window["key"],
+                "sourceStart": window["sourceStart"],
+                "sourceEnd": window["sourceEnd"],
+                "outputStart": window["outputStart"],
+                "outputEnd": window["outputEnd"],
+                "focalX": window["focalX"],
+                "sourceSha256": window["sourceSha256"],
+                "sourceBytes": window["sourceBytes"],
+                "sourceDuration": window["sourceDuration"],
+            }
+            for window in plan["windows"]
+        ],
+    }
+    canonical = json.dumps(identity, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode()).hexdigest()
+
+
 def _executor_contract(format_slug: str | None = None) -> tuple[dict[str, Any], str]:
     path = UGC_EXECUTOR_PATH if format_slug == UGC_FORMAT_SLUG else EXECUTOR_PATH
     raw = path.read_bytes()
@@ -139,9 +310,11 @@ def _executor_contract(format_slug: str | None = None) -> tuple[dict[str, Any], 
         }
     ):
         raise ValueError("Syzygy slideshow executor contract is invalid")
-    # pageTreatments is optional server-owned config: a page_id -> closed cut
-    # policy that drives the render wire for that exact page only. It is not a
-    # protocol; unknown pages keep the generic UGC clean-slideshow behavior.
+    # pageTreatments is optional server-owned config: a page_id -> closed policy
+    # that drives the render wire for that exact page only. It is not a protocol;
+    # unknown pages keep the generic UGC clean-slideshow behavior. A treatment is
+    # EITHER the legacy cut_style trio OR a closed curatedVideoPlan object (not
+    # both); anything else fails closed.
     treatments = value.get("pageTreatments", {})
     if not isinstance(treatments, dict):
         raise ValueError("Syzygy slideshow executor pageTreatments is invalid")
@@ -150,13 +323,20 @@ def _executor_contract(format_slug: str | None = None) -> tuple[dict[str, Any], 
             not isinstance(page_id, str)
             or not page_id.strip()
             or not isinstance(treatment, dict)
-            or set(treatment) != {"cutMode", "cuts", "audioSectionEnd"}
-            or treatment.get("cutMode") != "cut_style"
-            or not isinstance(treatment.get("cuts"), int)
-            or not 1 <= treatment["cuts"] <= 240
-            or not isinstance(treatment.get("audioSectionEnd"), (int, float))
-            or not 0 < treatment["audioSectionEnd"] <= 60
         ):
+            raise ValueError("Syzygy slideshow executor pageTreatment is invalid")
+        if set(treatment) == {"cutMode", "cuts", "audioSectionEnd"}:
+            if (
+                treatment.get("cutMode") != "cut_style"
+                or not isinstance(treatment.get("cuts"), int)
+                or not 1 <= treatment["cuts"] <= 240
+                or not isinstance(treatment.get("audioSectionEnd"), (int, float))
+                or not 0 < treatment["audioSectionEnd"] <= 60
+            ):
+                raise ValueError("Syzygy slideshow executor pageTreatment is invalid")
+        elif set(treatment) == {"curatedVideoPlan"}:
+            _parse_curated_video_plan(treatment["curatedVideoPlan"])
+        else:
             raise ValueError("Syzygy slideshow executor pageTreatment is invalid")
     for format_slug, config in value["formats"].items():
         if (
@@ -207,6 +387,30 @@ def _subject(handle: Any) -> str | None:
     return value if value and len(value) <= 100 else None
 
 
+def ugc_page_treatment(page_id: str) -> dict[str, Any] | None:
+    """Return the closed server-owned treatment for one UGC page, if any.
+
+    Returns either a legacy ``{"cutMode","cuts","audioSectionEnd"}`` policy or a
+    full ``{"curatedVideoPlan": ...}`` (with ``sourceKeys``/``windows`` already
+    normalized). Unknown pages return None and keep generic UGC behavior.
+    """
+    if not isinstance(page_id, str) or not page_id.strip():
+        return None
+    try:
+        executor, _ = _executor_contract(UGC_FORMAT_SLUG)
+    except (OSError, ValueError, json.JSONDecodeError):
+        return None
+    treatment = executor.get("pageTreatments", {}).get(page_id)
+    if not isinstance(treatment, dict):
+        return None
+    if "curatedVideoPlan" in treatment and set(treatment) == {"curatedVideoPlan"}:
+        plan = _parse_curated_video_plan(treatment["curatedVideoPlan"])
+        return {"curatedVideoPlan": plan}
+    if set(treatment) == {"cutMode", "cuts", "audioSectionEnd"}:
+        return dict(treatment)
+    return None
+
+
 def slideshow_library_address(
     profile: MaterialProfile, master_pages: dict[str, Any],
 ) -> tuple[str, str, str] | None:
@@ -218,6 +422,19 @@ def slideshow_library_address(
     if not isinstance(config, dict) or subject is None:
         return None
     lane = config["lane"]
+    # A page with a curated video plan resolves its canonical clips lane so the
+    # library keys are slideshow-webweaving/<subject>/clips/<file>. Generic
+    # pages keep the format's photo lane.
+    if profile.format_slug == UGC_FORMAT_SLUG:
+        page_treatment = ugc_page_treatment(master_pages.get("pageId"))
+        curated = (
+            page_treatment.get("curatedVideoPlan")
+            if isinstance(page_treatment, dict) else None
+        )
+        if isinstance(curated, dict):
+            if subject != curated["subject"]:
+                return None
+            lane = curated["lane"]
     library_id = f"syzygy:{lane}:{subject}"
     return library_id, lane, subject
 
@@ -404,6 +621,94 @@ def resolve_slideshow_recipe(
     )
 
 
+def _build_curated_plan(
+    recipe: SlideshowRecipe, library: SyzygyLibrary, curated: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Build the single closed curated video plan for one page.
+
+    ``mediaKeys`` are the unique ordered source keys (one per source file) for
+    source observation and the Worker receipt; ``windows`` is the full ordered
+    19-window expansion that drives the render wire and is bound into the plan
+    signature. Every required key must exist in the live library, and extras are
+    never selected.
+    """
+    if (recipe.lane != curated["lane"] or recipe.subject != curated["subject"]
+            or library.lane != recipe.lane or library.subject != recipe.subject
+            or library.library_id != recipe.library_id):
+        return None
+    by_file = {source["file"]: source for source in curated["sources"]}
+    key_by_file: dict[str, str] = {}
+    ordered_files: list[str] = []
+    for window in curated["windows"]:
+        filename = window["source"]
+        if filename not in key_by_file:
+            key_by_file[filename] = (
+                f"{recipe.lane}/{recipe.subject}/clips/{filename}"
+            )
+            ordered_files.append(filename)
+    library_bytes = {item.key: item.bytes for item in library.objects}
+    if any(library_bytes.get(key_by_file[filename]) != by_file[filename]["bytes"]
+           for filename in ordered_files):
+        return None
+    media_keys = [key_by_file[filename] for filename in ordered_files]
+    windows = []
+    for window in curated["windows"]:
+        filename = window["source"]
+        source = by_file[filename]
+        windows.append({
+            "key": key_by_file[filename],
+            "sourceStart": window["sourceStart"],
+            "sourceEnd": window["sourceEnd"],
+            "outputStart": window["outputStart"],
+            "outputEnd": window["outputEnd"],
+            "focalX": window["focalX"],
+            "sourceSha256": source["sha256"],
+            "sourceBytes": source["bytes"],
+            "sourceDuration": source["duration"],
+        })
+    plan = {
+        "templateSlug": CURATED_VIDEO_PLAN_SLUG,
+        "mediaKeys": media_keys,
+        "muted": curated["muted"],
+        "speed": curated["speed"],
+        "cropMode": curated["cropMode"],
+        "audioSectionEnd": curated["audioSectionEnd"],
+        "windows": windows,
+    }
+    signature = curated_plan_signature(plan)
+    return {
+        **plan,
+        "signature": signature,
+        "librarySnapshotHash": library.snapshot_hash,
+    }
+
+
+def requires_curated_video_plan(recipe: SlideshowRecipe) -> bool:
+    """Derive the execution mode from server-owned recipe authority, not job shape."""
+    if recipe.format_slug != UGC_FORMAT_SLUG:
+        return False
+    page_id = recipe.recipe_spec.get("masterPages", {}).get("pageId")
+    treatment = ugc_page_treatment(page_id) if isinstance(page_id, str) else None
+    return isinstance(treatment, dict) and "curatedVideoPlan" in treatment
+
+
+def curated_plan_for_recipe(
+    recipe: SlideshowRecipe, library: SyzygyLibrary,
+) -> dict[str, Any] | None:
+    """The canonical curated video plan for a recipe, or None if not curated.
+
+    Re-derived from the pinned executor config for the recipe's page; the recipe
+    executor_version already binds the executor bytes, so this is stable across
+    a job's lifecycle unless the job itself was tampered with.
+    """
+    page_id = recipe.recipe_spec.get("masterPages", {}).get("pageId")
+    treatment = ugc_page_treatment(page_id) if isinstance(page_id, str) else None
+    curated = treatment.get("curatedVideoPlan") if isinstance(treatment, dict) else None
+    if not isinstance(curated, dict):
+        return None
+    return _build_curated_plan(recipe, library, curated)
+
+
 def plan_slideshows(
     recipe: SlideshowRecipe,
     library: SyzygyLibrary,
@@ -421,12 +726,22 @@ def plan_slideshows(
         or any(not SHA256.fullmatch(item) for item in unavailable_signatures)
     ):
         return []
-    # The UGC format is a curated page library: the first mediaCount objects in
-    # the library's ordinal order form the one and only plan. No offset/stride
-    # permutation would be legal (it would reorder the curated arc), so there
-    # is never "variety" to synthesize — an exhausted ordered set stays
-    # exhausted until the operator ships a new curated set.
+    # The UGC format is a curated page library. A page with a curatedVideoPlan
+    # renders that one ordered montage exactly once (never permuted); a generic
+    # page renders the first mediaCount photo objects in ordinal order. No
+    # offset/stride permutation is legal for either, so there is never
+    # "variety" to synthesize — an exhausted ordered set stays exhausted.
     if recipe.format_slug == UGC_FORMAT_SLUG:
+        has_curated_plan = requires_curated_video_plan(recipe)
+        canonical = curated_plan_for_recipe(recipe, library)
+        if has_curated_plan and canonical is None:
+            return []
+        if canonical is not None:
+            # The curated page's one ordered montage plan; exhausted once
+            # reserved, never permuted. Extras in the library are ignored.
+            if canonical["signature"] in unavailable_signatures:
+                return []
+            return [canonical]
         template = recipe.templates[0]
         objects_in_order = list(library.objects)
         if template.media_count > len(objects_in_order):
@@ -489,20 +804,28 @@ def plan_slideshows(
 
 
 def ugc_page_cut_policy(page_id: str) -> dict[str, Any] | None:
-    """Return the staged server-owned fast-cut policy for one page, if any.
+    """Return the staged server-owned legacy fast-cut policy for one page, if any.
 
-    The policy is page-scoped config that drives the render wire for that exact
-    page. An unknown page returns None and keeps the generic UGC clean-slideshow
-    behavior (15s audio section, no cut_style cuts).
+    Only the ``{"cutMode","cuts","audioSectionEnd"}`` treatment is a cut policy;
+    a curatedVideoPlan page is handled by the curated wire and returns None here.
+    An unknown page returns None and keeps generic UGC behavior.
     """
-    if not isinstance(page_id, str) or not page_id.strip():
-        return None
-    try:
-        executor, _ = _executor_contract(UGC_FORMAT_SLUG)
-    except (OSError, ValueError, json.JSONDecodeError):
-        return None
-    treatment = executor.get("pageTreatments", {}).get(page_id)
-    return dict(treatment) if isinstance(treatment, dict) else None
+    treatment = ugc_page_treatment(page_id)
+    if isinstance(treatment, dict) and set(treatment) == {"cutMode", "cuts", "audioSectionEnd"}:
+        return dict(treatment)
+    return None
+
+
+def ugc_encode_args(preset: str) -> list[str]:
+    """Delivery encode args for the UGC neutral background.
+
+    The same closed delivery preset as the legacy lyric/meme slideshow, plus
+    ``-an`` to drop any renderer-shipped audio track. Legacy callers keep the
+    preset byte-for-byte unchanged; this is UGC-only.
+    """
+    from services.ffmpeg import delivery_encode_args
+
+    return [*delivery_encode_args(preset), "-an"]
 
 
 def syzygy_idempotency_key(*parts: str) -> str:
@@ -555,7 +878,7 @@ async def _request_json(
 async def syzygy_revision() -> str:
     value = await _request_json("GET", "/readyz", timeout=15.0)
     revision = value.get("revision")
-    if not isinstance(revision, str) or not SHA256.fullmatch(revision):
+    if not isinstance(revision, str) or not RENDERER_REVISION.fullmatch(revision):
         raise SyzygyError("Syzygy renderer revision is unavailable")
     return revision
 
@@ -564,6 +887,53 @@ async def submit_syzygy_render(
     plan: dict[str, Any], *, page_id: str, recipe_version: str,
     format_slug: str | None = None,
 ) -> tuple[str, str]:
+    if format_slug == UGC_FORMAT_SLUG and isinstance(plan.get("windows"), list):
+        # Curated video montage: the renderer selects on spec.format (video),
+        # NOT on kind, and receives the full ordered window expansion. No
+        # template_slug (its builtin template style would fill absent cuts from
+        # the clean-slideshow seed), no cuts (the flow-stage windows override
+        # explicit durations/order), and no audio section.
+        media = []
+        for window in plan["windows"]:
+            media.append({
+                "type": "video",
+                "library": window["key"],
+                "duration": round(window["outputEnd"] - window["outputStart"], 6),
+                "clip_start": window["sourceStart"],
+                "clip_end": window["sourceEnd"],
+                "muted": True,
+                "speed": 1,
+                "crop_mode": "cover",
+                "focal_x": window["focalX"],
+                "focal_y": 0.5,
+                "transition": {"type": "cut", "duration": 0},
+            })
+        spec = {
+            "format": "video",
+            "aspect": "9:16",
+            "hook": {"text": "", "position": "none"},
+            "lyrics": [],
+            "captions": {"position": "none"},
+            "textCards": [],
+            "text_cards": [],
+            "lyrics_lrc": "",
+            "lyrics_required": False,
+            "uses_original_audio": False,
+            "media": media,
+        }
+        key = syzygy_idempotency_key(
+            page_id, recipe_version, plan["signature"], "render-v1",
+        )
+        value = await _request_json(
+            "POST", "/api/v1/render", body={"spec": spec},
+            idempotency_key=key, timeout=90.0,
+        )
+        job_id = value.get("job_id")
+        quality = value.get("quality")
+        if not isinstance(job_id, str) or not job_id or not isinstance(quality, str):
+            raise SyzygyError("Syzygy render receipt is invalid")
+        return job_id, quality
+
     media = []
     for object_key in plan.get("mediaKeys", []):
         media.append({
@@ -593,9 +963,6 @@ async def submit_syzygy_render(
         })
         policy = ugc_page_cut_policy(page_id)
         if policy is not None:
-            # Culture Core's verified fast-cut wire: cut_style with 60 cuts over
-            # a 12s section. The audio section carries no source (no `src` key);
-            # the Lab still applies the Dossier brightness once downstream.
             spec["cuts"] = {"mode": policy["cutMode"], "cuts": policy["cuts"]}
             spec["audio"]["section_end"] = policy["audioSectionEnd"]
     key = syzygy_idempotency_key(
