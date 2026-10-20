@@ -1,3 +1,21 @@
+time: [23:47] [19-10-26]
+agent: [codex] [gpt-5] [source-identity-alias]
+worktree: [codex/between-source-identity-alias-1020] /Users/seenorising/rt-work/between-source-identity-alias-1020
+type: [config]: Source-DNA library alias for between-the-lines66
+area: [backend]: sourced-video source-dna registry
+
+Added `recipes/source-dna/pov-night-core-between-the-lines66-automation-v1.json`
+as a new tracked manifest with `libraryId=pov-night-core-between-the-lines66-automation-v1`
+and `pageId=acct:between-the-lines66`. Every other field is byte-identical to the
+existing `pov-night-core-between-the-lines66-v1.json` manifest, including the
+masters array (sourceId, SHA-256 3816ff5c4c79d73eff1694cc21f3644aff18bb68c3a97ca5b8306316feda1314,
+205190968 bytes, 800000ms, storageKey, provenance, sourceOffsetMs 0). The retired
+old-tt manifest bytes are unchanged. Added
+`tests/test_between_source_identity_alias.py`. Verification: focused selection 29
+passed. No source bytes modified/copied/redownloaded, no Python logic change, no
+deployment.
+_________________________________________________________________________________
+
 time: [17:24] [09-01-26]
 agent: [codex] [gpt-5] [caption_renderer_bridge]
 worktree: [feat/typed-caption-render-plan-20260901] /private/tmp/content-lab-caption-renderer
