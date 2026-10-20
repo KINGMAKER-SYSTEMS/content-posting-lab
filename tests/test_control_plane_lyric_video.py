@@ -132,6 +132,8 @@ def test_all_preexisting_profiles_contracts_and_static_renderer_retain_baseline_
         ("content-engine-registry.v1.json","profiles","70baee7058a9805fb9865de57e37262ddc055d0a89f6ff50853c65c7415ec7a2"),
         ("content-format-contracts.v1.json","contracts","de1902e864747568f2f5849597833bd76873204d3131eb037c6953cf039c3432")]:
         current=json.loads((root/"recipes"/path).read_bytes())[key]
+        # Both additive formats are new to frozen233; compare its entire legacy map.
         current.pop("lyric-video")
+        current.pop("image-video")
         assert hashlib.sha256(json.dumps(current,sort_keys=True,separators=(",",":"),ensure_ascii=False).encode()).hexdigest()==expected
     assert hashlib.sha256((root/"services/post_render.py").read_bytes()).hexdigest()=="d297b8231cb27c0b81c07bd75ea2762d8a0c7bd9040ed9805758e1c093ab7d97"
