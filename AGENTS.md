@@ -7,6 +7,10 @@
 
 ## Ownership
 
+- `docs/syzygy-integration.md` owns the creation-to-distribution reuse map,
+  observed cross-project gaps and next integration proofs. Refresh its source
+  baseline before treating an observation as current implementation state.
+
 - `routers/recreate.py` confines REST and WebSocket job IDs to one real
   recreate-directory child before any job write or deletion. Reject encoded
   parent traversal and symlinked job directories; listing skips unsafe jobs and
@@ -234,6 +238,14 @@
   and render-cache contracts; `services/editor_timeline.py` and `routers/agenticnews.py` own the implementation.
 
 ## Local Contracts
+
+- Syzygy integrations reuse `services/control_plane_slideshows.py`: Content Lab
+  owns page-bound planning and receipts; Syzygy owns rendering. Preserve the
+  renderer's full 40- or 64-character lowercase Git revision from `/readyz`.
+  Media and recipe SHA-256 checks remain exactly 64 characters. Before adding
+  creation or distribution capabilities, inspect existing cross-project APIs
+  and active work; extend the existing path instead of duplicating renderers,
+  queues, or controls.
 
 - `services/abn_factory.py` kinetic-template parameters remain inert JSON inside
   the HTML script. Escape HTML script delimiters while preserving decoded values.
@@ -697,6 +709,10 @@
   module and return the same versioned schema and hashes.
 
 ## Verification
+- Run `pytest -q tests/test_syzygy_revision_contract.py tests/test_control_plane_slideshow_execution.py`
+  for renderer revision interoperability, invalid-evidence refusal, and exact
+  revision preservation in page-bound slideshow receipts; these tests are offline.
+
 - Run `pytest -q tests/test_health_tool_latency.py tests/test_smoke.py`
   for nonblocking single-flight tool refresh, missing-tool degradation and
   the public health response.

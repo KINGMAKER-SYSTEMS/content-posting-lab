@@ -32,6 +32,8 @@ EXECUTOR_PATH = (
 )
 EXECUTOR_SCHEMA = "content-lab.syzygy-slideshow-executor.v1"
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
+# Deployment revisions are Git object IDs, not media byte checksums.
+RENDERER_REVISION = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})")
 LIBRARY_ID = re.compile(r"^syzygy:[a-z0-9][a-z0-9-]{0,63}:[a-z0-9][a-z0-9-]{0,99}$")
 OBJECT_KEY = re.compile(
     r"^[a-z0-9][a-z0-9-]{0,63}/[a-z0-9][a-z0-9-]{0,99}/"
@@ -481,7 +483,7 @@ async def _request_json(
 async def syzygy_revision() -> str:
     value = await _request_json("GET", "/readyz", timeout=15.0)
     revision = value.get("revision")
-    if not isinstance(revision, str) or not SHA256.fullmatch(revision):
+    if not isinstance(revision, str) or not RENDERER_REVISION.fullmatch(revision):
         raise SyzygyError("Syzygy renderer revision is unavailable")
     return revision
 
