@@ -110,6 +110,7 @@ def managed_lyric_binding(job: dict, publication: dict, recipe_spec: dict, sourc
     return {'schema':'content-lab.lyric-timing-binding.v1',
             'pageId':PAGE_ID,'account':ACCOUNT,'notionPageId':NOTION_ID,
             'soundId':timing['soundId'],'timingSetId':timing['id'],'timingSha256':timing['sha256'],
+            'manifestJson':timing['manifestJson'],
             'sourceProgramId':timing['sourceProgramId'],'sourceProgramSha256':timing['sourceProgramSha256'],
             'durationMs':timing['durationMs'],'sourceSha256':source_sha256,
             'generationJobId':job['jobId'],'recipeId':job['recipeId'],'recipeVersion':job['recipeVersion'],

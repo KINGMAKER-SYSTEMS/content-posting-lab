@@ -31,3 +31,10 @@ def test_structurally_invalid_approved_bytes_still_refuse(monkeypatch,tmp_path,m
 def test_same_length_content_tamper_fails_hash_before_loading(monkeypatch,tmp_path):
     raw=timing._TIMING_PATH.read_bytes().replace(b'Love me now',b'Hate me now');p=tmp_path/'tampered.json';p.write_bytes(raw);monkeypatch.setattr(timing,'_TIMING_PATH',p)
     with pytest.raises(timing.LyricTimingError,match='bytes differ'):resolve()
+
+
+def test_manifest_export_preserves_exact_registered_utf8_bytes_not_catalog_payload():
+    value=resolve()
+    assert value['manifestJson'].encode('utf-8')==timing._TIMING_PATH.read_bytes()
+    assert hashlib.sha256(value['manifestJson'].encode('utf-8')).hexdigest()==value['sha256']
+    assert 'manifestJson' not in timing.lyric_timing_catalog(page_id=value['pageId'],account=value['account'])[0]

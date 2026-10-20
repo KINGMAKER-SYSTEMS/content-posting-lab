@@ -53,7 +53,8 @@ def _load() -> dict[str, Any]:
     canonical = "\n".join(p["text"] for p in value["phrases"])
     if previous_end != value["durationMs"] or value["canonicalCaption"] != canonical or len(canonical) > 4_000:
         raise LyricTimingError("lyric_timing_invalid", "timing caption or final boundary is invalid")
-    return {**value, "sha256": _TIMING_SHA256}
+    # Retain the exact registered UTF-8 bytes; reserialization changes authority.
+    return {**value, "sha256": _TIMING_SHA256, "manifestJson": raw.decode("utf-8")}
 
 def resolve_lyric_timing(set_id: str, *, page_id: str, account: str, sound_id: str, expected_sha256: str) -> dict[str, Any]:
     if set_id != _TIMING_ID:
