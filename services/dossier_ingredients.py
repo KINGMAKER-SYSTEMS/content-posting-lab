@@ -800,6 +800,13 @@ def _slideshow_ingredients(
             )
             treatment = slideshow_treatment_capability(profile.format_slug)
             minimum = treatment["minimumLibraryItems"]
+            photo_ready = True
+            if profile.format_slug == "image-video":
+                from services.control_plane_image_video import image_video_plan
+                photo = image_video_plan(master_pages.get("pageId"))
+                minimum = len(photo["media"]) if photo is not None else 1
+                inventory = {obj.key: obj.bytes for obj in library.objects}
+                photo_ready = photo is not None and all(inventory.get(row["key"]) == row["bytes"] for row in photo["media"])
             library_option = {
                 "libraryId": library.library_id,
                 "lane": library.lane,
@@ -811,7 +818,7 @@ def _slideshow_ingredients(
                 "snapshotHash": f"sha256:{library.snapshot_hash}",
             }
             library_status = (
-                "bound" if len(library.objects) >= minimum else "missing"
+                "bound" if photo_ready and len(library.objects) >= minimum else "missing"
             )
         except SyzygyError:
             library_status = "unavailable"

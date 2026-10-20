@@ -192,6 +192,18 @@
       "executorVersion": "sha256:78da457008391bd873dbc23c57fc7621f9707b8e139781e8d98cea4cdb9f65c9",
       "formatContractVersion": "sha256:380e6688c1344dc227fb3099fad375fa4016107b363526f19736b53ffed97234",
       "maxQuantity": 1
+    },
+    "image-video": {
+      "contentNiche": "slideshow",
+      "contentEngine": "sourced_slideshow",
+      "materialSource": "image_library",
+      "assetType": "video/mp4",
+      "executionStatus": "commissioned",
+      "executorKind": "slideshow_renderer",
+      "executorId": "syzygy-slideshow",
+      "executorVersion": "sha256:fee820be22a84f50cfa80330c5c0d6006b456a468a0bfa0373f9a652d25d599c",
+      "formatContractVersion": "sha256:ee9560d5d36879b2ee72463a1687e9c5a68842fd486d64c133f90869306cc76c",
+      "maxQuantity": 1
     }
   }
 }

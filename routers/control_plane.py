@@ -3795,12 +3795,22 @@ async def _run_syzygy_slideshow(job_id: str) -> None:
                 if isinstance(template_slug, str)
                 else None
             )
+            image_video = recipe.format_slug == "image-video"
             curated = requires_curated_video_plan(recipe)
             if curated and not isinstance(plan.get("windows"), list):
                 raise RuntimeError("slideshow_plan_invalid")
             if not curated and "windows" in plan:
                 raise RuntimeError("slideshow_plan_invalid")
-            if curated:
+            if image_video:
+                from services.control_plane_image_video import recipe_image_video_plan
+                canonical = recipe_image_video_plan(recipe, library)
+                if canonical is None or {key: value for key, value in plan.items() if key != "media"} != canonical:
+                    raise RuntimeError("slideshow_plan_invalid")
+                pinned_by_key = {row["key"]: (row["sha256"], row["bytes"]) for row in plan["photoPlan"]["media"]}
+                if (not isinstance(planned_media, list)
+                        or planned_media != [{"objectKey": key, "bytes": pinned_by_key[key][1]} for key in media_keys]):
+                    raise RuntimeError("slideshow_plan_invalid")
+            elif curated:
                 canonical = curated_plan_for_recipe(recipe, library)
                 if canonical is None:
                     raise RuntimeError("slideshow_plan_invalid")
@@ -3875,7 +3885,7 @@ async def _run_syzygy_slideshow(job_id: str) -> None:
                 if bytes_by_key.get(item["objectKey"]) != item["bytes"]:
                     raise RuntimeError("slideshow_library_object_changed")
             before = await observe_library_media(library, media_keys)
-            if curated:
+            if curated or image_video:
                 # Verify observed bytes are the pinned bytes AND the observed
                 # SHA matches the pinned source SHA before any paid POST.
                 observed = {row["objectKey"]: row for row in before}
@@ -3906,7 +3916,7 @@ async def _run_syzygy_slideshow(job_id: str) -> None:
             destination = treated_root / f"slideshow-{index:04d}.mp4"
             encode_args = (
                 ugc_encode_args(recipe.encode_preset)
-                if recipe.format_slug in CLEAN_VIDEO_FORMATS
+                if recipe.format_slug in CLEAN_VIDEO_FORMATS or recipe.format_slug == "image-video"
                 else delivery_encode_args(recipe.encode_preset)
             )
             await run_color_correct(
@@ -3942,6 +3952,7 @@ async def _run_syzygy_slideshow(job_id: str) -> None:
                 "rendererRevision": renderer_revision,
                 "renderJobId": render_job_id,
                 "media": after,
+                **({"photoPlan": plan["photoPlan"]} if image_video else {}),
             })
             manifest["thumbnail"] = await _thumbnail_manifest(
                 job_root, destination, len(manifests),

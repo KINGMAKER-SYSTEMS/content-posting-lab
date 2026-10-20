@@ -95,7 +95,7 @@ def test_every_known_format_has_a_strict_contract_and_registry_binding():
         "boat-lake", "coffee-tok", "construction-scenic", "lyric-edits", "lyric-video",
         "meme-slideshow", "pov-dirt-bike", "pov-dusk-core",
         "pov-club", "pov-night-core", "pov-night-core-ai", "pov-scenic",
-        "silhouette-truck", "truck-scenic", "truck-ugc", "ugc-slideshow",
+        "silhouette-truck", "truck-scenic", "truck-ugc", "ugc-slideshow", "image-video",
     }
     for slug, profile in profiles.items():
         assert profile.format_contract_version == (
@@ -112,7 +112,7 @@ def test_only_complete_hash_bound_formats_are_commissioned():
     } == {
         "boat-lake", "coffee-tok", "lyric-edits", "lyric-video", "meme-slideshow",
         "pov-club", "pov-dirt-bike", "pov-night-core", "pov-scenic", "silhouette-truck",
-        "truck-scenic", "ugc-slideshow",
+        "truck-scenic", "ugc-slideshow", "image-video",
     }
     assert all(
         contracts[slug].definition_status == "complete"

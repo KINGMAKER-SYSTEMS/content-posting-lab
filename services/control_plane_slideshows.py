@@ -284,6 +284,9 @@ def curated_plan_signature(plan: dict[str, Any]) -> str:
 
 
 def _executor_contract(format_slug: str | None = None) -> tuple[dict[str, Any], str]:
+    if format_slug == "image-video":
+        from services.control_plane_image_video import slideshow_executor_adapter
+        return slideshow_executor_adapter()
     path = (LYRIC_VIDEO_EXECUTOR_PATH if format_slug == LYRIC_VIDEO_FORMAT_SLUG else
             UGC_EXECUTOR_PATH if format_slug == UGC_FORMAT_SLUG else EXECUTOR_PATH)
     raw = path.read_bytes()
@@ -425,6 +428,12 @@ def slideshow_library_address(
     subject = _subject(master_pages.get("handle"))
     if not isinstance(config, dict) or subject is None:
         return None
+    if profile.format_slug == "image-video":
+        from services.control_plane_image_video import image_video_plan
+        photo = image_video_plan(master_pages.get("pageId"))
+        if photo is None or subject != photo["subject"]:
+            return None
+        return photo["libraryId"], photo["lane"], photo["subject"]
     lane = config["lane"]
     # A page with a curated video plan resolves its canonical clips lane so the
     # library keys are slideshow-webweaving/<subject>/clips/<file>. Generic
@@ -606,6 +615,10 @@ def resolve_slideshow_recipe(
             validate_lyric_recipe(spec)
         except ValueError:
             return None
+    if profile.format_slug == "image-video":
+        from services.control_plane_image_video import required_image_video_treatment
+        if not required_image_video_treatment(spec, master_pages.get("pageId")):
+            return None
     templates = tuple(
         SyzygyTemplate(item["slug"], item["mediaCount"])
         for item in config["templates"]
@@ -738,6 +751,12 @@ def plan_slideshows(
         or any(not SHA256.fullmatch(item) for item in unavailable_signatures)
     ):
         return []
+    if recipe.format_slug == "image-video":
+        from services.control_plane_image_video import recipe_image_video_plan
+        plan = recipe_image_video_plan(recipe, library)
+        if plan is None or plan["signature"] in unavailable_signatures:
+            return []
+        return [plan]
     # The UGC format is a curated page library. A page with a curatedVideoPlan
     # renders that one ordered montage exactly once (never permuted); a generic
     # page renders the first mediaCount photo objects in ordinal order. No
@@ -899,6 +918,10 @@ async def submit_syzygy_render(
     plan: dict[str, Any], *, page_id: str, recipe_version: str,
     format_slug: str | None = None,
 ) -> tuple[str, str]:
+    if format_slug == "image-video":
+        from services.control_plane_image_video import submit_image_video_render
+        return await submit_image_video_render(plan.get("photoPlan"), page_id=page_id,
+            recipe_version=recipe_version, request_json=_request_json)
     if format_slug == LYRIC_VIDEO_FORMAT_SLUG:
         from services.control_plane_lyric_video import validate_lyric_wire_plan
         validate_lyric_wire_plan(plan, page_id)
