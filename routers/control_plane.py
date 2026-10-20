@@ -108,6 +108,7 @@ from services.control_plane_sources import (
 from services.control_plane_slideshows import (
     SyzygyError,
     UGC_FORMAT_SLUG,
+    CLEAN_VIDEO_FORMATS,
     curated_plan_for_recipe,
     curated_plan_signature,
     requires_curated_video_plan,
@@ -3741,6 +3742,15 @@ async def _run_syzygy_slideshow(job_id: str) -> None:
         )
         return
 
+    if recipe.format_slug == "lyric-video":
+        from services.control_plane_lyric_video import validate_managed_lyric_job
+        try:
+            validate_managed_lyric_job(job, publication, recipe.recipe_spec)
+        except (KeyError, TypeError, ValueError):
+            await asyncio.to_thread(_update_job, job_id, status="failed",
+                error="lyric_recipe_authority_mismatch", completedAt=datetime.now(timezone.utc).isoformat())
+            return
+
     job_root = Path(job["artifactRoot"]).resolve()
     treated_root = job_root / "treated"
     treated_root.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -3896,7 +3906,7 @@ async def _run_syzygy_slideshow(job_id: str) -> None:
             destination = treated_root / f"slideshow-{index:04d}.mp4"
             encode_args = (
                 ugc_encode_args(recipe.encode_preset)
-                if recipe.format_slug == UGC_FORMAT_SLUG
+                if recipe.format_slug in CLEAN_VIDEO_FORMATS
                 else delivery_encode_args(recipe.encode_preset)
             )
             await run_color_correct(
@@ -3917,6 +3927,9 @@ async def _run_syzygy_slideshow(job_id: str) -> None:
                 clip_speed=clip_speed,
                 clip_crop=clip_crop,
             )
+            if recipe.format_slug == "lyric-video":
+                from services.control_plane_lyric_video import managed_lyric_binding
+                manifest["lyricTiming"] = managed_lyric_binding(job, publication, recipe.recipe_spec, manifest["sha256"])
             manifest["source"] = _source_provenance(job, {
                 "schema": "content-lab.syzygy-slideshow-source.v1",
                 "kind": "syzygy_slideshow",
@@ -4976,6 +4989,24 @@ def _artifact_source_treatment(job: dict[str, Any], clip: dict[str, Any]) -> dic
         return None
 
 
+def _artifact_lyric_timing(job: dict[str, Any], clip: dict[str, Any]) -> dict[str, Any] | None:
+    if job.get("recipeId") != "lyric-video:master":
+        return None
+    from services.control_plane_lyric_video import managed_lyric_binding
+    publication = load_registered_recipe(job.get("recipePublicationPageId") or job["pageId"],
+                                        job["recipeId"], job["engine"], job["recipeVersion"])
+    recipe_spec = typed_recipe_spec(publication) if isinstance(publication, dict) else None
+    try:
+        if job.get("status") != "completed" or recipe_spec is None:
+            raise ValueError("lyric managed artifact is not complete")
+        expected = managed_lyric_binding(job, publication, recipe_spec, clip["sha256"])
+        if clip.get("lyricTiming") != expected:
+            raise ValueError("lyric timing producer evidence is missing or changed")
+        return expected
+    except (KeyError, TypeError, ValueError) as error:
+        raise HTTPException(409, "lyric_timing_binding_invalid") from error
+
+
 @router.get("/v1/jobs/{job_id}/artifacts")
 def job_artifacts(
     job_id: str,
@@ -5040,6 +5071,9 @@ def job_artifacts(
         source_treatment = _artifact_source_treatment(job, clip)
         if source_treatment is not None:
             artifact["sourceTreatment"] = source_treatment
+        lyric_timing = _artifact_lyric_timing(job, clip)
+        if lyric_timing is not None:
+            artifact["lyricTiming"] = lyric_timing
         artifacts.append(artifact)
     return {"schema": RESPONSE_SCHEMA, "jobId": job_id, "artifacts": artifacts}
 

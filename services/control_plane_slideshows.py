@@ -35,6 +35,9 @@ EXECUTOR_PATH = (
 # meme-slideshow profile hashes) stay unchanged; only `ugc-slideshow` resolves
 # the scoped copy.
 UGC_FORMAT_SLUG = "ugc-slideshow"
+LYRIC_VIDEO_FORMAT_SLUG = "lyric-video"
+CLEAN_VIDEO_FORMATS = frozenset({UGC_FORMAT_SLUG, LYRIC_VIDEO_FORMAT_SLUG})
+LYRIC_VIDEO_EXECUTOR_PATH = Path(__file__).resolve().parents[1] / "recipes/executors/syzygy-slideshow-lyric-video.v1.json"
 # Lab plan identity, not an applied Syzygy builtin template.
 CURATED_VIDEO_PLAN_SLUG = "curated-video-montage"
 UGC_EXECUTOR_PATH = (
@@ -281,7 +284,8 @@ def curated_plan_signature(plan: dict[str, Any]) -> str:
 
 
 def _executor_contract(format_slug: str | None = None) -> tuple[dict[str, Any], str]:
-    path = UGC_EXECUTOR_PATH if format_slug == UGC_FORMAT_SLUG else EXECUTOR_PATH
+    path = (LYRIC_VIDEO_EXECUTOR_PATH if format_slug == LYRIC_VIDEO_FORMAT_SLUG else
+            UGC_EXECUTOR_PATH if format_slug == UGC_FORMAT_SLUG else EXECUTOR_PATH)
     raw = path.read_bytes()
     value = json.loads(raw)
     if (
@@ -387,7 +391,7 @@ def _subject(handle: Any) -> str | None:
     return value if value and len(value) <= 100 else None
 
 
-def ugc_page_treatment(page_id: str) -> dict[str, Any] | None:
+def ugc_page_treatment(page_id: str, format_slug: str = UGC_FORMAT_SLUG) -> dict[str, Any] | None:
     """Return the closed server-owned treatment for one UGC page, if any.
 
     Returns either a legacy ``{"cutMode","cuts","audioSectionEnd"}`` policy or a
@@ -397,7 +401,7 @@ def ugc_page_treatment(page_id: str) -> dict[str, Any] | None:
     if not isinstance(page_id, str) or not page_id.strip():
         return None
     try:
-        executor, _ = _executor_contract(UGC_FORMAT_SLUG)
+        executor, _ = _executor_contract(format_slug)
     except (OSError, ValueError, json.JSONDecodeError):
         return None
     treatment = executor.get("pageTreatments", {}).get(page_id)
@@ -425,8 +429,8 @@ def slideshow_library_address(
     # A page with a curated video plan resolves its canonical clips lane so the
     # library keys are slideshow-webweaving/<subject>/clips/<file>. Generic
     # pages keep the format's photo lane.
-    if profile.format_slug == UGC_FORMAT_SLUG:
-        page_treatment = ugc_page_treatment(master_pages.get("pageId"))
+    if profile.format_slug in CLEAN_VIDEO_FORMATS:
+        page_treatment = ugc_page_treatment(master_pages.get("pageId"), profile.format_slug)
         curated = (
             page_treatment.get("curatedVideoPlan")
             if isinstance(page_treatment, dict) else None
@@ -435,6 +439,8 @@ def slideshow_library_address(
             if subject != curated["subject"]:
                 return None
             lane = curated["lane"]
+    if profile.format_slug == LYRIC_VIDEO_FORMAT_SLUG and (master_pages.get("pageId"), master_pages.get("handle")) != ("acct:burnt-mill-rd", "burnt.mill.rd"):
+        return None
     library_id = f"syzygy:{lane}:{subject}"
     return library_id, lane, subject
 
@@ -594,6 +600,12 @@ def resolve_slideshow_recipe(
         or (require_runtime and _runtime() is None)
     ):
         return None
+    if profile.format_slug == LYRIC_VIDEO_FORMAT_SLUG:
+        from services.control_plane_lyric_video import validate_lyric_recipe
+        try:
+            validate_lyric_recipe(spec)
+        except ValueError:
+            return None
     templates = tuple(
         SyzygyTemplate(item["slug"], item["mediaCount"])
         for item in config["templates"]
@@ -628,7 +640,7 @@ def _build_curated_plan(
 
     ``mediaKeys`` are the unique ordered source keys (one per source file) for
     source observation and the Worker receipt; ``windows`` is the full ordered
-    19-window expansion that drives the render wire and is bound into the plan
+    ordered-window expansion that drives the render wire and is bound into the plan
     signature. Every required key must exist in the live library, and extras are
     never selected.
     """
@@ -685,10 +697,10 @@ def _build_curated_plan(
 
 def requires_curated_video_plan(recipe: SlideshowRecipe) -> bool:
     """Derive the execution mode from server-owned recipe authority, not job shape."""
-    if recipe.format_slug != UGC_FORMAT_SLUG:
+    if recipe.format_slug not in CLEAN_VIDEO_FORMATS:
         return False
     page_id = recipe.recipe_spec.get("masterPages", {}).get("pageId")
-    treatment = ugc_page_treatment(page_id) if isinstance(page_id, str) else None
+    treatment = ugc_page_treatment(page_id, recipe.format_slug) if isinstance(page_id, str) else None
     return isinstance(treatment, dict) and "curatedVideoPlan" in treatment
 
 
@@ -702,7 +714,7 @@ def curated_plan_for_recipe(
     a job's lifecycle unless the job itself was tampered with.
     """
     page_id = recipe.recipe_spec.get("masterPages", {}).get("pageId")
-    treatment = ugc_page_treatment(page_id) if isinstance(page_id, str) else None
+    treatment = ugc_page_treatment(page_id, recipe.format_slug) if isinstance(page_id, str) else None
     curated = treatment.get("curatedVideoPlan") if isinstance(treatment, dict) else None
     if not isinstance(curated, dict):
         return None
@@ -731,7 +743,7 @@ def plan_slideshows(
     # page renders the first mediaCount photo objects in ordinal order. No
     # offset/stride permutation is legal for either, so there is never
     # "variety" to synthesize — an exhausted ordered set stays exhausted.
-    if recipe.format_slug == UGC_FORMAT_SLUG:
+    if recipe.format_slug in CLEAN_VIDEO_FORMATS:
         has_curated_plan = requires_curated_video_plan(recipe)
         canonical = curated_plan_for_recipe(recipe, library)
         if has_curated_plan and canonical is None:
@@ -821,7 +833,7 @@ def ugc_encode_args(preset: str) -> list[str]:
 
     The same closed delivery preset as the legacy lyric/meme slideshow, plus
     ``-an`` to drop any renderer-shipped audio track. Legacy callers keep the
-    preset byte-for-byte unchanged; this is UGC-only.
+    preset byte-for-byte unchanged; this is for clean managed video backgrounds.
     """
     from services.ffmpeg import delivery_encode_args
 
@@ -887,7 +899,10 @@ async def submit_syzygy_render(
     plan: dict[str, Any], *, page_id: str, recipe_version: str,
     format_slug: str | None = None,
 ) -> tuple[str, str]:
-    if format_slug == UGC_FORMAT_SLUG and isinstance(plan.get("windows"), list):
+    if format_slug == LYRIC_VIDEO_FORMAT_SLUG:
+        from services.control_plane_lyric_video import validate_lyric_wire_plan
+        validate_lyric_wire_plan(plan, page_id)
+    if format_slug in CLEAN_VIDEO_FORMATS and isinstance(plan.get("windows"), list):
         # Curated video montage: the renderer selects on spec.format (video),
         # NOT on kind, and receives the full ordered window expansion. No
         # template_slug (its builtin template style would fill absent cuts from
@@ -934,6 +949,8 @@ async def submit_syzygy_render(
             raise SyzygyError("Syzygy render receipt is invalid")
         return job_id, quality
 
+    if format_slug == LYRIC_VIDEO_FORMAT_SLUG:
+        raise SyzygyError("lyric video requires the registered curated plan")
     media = []
     for object_key in plan.get("mediaKeys", []):
         media.append({

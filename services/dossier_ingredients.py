@@ -352,6 +352,14 @@ def _selection_catalog_version(
         entry.get("binding") for entry in format_entry.get("ingredients", [])
         if entry.get("ingredientId") in {"clip-treatment", "slideshow-treatment"}
     ), None)
+    timing = ingredients.get("lyric-timing")
+    timing_binding = (timing or {}).get("binding")
+    if timing is not None:
+        if not isinstance(timing_binding, dict):
+            return None
+        controls = production.get("controls", {})
+        if controls != {"lyricTimingSetId": timing_binding["id"]}:
+            return None
     model_binding = (model or {}).get("binding")
     projection = {
         "schema": SELECTION_AUTHORITY_SCHEMA,
@@ -383,6 +391,7 @@ def _selection_catalog_version(
                 else selected_source
             ),
             "treatment": treatment,
+            **({"lyricTiming": timing_binding} if timing is not None else {}),
         },
     }
     canonical = json.dumps(
@@ -422,6 +431,9 @@ def _production_selections(format_entry: dict[str, Any]) -> list[dict[str, Any]]
         } for option in source.get("options", [])]
     else:
         identities = []
+    timing = (ingredients.get("lyric-timing") or {}).get("binding")
+    if isinstance(timing, dict):
+        identities = [{**identity, "controls": {"lyricTimingSetId": timing["id"]}} for identity in identities]
     selections: list[dict[str, Any]] = []
     for identity in identities:
         version = _selection_catalog_version(format_entry, identity)
@@ -855,6 +867,9 @@ def _format_entry(
             else None
         )
         ingredients = _slideshow_ingredients(profile, current_slideshow_page)
+    if contract.format_slug == "lyric-video":
+        from services.control_plane_lyric_video import lyric_ingredient
+        ingredients.append(lyric_ingredient(page_id=page_id, master_pages=master_pages))
     ingredients.extend([
         _ingredient("caption-bank", "caption_bank", required=True, status="page_binding_required"),
         _ingredient("sound-collection", "sound_collection", required=True, status="page_binding_required"),
@@ -1016,6 +1031,8 @@ def catalog_selection_version(
     identity_fields = (
         "providerId", "modelId", "promptModuleId", "referenceSetId", "sourceLibraryId",
     )
+    if format_id == "lyric-video":
+        identity_fields += ("controls",)
     entry = next((
         item for item in catalog.get("formats", []) if item.get("formatId") == format_id
     ), None)

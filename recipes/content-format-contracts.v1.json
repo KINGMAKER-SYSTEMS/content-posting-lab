@@ -92,12 +92,12 @@
       "dimensions": {
         "subject": {
           "status": "defined",
-          "rule": "one vintage white porcelain teacup (fine bone china) with a thin delicate gold rim and an ornate gold handle to the right, sitting on a matching white porcelain saucer, viewed from directly overhead in a perfect flat-lay, filled with dark near-black coffee, large and positioned in the EXACT dead center of the vertical frame, the cup and saucer filling the width with the saucer edges reaching the left and right edges of the frame, equal black space above and below, on a pure solid black background — the mindfulsources CoffeeTok look",
+          "rule": "one vintage white porcelain teacup (fine bone china) with a thin delicate gold rim and an ornate gold handle to the right, sitting on a matching white porcelain saucer, viewed from directly overhead in a perfect flat-lay, filled with dark near-black coffee, large and positioned in the EXACT dead center of the vertical frame, the cup and saucer filling the width with the saucer edges reaching the left and right edges of the frame, equal black space above and below, on a pure solid black background \u2014 the mindfulsources CoffeeTok look",
           "authority": "promptCatalog.families.coffee.fixed_subject"
         },
         "setting": {
           "status": "defined",
-          "rule": "photorealistic macro food photograph, EXACTLY ONE vintage white porcelain teacup on its saucer and nothing else, the crema is REAL and appetizing — genuine fresh-coffee foam over clean dark coffee, never a muddy flat manufactured blob, never latte art, never CGI; soft even diffuse studio light, matte surface, flat pure black (#000000) background with no gradient or vignette; cup+saucer large and dead-center, saucer edges at the frame edges, equal black caption space above and below; nothing else in frame — no hands, people, steam, food, text or logos; sharp focus, vertical 9:16 portrait",
+          "rule": "photorealistic macro food photograph, EXACTLY ONE vintage white porcelain teacup on its saucer and nothing else, the crema is REAL and appetizing \u2014 genuine fresh-coffee foam over clean dark coffee, never a muddy flat manufactured blob, never latte art, never CGI; soft even diffuse studio light, matte surface, flat pure black (#000000) background with no gradient or vignette; cup+saucer large and dead-center, saucer edges at the frame edges, equal black caption space above and below; nothing else in frame \u2014 no hands, people, steam, food, text or logos; sharp focus, vertical 9:16 portrait",
           "authority": "promptCatalog.families.coffee.quality_guards"
         },
         "shotGrammar": {
@@ -112,7 +112,7 @@
         },
         "motion": {
           "status": "defined",
-          "rule": "Only the coffee surface moves: the tan crema drifts slowly and gently clockwise like real liquid under surface tension, fine micro-foam wisps stretch and relax, tiny rim bubbles hold their size. The white porcelain cup, gold rim, gold handle, and saucer stay perfectly fixed and still — no cup rotation, no drift, no zoom. Locked overhead camera, pure black background, photorealistic, empty closed frame — nothing pours or enters, the scene is complete and unchanged except the coffee surface, gentle seamless loop.",
+          "rule": "Only the coffee surface moves: the tan crema drifts slowly and gently clockwise like real liquid under surface tension, fine micro-foam wisps stretch and relax, tiny rim bubbles hold their size. The white porcelain cup, gold rim, gold handle, and saucer stay perfectly fixed and still \u2014 no cup rotation, no drift, no zoom. Locked overhead camera, pure black background, photorealistic, empty closed frame \u2014 nothing pours or enters, the scene is complete and unchanged except the coffee surface, gentle seamless loop.",
           "authority": "promptCatalog.families.coffee.motion_prompt"
         },
         "duration": {
@@ -637,7 +637,7 @@
       ]
     },
     "pov-night-core": {
-      "contentNiche": "POV — Night Core",
+      "contentNiche": "POV \u2014 Night Core",
       "contentEngine": "sourced_video",
       "materialSource": "source_library",
       "assetType": "video/mp4",
@@ -801,7 +801,7 @@
       ]
     },
     "pov-scenic": {
-      "contentNiche": "POV — Scenic",
+      "contentNiche": "POV \u2014 Scenic",
       "contentEngine": "sourced_video",
       "materialSource": "source_library",
       "assetType": "video/mp4",
@@ -1170,6 +1170,83 @@
           "status": "defined",
           "rule": "The exact object keys, byte counts, ETags when available, and SHA-256 observations used by each render are preserved in its artifact source manifest.",
           "authority": "artifact.source.media"
+        }
+      },
+      "output": {
+        "aspectRatio": "9:16",
+        "container": "video/mp4",
+        "durationPolicy": "executor_bound",
+        "audioPolicy": "campaign_sound_bound_downstream"
+      },
+      "reviewAuthority": "syzygy-slideshow.output+artifact.source.media",
+      "reviewGates": [
+        "technical_video",
+        "rights_and_provenance",
+        "text_layout",
+        "duplicate_and_never_reuse"
+      ],
+      "distribution": {
+        "captions": "page_binding_required",
+        "sounds": "page_binding_required"
+      },
+      "definitionGaps": []
+    },
+    "lyric-video": {
+      "contentNiche": "lyric-edits",
+      "contentEngine": "lyrics_slideshows",
+      "materialSource": "lyric_image_library",
+      "assetType": "video/mp4",
+      "definitionStatus": "complete",
+      "creativeAuthority": {
+        "kind": "slideshow_renderer",
+        "id": "syzygy-slideshow",
+        "version": "sha256:78da457008391bd873dbc23c57fc7621f9707b8e139781e8d98cea4cdb9f65c9"
+      },
+      "dimensions": {
+        "subject": {
+          "status": "defined",
+          "rule": "Burnt Mill Road only: the approved Tirana moving protest portrait, 20 original source videos and 27 ordered windows.",
+          "authority": "recipes/executors/syzygy-slideshow-lyric-video.v1.json"
+        },
+        "setting": {
+          "status": "defined",
+          "rule": "Tirana, Albania across the preserved October 14\u201318 source dates; do not imply one simultaneous event.",
+          "authority": "recipes/executors/syzygy-slideshow-lyric-video.v1.json"
+        },
+        "shotGrammar": {
+          "status": "defined",
+          "rule": "The immutable 27-window 20-second video program with pinned original SHA-256/bytes/source trims/order/focal crops. No photo cycles.",
+          "authority": "recipes/executors/syzygy-slideshow-lyric-video.v1.json"
+        },
+        "lighting": {
+          "status": "defined",
+          "rule": "Original day/night progression; apply RGB gain 0.85 once to original source footage.",
+          "authority": "recipes/executors/syzygy-slideshow-lyric-video.v1.json"
+        },
+        "motion": {
+          "status": "defined",
+          "rule": "Original source movement at speed 1, muted hard cuts and explicitly authored phrase-driven windows.",
+          "authority": "recipes/executors/syzygy-slideshow-lyric-video.v1.json"
+        },
+        "duration": {
+          "status": "defined",
+          "rule": "Exactly 20 seconds at 30 frames per second.",
+          "authority": "recipes/executors/syzygy-slideshow-lyric-video.v1.json"
+        },
+        "textPolicy": {
+          "status": "defined",
+          "rule": "Syzygy background has no words. Content Lab final renderer resolves seven immutable Heavy Foot phrases from the page-scoped timing selector; official music remains downstream.",
+          "authority": "recipes/executors/syzygy-slideshow-lyric-video.v1.json"
+        },
+        "negativeRules": {
+          "status": "defined",
+          "rule": "No arbitrary lyric text, foreign page/sound/timing hash, random country mix, source audio, or repeated photo filler.",
+          "authority": "recipes/executors/syzygy-slideshow-lyric-video.v1.json"
+        },
+        "referenceExamples": {
+          "status": "defined",
+          "rule": "Owner-approved moving-v3 Tirana program and the independently verified Lab timed-lyric QA reference; reference is not an admitted production artifact.",
+          "authority": "recipes/executors/syzygy-slideshow-lyric-video.v1.json"
         }
       },
       "output": {

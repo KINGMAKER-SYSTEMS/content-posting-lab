@@ -6,6 +6,7 @@ import fcntl
 import hashlib
 import json
 import logging
+import math
 import os
 import re
 import shutil
@@ -16,7 +17,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable, Literal
+from typing import Annotated, Callable, Literal
 from urllib.parse import quote, urlsplit
 
 import httpx
@@ -26,6 +27,16 @@ from services.post_render import (
     Hash, Identity, MAX_SOURCE_BYTES, MAX_FINAL_BYTES, MAX_OVERLAY_BYTES, MAX_QA_BYTES,
     PostRenderError, PostRenderRequest, RenderedPost, render_post, sha256, source_visual_matches,
 )
+
+from services.post_render_timed import (
+    DURATION_TOLERANCE_MS, TimedPostRenderRequest, render_timed_post, _resolve_timing,
+)
+
+
+def render_prepared_post(source, output, request, **kwargs):
+    if isinstance(request, TimedPostRenderRequest):
+        return render_timed_post(source, output, request, **kwargs)
+    return render_post(source, output, request, **kwargs)
 
 log = logging.getLogger("content_lab.post_render_jobs")
 
@@ -207,7 +218,7 @@ class SourceProvenance(BaseModel):
 class RenderJobSubmission(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
     schema_: Literal[JOB_SCHEMA] = Field(alias="schema")
-    request: PostRenderRequest
+    request: Annotated[PostRenderRequest | TimedPostRenderRequest, Field(discriminator="schema_")]
     slot_payload_json: str = Field(min_length=2, max_length=256 * 1024)
     source_provenance: SourceProvenance | None = None
 
@@ -232,6 +243,10 @@ class RenderJobSubmission(BaseModel):
         supplied = json.loads(request.render_treatment_json)
         if json.dumps(slot.get("render_treatment"), sort_keys=True, allow_nan=False) != json.dumps(supplied, sort_keys=True, allow_nan=False):
             raise ValueError("slot treatment does not match render request")
+        if isinstance(request, TimedPostRenderRequest):
+            _resolve_timing(request)
+            if not isinstance(slot.get("sound"), dict) or slot["sound"].get("music_id") != request.sound_id:
+                raise ValueError("timed request does not match the immutable official slot sound")
         provenance = self.source_provenance
         if provenance is not None and (provenance.source_sha256 != request.source_sha256
                 or provenance.source_visual_treatment_sha256 != request.source_visual_treatment_sha256):
@@ -367,7 +382,7 @@ class ProcessLock:
 
 class PostRenderJobs:
     """SQLite owns job truth; OS locks fence live writers and clear when a process dies."""
-    def __init__(self, root: Path, *, fetcher: Callable | None = None, renderer: Callable = render_post,
+    def __init__(self, root: Path, *, fetcher: Callable | None = None, renderer: Callable = render_prepared_post,
                  clock_ms: Callable[[], int] = lambda: time.time_ns() // 1_000_000,
                  confirm_final: Callable[[str, int], bool | None] = confirm_admitted_final):
         if not root.is_absolute():
@@ -582,6 +597,35 @@ class PostRenderJobs:
                       "source_sha256", "caption_sha256", "treatment_sha256", "renderer_id", "renderer_version"):
             if receipt.get(field) != getattr(request, field):
                 raise RenderJobError("receipt_binding_mismatch")
+        expected_schema = "posting-prepared-artifact/v2" if isinstance(request, TimedPostRenderRequest) else "posting-prepared-artifact/v1"
+        if receipt.get("schema") != expected_schema:
+            raise RenderJobError("receipt_binding_mismatch")
+        if isinstance(request, TimedPostRenderRequest):
+            timing, phrases = _resolve_timing(request)
+            duration = receipt.get("duration_ms")
+            if (type(duration) is not int
+                    or abs(duration - timing["durationMs"]) > DURATION_TOLERANCE_MS):
+                raise RenderJobError("receipt_binding_mismatch")
+            for field in ("lyric_timing_set_id", "lyric_timing_sha256", "sound_id", "source_program_id", "source_program_sha256"):
+                if receipt.get(field) != getattr(request, field):
+                    raise RenderJobError("receipt_binding_mismatch")
+            supplied_phrases = receipt.get("phrases")
+            if (not isinstance(supplied_phrases, list) or len(supplied_phrases) != len(phrases)
+                    or any(not isinstance(got, dict) or {k: got.get(k) for k in ("startMs", "endMs", "text")} != expected
+                           or not re.fullmatch(r"[0-9a-f]{64}", str(got.get("pngSha256", "")))
+                           for got, expected in zip(supplied_phrases, phrases))):
+                raise RenderJobError("receipt_binding_mismatch")
+            expected_frames = [(index, frame) for index in sorted({0, len(phrases) - 1})
+                               for frame in sorted({math.ceil(phrases[index]["startMs"] * 30 / 1000), math.ceil(phrases[index]["endMs"] * 30 / 1000) - 1})]
+            checks = receipt.get("phrase_frame_evidence")
+            if (not isinstance(checks, list) or len(checks) != len(expected_frames)
+                    or any(not isinstance(check, dict) or (check.get("phraseIndex"), check.get("frame")) != expected
+                           or type(check.get("maxMeanGlyphError")) not in (int, float)
+                           or not math.isfinite(check["maxMeanGlyphError"]) or not 0 <= check["maxMeanGlyphError"] <= 35
+                           or not re.fullmatch(r"[0-9a-f]{64}", str(check.get("sha256", "")))
+                           for check, expected in zip(checks, expected_frames))
+                    or evidence.get("decoded_video_frames") != 600):
+                raise RenderJobError("lyric_frame_evidence_missing")
         final_sha = authority.get("final_sha256")
         qa_sha = authority.get("qa_frame_sha256")
         final_length = authority.get("final_byte_length")
@@ -630,7 +674,9 @@ class PostRenderJobs:
         if len(receipt_bytes) > 64 * 1024:
             raise RenderJobError("receipt_invalid")
         receipt = json.loads(receipt_bytes)
-        if receipt.get("schema") != "posting-prepared-artifact/v1":
+        request = RenderJobSubmission.model_validate_json(row["submission_json"]).request
+        expected_schema = "posting-prepared-artifact/v2" if isinstance(request, TimedPostRenderRequest) else "posting-prepared-artifact/v1"
+        if receipt.get("schema") != expected_schema:
             raise RenderJobError("receipt_invalid")
         final_sha, final_length = _file_hash(output / "final.mp4", MAX_FINAL_BYTES)
         qa_sha, _ = _file_hash(output / "qa.jpg", MAX_QA_BYTES)
