@@ -3818,6 +3818,7 @@ async def _run_syzygy_slideshow(job_id: str) -> None:
                 plan,
                 page_id=job["pageId"],
                 recipe_version=job["recipeVersion"],
+                format_slug=recipe.format_slug,
             )
             play_url = await poll_syzygy_render(render_job_id)
             raw_render = renders_root / f"render-{index:04d}.mp4"
