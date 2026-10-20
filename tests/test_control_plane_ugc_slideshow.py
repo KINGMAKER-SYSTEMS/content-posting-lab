@@ -1,5 +1,5 @@
 """Culture Core UGC slideshow: curated ordered plan, blank text/no audio, and
-the staged fast-cut cadence config — without touching legacy lyric/meme hashes."""
+the page-scoped fast-cut wire — without touching legacy lyric/meme hashes."""
 
 import hashlib
 
@@ -17,7 +17,6 @@ from services.control_plane_slideshows import (
     plan_slideshows,
     slideshow_library_address,
     ugc_page_cut_policy,
-    ugc_fast_cut_cadence,
 )
 
 ORIGINAL_EXECUTOR_SHA = (
@@ -154,30 +153,18 @@ def test_legacy_executor_bytes_are_unchanged():
         assert profiles[slug].executor_version == f"sha256:{ORIGINAL_EXECUTOR_SHA}"
 
 
-def test_ugc_page_cut_policy_is_staged_and_page_scoped():
-    policy = ugc_page_cut_policy("culture-core")
+def test_ugc_page_cut_policy_is_page_scoped():
+    policy = ugc_page_cut_policy("acct:culture-core-1")
     assert policy == {
-        "cutStyle": "fast_sixteenth",
-        "cutCount": 60,
-        "framesPerCut": 6,
-        "cutsPerSecond": 5,
-        "targetSeconds": 12,
+        "cutMode": "cut_style",
+        "cuts": 60,
+        "audioSectionEnd": 12,
     }
-    assert ugc_page_cut_policy("some-other-page") is None
+    assert ugc_page_cut_policy("acct:other-page") is None
     assert ugc_page_cut_policy("") is None
 
 
-def test_ugc_fast_cut_cadence_is_pure_and_bounded():
-    cadence = ugc_fast_cut_cadence(cut_count=60, frames_per_cut=6, fps=30)
-    assert len(cadence) == 60
-    assert cadence[0] == 0.0
-    assert cadence[1] == 0.2
-    assert cadence[-1] == 11.8  # 60 cuts * 6 frames / 30fps = 12s span
-    assert ugc_fast_cut_cadence(cut_count=0, frames_per_cut=6) == []
-    assert ugc_fast_cut_cadence(cut_count=60, frames_per_cut=0) == []
-
-
-async def test_ugc_render_payload_is_blank_text_and_no_audio(monkeypatch):
+async def test_culture_render_wire_has_60_cuts_and_12s_section(monkeypatch):
     captured = {}
 
     async def fake_request_json(method, endpoint, *, body=None, idempotency_key=None,
@@ -196,7 +183,7 @@ async def test_ugc_render_payload_is_blank_text_and_no_audio(monkeypatch):
         ],
     }
     await slideshows.submit_syzygy_render(
-        plan, page_id="culture-core", recipe_version="v1",
+        plan, page_id="acct:culture-core-1", recipe_version="v1",
         format_slug="ugc-slideshow",
     )
     spec = captured["body"]["spec"]
@@ -208,8 +195,42 @@ async def test_ugc_render_payload_is_blank_text_and_no_audio(monkeypatch):
     assert spec["lyrics_lrc"] == ""
     assert spec["lyrics_required"] is False
     assert spec["uses_original_audio"] is False
-    # Campaign sound stays bound downstream; the renderer only gets the section.
+    # Culture Core's verified fast-cut wire, and no audio `src` key.
+    assert spec["cuts"] == {"mode": "cut_style", "cuts": 60}
+    assert spec["audio"] == {"section_start": 0, "section_end": 12}
+    assert "src" not in spec["audio"]
+
+
+async def test_generic_ugc_wire_keeps_15s_and_no_cuts(monkeypatch):
+    captured = {}
+
+    async def fake_request_json(method, endpoint, *, body=None, idempotency_key=None,
+                                timeout=60.0):
+        captured["body"] = body
+        return {"job_id": "job-ugc", "quality": "draft"}
+
+    monkeypatch.setattr(slideshows, "_request_json", fake_request_json)
+    plan = {
+        "templateSlug": "clean-slideshow",
+        "signature": "c" * 64,
+        "mediaKeys": [
+            "ugc/other/photos/img-1.jpg",
+            "ugc/other/photos/img-2.jpg",
+            "ugc/other/photos/img-3.jpg",
+        ],
+    }
+    await slideshows.submit_syzygy_render(
+        plan, page_id="acct:other-page", recipe_version="v1",
+        format_slug="ugc-slideshow",
+    )
+    spec = captured["body"]["spec"]
+    # Blank text/no audio still applies to every UGC page…
+    assert spec["hook"] == {"text": "", "position": "none"}
+    assert spec["uses_original_audio"] is False
+    # …but the fast-cut wire is Culture-only: no cuts, 15s section.
+    assert "cuts" not in spec
     assert spec["audio"] == {"section_start": 0, "section_end": 15}
+    assert "src" not in spec["audio"]
 
 
 async def test_legacy_render_payload_has_no_blank_overrides(monkeypatch):

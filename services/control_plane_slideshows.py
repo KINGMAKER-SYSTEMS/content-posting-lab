@@ -140,7 +140,8 @@ def _executor_contract(format_slug: str | None = None) -> tuple[dict[str, Any], 
     ):
         raise ValueError("Syzygy slideshow executor contract is invalid")
     # pageTreatments is optional server-owned config: a page_id -> closed cut
-    # policy mapping that never binds the render wire. It is not a protocol.
+    # policy that drives the render wire for that exact page only. It is not a
+    # protocol; unknown pages keep the generic UGC clean-slideshow behavior.
     treatments = value.get("pageTreatments", {})
     if not isinstance(treatments, dict):
         raise ValueError("Syzygy slideshow executor pageTreatments is invalid")
@@ -149,19 +150,12 @@ def _executor_contract(format_slug: str | None = None) -> tuple[dict[str, Any], 
             not isinstance(page_id, str)
             or not page_id.strip()
             or not isinstance(treatment, dict)
-            or set(treatment) != {
-                "cutStyle", "cutCount", "framesPerCut", "cutsPerSecond",
-                "targetSeconds",
-            }
-            or treatment.get("cutStyle") != "fast_sixteenth"
-            or not isinstance(treatment.get("cutCount"), int)
-            or not 1 <= treatment["cutCount"] <= 240
-            or not isinstance(treatment.get("framesPerCut"), int)
-            or not 1 <= treatment["framesPerCut"] <= 60
-            or not isinstance(treatment.get("cutsPerSecond"), (int, float))
-            or not 0 < treatment["cutsPerSecond"] <= 60
-            or not isinstance(treatment.get("targetSeconds"), (int, float))
-            or not 0 < treatment["targetSeconds"] <= 60
+            or set(treatment) != {"cutMode", "cuts", "audioSectionEnd"}
+            or treatment.get("cutMode") != "cut_style"
+            or not isinstance(treatment.get("cuts"), int)
+            or not 1 <= treatment["cuts"] <= 240
+            or not isinstance(treatment.get("audioSectionEnd"), (int, float))
+            or not 0 < treatment["audioSectionEnd"] <= 60
         ):
             raise ValueError("Syzygy slideshow executor pageTreatment is invalid")
     for format_slug, config in value["formats"].items():
@@ -497,9 +491,9 @@ def plan_slideshows(
 def ugc_page_cut_policy(page_id: str) -> dict[str, Any] | None:
     """Return the staged server-owned fast-cut policy for one page, if any.
 
-    The policy is config only: it describes the Culture Core cadence the
-    operator intends Syzygy to render. It never binds the render wire, so an
-    unknown page keeps the generic UGC clean-slideshow behavior unchanged.
+    The policy is page-scoped config that drives the render wire for that exact
+    page. An unknown page returns None and keeps the generic UGC clean-slideshow
+    behavior (15s audio section, no cut_style cuts).
     """
     if not isinstance(page_id, str) or not page_id.strip():
         return None
@@ -509,27 +503,6 @@ def ugc_page_cut_policy(page_id: str) -> dict[str, Any] | None:
         return None
     treatment = executor.get("pageTreatments", {}).get(page_id)
     return dict(treatment) if isinstance(treatment, dict) else None
-
-
-def ugc_fast_cut_cadence(
-    *, cut_count: int, frames_per_cut: int, fps: int = 30,
-) -> list[float]:
-    """Pure cadence helper: evenly spaced cut boundaries for a fast UGC burst.
-
-    Returns cut_count boundary timestamps (seconds) using frames_per_cut frames
-    per cut at the given fps. No Syzygy wire field is derived here; the parent
-    will pin the exact render payload once Syzygy's fast-cut contract lands.
-    """
-    if (
-        not isinstance(cut_count, int) or isinstance(cut_count, bool)
-        or cut_count <= 0
-        or not isinstance(frames_per_cut, int) or isinstance(frames_per_cut, bool)
-        or frames_per_cut <= 0
-        or not isinstance(fps, int) or isinstance(fps, bool) or fps <= 0
-    ):
-        return []
-    step = frames_per_cut / fps
-    return [round(index * step, 6) for index in range(cut_count)]
 
 
 def syzygy_idempotency_key(*parts: str) -> str:
@@ -618,6 +591,13 @@ async def submit_syzygy_render(
             "lyrics_required": False,
             "uses_original_audio": False,
         })
+        policy = ugc_page_cut_policy(page_id)
+        if policy is not None:
+            # Culture Core's verified fast-cut wire: cut_style with 60 cuts over
+            # a 12s section. The audio section carries no source (no `src` key);
+            # the Lab still applies the Dossier brightness once downstream.
+            spec["cuts"] = {"mode": policy["cutMode"], "cuts": policy["cuts"]}
+            spec["audio"]["section_end"] = policy["audioSectionEnd"]
     key = syzygy_idempotency_key(
         page_id, recipe_version, plan["signature"], "render-v1",
     )
