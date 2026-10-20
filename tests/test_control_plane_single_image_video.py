@@ -98,6 +98,10 @@ def test_same_request_rechecks_live_image_library_without_file_or_intent_change(
     client,library,payload,_=image_lab
     import routers.control_plane as cp
     reads=[]
+    with cp.lock_for(cp._jobs_path()):
+        cp._save_jobs({'jobs': {}})
+    generation=cp._read_jobs_snapshot_object().generation
+    saved_job_bytes=cp._jobs_path().read_bytes()
     def available(*args,**kwargs):
         reads.append('available')
         return library
@@ -118,3 +122,5 @@ def test_same_request_rechecks_live_image_library_without_file_or_intent_change(
     assert second.status_code==200
     assert all(x['recipeId']!=base.RECIPE_ID for x in second.json()['capabilities'])
     assert reads==['available','unavailable']
+    assert cp._read_jobs_snapshot_object().generation==generation
+    assert cp._jobs_path().read_bytes()==saved_job_bytes
