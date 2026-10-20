@@ -105,6 +105,7 @@ from services.control_plane_sources import (
     source_window_exclusions,
     SOURCE_SPEED_DURATION_UNSUPPORTED,
 )
+from services.control_plane_image_video import IMAGE_VIDEO_FORMATS
 from services.control_plane_slideshows import (
     SyzygyError,
     UGC_FORMAT_SLUG,
@@ -323,7 +324,7 @@ def _registered_recipes() -> list[dict[str, Any]]:
 # it reads and re-parses up to three files). A stat is one syscall.
 #
 # Audited and NOT cacheable at all: a registered slideshow binding
-# (sourced_slideshow / lyrics_slideshows) resolves through
+# (sourced_slideshow / lyrics_slideshows / sourced_image) resolves through
 # load_syzygy_library, a LIVE networked fetch with no cheap pre-fetch
 # version signal at all — not even a stat, since there is no local file.
 # capabilities() never caches (reads or stores) a response for a page with
@@ -362,7 +363,7 @@ _capabilities_cache: dict[tuple[Any, ...], tuple[float, list[dict[str, Any]]]] =
 _CAPABILITIES_CACHE_TTL_SECONDS = 2.0
 _CAPABILITIES_CACHE_MAX_ENTRIES = 4096
 
-_SLIDESHOW_ENGINES = frozenset({"sourced_slideshow", "lyrics_slideshows"})
+_SLIDESHOW_ENGINES = frozenset({"sourced_slideshow", "lyrics_slideshows", "sourced_image"})
 
 
 def _file_stat_signature(path: Path) -> tuple[str, int, int, int, int]:
@@ -692,7 +693,7 @@ def capabilities(
         )
         slideshow_recipe = (
             resolve_slideshow_recipe(publication)
-            if publication_engine in {"sourced_slideshow", "lyrics_slideshows"}
+            if publication_engine in {"sourced_slideshow", "lyrics_slideshows", "sourced_image"}
             else None
         )
         if (
@@ -3795,7 +3796,7 @@ async def _run_syzygy_slideshow(job_id: str) -> None:
                 if isinstance(template_slug, str)
                 else None
             )
-            image_video = recipe.format_slug == "image-video"
+            image_video = recipe.format_slug in IMAGE_VIDEO_FORMATS
             curated = requires_curated_video_plan(recipe)
             if curated and not isinstance(plan.get("windows"), list):
                 raise RuntimeError("slideshow_plan_invalid")
@@ -3916,7 +3917,7 @@ async def _run_syzygy_slideshow(job_id: str) -> None:
             destination = treated_root / f"slideshow-{index:04d}.mp4"
             encode_args = (
                 ugc_encode_args(recipe.encode_preset)
-                if recipe.format_slug in CLEAN_VIDEO_FORMATS or recipe.format_slug == "image-video"
+                if recipe.format_slug in CLEAN_VIDEO_FORMATS or recipe.format_slug in IMAGE_VIDEO_FORMATS
                 else delivery_encode_args(recipe.encode_preset)
             )
             await run_color_correct(
@@ -4465,7 +4466,7 @@ async def create_job(
     )
     slideshow_recipe = (
         resolve_slideshow_recipe(publication)
-        if publication_engine in {"sourced_slideshow", "lyrics_slideshows"}
+        if publication_engine in {"sourced_slideshow", "lyrics_slideshows", "sourced_image"}
         else None
     )
     if (

@@ -424,6 +424,7 @@ async def submit_image_video_render(
     recipe_version: str,
     request_json: Any = None,
     timeout: float = 90.0,
+    format_slug: str | None = None,
 ) -> tuple[str, str]:
     """Submit one prepared photo plan and return (job_id, quality).
 
@@ -437,6 +438,10 @@ async def submit_image_video_render(
             or not isinstance(recipe_version, str) or not recipe_version.strip()
             or recipe_version != recipe_version.strip()):
         raise ImageVideoError("image-video submission identity is invalid")
+    if format_slug is not None:
+        target = IMAGE_VIDEO_TARGETS.get(format_slug)
+        if target is None or page_id != target[0] or len(plan.get("media", [])) != target[5]:
+            raise ImageVideoError("image-video submission format differs from exact page")
     spec = build_image_video_spec(plan)
     key = image_video_idempotency_key(
         page_id, recipe_version, plan["signature"], "render-v1",
@@ -457,13 +462,36 @@ async def submit_image_video_render(
 
 
 FORMAT_SLUG = "image-video"
+SINGLE_IMAGE_FORMAT_SLUG = "single-image-video"
+IMAGE_VIDEO_FORMATS = frozenset({FORMAT_SLUG, SINGLE_IMAGE_FORMAT_SLUG})
+# Exact ontology identities; the original plan file remains the media authority.
+IMAGE_VIDEO_TARGETS = {
+    FORMAT_SLUG: ("acct:pen-pal3", "pen.pal3", "3ed1465b-b829-809f-afb4-da66093e7f9d", "slideshow", "sourced_slideshow", 3),
+    SINGLE_IMAGE_FORMAT_SLUG: ("acct:twin47996", "twin47996", "3ed1465b-b829-8056-aa9b-f8579c3210b8", "POV", "sourced_image", 1),
+}
+
+
+def image_video_plan_for_format(format_slug, master_pages):
+    """Select only the exact current page/format tuple, never a foreign still pool."""
+    target = IMAGE_VIDEO_TARGETS.get(format_slug)
+    if target is None or not isinstance(master_pages, dict):
+        return None
+    page, handle, notion, niche, engine, count = target
+    if (master_pages.get("pageId"), master_pages.get("handle"),
+        master_pages.get("notionPageId"), master_pages.get("contentNiche"),
+        master_pages.get("contentEngine")) != (page, handle, notion, niche, engine):
+        return None
+    plan = image_video_plan(page)
+    if plan is None or len(plan["media"]) != count:
+        return None
+    return plan
+
 
 def recipe_image_video_plan(recipe, library):
     """Adapt a closed photo plan to the existing reserved-slideshow envelope."""
-    if recipe.format_slug != FORMAT_SLUG:
+    if recipe.format_slug not in IMAGE_VIDEO_FORMATS:
         return None
-    page = recipe.recipe_spec.get("masterPages", {}).get("pageId")
-    photo = image_video_plan(page)
+    photo = image_video_plan_for_format(recipe.format_slug, recipe.recipe_spec.get("masterPages"))
     if photo is None or recipe.library_id != photo["libraryId"] or library.library_id != photo["libraryId"]:
         return None
     by_key = {obj.key: obj for obj in library.objects}
@@ -486,10 +514,13 @@ def required_image_video_treatment(spec, page_id):
                 "clipSpeed": 1., "clipCrop": NEUTRAL_CROP}
     return actual == expected
 
-def slideshow_executor_adapter():
+def slideshow_executor_adapter(format_slug=FORMAT_SLUG):
     """Existing executor vocabulary; original legacy JSON stays byte-identical."""
+    if format_slug not in IMAGE_VIDEO_FORMATS:
+        raise ImageVideoError("image-video format is unknown")
     config, digest = image_video_executor_contract()
-    return {"formats": {FORMAT_SLUG: {"lane": "animals", "minimumLibraryItems": 1,
+    lane = "interiors" if format_slug == SINGLE_IMAGE_FORMAT_SLUG else "animals"
+    return {"formats": {format_slug: {"lane": lane, "minimumLibraryItems": 1,
                 "templates": [{"slug": PLAN_SLUG, "mediaCount": 1}]}},
             "selection": config["selection"], "reservation": config["reservation"],
             "output": {**config["output"], "audioPolicy": "campaign_sound_bound_downstream"}}, digest

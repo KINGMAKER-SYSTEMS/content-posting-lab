@@ -8,11 +8,24 @@ import services.control_plane_slideshows as ss
 import services.control_plane_image_video as iv
 import routers.control_plane as cp
 
-@pytest.fixture(params=[('acct:pen-pal3','pen.pal3'),('acct:twin47996','twin47996')])
+@pytest.fixture(params=[
+    ('acct:pen-pal3','pen.pal3','image-video','sourced_slideshow','slideshow','3ed1465b-b829-809f-afb4-da66093e7f9d'),
+    ('acct:twin47996','twin47996','single-image-video','sourced_image','POV','3ed1465b-b829-8056-aa9b-f8579c3210b8'),
+])
 def image_lab(request,monkeypatch,tmp_path):
-    page,handle=request.param;photo=iv.image_video_plan(page)
+    page,handle,format_slug,engine,niche,notion=request.param;photo=iv.image_video_plan(page)
     library=ss.SyzygyLibrary(photo['libraryId'],photo['lane'],photo['subject'],tuple(ss.SyzygyObject(x['key'],x['bytes'],'https://r2.example/'+x['key'])for x in photo['media']),'c'*64)
-    for key,value in {'PAGE_ID':page,'HANDLE':handle,'SUBJECT':photo['subject'],'LANE':photo['lane'],'FORMAT':'image-video','ENGINE':'sourced_slideshow','NICHE':'slideshow','LIBRARY_ID':photo['libraryId'],'RECIPE_ID':'image-video:master'}.items():monkeypatch.setattr(base,key,value)
+    for key,value in {'PAGE_ID':page,'HANDLE':handle,'SUBJECT':photo['subject'],'LANE':photo['lane'],'FORMAT':format_slug,'ENGINE':engine,'NICHE':niche,'LIBRARY_ID':photo['libraryId'],'RECIPE_ID':format_slug+':master'}.items():monkeypatch.setattr(base,key,value)
+    # These are the actual observed Notion tuples, not a slideshow-normalized Twin.
+    original_master_pages = base.master_pages
+    def actual_master_pages(*args, **kwargs):
+        from services.master_pages_contract import intent_hash
+        intent, _ = original_master_pages(*args, **kwargs)
+        intent.update(notionPageId=notion, group='MON ROVIA', groupLabel='Mon Rovia',
+                      posterName='PIXEL-8', status='active', accountType=None, pageType=None,
+                      vaultUrl='https://shipstream.risingtidesviral.com/vault/'+handle)
+        return intent, intent_hash(intent)
+    monkeypatch.setattr(base,'master_pages',actual_master_pages)
     monkeypatch.setattr(base,'_library',lambda *a,**k:library)
     original=base.publication
     def publication(*args,**kwargs):
@@ -38,6 +51,7 @@ async def test_managed_photo_admission_wire_grade_provenance_and_exhaustion(imag
     spec=captured[0][2]['body']['spec'];assert spec==iv.build_image_video_spec(photo);assert spec['transition']==0;assert 'template_slug'not in spec and 'cuts'not in spec
     assert sum(x['duration']for x in spec['media'])==12
     clip=job['clips'][0];assert clip['source']['photoPlan']==photo
+    assert clip['source']['contentEngine']==base.ENGINE
     assert clip['sourceTreatment']['visualTreatment']['filters']['brightness']==.85
     assert clip['sourceTreatment']['sourceSha256']==clip['sha256']
     again=client.post('/api/control-plane/v1/jobs',json=base.job_body(1,payload),headers=base.headers('image-run-2'))
@@ -75,7 +89,7 @@ def test_catalog_advertises_actual_page_photo_count(image_lab):
     from services.content_engine_registry import load_engine_registry
     from services.dossier_ingredients import _slideshow_ingredients
     profiles,_=load_engine_registry()
-    entries=_slideshow_ingredients(profiles["image-video"],json.loads(payload["recipeSpecCanonical"])["masterPages"])
+    entries=_slideshow_ingredients(profiles[base.FORMAT],json.loads(payload["recipeSpecCanonical"])["masterPages"])
     bindings={x["ingredientId"]:x["binding"] for x in entries}
     count=len(photo["media"])
     assert bindings["image-library"]["minimumLibraryItems"]==count

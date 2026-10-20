@@ -18,6 +18,7 @@ from typing import Any
 from providers import PROVIDERS
 from routers.video import PROVIDER_SCHEMAS
 from services.content_engine_registry import MaterialProfile, load_engine_registry
+from services.control_plane_image_video import IMAGE_VIDEO_FORMATS, image_video_plan_for_format
 from services.content_format_contracts import FormatContract, load_format_contracts
 from services.control_plane_generation import (
     load_prompt_catalog,
@@ -801,9 +802,8 @@ def _slideshow_ingredients(
             treatment = slideshow_treatment_capability(profile.format_slug)
             minimum = treatment["minimumLibraryItems"]
             photo_ready = True
-            if profile.format_slug == "image-video":
-                from services.control_plane_image_video import image_video_plan
-                photo = image_video_plan(master_pages.get("pageId"))
+            if profile.format_slug in IMAGE_VIDEO_FORMATS:
+                photo = image_video_plan_for_format(profile.format_slug, master_pages)
                 minimum = len(photo["media"]) if photo is not None else 1
                 inventory = {obj.key: obj.bytes for obj in library.objects}
                 photo_ready = photo is not None and all(inventory.get(row["key"]) == row["bytes"] for row in photo["media"])
@@ -824,9 +824,8 @@ def _slideshow_ingredients(
             library_status = "unavailable"
         try:
             treatment_binding = slideshow_treatment_capability(profile.format_slug)
-            if profile.format_slug == "image-video":
-                from services.control_plane_image_video import image_video_plan
-                photo = image_video_plan(master_pages.get("pageId"))
+            if profile.format_slug in IMAGE_VIDEO_FORMATS:
+                photo = image_video_plan_for_format(profile.format_slug, master_pages)
                 if photo is not None:
                     count = len(photo["media"])
                     treatment_binding = {**treatment_binding, "minimumLibraryItems": count,

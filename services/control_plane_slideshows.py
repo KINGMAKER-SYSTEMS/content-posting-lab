@@ -23,6 +23,7 @@ from urllib.parse import quote, urljoin, urlsplit
 import httpx
 
 from services.content_engine_registry import MaterialProfile, resolve_material_profile
+from services.control_plane_image_video import IMAGE_VIDEO_FORMATS, image_video_plan_for_format
 from services.control_plane_generation import typed_recipe_spec
 
 
@@ -284,9 +285,9 @@ def curated_plan_signature(plan: dict[str, Any]) -> str:
 
 
 def _executor_contract(format_slug: str | None = None) -> tuple[dict[str, Any], str]:
-    if format_slug == "image-video":
+    if format_slug in IMAGE_VIDEO_FORMATS:
         from services.control_plane_image_video import slideshow_executor_adapter
-        return slideshow_executor_adapter()
+        return slideshow_executor_adapter(format_slug)
     path = (LYRIC_VIDEO_EXECUTOR_PATH if format_slug == LYRIC_VIDEO_FORMAT_SLUG else
             UGC_EXECUTOR_PATH if format_slug == UGC_FORMAT_SLUG else EXECUTOR_PATH)
     raw = path.read_bytes()
@@ -428,9 +429,8 @@ def slideshow_library_address(
     subject = _subject(master_pages.get("handle"))
     if not isinstance(config, dict) or subject is None:
         return None
-    if profile.format_slug == "image-video":
-        from services.control_plane_image_video import image_video_plan
-        photo = image_video_plan(master_pages.get("pageId"))
+    if profile.format_slug in IMAGE_VIDEO_FORMATS:
+        photo = image_video_plan_for_format(profile.format_slug, master_pages)
         if photo is None or subject != photo["subject"]:
             return None
         return photo["libraryId"], photo["lane"], photo["subject"]
@@ -575,7 +575,7 @@ def resolve_slideshow_recipe(
     if (
         not isinstance(recipe_id, str)
         or not recipe_id.endswith(":master")
-        or engine not in {"sourced_slideshow", "lyrics_slideshows"}
+        or engine not in {"sourced_slideshow", "lyrics_slideshows", "sourced_image"}
     ):
         return None
     spec = typed_recipe_spec(publication)
@@ -615,7 +615,7 @@ def resolve_slideshow_recipe(
             validate_lyric_recipe(spec)
         except ValueError:
             return None
-    if profile.format_slug == "image-video":
+    if profile.format_slug in IMAGE_VIDEO_FORMATS:
         from services.control_plane_image_video import required_image_video_treatment
         if not required_image_video_treatment(spec, master_pages.get("pageId")):
             return None
@@ -751,7 +751,7 @@ def plan_slideshows(
         or any(not SHA256.fullmatch(item) for item in unavailable_signatures)
     ):
         return []
-    if recipe.format_slug == "image-video":
+    if recipe.format_slug in IMAGE_VIDEO_FORMATS:
         from services.control_plane_image_video import recipe_image_video_plan
         plan = recipe_image_video_plan(recipe, library)
         if plan is None or plan["signature"] in unavailable_signatures:
@@ -918,10 +918,10 @@ async def submit_syzygy_render(
     plan: dict[str, Any], *, page_id: str, recipe_version: str,
     format_slug: str | None = None,
 ) -> tuple[str, str]:
-    if format_slug == "image-video":
+    if format_slug in IMAGE_VIDEO_FORMATS:
         from services.control_plane_image_video import submit_image_video_render
         return await submit_image_video_render(plan.get("photoPlan"), page_id=page_id,
-            recipe_version=recipe_version, request_json=_request_json)
+            recipe_version=recipe_version, request_json=_request_json, format_slug=format_slug)
     if format_slug == LYRIC_VIDEO_FORMAT_SLUG:
         from services.control_plane_lyric_video import validate_lyric_wire_plan
         validate_lyric_wire_plan(plan, page_id)

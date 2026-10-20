@@ -1282,12 +1282,12 @@
       "dimensions": {
         "subject": {
           "status": "defined",
-          "rule": "Exact page-owned cats with flowers for PenPal or one lamplit apartment image for Twin; no foreign-pool sampling.",
+          "rule": "Exact three page-owned cats-with-flowers photographs for PenPal only; no foreign-pool sampling.",
           "authority": "recipes/executors/syzygy-image-video.v1.json"
         },
         "setting": {
           "status": "defined",
-          "rule": "Retain approved original cat/flower or apartment setting.",
+          "rule": "Retain the approved original cat and flower settings.",
           "authority": "recipes/executors/syzygy-image-video.v1.json"
         },
         "shotGrammar": {
@@ -1302,12 +1302,89 @@
         },
         "motion": {
           "status": "defined",
-          "rule": "PenPal three gentle .025 KenBurns inward holds; Twin one static hold with zero zoom and transition.",
+          "rule": "Three gentle .025 KenBurns inward holds.",
           "authority": "recipes/executors/syzygy-image-video.v1.json"
         },
         "duration": {
           "status": "defined",
-          "rule": "Twelve seconds: PenPal3x4s or Twin1x12s.",
+          "rule": "Twelve seconds: three ordered four-second image holds.",
+          "authority": "recipes/executors/syzygy-image-video.v1.json"
+        },
+        "textPolicy": {
+          "status": "defined",
+          "rule": "Blank source background; captions and official sound are bound downstream.",
+          "authority": "recipes/executors/syzygy-image-video.v1.json"
+        },
+        "negativeRules": {
+          "status": "defined",
+          "rule": "No asset substitution, permutations, baked words, source audio, additional dimming, or fabricated treatment receipts.",
+          "authority": "recipes/executors/syzygy-image-video.v1.json"
+        },
+        "referenceExamples": {
+          "status": "defined",
+          "rule": "Exact original source keys, full SHA256 and bytes in scoped image-video executor.",
+          "authority": "recipes/executors/syzygy-image-video.v1.json"
+        }
+      },
+      "output": {
+        "aspectRatio": "9:16",
+        "container": "video/mp4",
+        "durationPolicy": "executor_bound",
+        "audioPolicy": "campaign_sound_bound_downstream"
+      },
+      "reviewAuthority": "recipes/executors/syzygy-image-video.v1.json",
+      "reviewGates": [
+        "technical_video",
+        "rights_and_provenance",
+        "text_layout",
+        "duplicate_and_never_reuse"
+      ],
+      "distribution": {
+        "captions": "page_binding_required",
+        "sounds": "page_binding_required"
+      },
+      "definitionGaps": []
+    },
+    "single-image-video": {
+      "contentNiche": "POV",
+      "contentEngine": "sourced_image",
+      "materialSource": "image_library",
+      "assetType": "video/mp4",
+      "definitionStatus": "complete",
+      "creativeAuthority": {
+        "kind": "slideshow_renderer",
+        "id": "syzygy-slideshow",
+        "version": "sha256:fee820be22a84f50cfa80330c5c0d6006b456a468a0bfa0373f9a652d25d599c"
+      },
+      "dimensions": {
+        "subject": {
+          "status": "defined",
+          "rule": "Exact page-owned single lamplit apartment image for Twin only; no foreign-pool sampling.",
+          "authority": "recipes/executors/syzygy-image-video.v1.json"
+        },
+        "setting": {
+          "status": "defined",
+          "rule": "Retain the approved original apartment setting.",
+          "authority": "recipes/executors/syzygy-image-video.v1.json"
+        },
+        "shotGrammar": {
+          "status": "defined",
+          "rule": "Portrait cover crop with exact page-bound focal positions and ordered photo holds.",
+          "authority": "recipes/executors/syzygy-image-video.v1.json"
+        },
+        "lighting": {
+          "status": "defined",
+          "rule": "Apply requested brightness .85 exactly once through managed source treatment.",
+          "authority": "recipes/executors/syzygy-image-video.v1.json"
+        },
+        "motion": {
+          "status": "defined",
+          "rule": "One static hold with zero zoom and transition.",
+          "authority": "recipes/executors/syzygy-image-video.v1.json"
+        },
+        "duration": {
+          "status": "defined",
+          "rule": "Twelve seconds holding exactly one image.",
           "authority": "recipes/executors/syzygy-image-video.v1.json"
         },
         "textPolicy": {
