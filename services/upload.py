@@ -282,7 +282,7 @@ def _update_job(job_id: str, updates: dict) -> dict | None:
     return None
 
 
-def _account_has_active_upload(jobs: list[dict], account_name: str, job_id: str) -> bool:
+def _account_has_active_upload(jobs: list[dict], account_name: str, video_path: str, job_id: str) -> bool:
     """A saved claim outlives its store lock, process, and browser session."""
     if any(
         row["job_id"] != job_id
@@ -294,7 +294,10 @@ def _account_has_active_upload(jobs: list[dict], account_name: str, job_id: str)
     # A quarantined row's invalid shape/status cannot establish that the
     # provider was never called. Even a saved terminal label may be one of
     # multiple conflicting copies, so hold this account for reconciliation.
-    return _quarantined_account_attempt(account_name) is not None
+    return (
+        _quarantined_account_attempt(account_name) is not None
+        or _quarantined_unknown_account_attempt(video_path) is not None
+    )
 
 
 def _quarantined_account_attempt(account_name: str) -> dict | None:
@@ -305,12 +308,34 @@ def _quarantined_account_attempt(account_name: str) -> dict | None:
     )
 
 
+def _quarantined_unknown_account_attempt(video_path: str) -> dict | None:
+    """An unknown account may still identify a prior Post by its real video path.
+
+    When both identity fields are lost, no target can be ruled out; all new
+    claims wait for reconciliation of that original row.
+    """
+    rejected = _quarantined_job_rows.get(str(Path(UPLOAD_JOBS_FILE).resolve()), [])
+    target = os.path.realpath(video_path)
+    return next(
+        (
+            row for row in rejected
+            if isinstance(row, dict)
+            and (not isinstance(row.get("account_name"), str) or not row["account_name"])
+            and (
+                not isinstance(row.get("video_path"), str) or not row["video_path"]
+                or os.path.realpath(row["video_path"]) == target
+            )
+        ),
+        None,
+    )
+
+
 def _has_runnable_queued_job() -> bool:
     with _job_store_write_lock():
         jobs = _read_stored_jobs(_lock_held=True)
         return any(
             row["status"] == "queued"
-            and not _account_has_active_upload(jobs, row["account_name"], row["job_id"])
+            and not _account_has_active_upload(jobs, row["account_name"], row["video_path"], row["job_id"])
             for row in jobs
         )
 
@@ -409,6 +434,13 @@ def submit_job(
             raise UploadReconciliationRequired(
                 "TikTok upload original attempt requires reconciliation before another "
                 "submission on this account (job %s)" % (unresolved.get("job_id") or "unknown")
+            )
+        unresolved = _quarantined_unknown_account_attempt(video_path)
+        if unresolved is not None:
+            raise UploadReconciliationRequired(
+                "TikTok upload original attempt requires reconciliation before another "
+                "submission for this video or an unknowable target (job %s)"
+                % (unresolved.get("job_id") or "unknown")
             )
         target = os.path.realpath(video_path)
         stored_rows = [*jobs, *_quarantined_job_rows.get(str(Path(UPLOAD_JOBS_FILE).resolve()), [])]
@@ -544,7 +576,7 @@ async def _process_single_job(job_id: str) -> bool:
         job = next((row for row in jobs if row["job_id"] == job_id), None)
         if not job or job["status"] != "queued":
             return False
-        if _account_has_active_upload(jobs, job["account_name"], job_id):
+        if _account_has_active_upload(jobs, job["account_name"], job["video_path"], job_id):
             # Other processes may execute a different video on this account.
             # The durable claim, not a process-local mutex, is the guard.
             return False
