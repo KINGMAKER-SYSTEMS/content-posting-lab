@@ -88,17 +88,22 @@ MIN_START_GAP_MS = 250
 CUT_LENGTH_MIN_MS = 5_000
 CUT_LENGTH_STEP_MS = 500
 CUT_LENGTH_MAX_MS = 9_000
-# Variety score. Any overlap with already-cut footage (OVERLAP_PENALTY plus up
-# to OVERLAP_WEIGHT plus 1 for recency) costs more than the largest distance
-# and length penalty (2 x sum(RECENT_WEIGHTS) = 3.8), so fresh footage comes
-# first -- except that repeating the master's last length
-# (SAME_AS_LAST_LENGTH_PENALTY) costs more than any overlap.
+# Variety score. Overlap with already-cut footage is scored first: a fresh
+# window always comes first, even when it repeats the master's last length.
+# Length variety (SAME_AS_LAST_LENGTH_PENALTY, near-start distance and the
+# recent-length penalties) then orders candidates that are equally fresh, or
+# equally overlapped. FRESH_FIRST_PENALTY is a tier barrier so no re-cut of
+# used footage can outrank a genuinely fresh window.
 RECENT_CUTS_REMEMBERED = 3
 RECENT_WEIGHTS = (1.0, 0.6, 0.3)
 NEAR_START_MS = 120_000
 OVERLAP_PENALTY = 5.0
 # Repeating the master's last length is allowed only when nothing else fits.
 SAME_AS_LAST_LENGTH_PENALTY = 100.0
+# A fresh window (zero overlap) always beats any re-cut, whatever the length
+# variety: this barrier exceeds the largest possible variety penalty
+# (SAME_AS_LAST_LENGTH_PENALTY + 2 * sum(RECENT_WEIGHTS) = 103.8).
+FRESH_FIRST_PENALTY = 1000.0
 OVERLAP_WEIGHT = 4.0
 NO_CUT_TIME = float("-inf")
 # Above this many candidate time frames a plan scores a seeded sample per cut
@@ -667,11 +672,11 @@ class _Lane:
         """(footage-reuse penalty, newest cut touching it) for one candidate.
 
         Any overlap with footage this master already cut costs more than any
-        distance or length penalty except repeating the last length, so fresh
-        footage comes first; more of the window already cut costs more. When
-        a window must overlap, footage cut longest ago is preferred: the age
-        term is the rank of the newest cut touching the window's seconds, 0
-        for the oldest and 1 for the newest.
+        distance or length penalty, so fresh footage comes first even when it
+        repeats the last length; more of the window already cut costs more.
+        When a window must overlap, footage cut longest ago is preferred: the
+        age term is the rank of the newest cut touching the window's seconds,
+        0 for the oldest and 1 for the newest.
         """
         end = start + duration
         covered = 0
@@ -696,9 +701,10 @@ class _Lane:
 
         The first cut on a master (no dated history) uses the page's Cut
         length. After that, the last cut's length is used again only when no
-        other length fits, and a start within ``near_ms`` of a recent start
-        and a length equal to (or 0.5 s from) a recent length cost more,
-        newest cut weighted most.
+        other equally-fresh length fits, and a start within ``near_ms`` of a
+        recent start and a length equal to (or 0.5 s from) a recent length
+        cost more, newest cut weighted most. This penalty is a secondary key:
+        the static overlap score always decides fresh footage first.
         """
         if not self.recent:
             return 0.0 if duration == starting_length else 1.0
@@ -752,9 +758,10 @@ def plan_source_cuts(
     half a second, then a quarter and three quarters). Each candidate is
     scored, lower is better:
 
-    1. repeating the master's last length (only when nothing else fits),
-    2. overlap with footage this master already cut (fresh footage first;
-       when everything overlaps, footage cut longest ago wins),
+    1. overlap with footage this master already cut (fresh footage first -- a
+       genuinely unused window wins even when it repeats the master's last
+       length; when everything overlaps, footage cut longest ago wins),
+    2. repeating the master's last length (only when nothing else fits),
     3. closeness of its start to the last few starts on this master,
     4. the same (or a 0.5 s different) length as the last few cuts,
 
@@ -835,7 +842,10 @@ def plan_source_cuts(
     def scored(index: int, start_ms: int, duration_ms: int, tiebreak: float) -> Row:
         lane = lanes[index]
         static, age = lane.static_score(start_ms, duration_ms)
-        score = static + lane.variety_penalty(start_ms, duration_ms, starting_length)
+        variety = lane.variety_penalty(start_ms, duration_ms, starting_length)
+        score = static + variety
+        if static > 0.0:
+            score += FRESH_FIRST_PENALTY
         return (score, age, tiebreak, index, start_ms, duration_ms)
 
     def usable(index: int, start_ms: int, duration_ms: int) -> bool:
@@ -843,8 +853,9 @@ def plan_source_cuts(
         return not lane.is_taken(start_ms, duration_ms) and not lane.overlaps_chosen(start_ms, duration_ms)
 
     def best_scanned(rows: list[Row]) -> Row | None:
-        # Rows are sorted by their static score, and the variety penalty is
-        # never negative: once a row cannot beat the best, no later row can.
+        # Rows are sorted by their static score, and the variety penalty and
+        # freshness barrier are never negative: once a row cannot beat the
+        # best, no later row can.
         best = None
         for static, age, tiebreak, index, start_ms, duration_ms in rows:
             if best is not None and (static, age, tiebreak) >= best[:3]:
@@ -911,18 +922,24 @@ def plan_source_cuts(
         lane = lanes[row[3]]
         return bool(lane.recent) and row[5] == lane.recent[0][1]
 
+    def fresh(row: Row) -> bool:
+        lane = lanes[row[3]]
+        static, _ = lane.static_score(row[4], row[5])
+        return static == 0.0
+
     chosen: list[SourceCut] = []
     for _ in range(quantity):
         # Whole-second starts first; a finer start only once every window at
         # the coarser level is cut. A coarser window that is uncut but does
         # not fit beside this plan's other cuts ends the plan; the next plan
-        # cuts it. The one exception: a window repeating the master's last
-        # length is taken only when no finer level offers another length,
-        # and only as a plan's first cut.
+        # cuts it. A genuinely fresh window is always taken, whatever its
+        # length. The one exception: an overlapping window that repeats the
+        # master's last length is taken only when no finer level offers
+        # another length, and only as a plan's first cut.
         pick = fallback = None
         for level in range(len(START_OFFSET_LEVELS_MS)):
             candidate = best_new(level)
-            if candidate is not None and not repeats_last_length(candidate):
+            if candidate is not None and (fresh(candidate) or not repeats_last_length(candidate)):
                 pick = candidate
                 break
             fallback = fallback or candidate
