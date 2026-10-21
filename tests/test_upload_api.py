@@ -484,6 +484,30 @@ def test_unknown_account_and_video_hold_all_targets_until_reconciled(cookie_dir,
     assert unknown in json.loads(stored.read_text())
 
 
+@pytest.mark.parametrize("unknown", [None, ["lost upload"], {
+    "job_id": "prior", "status": "uploading", "video_path": "/tmp/bad\x00path.mp4",
+}])
+def test_unidentifiable_quarantined_attempt_never_reposts(
+    cookie_dir, monkeypatch, unknown,
+):
+    monkeypatch.setattr(upload_svc, "require_upload_runtime", lambda: None)
+    queued = upload_svc.submit_job(video_path="/tmp/good.mp4", account_name="linked")
+    stored = cookie_dir.parent / "upload_jobs.json"
+    stored.write_text(json.dumps([queued, unknown]))
+    original = json.loads(stored.read_text())
+    calls = []
+    monkeypatch.setattr(upload_svc, "_run_upload_sync", lambda job: calls.append(job["job_id"]) or "Completed")
+
+    with pytest.raises(upload_svc.UploadReconciliationRequired):
+        upload_svc.submit_job(video_path="/tmp/new.mp4", account_name="other")
+    asyncio.run(upload_svc.process_queue())
+    assert calls == []
+    assert upload_svc.get_job(queued["job_id"])["status"] == "queued"
+    assert json.loads(stored.read_text()) == original
+    quarantine = stored.with_name(stored.name + ".quarantine.jsonl")
+    assert any(json.loads(line)["job"] == unknown for line in quarantine.read_text().splitlines())
+
+
 def test_quarantine_write_failure_keeps_valid_job_available(cookie_dir, monkeypatch, caplog):
     monkeypatch.setattr(upload_svc, "require_upload_runtime", lambda: None)
     good = upload_svc.submit_job(video_path="/tmp/good.mp4", account_name="unrelated")

@@ -78,6 +78,8 @@ def _stored_job_error(job: object, seen_ids: set[str]) -> str | None:
     for key in ("video_path", "account_name"):
         if not isinstance(job.get(key), str) or not job[key]:
             return f"{key} must be a non-empty string"
+    if "\x00" in job["video_path"]:
+        return "video_path contains NUL"
     if job["status"] == "queued":
         required = (
             "description", "hashtags", "sound_name", "sound_aud_vol",
@@ -315,19 +317,25 @@ def _quarantined_unknown_account_attempt(video_path: str) -> dict | None:
     claims wait for reconciliation of that original row.
     """
     rejected = _quarantined_job_rows.get(str(Path(UPLOAD_JOBS_FILE).resolve()), [])
+    if not rejected:
+        return None
     target = os.path.realpath(video_path)
-    return next(
-        (
-            row for row in rejected
-            if isinstance(row, dict)
-            and (not isinstance(row.get("account_name"), str) or not row["account_name"])
-            and (
-                not isinstance(row.get("video_path"), str) or not row["video_path"]
-                or os.path.realpath(row["video_path"]) == target
-            )
-        ),
-        None,
-    )
+    for row in rejected:
+        # A scalar or list may be a lost Post with neither identity retained.
+        if not isinstance(row, dict):
+            return {"job_id": "unknown"}
+        if isinstance(row.get("account_name"), str) and row["account_name"]:
+            continue
+        path = row.get("video_path")
+        if not isinstance(path, str) or not path:
+            return row
+        try:
+            if os.path.realpath(path) == target:
+                return row
+        except ValueError:
+            # NUL or another invalid persisted path cannot rule out a target.
+            return row
+    return None
 
 
 def _has_runnable_queued_job() -> bool:
