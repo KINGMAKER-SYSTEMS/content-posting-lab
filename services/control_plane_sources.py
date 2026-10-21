@@ -784,44 +784,44 @@ def plan_source_cuts(
     Every cut path goes through here (tests/test_source_cut_path_census.py).
     Candidates are every whole-second start on the master's timeline (from
     the page floor; plus one start ending on the last frame) at every allowed
-    length (source_cut_durations). Only when every one of those is cut do
-    starts move inside the second, coarse to fine (START_OFFSET_LEVELS_MS:
-    half a second, then a quarter and three quarters). Each candidate is
-    scored, lower is better:
+    length (source_cut_durations). Finer levels add half-second, then quarter-
+    and three-quarter-second starts (START_OFFSET_LEVELS_MS). Fresh candidates
+    at every level are considered before any re-cut. Within a tier, lower
+    combined candidate scores are preferred.
 
     The combined score includes overlap with footage already cut, repeating
     the master's last length, closeness to recent starts, and lengths equal
     to or 0.5 s from recent lengths. These are weighted terms, not separate
     ordering keys. In particular, length variety can outweigh overlap amount
-    among re-cuts; age and seeded randomness break equal-score ties,
+    among re-cuts; age and seeded randomness break equal-score ties.
 
-    but a genuinely fresh window (zero overlap with already-cut footage) is
+    A genuinely fresh window (zero overlap with already-cut footage) is
     always chosen before any re-cut, whatever its length: the planner first
     searches every start level, coarse to fine, for a fresh window derived from
     the complement of already-cut and reserved footage (so a whole-second re-cut
     never hides a finer-grained fresh window and sampling never skips one), and
     only then falls back to the re-cut/LRU ordering above.
 
-    then least-recently-used footage, then a seeded random tiebreak, so the
-    same seed and inputs always yield the same plan. Every pick updates the
+    The same seed and inputs yield the same plan. Every pick updates the
     "recent" state, so one multi-clip plan is itself spread out, and one plan
-    never holds two overlapping cuts of a master. The first cut on a master
-    uses the page's Cut length. Recency and variety are per master, across
+    never holds two overlapping cuts of a master. A master's first cut prefers
+    the page's Cut length when available. Recency and variety are per master, across
     every page that cut it.
 
     ``served_slots`` holds every time frame already cut or reserved (slot ids
     ``sha:start:duration``; legacy ``sha:start`` grid ids resolve to the length
     they were cut at). No window within MIN_START_GAP_MS of one of those (same
-    length) is ever planned: a cut never renders the same bytes twice.
+    length) is ever planned. This is timeline identity, not proof that different
+    timeline windows contain visually distinct footage.
     ``history`` maps ``sha:start:duration`` to when it was cut (CutUse); a
     window without one counts as the oldest. Windows overlapping another
     page's reservation (``exclusions``) are never candidates.
 
-    The plan is empty or short only when no further never-cut window fits:
-    explain_empty_source_plan names why an empty plan is empty
+    explain_empty_source_plan names an empty plan's reason
     (SOURCE_MASTER_TOO_SHORT, SOURCE_WINDOWS_EXHAUSTED or
-    SOURCE_WINDOWS_RESERVED_ELSEWHERE). A coarser never-cut window that does
-    not fit beside the plan's other cuts ends the plan; the next plan cuts it.
+    SOURCE_WINDOWS_RESERVED_ELSEWHERE). In the existing re-cut fallback, a
+    coarser never-cut window that cannot fit beside this plan's other cuts
+    ends the batch before finer re-cut levels; a later plan can use it.
 
     A start level with more than FULL_SCAN_CANDIDATES candidates scores a
     seeded sample of SAMPLED_CANDIDATES_PER_CUT candidates per cut (up to
