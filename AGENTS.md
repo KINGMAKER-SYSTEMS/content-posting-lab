@@ -283,8 +283,13 @@
   claim/cancel decision across worker processes. An unresolved uploading or held
   claim also bars another provider call for that account, even for a different
   queued job or process. A quarantined row with a readable account but invalid
-  status likewise blocks that account until reconciled. A bare provider `Completed` or error return becomes a
-  durable held result with its original claim and return retained; it cannot
+  status likewise blocks that account until reconciled. A quarantined prior
+  attempt with no readable account blocks any new submission or queued claim
+  for its real video path across accounts; if its video path is also unreadable,
+  all new upload claims wait for operator reconciliation. Preserve the original
+  row and allow unrelated known video paths to proceed. A bare provider
+  `Completed` or error return becomes a durable held result with its original
+  claim and return retained; it cannot
   establish posting success or authorize a repeat. A completed row permits
   explicit resubmission only with a matching canonical TikTok URL/video ID;
   cancelled history retains its existing resubmission behavior. A conflict
