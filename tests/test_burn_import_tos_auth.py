@@ -1,9 +1,15 @@
 """TOS imports require the private machine credential before reads or writes."""
 
+import asyncio
+
+import pytest
+from fastapi import HTTPException
+
 import requests
 
 import app as app_module
 import project_manager
+from routers.burn import import_tos_captions
 
 
 TOKEN = "server-only-control-plane-token"
@@ -53,6 +59,27 @@ def test_import_refuses_missing_wrong_browser_and_unconfigured_token_before_side
     assert response.status_code == 503
     assert not project_dir.exists()
 
+
+def test_import_refuses_unicode_machine_token_before_side_effects(
+    monkeypatch, isolated_projects_root
+):
+    monkeypatch.setenv("CONTROL_PLANE_TOKEN", TOKEN)
+    monkeypatch.setenv("SUPABASE_URL", "https://supabase.invalid")
+    monkeypatch.setenv("SUPABASE_SERVICE_KEY", "test-service-key")
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("unauthorized import reached a side effect")
+
+    monkeypatch.setattr(requests, "get", forbidden)
+    monkeypatch.setattr(project_manager, "get_project_caption_dir", forbidden)
+    project_dir = isolated_projects_root / PROJECT
+
+    # Call the route with an already-decoded value: HTTP clients may refuse
+    # non-ASCII header bytes before this shared guard sees them.
+    with pytest.raises(HTTPException) as error:
+        asyncio.run(import_tos_captions(project=PROJECT, authorization="Bearer café"))
+    assert error.value.status_code == 401
+    assert not project_dir.exists()
 
 def test_import_accepts_machine_token_with_app_key_unset(sync_client, monkeypatch, isolated_projects_root):
     monkeypatch.setattr(app_module, "_APP_API_KEY", None)

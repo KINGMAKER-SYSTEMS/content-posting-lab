@@ -121,7 +121,7 @@ def require_control_plane_bearer(authorization: str | None) -> None:
     if not authorization or not authorization.startswith(prefix):
         raise HTTPException(401, "invalid control-plane credential")
     supplied = authorization[len(prefix):]
-    if not hmac.compare_digest(supplied, expected):
+    if not hmac.compare_digest(supplied.encode("utf-8"), expected.encode("utf-8")):
         raise HTTPException(401, "invalid control-plane credential")
 
 
