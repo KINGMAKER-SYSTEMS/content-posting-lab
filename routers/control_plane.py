@@ -105,8 +105,14 @@ from services.control_plane_sources import (
     source_window_exclusions,
     SOURCE_SPEED_DURATION_UNSUPPORTED,
 )
+from services.control_plane_image_video import IMAGE_VIDEO_FORMATS
 from services.control_plane_slideshows import (
     SyzygyError,
+    UGC_FORMAT_SLUG,
+    CLEAN_VIDEO_FORMATS,
+    curated_plan_for_recipe,
+    curated_plan_signature,
+    requires_curated_video_plan,
     download_syzygy_artifact,
     load_recipe_library,
     load_syzygy_library,
@@ -116,6 +122,7 @@ from services.control_plane_slideshows import (
     resolve_slideshow_recipe,
     submit_syzygy_render,
     syzygy_revision,
+    ugc_encode_args,
 )
 from services.control_plane_source_imports import (
     MAX_CONCURRENT_SOURCE_IMPORTS,
@@ -317,7 +324,7 @@ def _registered_recipes() -> list[dict[str, Any]]:
 # it reads and re-parses up to three files). A stat is one syscall.
 #
 # Audited and NOT cacheable at all: a registered slideshow binding
-# (sourced_slideshow / lyrics_slideshows) resolves through
+# (sourced_slideshow / lyrics_slideshows / sourced_image) resolves through
 # load_syzygy_library, a LIVE networked fetch with no cheap pre-fetch
 # version signal at all — not even a stat, since there is no local file.
 # capabilities() never caches (reads or stores) a response for a page with
@@ -356,7 +363,7 @@ _capabilities_cache: dict[tuple[Any, ...], tuple[float, list[dict[str, Any]]]] =
 _CAPABILITIES_CACHE_TTL_SECONDS = 2.0
 _CAPABILITIES_CACHE_MAX_ENTRIES = 4096
 
-_SLIDESHOW_ENGINES = frozenset({"sourced_slideshow", "lyrics_slideshows"})
+_SLIDESHOW_ENGINES = frozenset({"sourced_slideshow", "lyrics_slideshows", "sourced_image"})
 
 
 def _file_stat_signature(path: Path) -> tuple[str, int, int, int, int]:
@@ -686,7 +693,7 @@ def capabilities(
         )
         slideshow_recipe = (
             resolve_slideshow_recipe(publication)
-            if publication_engine in {"sourced_slideshow", "lyrics_slideshows"}
+            if publication_engine in {"sourced_slideshow", "lyrics_slideshows", "sourced_image"}
             else None
         )
         if (
@@ -3736,6 +3743,15 @@ async def _run_syzygy_slideshow(job_id: str) -> None:
         )
         return
 
+    if recipe.format_slug == "lyric-video":
+        from services.control_plane_lyric_video import validate_managed_lyric_job
+        try:
+            validate_managed_lyric_job(job, publication, recipe.recipe_spec)
+        except (KeyError, TypeError, ValueError):
+            await asyncio.to_thread(_update_job, job_id, status="failed",
+                error="lyric_recipe_authority_mismatch", completedAt=datetime.now(timezone.utc).isoformat())
+            return
+
     job_root = Path(job["artifactRoot"]).resolve()
     treated_root = job_root / "treated"
     treated_root.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -3780,7 +3796,66 @@ async def _run_syzygy_slideshow(job_id: str) -> None:
                 if isinstance(template_slug, str)
                 else None
             )
-            if (
+            image_video = recipe.format_slug in IMAGE_VIDEO_FORMATS
+            curated = requires_curated_video_plan(recipe)
+            if curated and not isinstance(plan.get("windows"), list):
+                raise RuntimeError("slideshow_plan_invalid")
+            if not curated and "windows" in plan:
+                raise RuntimeError("slideshow_plan_invalid")
+            if image_video:
+                from services.control_plane_image_video import recipe_image_video_plan
+                canonical = recipe_image_video_plan(recipe, library)
+                if canonical is None or {key: value for key, value in plan.items() if key != "media"} != canonical:
+                    raise RuntimeError("slideshow_plan_invalid")
+                pinned_by_key = {row["key"]: (row["sha256"], row["bytes"]) for row in plan["photoPlan"]["media"]}
+                if (not isinstance(planned_media, list)
+                        or planned_media != [{"objectKey": key, "bytes": pinned_by_key[key][1]} for key in media_keys]):
+                    raise RuntimeError("slideshow_plan_invalid")
+            elif curated:
+                canonical = curated_plan_for_recipe(recipe, library)
+                if canonical is None:
+                    raise RuntimeError("slideshow_plan_invalid")
+                if (
+                    signature != canonical["signature"]
+                    or signature != curated_plan_signature(plan)
+                    or media_keys != canonical["mediaKeys"]
+                    or any(
+                        not isinstance(window, dict)
+                        or window.get("key") is None
+                        for window in plan["windows"]
+                    )
+                ):
+                    raise RuntimeError("slideshow_plan_invalid")
+                # Unique 15-key media for observation/receipt, plus full windows.
+                if len(set(media_keys)) != len(media_keys):
+                    raise RuntimeError("slideshow_plan_invalid")
+                pinned_by_key = {
+                    window["key"]: (window["sourceSha256"], window["sourceBytes"])
+                    for window in plan["windows"]
+                }
+                if len(pinned_by_key) != len(media_keys):
+                    raise RuntimeError("slideshow_plan_invalid")
+                valid = (
+                    not isinstance(signature, str)
+                    or not re.fullmatch(r"[0-9a-f]{64}", signature)
+                    or not isinstance(snapshot_hash, str)
+                    or not re.fullmatch(r"[0-9a-f]{64}", snapshot_hash)
+                    or not isinstance(planned_media, list)
+                    or [
+                        item.get("objectKey") if isinstance(item, dict) else None
+                        for item in planned_media
+                    ] != media_keys
+                    or any(
+                        not isinstance(item.get("bytes"), int)
+                        or isinstance(item.get("bytes"), bool)
+                        or item.get("bytes") <= 0
+                        for item in planned_media
+                        if isinstance(item, dict)
+                    )
+                )
+                if valid:
+                    raise RuntimeError("slideshow_plan_invalid")
+            elif (
                 template is None
                 or not isinstance(media_keys, list)
                 or len(media_keys) != template.media_count
@@ -3811,6 +3886,19 @@ async def _run_syzygy_slideshow(job_id: str) -> None:
                 if bytes_by_key.get(item["objectKey"]) != item["bytes"]:
                     raise RuntimeError("slideshow_library_object_changed")
             before = await observe_library_media(library, media_keys)
+            if curated or image_video:
+                # Verify observed bytes are the pinned bytes AND the observed
+                # SHA matches the pinned source SHA before any paid POST.
+                observed = {row["objectKey"]: row for row in before}
+                for key in media_keys:
+                    row = observed.get(key)
+                    pinned_sha, pinned_bytes = pinned_by_key[key]
+                    if (
+                        row is None
+                        or row["sha256"] != pinned_sha
+                        or row["bytes"] != pinned_bytes
+                    ):
+                        raise RuntimeError("slideshow_source_sha_mismatch")
             # The renderer may roll between plans; each artifact records the
             # exact revision observed immediately before its own submission.
             renderer_revision = await syzygy_revision()
@@ -3818,6 +3906,7 @@ async def _run_syzygy_slideshow(job_id: str) -> None:
                 plan,
                 page_id=job["pageId"],
                 recipe_version=job["recipeVersion"],
+                format_slug=recipe.format_slug,
             )
             play_url = await poll_syzygy_render(render_job_id)
             raw_render = renders_root / f"render-{index:04d}.mp4"
@@ -3826,10 +3915,15 @@ async def _run_syzygy_slideshow(job_id: str) -> None:
             if after != before:
                 raise RuntimeError("slideshow_source_mutated_during_render")
             destination = treated_root / f"slideshow-{index:04d}.mp4"
+            encode_args = (
+                ugc_encode_args(recipe.encode_preset)
+                if recipe.format_slug in CLEAN_VIDEO_FORMATS or recipe.format_slug in IMAGE_VIDEO_FORMATS
+                else delivery_encode_args(recipe.encode_preset)
+            )
             await run_color_correct(
                 str(raw_render), str(destination), color_correction,
                 scale=None,
-                encode_args=delivery_encode_args(recipe.encode_preset),
+                encode_args=encode_args,
                 playback_speed=clip_speed,
                 clip_crop=clip_crop,
                 clip_crop_size=(recipe.output_width, recipe.output_height),
@@ -3844,6 +3938,9 @@ async def _run_syzygy_slideshow(job_id: str) -> None:
                 clip_speed=clip_speed,
                 clip_crop=clip_crop,
             )
+            if recipe.format_slug == "lyric-video":
+                from services.control_plane_lyric_video import managed_lyric_binding
+                manifest["lyricTiming"] = managed_lyric_binding(job, publication, recipe.recipe_spec, manifest["sha256"])
             manifest["source"] = _source_provenance(job, {
                 "schema": "content-lab.syzygy-slideshow-source.v1",
                 "kind": "syzygy_slideshow",
@@ -3856,6 +3953,7 @@ async def _run_syzygy_slideshow(job_id: str) -> None:
                 "rendererRevision": renderer_revision,
                 "renderJobId": render_job_id,
                 "media": after,
+                **({"photoPlan": plan["photoPlan"]} if image_video else {}),
             })
             manifest["thumbnail"] = await _thumbnail_manifest(
                 job_root, destination, len(manifests),
@@ -4368,7 +4466,7 @@ async def create_job(
     )
     slideshow_recipe = (
         resolve_slideshow_recipe(publication)
-        if publication_engine in {"sourced_slideshow", "lyrics_slideshows"}
+        if publication_engine in {"sourced_slideshow", "lyrics_slideshows", "sourced_image"}
         else None
     )
     if (
@@ -4903,6 +5001,24 @@ def _artifact_source_treatment(job: dict[str, Any], clip: dict[str, Any]) -> dic
         return None
 
 
+def _artifact_lyric_timing(job: dict[str, Any], clip: dict[str, Any]) -> dict[str, Any] | None:
+    if job.get("recipeId") != "lyric-video:master":
+        return None
+    from services.control_plane_lyric_video import managed_lyric_binding
+    publication = load_registered_recipe(job.get("recipePublicationPageId") or job["pageId"],
+                                        job["recipeId"], job["engine"], job["recipeVersion"])
+    recipe_spec = typed_recipe_spec(publication) if isinstance(publication, dict) else None
+    try:
+        if job.get("status") != "completed" or recipe_spec is None:
+            raise ValueError("lyric managed artifact is not complete")
+        expected = managed_lyric_binding(job, publication, recipe_spec, clip["sha256"])
+        if clip.get("lyricTiming") != expected:
+            raise ValueError("lyric timing producer evidence is missing or changed")
+        return expected
+    except (KeyError, TypeError, ValueError) as error:
+        raise HTTPException(409, "lyric_timing_binding_invalid") from error
+
+
 @router.get("/v1/jobs/{job_id}/artifacts")
 def job_artifacts(
     job_id: str,
@@ -4967,6 +5083,9 @@ def job_artifacts(
         source_treatment = _artifact_source_treatment(job, clip)
         if source_treatment is not None:
             artifact["sourceTreatment"] = source_treatment
+        lyric_timing = _artifact_lyric_timing(job, clip)
+        if lyric_timing is not None:
+            artifact["lyricTiming"] = lyric_timing
         artifacts.append(artifact)
     return {"schema": RESPONSE_SCHEMA, "jobId": job_id, "artifacts": artifacts}
 

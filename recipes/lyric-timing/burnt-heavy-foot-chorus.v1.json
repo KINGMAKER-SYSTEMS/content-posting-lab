@@ -1,0 +1,52 @@
+{
+  "schema": "content-lab.lyric-timing-set.v1",
+  "id": "burnt-heavy-foot-chorus-v1",
+  "pageId": "acct:burnt-mill-rd",
+  "account": "burnt.mill.rd",
+  "soundId": "7611482162773035025",
+  "durationMs": 20000,
+  "phrases": [
+    {
+      "startMs": 120,
+      "endMs": 2990,
+      "text": "Love me now"
+    },
+    {
+      "startMs": 2990,
+      "endMs": 5860,
+      "text": "Hold me down"
+    },
+    {
+      "startMs": 5860,
+      "endMs": 7060,
+      "text": "And the government"
+    },
+    {
+      "startMs": 7060,
+      "endMs": 9240,
+      "text": "Staying on heavy foot"
+    },
+    {
+      "startMs": 9240,
+      "endMs": 12310,
+      "text": "And they tried to keep us all down"
+    },
+    {
+      "startMs": 12310,
+      "endMs": 17560,
+      "text": "No they never gonna keep us all down"
+    },
+    {
+      "startMs": 17560,
+      "endMs": 20000,
+      "text": "Do you see the birds in the cage"
+    }
+  ],
+  "canonicalCaption": "Love me now\nHold me down\nAnd the government\nStaying on heavy foot\nAnd they tried to keep us all down\nNo they never gonna keep us all down\nDo you see the birds in the cage",
+  "referenceAudioSha256": "11ace1c61ab8535c87a71dddbe7f06d03ac56bd3324809561cb49a8ddf95823f",
+  "timingProvenance": "Existing published HeavyFoot phrase anchors relative to alreadytrimmed20s fixture; audio/videoQA zero measuredlag. Officialphone playbackphase not yet verified.",
+  "intervalSemantics": "startinclusive,endexclusive; outputframequantization at30fps; no word-perfect alignmentclaim",
+  "sourceProgramId": "burnt-heavy-foot-tirana-v3",
+  "sourceProgramSha256": "78da457008391bd873dbc23c57fc7621f9707b8e139781e8d98cea4cdb9f65c9",
+  "notionPageId": "3451465b-b829-80a8-b9d1-fb7e34b98ff5"
+}

@@ -18,6 +18,7 @@ from typing import Any
 from providers import PROVIDERS
 from routers.video import PROVIDER_SCHEMAS
 from services.content_engine_registry import MaterialProfile, load_engine_registry
+from services.control_plane_image_video import IMAGE_VIDEO_FORMATS, image_video_plan_for_format
 from services.content_format_contracts import FormatContract, load_format_contracts
 from services.control_plane_generation import (
     load_prompt_catalog,
@@ -352,6 +353,14 @@ def _selection_catalog_version(
         entry.get("binding") for entry in format_entry.get("ingredients", [])
         if entry.get("ingredientId") in {"clip-treatment", "slideshow-treatment"}
     ), None)
+    timing = ingredients.get("lyric-timing")
+    timing_binding = (timing or {}).get("binding")
+    if timing is not None:
+        if not isinstance(timing_binding, dict):
+            return None
+        controls = production.get("controls", {})
+        if controls != {"lyricTimingSetId": timing_binding["id"]}:
+            return None
     model_binding = (model or {}).get("binding")
     projection = {
         "schema": SELECTION_AUTHORITY_SCHEMA,
@@ -383,6 +392,7 @@ def _selection_catalog_version(
                 else selected_source
             ),
             "treatment": treatment,
+            **({"lyricTiming": timing_binding} if timing is not None else {}),
         },
     }
     canonical = json.dumps(
@@ -422,6 +432,9 @@ def _production_selections(format_entry: dict[str, Any]) -> list[dict[str, Any]]
         } for option in source.get("options", [])]
     else:
         identities = []
+    timing = (ingredients.get("lyric-timing") or {}).get("binding")
+    if isinstance(timing, dict):
+        identities = [{**identity, "controls": {"lyricTimingSetId": timing["id"]}} for identity in identities]
     selections: list[dict[str, Any]] = []
     for identity in identities:
         version = _selection_catalog_version(format_entry, identity)
@@ -788,6 +801,12 @@ def _slideshow_ingredients(
             )
             treatment = slideshow_treatment_capability(profile.format_slug)
             minimum = treatment["minimumLibraryItems"]
+            photo_ready = True
+            if profile.format_slug in IMAGE_VIDEO_FORMATS:
+                photo = image_video_plan_for_format(profile.format_slug, master_pages)
+                minimum = len(photo["media"]) if photo is not None else 1
+                inventory = {obj.key: obj.bytes for obj in library.objects}
+                photo_ready = photo is not None and all(inventory.get(row["key"]) == row["bytes"] for row in photo["media"])
             library_option = {
                 "libraryId": library.library_id,
                 "lane": library.lane,
@@ -799,12 +818,18 @@ def _slideshow_ingredients(
                 "snapshotHash": f"sha256:{library.snapshot_hash}",
             }
             library_status = (
-                "bound" if len(library.objects) >= minimum else "missing"
+                "bound" if photo_ready and len(library.objects) >= minimum else "missing"
             )
         except SyzygyError:
             library_status = "unavailable"
         try:
             treatment_binding = slideshow_treatment_capability(profile.format_slug)
+            if profile.format_slug in IMAGE_VIDEO_FORMATS:
+                photo = image_video_plan_for_format(profile.format_slug, master_pages)
+                if photo is not None:
+                    count = len(photo["media"])
+                    treatment_binding = {**treatment_binding, "minimumLibraryItems": count,
+                        "templates": [{"slug": "page-photo-hold", "mediaCount": count}]}
         except ValueError:
             treatment_binding = None
     else:
@@ -855,6 +880,9 @@ def _format_entry(
             else None
         )
         ingredients = _slideshow_ingredients(profile, current_slideshow_page)
+    if contract.format_slug == "lyric-video":
+        from services.control_plane_lyric_video import lyric_ingredient
+        ingredients.append(lyric_ingredient(page_id=page_id, master_pages=master_pages))
     ingredients.extend([
         _ingredient("caption-bank", "caption_bank", required=True, status="page_binding_required"),
         _ingredient("sound-collection", "sound_collection", required=True, status="page_binding_required"),
@@ -1016,6 +1044,8 @@ def catalog_selection_version(
     identity_fields = (
         "providerId", "modelId", "promptModuleId", "referenceSetId", "sourceLibraryId",
     )
+    if format_id == "lyric-video":
+        identity_fields += ("controls",)
     entry = next((
         item for item in catalog.get("formats", []) if item.get("formatId") == format_id
     ), None)

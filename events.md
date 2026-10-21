@@ -1714,3 +1714,26 @@ identity-only delta and current-page ingredient eligibility. Independent remote
 verification: 29 source-registry, ingredient and packaged-import tests pass.
 No source-media bytes were downloaded, copied, modified or rendered. No deployment.
 _________________________________________________________________________________
+
+2026-10-20
+type: [feature]: Add a scoped managed timed-lyric backend for Burnt Mill Road
+area: [backend], [testing]
+
+Added a separate immutable20s27-window/20-video source program and page-owned
+Heavy Foot timing selection. The typed prepared renderer2 creates timed PNG
+phrases over silent already-treated source, checks decoded edge-phrase glyphs,
+and records a v2 receipt. Durable jobs preserve v1 behavior and reject foreign
+sound/timing/source-program identities. Actual background execution emits a
+source-bound lyricTiming capsule; artifact reads reject missing/stale producer
+proof. Legacy format records/executor bytes and static renderer remain unchanged.
+This is draft integration: Worker producer/admission support, full/image gates,
+publication/hardware and release remain separate. No paid render or deployment.
+_________________________________________________________________________________
+
+11:15 — Independent Burnt v2 review: durable output authority now refuses a self-consistent receipt/decode duration outside the registered 20-second timing set’s existing 34 ms tolerance, including non-integer values. The renderer already enforced 20 seconds; this closes the durable acceptance backstop while leaving v1 unchanged. Five negative queued-row cases failed before the fix; three tolerance controls remained valid. Affected renderer/durable suites pass 117 tests, including real FFmpeg output. Exact-head broader qualification, full suite, image and release gates remain separate. No deployment or paid render.
+
+### 2026-10-20 — Exact managed lyric manifest capsule
+
+Managed lyric completion now retains the registered timing manifest's original UTF-8 bytes as artifact.lyricTiming.manifestJson. The existing immutable timing SHA, closed seven-phrase authority and page/sound/Notion/program scope remain authoritative; artifact readback compares the complete recomputed producer capsule. The ingredient catalog remains scalar metadata and does not duplicate the raw manifest. No operator backfill or v1 renderer change.
+
+Focused producer/readback/authority tests: 29 passed. Isolated source mutations that omit the producer field or reserialize the manifest both fail their behavioral regressions; restored source passes. The normal runner fixture executes managed completion with mocked remote transport/media and synthetic durable authority/store, not a paid render. The preceding 41eb9f4 relevant gate passed 699 tests; this successor requires its own gate. Full-suite, built-image and visual quality qualifications remain separate; no deployment.

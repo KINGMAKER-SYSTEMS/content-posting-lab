@@ -51,8 +51,19 @@ def _asgi_get(asgi_app, raw_path: str) -> tuple[int, bytes]:
     status = 0
     body = bytearray()
 
+    request_delivered = False
+    disconnected = asyncio.Event()
+
     async def receive():
-        return {"type": "http.request", "body": b"", "more_body": False}
+        nonlocal request_delivered
+        if not request_delivered:
+            request_delivered = True
+            return {"type": "http.request", "body": b"", "more_body": False}
+        # A connected client has no second request body or disconnect yet.
+        # Yield until an actual disconnect or response-task cancellation;
+        # an immediate fake disconnect can hide streamed-file body failures.
+        await disconnected.wait()
+        return {"type": "http.disconnect"}
 
     async def send(message):
         nonlocal status
@@ -126,6 +137,12 @@ def test_spa_fallback_never_serves_files_outside_dist(spa):
         assert status in (200, 404), payload
         if status == 200:
             assert body == INDEX, f"{payload!r} served something other than index.html"
+
+
+def test_raw_asgi_successful_file_body_completes_without_disconnect(spa):
+    test_app, _ = spa
+    assert _asgi_get(test_app, "/assets/index-abc123.js") == (200, ASSET)
+    assert _asgi_get(test_app, "/") == (200, INDEX)
 
 
 def test_spa_fallback_via_testclient_never_leaks(spa):

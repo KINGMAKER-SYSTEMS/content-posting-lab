@@ -36,6 +36,7 @@ ALLOWED_BINDINGS = {
     "ai_video": ("generated_video", "prompt_family"),
     "sourced_video": ("source_library", "source_dna_recut"),
     "sourced_slideshow": ("image_library", "slideshow_renderer"),
+    "sourced_image": ("image_library", "slideshow_renderer"),
     "lyrics_slideshows": ("lyric_image_library", "slideshow_renderer"),
 }
 

@@ -403,6 +403,21 @@ def _validate_production_selection(
     treatment_controls = (treatment or {}).get("binding", {}).get("controls", {})
     if isinstance(treatment_controls, dict):
         advertised.update(treatment_controls)
+    # Closed lyric-timing selection: the timed-lyrics ingredient advertises its
+    # own selectionControl (lyricTimingSetId) whose legal values are exactly the
+    # registered timing option ids. The
+    # catalog version builder already accepts this control; registration must
+    # too, or the timed lyric recipe cannot be registered at all.
+    lyric_timing = _ingredient(format_entry, "lyric-timing")
+    if isinstance(lyric_timing, dict) and lyric_timing.get("selectionControl"):
+        advertised[lyric_timing["selectionControl"]] = {
+            "type": "select",
+            "options": [
+                option.get("id")
+                for option in (lyric_timing.get("options") or [])
+                if isinstance(option, dict) and option.get("id")
+            ],
+        }
     advanced = advertised.get("_advanced", {}) if isinstance(advertised, dict) else {}
     for key, value in controls.items():
         if key == "sourceStartMs" and _valid_source_start_control(value, intent):
