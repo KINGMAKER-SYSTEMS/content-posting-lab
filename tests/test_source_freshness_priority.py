@@ -74,3 +74,44 @@ def test_freshness_never_loses_to_a_different_length_recut():
     first = plan[0]
     # The five 5 s cuts span 0..9 s; the first pick must be disjoint from it.
     assert first.start_ms >= 9_000, first
+
+
+def test_half_second_fresh_window_beats_whole_second_recut():
+    # Root counterexample: a 20 s master cut at 0..5.5 s and 10.5..19.5 s
+    # leaves exactly 5 s unused at 5.5..10.5 s. The only whole-second 5 s
+    # windows near it re-cut 0.5 s of used footage, so the planner must reach
+    # the half-second start 5500 ms and take the genuinely fresh window.
+    recipe, master = _recipe(duration_ms=20_000)
+    assert 5_000 in source_cut_durations(recipe)
+    sha = master.sha256
+    served = {f"{sha}:0:5500", f"{sha}:10500:9000"}
+    history = {
+        f"{sha}:0:5500": CutUse(100.0, 0),
+        f"{sha}:10500:9000": CutUse(200.0, 0),
+    }
+    plan = plan_source_cuts(recipe, 1, served, seed="fresh-half-second", history=history)
+    assert len(plan) == 1
+    (cut,) = plan
+    assert (cut.start_ms, cut.duration_ms) == (5500, 5000), (
+        f"expected the fresh 5 s window at 5.5 s, got "
+        f"{cut.start_ms} ms at {cut.duration_ms} ms"
+    )
+
+
+def test_large_sampled_master_still_prefers_a_narrow_fresh_window():
+    # A 700 s master whose footage is fully cut except a 5 s half-second-aligned
+    # gap at 5.5..10.5 s. The whole-second level holds only re-cuts and is
+    # sampled (more than FULL_SCAN_CANDIDATES candidates); the genuinely fresh
+    # 5 s window exists only at the half-second start 5500 ms and must still
+    # win over every sampled re-cut.
+    recipe, master = _recipe(duration_ms=700_000)
+    sha = master.sha256
+    served = {f"{sha}:0:5500"}
+    served |= {f"{sha}:{10_500 + 9_000 * k}:9000" for k in range(76)}
+    served.add(f"{sha}:694500:5500")
+    history = {slot: CutUse(float(i), 0) for i, slot in enumerate(sorted(served))}
+    (cut,) = plan_source_cuts(recipe, 1, served, seed="narrow-fresh", history=history)
+    assert (cut.start_ms, cut.duration_ms) == (5500, 5000), (
+        f"expected the fresh 5 s window at 5.5 s, got "
+        f"{cut.start_ms} ms at {cut.duration_ms} ms"
+    )
