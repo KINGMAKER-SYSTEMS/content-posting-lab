@@ -450,9 +450,10 @@ def resolve_parent_authority(
     ]
     from services.control_plane_sources import source_cut_is_planned
 
-    if len(matching) != 1 or not source_cut_is_planned(
-        recipe, master, start_ms, duration_ms, matching[0].get("slotId"),
-    ):
+    if len(matching) != 1:
+        raise SourceRegenerationError("source_regeneration_cut_unplanned")
+    cut_slot_id = matching[0].get("slotId")
+    if not source_cut_is_planned(recipe, master, start_ms, duration_ms, cut_slot_id):
         raise SourceRegenerationError("source_regeneration_cut_unplanned")
 
     try:
@@ -476,6 +477,8 @@ def resolve_parent_authority(
         "schema": COMMAND_SCHEMA,
         "parentGenerationJobId": parent_generation_job_id,
         "parentAuthorityJobId": terminal_parent_id,
+        "cutSlotId": cut_slot_id,
+        "masterSha256": master_sha256,
         "pageId": page_id,
         "slotId": request.slot_id,
         "slotPayloadSha256": request.slot_payload_sha256,
@@ -704,13 +707,46 @@ def _hash_file(path: Path, limit: int) -> tuple[str, int]:
     return digest.hexdigest(), total
 
 
+def _reload_planned_cut(command: dict):
+    """Reload the registered recipe and master the command was planned against."""
+    from routers import control_plane as cp
+
+    authority_id = command.get("parentAuthorityJobId") or command.get("parentGenerationJobId")
+    try:
+        job = cp._get_job_or_404(authority_id)
+    except Exception as error:
+        raise SourceRegenerationError("source_regeneration_parent_unavailable") from error
+    publication = cp.load_registered_recipe(
+        job.get("recipePublicationPageId") or job["pageId"],
+        job["recipeId"], job["engine"], job["recipeVersion"],
+    )
+    recipe = cp._dossier_source_recipe(publication)
+    if recipe is None:
+        raise SourceRegenerationError("source_regeneration_recipe_unavailable")
+    master_sha = command.get("masterSha256") or command["master"]["sha256"]
+    master = next((m for m in recipe.masters if m.sha256 == master_sha), None)
+    if master is None:
+        raise SourceRegenerationError("source_regeneration_master_unavailable")
+    return recipe, master
+
+
 async def _render(
     command: dict, master_path: Path, output_path: Path,
 ) -> None:
+    from services.control_plane_sources import source_cut_is_planned
     from services.ffmpeg import delivery_encode_args, run_color_correct
 
     render = command["render"]
     cut = command["cut"]
+    # Re-derive the exact planned cut before rendering: source_cut_is_planned
+    # is the planner's own vocabulary check, the same one _run_dossier_source
+    # applies per cut. A stored window the planner would not emit is refused.
+    recipe, master = _reload_planned_cut(command)
+    slot_id = command.get("cutSlotId") or f"{master.sha256}:{cut["start_ms"]}:{cut["duration_ms"]}"
+    if not source_cut_is_planned(
+        recipe, master, cut["start_ms"], cut["duration_ms"], slot_id,
+    ):
+        raise SourceRegenerationError("source_regeneration_cut_unplanned")
     frame_kwargs: dict[str, Any] = {}
     if render.get("frame"):
         from routers import control_plane as cp

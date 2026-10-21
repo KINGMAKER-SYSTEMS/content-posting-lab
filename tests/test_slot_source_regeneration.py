@@ -867,6 +867,8 @@ def _minimal_command():
         "schema": regen.COMMAND_SCHEMA,
         "submissionSha256": "a" * 64,
         "parentGenerationJobId": "cpl-minimal",
+        "parentAuthorityJobId": "cpl-minimal",
+        "cutSlotId": "f" * 64 + ":0:6000",
         "pageId": PAGE_ID,
         "slotId": "slot:minimal",
         "slotPayloadSha256": "b" * 64,
@@ -950,6 +952,11 @@ def test_two_source_repairs_share_one_loop_and_serialize_on_the_gate(monkeypatch
                         lambda _path: {"width": 1080, "height": 1920, "duration_ms": 6000,
                                        "video_codec": "h264", "pixel_format": "yuv420p",
                                        "frame_rate": 30.0})
+    monkeypatch.setattr(regen, "_reload_planned_cut",
+                        lambda command: (object(), object()))
+    from services.control_plane_sources import source_cut_is_planned
+    monkeypatch.setattr("services.control_plane_sources.source_cut_is_planned",
+                        lambda *a, **k: True)
 
     start = threading.Barrier(2)
     results = []
