@@ -32,6 +32,8 @@ from services.post_render_timed import (
     DURATION_TOLERANCE_MS, TimedPostRenderRequest, render_timed_post, _resolve_timing,
 )
 
+from services import slot_source_regeneration as slot_source
+
 
 def render_prepared_post(source, output, request, **kwargs):
     if isinstance(request, TimedPostRenderRequest):
@@ -384,11 +386,17 @@ class PostRenderJobs:
     """SQLite owns job truth; OS locks fence live writers and clear when a process dies."""
     def __init__(self, root: Path, *, fetcher: Callable | None = None, renderer: Callable = render_prepared_post,
                  clock_ms: Callable[[], int] = lambda: time.time_ns() // 1_000_000,
-                 confirm_final: Callable[[str, int], bool | None] = confirm_admitted_final):
+                 confirm_final: Callable[[str, int], bool | None] = confirm_admitted_final,
+                 source_regenerator: Callable | None = None,
+                 source_loop=None):
         if not root.is_absolute():
             raise RenderJobError("job_root_must_be_absolute")
         self.root, self.renderer, self.clock_ms = root, renderer, clock_ms
         self.confirm_final = confirm_final
+        # The source-repair lane renders the original registered master, never
+        # the already treated prepared source, so it is a separate renderer.
+        self.source_regenerator = source_regenerator or slot_source.regenerate
+        self.source_loop = source_loop
         self._age_out_lock = threading.Lock()
         self._next_age_out_ms = 0
         self._last_age_out_ms = -AGE_OUT_INTERVAL_MS["floor"]
@@ -499,6 +507,10 @@ class PostRenderJobs:
                 planned_at_ms = _planned_at_ms(submission.slot_payload_json)
                 db.execute("INSERT INTO jobs(id,slot_id,slot_hash,request_hash,submission_json,state,available_at_ms,created_at_ms,updated_at_ms,error_code,planned_at_ms) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
                            (job_id, request.slot_id, request.slot_payload_sha256, request_hash, payload, state, now, now, now, reason, planned_at_ms))
+            elif slot_source.pending_command(existing) is not None or slot_source.completed_envelope(existing) is not None:
+                # A source repair owns this job's state machine until it is
+                # finished; a fresh key may not reset its attempts or command.
+                raise RenderJobError("source_regeneration_pending")
             elif (existing["state"] == "failed" and existing["error_code"] == "source_response_rejected"
                     and existing["attempts"] >= MAX_ATTEMPTS):
                 # A fresh key is an explicit Control Plane recovery request. The
@@ -527,6 +539,15 @@ class PostRenderJobs:
         if request.page_id != page_id:
             raise RenderJobError("job_not_found")
 
+    def set_source_loop(self, loop) -> None:
+        """The one ASGI loop captured at startup; the source lane dispatches onto it."""
+        self.source_loop = loop
+
+    def _optional_row(self, job_id: str):
+        """A durable row or None, for bounded prior-hop ancestry resolution."""
+        with self._db() as db:
+            return db.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
+
     def status(self, job_id: str) -> dict:
         row = self._row(job_id)
         result = {key: row[key] for key in ("id", "slot_id", "slot_hash", "state", "attempts", "created_at_ms", "updated_at_ms", "error_code", "acknowledged_at_ms", "retired_at_ms")}
@@ -534,6 +555,9 @@ class PostRenderJobs:
         if row["state"] == "regeneration_needed":
             result["next_action"] = "regenerate_source_with_treatment_provenance"
         result["retryable"] = row["state"] == "failed" and row["attempts"] < MAX_ATTEMPTS
+        envelope = slot_source.completed_envelope(row)
+        if envelope is not None and row["state"] == "regeneration_needed":
+            result["source_regeneration"] = envelope
         if row["state"] == "succeeded":
             result["receipt_sha256"] = row["receipt_sha256"]
             if row["final_sha256"] is not None:
@@ -562,6 +586,8 @@ class PostRenderJobs:
                 raise RenderJobError("job_not_found")
             if row["request_hash"] == request_hash:
                 return self.status(job_id)
+            if slot_source.pending_command(row) is not None:
+                raise RenderJobError("source_regeneration_pending")
             old = RenderJobSubmission.model_validate_json(row["submission_json"]).model_dump(by_alias=True)
             new = submission.model_dump(by_alias=True)
             for value in (old, new):
@@ -580,6 +606,205 @@ class PostRenderJobs:
                        (request_hash, payload, "queued" if matches else "regeneration_needed",
                         None if matches else "source_treatment_mismatch", now, now, job_id))
         return self.status(job_id)
+
+    def request_source_regeneration(self, job_id: str, page_id: str, request, key: str) -> dict:
+        """Queue one original-master repair for a source-mismatched prepared job.
+
+        The wire body carries identity only. Everything the repair needs (page,
+        account, slot payload hash, requested visual, source SHA, parent recipe
+        and exact cut window) comes from the immutable submission and the
+        parent generation job, so nothing here can redirect the cut. Every
+        authority failure refuses before queueing and before any media IO, and
+        the immutable submission_json is never rewritten.
+        """
+        if not re.fullmatch(r"[A-Za-z0-9._:-]{8,200}", key):
+            raise RenderJobError("invalid_idempotency_key")
+        request = slot_source.SourceRegenerationRequest.model_validate(request.model_dump(by_alias=True))
+        parent_id = request.parent_generation_job_id
+        request_hash = sha256(slot_source.canonical_json({
+            "schema": slot_source.REQUEST_SCHEMA, "jobId": job_id,
+            "pageId": page_id, "parentGenerationJobId": parent_id,
+        }).encode())
+        row = self._row(job_id)
+        submission = RenderJobSubmission.model_validate_json(row["submission_json"])
+        if submission.request.page_id != page_id:
+            raise RenderJobError("job_not_found")
+        queued = slot_source.pending_command(row) or slot_source.completed_envelope(row)
+        if queued is not None:
+            # A repeated key observes the current state instead of re-deciding.
+            return self._replay_source_regeneration(job_id, key, request_hash, queued, parent_id)
+        if (row["state"] != "regeneration_needed" or row["attempts"] != 0
+                or row["acknowledged_at_ms"] is not None or row["retired_at_ms"] is not None):
+            raise RenderJobError("source_regeneration_not_needed")
+        try:
+            command = slot_source.resolve_parent_authority(
+                page_id=page_id, parent_generation_job_id=parent_id, request=submission.request,
+                prior_row_loader=self._optional_row,
+            )
+        except slot_source.SourceRegenerationError as error:
+            raise RenderJobError(error.code) from error
+        command["submissionSha256"] = row["request_hash"]
+        encoded, now = slot_source.canonical_json(command), self.clock_ms()
+        job_lock = _locked(self.root / "locks" / (job_id + ".lock"))
+        if job_lock is None:
+            raise RenderJobError("source_regeneration_busy")
+        with job_lock, self._db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            current = db.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
+            if current is None:
+                raise RenderJobError("job_not_found")
+            keyed = db.execute("SELECT * FROM idempotency WHERE key=?", (key,)).fetchone()
+            if keyed is not None:
+                if keyed["request_hash"] != request_hash or keyed["job_id"] != job_id:
+                    raise RenderJobError("idempotency_conflict")
+                return self.status(job_id)
+            landed = slot_source.pending_command(current) or slot_source.completed_envelope(current)
+            if landed is not None:
+                raise RenderJobError("source_regeneration_conflict")
+            changed = db.execute(
+                "UPDATE jobs SET state='queued',available_at_ms=?,updated_at_ms=?,output_authority_json=? "
+                "WHERE id=? AND state='regeneration_needed' AND attempts=0 "
+                "AND acknowledged_at_ms IS NULL AND retired_at_ms IS NULL "
+                "AND output_authority_json IS NULL",
+                (now, now, encoded, job_id),
+            ).rowcount
+            if changed != 1:
+                raise RenderJobError("source_regeneration_conflict")
+            db.execute("INSERT INTO idempotency(key,job_id,request_hash) VALUES(?,?,?)",
+                       (key, job_id, request_hash))
+        return self.status(job_id)
+
+    def _replay_source_regeneration(self, job_id: str, key: str, request_hash: str,
+                                    existing: dict, parent_id: str) -> dict:
+        """Only the queueing key replays; any other key observes a conflict.
+
+        A queued command names its parent at the top level; a completed
+        envelope names it on the nested receipt. Both must match the caller's
+        id, and only the queueing key may observe the current state.
+        """
+        stored_parent = existing.get("parentGenerationJobId")
+        if stored_parent is None and isinstance(existing.get("receipt"), dict):
+            stored_parent = existing["receipt"].get("parent_generation_job_id")
+        if stored_parent != parent_id:
+            raise RenderJobError("source_regeneration_conflict")
+        with self._db() as db:
+            keyed = db.execute("SELECT * FROM idempotency WHERE key=?", (key,)).fetchone()
+        if keyed is None:
+            raise RenderJobError("source_regeneration_pending")
+        if keyed["request_hash"] != request_hash or keyed["job_id"] != job_id:
+            raise RenderJobError("idempotency_conflict")
+        return self.status(job_id)
+
+    def _run_source_regenerator(self, command: dict, work_dir, job_id: str, attempt_id: str):
+        """Dispatch the source repair onto the one captured ASGI loop.
+
+        The default renderer reaches services.ffmpeg.run_color_correct, whose
+        process-wide asyncio.Semaphore must share the main loop. A missing loop
+        fails closed rather than spinning a private asyncio.run loop inside the
+        worker thread; injected test regenerators stay loop-free.
+        """
+        regenerator = self.source_regenerator
+        if regenerator is slot_source.regenerate:
+            if self.source_loop is None:
+                raise slot_source.SourceRegenerationError("source_regeneration_runtime_unavailable")
+            return regenerator(
+                command, work_dir, job_id=job_id, attempt_id=attempt_id, loop=self.source_loop,
+            )
+        return regenerator(command, work_dir, job_id=job_id, attempt_id=attempt_id)
+
+    def _execute_source_regeneration(self, old, command: dict) -> None:
+        """One fenced attempt of the original-master repair lane."""
+        if not self._has_workspace_capacity(job_id=old["id"]):
+            return
+        now, attempt_id = self.clock_ms(), uuid.uuid4().hex
+        with self._db() as db:
+            if old["attempts"] >= MAX_ATTEMPTS:
+                db.execute("UPDATE jobs SET state='failed',error_code='retry_budget_exhausted',"
+                           "updated_at_ms=? WHERE id=?", (now, old["id"]))
+                return
+            if old["state"] == "running":
+                db.execute("UPDATE attempts SET state='interrupted',ended_at_ms=?,"
+                           "error_code='incomplete_after_restart' WHERE id=?",
+                           (now, old["attempt_id"]))
+            db.execute("UPDATE jobs SET state='running',attempt_id=?,attempts=attempts+1,"
+                       "updated_at_ms=? WHERE id=? AND attempt_id IS ?",
+                       (attempt_id, now, old["id"], old["attempt_id"]))
+            db.execute("INSERT INTO attempts(id,job_id,state,started_at_ms) VALUES(?,?,'running',?)",
+                       (attempt_id, old["id"], now))
+        if command.get("submissionSha256") != old["request_hash"]:
+            with self._db() as db:
+                db.execute("UPDATE jobs SET state='failed',error_code='source_regeneration_command_stale',"
+                           "updated_at_ms=? WHERE id=? AND attempt_id=?",
+                           (now, old["id"], attempt_id))
+                db.execute("UPDATE attempts SET state='failed',error_code=?,ended_at_ms=? WHERE id=?",
+                           ("source_regeneration_command_stale", now, attempt_id))
+            return
+        attempt_root = self.root / "attempts" / old["id"] / attempt_id
+        try:
+            slot_source.revalidate_parent_authority(command)
+            attempt_root.mkdir(parents=True, exist_ok=False, mode=0o700)
+            envelope = self._run_source_regenerator(
+                command, attempt_root / "source-regeneration", old["id"], attempt_id,
+            )
+            self._finish_source_regeneration(old["id"], attempt_id, envelope)
+        except Exception as error:
+            code = getattr(error, "code", "source_regeneration_failed")
+            log.warning("post render source repair failed job=%s attempt=%s reason=%s",
+                        old["id"], attempt_id, code, exc_info=log.isEnabledFor(logging.DEBUG))
+            now = self.clock_ms()
+            state = "queued" if code in RETRY_CODES and old["attempts"] < MAX_ATTEMPTS else "failed"
+            with self._db() as db:
+                # The repair command stays in output_authority_json, so the
+                # existing retry door re-runs this same fenced lane.
+                db.execute("UPDATE jobs SET state=?,error_code=?,available_at_ms=?,updated_at_ms=? "
+                           "WHERE id=? AND attempt_id=? AND state='running'",
+                           (state, code, now + 5000 * old["attempts"], now, old["id"], attempt_id))
+                db.execute("UPDATE attempts SET state='failed',error_code=?,ended_at_ms=? WHERE id=?",
+                           (code, now, attempt_id))
+
+    def _fail_source_regeneration(self, row, code: str) -> None:
+        """Refuse rather than silently fall back to the prepared caption renderer."""
+        now = self.clock_ms()
+        with self._db() as db:
+            db.execute("UPDATE jobs SET state='failed',error_code=?,updated_at_ms=? "
+                       "WHERE id=? AND state IN ('queued','running')", (code, now, row["id"]))
+            if row["attempt_id"]:
+                db.execute("UPDATE attempts SET state='failed',error_code=?,ended_at_ms=? "
+                           "WHERE id=? AND ended_at_ms IS NULL", (code, now, row["attempt_id"]))
+
+    def _finish_source_regeneration(self, job_id: str, attempt_id: str, envelope: dict) -> None:
+        """Publish the repaired-source envelope; the job never becomes succeeded."""
+        row = self._row(job_id)
+        request = RenderJobSubmission.model_validate_json(row["submission_json"]).request
+        slot_source.verify_envelope(
+            envelope, root=self.root, job_id=job_id, attempt_id=attempt_id,
+            not_before_ms=request.created_at_ms, not_after_ms=self.clock_ms(),
+        )
+        if slot_source.pending_command(row) is None and slot_source.completed_envelope(row) is None:
+            raise RenderJobError("source_regeneration_command_missing")
+        encoded, now = slot_source.canonical_json(envelope), self.clock_ms()
+        with self._db() as db:
+            changed = db.execute(
+                "UPDATE jobs SET state='regeneration_needed',output_authority_json=?,updated_at_ms=? "
+                "WHERE id=? AND attempt_id=? AND state='running' "
+                "AND final_sha256 IS NULL AND qa_frame_sha256 IS NULL",
+                (encoded, now, job_id, attempt_id),
+            ).rowcount
+            if changed != 1:
+                raise RenderJobError("attempt_fenced")
+            db.execute("UPDATE attempts SET state='succeeded',ended_at_ms=? WHERE id=?", (now, attempt_id))
+
+    def _resume_source_regeneration(self, row) -> bool:
+        """Finish a repair whose envelope landed but whose state write did not."""
+        envelope = slot_source.completed_envelope(row)
+        if envelope is None or not row["attempt_id"]:
+            return False
+        try:
+            self._finish_source_regeneration(row["id"], row["attempt_id"], envelope)
+            return True
+        except (OSError, ValueError, TypeError):
+            # Unverifiable or incomplete bytes: rerun the same command authority.
+            return False
 
     def _output(self, row) -> Path:
         return self.root / "attempts" / row["id"] / row["attempt_id"] / "render"
@@ -726,6 +951,22 @@ class PostRenderJobs:
             raise RenderJobError("duplicate_output") from error
 
     def artifact(self, job_id: str, kind: str) -> Path:
+        if kind == "source":
+            # Exact repaired-source bytes for the authenticated download door,
+            # re-verified against the durable envelope before every reuse.
+            row = self._row(job_id)
+            envelope = slot_source.completed_envelope(row)
+            if (envelope is None or row["state"] != "regeneration_needed"
+                    or row["retired_at_ms"] is not None or not row["attempt_id"]):
+                raise RenderJobError("artifact_not_ready")
+            try:
+                request = RenderJobSubmission.model_validate_json(row["submission_json"]).request
+                return slot_source.verify_envelope(
+                    envelope, root=self.root, job_id=job_id, attempt_id=row["attempt_id"],
+                    not_before_ms=request.created_at_ms, not_after_ms=self.clock_ms(),
+                )
+            except slot_source.SourceRegenerationError as error:
+                raise RenderJobError("artifact_not_ready") from error
         names = {"final": "final.mp4", "qa": "qa.jpg", "receipt": "receipt.json"}
         if kind not in names:
             raise RenderJobError("artifact_not_found")
@@ -738,25 +979,56 @@ class PostRenderJobs:
         self._verify_output(row)
         return self._output(row) / names[kind]
 
-    def acknowledge(self, job_id: str) -> dict:
-        """Record downstream admission. Only a succeeded job may be acknowledged.
+    def acknowledge(self, job_id: str, source_ack=None) -> dict:
+        """Record downstream admission.
 
-        Idempotent: a replay after acknowledgment (including after retirement)
-        returns the current status without re-verifying deleted media.
+        A bodyless ACK marks a succeeded final admitted; a closed source-ack
+        body marks a completed source-only attempt admitted by its exact
+        attempt id, source SHA and slot payload SHA. Both are idempotent: a
+        replay after acknowledgment (including after retirement) returns the
+        current status from durable metadata without re-verifying deleted media.
         """
         row = self._row(job_id)
-        if row["state"] != "succeeded":
-            raise RenderJobError("acknowledge_not_ready")
-        if row["acknowledged_at_ms"]:
+        if source_ack is None:
+            if row["state"] != "succeeded":
+                raise RenderJobError("acknowledge_not_ready")
+            if row["acknowledged_at_ms"]:
+                return self.status(job_id)
+            authority = self._verify_output(row)
+            self._persist_output_authority(row, authority)
+            now = self.clock_ms()
+            with self._db() as db:
+                db.execute(
+                    "UPDATE jobs SET acknowledged_at_ms=? WHERE id=? AND acknowledged_at_ms IS NULL",
+                    (now, job_id),
+                )
             return self.status(job_id)
-        authority = self._verify_output(row)
-        self._persist_output_authority(row, authority)
+        return self._acknowledge_source(row, source_ack)
+
+    def _acknowledge_source(self, row, source_ack) -> dict:
+        """Acknowledge one completed source-only attempt by its exact identity."""
+        if row["state"] != "regeneration_needed":
+            raise RenderJobError("acknowledge_not_ready")
+        envelope = slot_source.completed_envelope(row)
+        if envelope is None:
+            raise RenderJobError("acknowledge_not_ready")
+        receipt, artifact = envelope.get("receipt"), envelope.get("artifact")
+        if (
+            not isinstance(receipt, dict)
+            or not isinstance(artifact, dict)
+            or source_ack.attempt_id != row["attempt_id"]
+            or source_ack.attempt_id != receipt.get("attempt_id")
+            or source_ack.source_sha256 != receipt.get("source_sha256")
+            or source_ack.source_sha256 != artifact.get("sha256")
+            or source_ack.slot_payload_sha256 != row["slot_hash"]
+        ):
+            raise RenderJobError("source_ack_mismatch")
         now = self.clock_ms()
         with self._db() as db:
-            changed = db.execute(
+            db.execute(
                 "UPDATE jobs SET acknowledged_at_ms=? WHERE id=? AND acknowledged_at_ms IS NULL",
-                (now, job_id),
-            ).rowcount
+                (now, job_id := row["id"]),
+            )
         return self.status(job_id)
 
     def retire(self, job_id: str) -> dict:
@@ -835,9 +1107,49 @@ class PostRenderJobs:
                 self._retire_row(row)
             except (OSError, ValueError, TypeError):
                 log.exception("post render retirement failed job=%s", row["id"])
+        self._gc_source_media(cutoff)
         self._gc_failed_attempt_media()
         if self._gc_auxiliary_history():
             self._checkpoint_wal()
+
+    def _gc_source_media(self, cutoff: int) -> int:
+        """Retire acknowledged completed source-only attempt media after the window.
+
+        Source repairs stay in state='regeneration_needed' with a completed
+        envelope (never 'succeeded'), so the ordinary state='succeeded' GC never
+        reaches their media. Once the Worker acknowledges the exact source bytes,
+        the attempt directory is removed while the jobs row (request, envelope,
+        ancestry, idempotency, tombstone) and the attempts row are retained.
+        """
+        with self._db() as db:
+            rows = db.execute(
+                "SELECT * FROM jobs WHERE state='regeneration_needed' "
+                "AND acknowledged_at_ms IS NOT NULL AND retired_at_ms IS NULL "
+                "AND acknowledged_at_ms<=?",
+                (cutoff,),
+            ).fetchall()
+        removed = 0
+        for row in rows:
+            if slot_source.completed_envelope(row) is None:
+                continue
+            attempt_dir = self.root / "attempts" / row["id"]
+            try:
+                if attempt_dir.exists():
+                    shutil.rmtree(attempt_dir)
+            except OSError:
+                log.exception("post render source-media retirement failed job=%s", row["id"])
+                continue
+            if attempt_dir.exists():
+                log.error("post render source-media retirement failed job=%s directory remains", row["id"])
+                continue
+            with self._db() as db:
+                db.execute(
+                    "UPDATE jobs SET retired_at_ms=? WHERE id=? AND retired_at_ms IS NULL",
+                    (self.clock_ms(), row["id"]),
+                )
+                db.execute("UPDATE attempts SET state='retired' WHERE job_id=?", (row["id"],))
+            removed += 1
+        return removed
 
     def _maybe_age_out(self, *, force: bool = False) -> dict | None:
         """One age-out pass when due (or forced); tightens itself under volume pressure."""
@@ -1074,6 +1386,24 @@ class PostRenderJobs:
                     row = self._row(row["id"])
                     if row["state"] not in {"queued", "running"}:
                         continue
+                    if slot_source.malformed_authority(row):
+                        # A nonblank authority that is none of the typed variants
+                        # must never fall through to the ordinary renderer.
+                        self._fail_source_regeneration(row, "source_regeneration_authority_corrupt")
+                        return True
+                    command = slot_source.pending_command(row)
+                    completed = slot_source.completed_envelope(row)
+                    if command is not None or completed is not None:
+                        # Only the source-repair lane may act on its own authority
+                        # variant; the normal prepared path never treats it as a
+                        # final output and never fetches a prepared source grant.
+                        if row["state"] == "running" and completed is not None                                 and self._resume_source_regeneration(row):
+                            return True
+                        if command is not None:
+                            self._execute_source_regeneration(row, command)
+                        else:
+                            self._fail_source_regeneration(row, "source_regeneration_command_missing")
+                        return True
                     if row["state"] == "running":
                         try:
                             self._finish(row, self._verify_output(row))
