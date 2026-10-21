@@ -88,12 +88,10 @@ MIN_START_GAP_MS = 250
 CUT_LENGTH_MIN_MS = 5_000
 CUT_LENGTH_STEP_MS = 500
 CUT_LENGTH_MAX_MS = 9_000
-# Variety score. Overlap with already-cut footage is scored first: a fresh
-# window always comes first, even when it repeats the master's last length.
-# Length variety (SAME_AS_LAST_LENGTH_PENALTY, near-start distance and the
-# recent-length penalties) then orders candidates that are equally fresh, or
-# equally overlapped. FRESH_FIRST_PENALTY is a tier barrier so no re-cut of
-# used footage can outrank a genuinely fresh window.
+# A genuinely fresh window is chosen before any re-cut, even when it repeats
+# the master's last length. Within each tier, overlap and length/start variety
+# contribute to one score; overlap amount is not a separate ordering key.
+# FRESH_FIRST_PENALTY is the score barrier between fresh windows and re-cuts.
 RECENT_CUTS_REMEMBERED = 3
 RECENT_WEIGHTS = (1.0, 0.6, 0.3)
 NEAR_START_MS = 120_000
@@ -735,8 +733,9 @@ class _Lane:
         length. After that, the last cut's length is used again only when no
         other equally-fresh length fits, and a start within ``near_ms`` of a
         recent start and a length equal to (or 0.5 s from) a recent length
-        cost more, newest cut weighted most. This penalty is a secondary key:
-        the static overlap score always decides fresh footage first.
+        cost more, newest cut weighted most. This penalty contributes to the
+        combined score inside the fresh or re-cut tier; the separate fresh
+        search and freshness barrier decide which tier comes first.
         """
         if not self.recent:
             return 0.0 if duration == starting_length else 1.0
@@ -790,12 +789,11 @@ def plan_source_cuts(
     half a second, then a quarter and three quarters). Each candidate is
     scored, lower is better:
 
-    1. overlap with footage this master already cut (fresh footage first -- a
-       genuinely unused window wins even when it repeats the master's last
-       length; when everything overlaps, footage cut longest ago wins),
-    2. repeating the master's last length (only when nothing else fits),
-    3. closeness of its start to the last few starts on this master,
-    4. the same (or a 0.5 s different) length as the last few cuts,
+    The combined score includes overlap with footage already cut, repeating
+    the master's last length, closeness to recent starts, and lengths equal
+    to or 0.5 s from recent lengths. These are weighted terms, not separate
+    ordering keys. In particular, length variety can outweigh overlap amount
+    among re-cuts; age and seeded randomness break equal-score ties,
 
     but a genuinely fresh window (zero overlap with already-cut footage) is
     always chosen before any re-cut, whatever its length: the planner first
