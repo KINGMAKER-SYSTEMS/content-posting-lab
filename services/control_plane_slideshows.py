@@ -433,7 +433,7 @@ def slideshow_library_address(
         photo = image_video_plan_for_format(profile.format_slug, master_pages)
         if photo is None or subject != photo["subject"]:
             return None
-        return photo["libraryId"], photo["lane"], photo["subject"]
+        return photo["libraryId"], photo["lane"], photo["librarySubject"] or photo["subject"]
     lane = config["lane"]
     # A page with a curated video plan resolves its canonical clips lane so the
     # library keys are slideshow-webweaving/<subject>/clips/<file>. Generic

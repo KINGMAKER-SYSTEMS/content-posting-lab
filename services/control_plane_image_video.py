@@ -86,17 +86,29 @@ def parse_plan_config(page_id: Any, cfg: Any) -> dict[str, Any]:
     """
     if not isinstance(page_id, str) or not page_id.strip():
         raise ValueError("page id is invalid")
-    if not isinstance(cfg, dict) or set(cfg) != {
+    required_fields = {
         "lane", "subject", "totalDurationSeconds",
         "brightnessGainFromOriginals", "objects",
-    }:
+    }
+    allowed_fields = required_fields | {"librarySubject"}
+    if (
+        not isinstance(cfg, dict)
+        or set(cfg) - allowed_fields
+        or not required_fields <= set(cfg)
+    ):
         raise ValueError("plan config fields are invalid")
     lane = cfg.get("lane")
     subject = cfg.get("subject")
+    library_subject = cfg.get("librarySubject")
     if not isinstance(lane, str) or not LANE.fullmatch(lane):
         raise ValueError("plan lane is invalid")
     if not isinstance(subject, str) or not SUBJECT.fullmatch(subject):
         raise ValueError("plan subject is invalid")
+    if library_subject is not None and (
+        not isinstance(library_subject, str) or not SUBJECT.fullmatch(library_subject)
+    ):
+        raise ValueError("plan librarySubject is invalid")
+    storage_subject = library_subject if library_subject is not None else subject
     total = cfg.get("totalDurationSeconds")
     if not _finite_number(total, minimum=1e-9) or total > 60:
         raise ValueError("totalDurationSeconds is invalid")
@@ -107,7 +119,7 @@ def parse_plan_config(page_id: Any, cfg: Any) -> dict[str, Any]:
     objects = cfg.get("objects")
     if not isinstance(objects, list) or not objects or len(objects) > MAX_OBJECTS:
         raise ValueError("plan objects are invalid")
-    expected_prefix = f"{lane}/{subject}/photos/"
+    expected_prefix = f"{lane}/{storage_subject}/photos/"
     seen_keys: set[str] = set()
     seen_sources: set[str] = set()
     duration_sum = 0.0
@@ -176,6 +188,7 @@ def parse_plan_config(page_id: Any, cfg: Any) -> dict[str, Any]:
         "pageId": page_id,
         "lane": lane,
         "subject": subject,
+        "librarySubject": library_subject,
         "totalDurationSeconds": float(total),
         "brightnessGainFromOriginals": float(gain),
         "objects": normalized,
@@ -239,6 +252,8 @@ def image_video_plan_signature(plan: dict[str, Any]) -> str:
     identity = {
         "pageId": plan["pageId"],
         "libraryId": plan["libraryId"],
+        "subject": plan["subject"],
+        "librarySubject": plan["librarySubject"],
         "totalDurationSeconds": plan["totalDurationSeconds"],
         "brightnessGainFromOriginals": plan["brightnessGainFromOriginals"],
         "media": [
@@ -283,12 +298,17 @@ def image_video_plan(page_id: str) -> dict[str, Any] | None:
         }
         for obj in cfg["objects"]
     ]
+    storage_subject = (
+        cfg["librarySubject"]
+        if cfg["librarySubject"] is not None else cfg["subject"]
+    )
     plan = {
         "planSlug": PLAN_SLUG,
         "pageId": cfg["pageId"],
-        "libraryId": f"syzygy:{cfg['lane']}:{cfg['subject']}",
+        "libraryId": f"syzygy:{cfg['lane']}:{storage_subject}",
         "lane": cfg["lane"],
         "subject": cfg["subject"],
+        "librarySubject": cfg["librarySubject"],
         "totalDurationSeconds": cfg["totalDurationSeconds"],
         "brightnessGainFromOriginals": cfg["brightnessGainFromOriginals"],
         "media": media,

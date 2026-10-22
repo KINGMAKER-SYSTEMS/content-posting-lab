@@ -35,24 +35,24 @@ UNKNOWN = "acct:someone-else"
 def _penpal_observations(*, extra=False):
     obs = [
         {
-            "key": "animals/pen-pal3/photos/pinterest_784681935144260004.jpg",
+            "key": "animals/kitten-flowers/photos/pinterest_784681935144260004.jpg",
             "bytes": 132530,
             "sha256": "09a1b391a05c29944705bd5b3c662cad05218b476e1a8d2e813c01dda119247d",
         },
         {
-            "key": "animals/pen-pal3/photos/pinterest_784681935144260020.jpg",
+            "key": "animals/kitten-flowers/photos/pinterest_784681935144260020.jpg",
             "bytes": 227679,
             "sha256": "39a5346f6cd04217b766bf00fc590993d8a6f5546f191785ae2885748ab0e92b",
         },
         {
-            "key": "animals/pen-pal3/photos/pinterest_784681935144259989.jpg",
+            "key": "animals/kitten-flowers/photos/pinterest_784681935144259989.jpg",
             "bytes": 224944,
             "sha256": "5ad6eb5aa5f43607e1d27366feccd7b8c8a0fd4ae482ddbaaa241f8d0066d288",
         },
     ]
     if extra:
         obs.append({
-            "key": "animals/pen-pal3/photos/extra-000.jpg",
+            "key": "animals/kitten-flowers/photos/extra-000.jpg",
             "bytes": 999,
             "sha256": "e" * 64,
         })
@@ -62,7 +62,7 @@ def _penpal_observations(*, extra=False):
 def _twin_observations():
     return [
         {
-            "key": "interiors/twin47996/photos/pinterest_784681935144259920.jpg",
+            "key": "interiors/lamplit-apartment/photos/pinterest_784681935144259920.jpg",
             "bytes": 130640,
             "sha256": "cf5cafb364516ea0e2e333f9a7379bbb6b6be76e08e8fd6976ae73c8fd44d85f",
         }
@@ -71,7 +71,9 @@ def _twin_observations():
 
 def _good_plan_config(page_id=PENPAL):
     executor, _ = image_video_executor_contract()
-    return deepcopy(executor["plans"][page_id])
+    cfg = deepcopy(executor["plans"][page_id])
+    cfg.pop("pageId", None)
+    return cfg
 
 
 def test_executor_contract_is_closed_and_hashes():
@@ -87,14 +89,16 @@ def test_penpal_plan_three_ordered_4s_holds():
     plan = image_video_plan(PENPAL)
     assert plan is not None
     assert plan["planSlug"] == "page-photo-hold"
-    assert plan["libraryId"] == "syzygy:animals:pen-pal3"
+    assert plan["libraryId"] == "syzygy:animals:kitten-flowers"
+    assert plan["subject"] == "pen-pal3"
+    assert plan["librarySubject"] == "kitten-flowers"
     assert plan["totalDurationSeconds"] == 12
     assert plan["brightnessGainFromOriginals"] == 0.85
     keys = [item["key"] for item in plan["media"]]
     assert keys == [
-        "animals/pen-pal3/photos/pinterest_784681935144260004.jpg",
-        "animals/pen-pal3/photos/pinterest_784681935144260020.jpg",
-        "animals/pen-pal3/photos/pinterest_784681935144259989.jpg",
+        "animals/kitten-flowers/photos/pinterest_784681935144260004.jpg",
+        "animals/kitten-flowers/photos/pinterest_784681935144260020.jpg",
+        "animals/kitten-flowers/photos/pinterest_784681935144259989.jpg",
     ]
     assert [item["duration"] for item in plan["media"]] == [4, 4, 4]
     assert [(item["focalX"], item["focalY"]) for item in plan["media"]] == [
@@ -108,13 +112,15 @@ def test_penpal_plan_three_ordered_4s_holds():
 def test_twin_plan_one_12s_hold_zero_ken_burns():
     plan = image_video_plan(TWIN)
     assert plan is not None
-    assert plan["libraryId"] == "syzygy:interiors:twin47996"
+    assert plan["libraryId"] == "syzygy:interiors:lamplit-apartment"
+    assert plan["subject"] == "twin47996"
+    assert plan["librarySubject"] == "lamplit-apartment"
     assert plan["totalDurationSeconds"] == 12
     # Latest managed output applies .85 once; static composition remains unchanged.
     assert plan["brightnessGainFromOriginals"] == 0.85
     assert len(plan["media"]) == 1
     media = plan["media"][0]
-    assert media["key"] == "interiors/twin47996/photos/pinterest_784681935144259920.jpg"
+    assert media["key"] == "interiors/lamplit-apartment/photos/pinterest_784681935144259920.jpg"
     assert media["duration"] == 12
     assert (media["focalX"], media["focalY"]) == (0.5, 0.5)
     assert media["cropMode"] == "cover"
@@ -148,11 +154,11 @@ def test_library_validation_accepts_exact_observations():
     assert snapshot == hashlib.sha256(
         json.dumps(
             [
-                ["animals/pen-pal3/photos/pinterest_784681935144260004.jpg", 132530,
+                ["animals/kitten-flowers/photos/pinterest_784681935144260004.jpg", 132530,
                  "09a1b391a05c29944705bd5b3c662cad05218b476e1a8d2e813c01dda119247d"],
-                ["animals/pen-pal3/photos/pinterest_784681935144260020.jpg", 227679,
+                ["animals/kitten-flowers/photos/pinterest_784681935144260020.jpg", 227679,
                  "39a5346f6cd04217b766bf00fc590993d8a6f5546f191785ae2885748ab0e92b"],
-                ["animals/pen-pal3/photos/pinterest_784681935144259989.jpg", 224944,
+                ["animals/kitten-flowers/photos/pinterest_784681935144259989.jpg", 224944,
                  "5ad6eb5aa5f43607e1d27366feccd7b8c8a0fd4ae482ddbaaa241f8d0066d288"],
             ],
             separators=(",", ":"), ensure_ascii=False,
@@ -337,9 +343,9 @@ def test_parser_rejects_bad_objects():
         mutate_object(0, kenBurns={"dir": "in", "zoom": 0}),
         mutate_object(0, kenBurns={"dir": "in"}),
         # Runtime key filename differs from source (not the same filename).
-        mutate_object(0, key="animals/pen-pal3/photos/other_000.jpg"),
+        mutate_object(0, key="animals/kitten-flowers/photos/other_000.jpg"),
         # Runtime key in the wrong library lane/subject.
-        mutate_object(0, key="interiors/twin47996/photos/pinterest_784681935144260004.jpg"),
+        mutate_object(0, key="interiors/lamplit-apartment/photos/pinterest_784681935144260004.jpg"),
     ]
     for cfg in cases:
         with pytest.raises(ValueError):
@@ -361,17 +367,16 @@ def test_parser_rejects_bad_objects():
         parse_plan_config(PENPAL, cfg)
 
 
-def test_runtime_dedicated_keys_share_original_filename():
+def test_runtime_keys_are_the_existing_source_pool_keys():
+    # The pinned photos now live directly under the existing Syzygy library
+    # folders, so the runtime key IS the source key (page subject is separate).
     plan = image_video_plan(PENPAL)
     for item in plan["media"]:
-        assert item["key"].rsplit("/", 1)[1] == item["sourceKey"].rsplit("/", 1)[1]
-        # The dedicated key is the page's own library, not the source pool.
-        assert item["key"].startswith("animals/pen-pal3/photos/")
+        assert item["key"] == item["sourceKey"]
+        assert item["key"].startswith("animals/kitten-flowers/photos/")
     twin = image_video_plan(TWIN)
-    assert twin["media"][0]["key"].startswith("interiors/twin47996/photos/")
-    assert twin["media"][0]["key"].rsplit("/", 1)[1] == (
-        twin["media"][0]["sourceKey"].rsplit("/", 1)[1]
-    )
+    assert twin["media"][0]["key"] == twin["media"][0]["sourceKey"]
+    assert twin["media"][0]["key"].startswith("interiors/lamplit-apartment/photos/")
 
 
 def test_plan_image_video_rejects_invalid_reservation_set():
@@ -398,3 +403,61 @@ async def test_submit_refuses_foreign_or_forged_plan_before_transport():
     with pytest.raises(iv.ImageVideoError):
         await submit_image_video_render(forged, page_id=PENPAL, recipe_version="v1", request_json=request)
     assert calls == []
+
+
+def test_slideshow_library_address_uses_storage_folder_and_refuses_foreign_handle():
+    from services.content_engine_registry import load_engine_registry
+    from services.control_plane_slideshows import slideshow_library_address
+
+    profiles, _ = load_engine_registry()
+    profile = profiles["image-video"]
+    pages = {
+        "pageId": "acct:pen-pal3",
+        "handle": "pen.pal3",
+        "notionPageId": "3ed1465b-b829-809f-afb4-da66093e7f9d",
+        "contentNiche": "slideshow",
+        "contentEngine": "sourced_slideshow",
+    }
+    address = slideshow_library_address(profile, pages)
+    assert address == ("syzygy:animals:kitten-flowers", "animals", "kitten-flowers")
+    # A foreign page handle must not resolve the owned photo plan/library.
+    assert slideshow_library_address(profile, {**pages, "handle": "foreign.page"}) is None
+    assert slideshow_library_address(profile, {**pages, "pageId": "acct:someone-else"}) is None
+
+
+def test_parser_refuses_key_outside_library_subject_folder():
+    good = _good_plan_config()
+    # librarySubject is present, so the key must live under
+    # animals/kitten-flowers/photos/, not the page subject folder.
+    cfg = deepcopy(good)
+    cfg["objects"][0]["key"] = "animals/pen-pal3/photos/pinterest_784681935144260004.jpg"
+    with pytest.raises(ValueError):
+        parse_plan_config(PENPAL, cfg)
+
+
+def test_parser_refuses_bad_library_subject_characters():
+    good = _good_plan_config()
+    for bad in ("UPPER-Case", "bad subject", "", "a" * 101):
+        cfg = deepcopy(good)
+        cfg["librarySubject"] = bad
+        with pytest.raises(ValueError):
+            parse_plan_config(PENPAL, cfg)
+
+
+def test_plan_without_library_subject_behaves_as_before():
+    cfg = deepcopy(_good_plan_config())
+    cfg.pop("librarySubject")
+    for obj in cfg["objects"]:
+        obj["key"] = "animals/pen-pal3/photos/" + obj["sourceKey"].rsplit("/", 1)[1]
+    parsed = parse_plan_config(PENPAL, cfg)
+    assert parsed["subject"] == "pen-pal3"
+    assert parsed["librarySubject"] is None
+    assert [obj["key"] for obj in parsed["objects"]] == [
+        "animals/pen-pal3/photos/pinterest_784681935144260004.jpg",
+        "animals/pen-pal3/photos/pinterest_784681935144260020.jpg",
+        "animals/pen-pal3/photos/pinterest_784681935144259989.jpg",
+    ]
+    # A key outside lane/subject/photos/ is still refused when librarySubject is absent.
+    cfg["objects"][0]["key"] = "animals/kitten-flowers/photos/pinterest_784681935144260004.jpg"
+    with pytest.raises(ValueError):
+        parse_plan_config(PENPAL, cfg)

@@ -8,12 +8,13 @@
     "acct:pen-pal3": {
       "lane": "animals",
       "subject": "pen-pal3",
+      "librarySubject": "kitten-flowers",
       "totalDurationSeconds": 12,
       "brightnessGainFromOriginals": 0.85,
       "objects": [
         {
           "sourceKey": "animals/kitten-flowers/photos/pinterest_784681935144260004.jpg",
-          "key": "animals/pen-pal3/photos/pinterest_784681935144260004.jpg",
+          "key": "animals/kitten-flowers/photos/pinterest_784681935144260004.jpg",
           "sha256": "09a1b391a05c29944705bd5b3c662cad05218b476e1a8d2e813c01dda119247d",
           "bytes": 132530,
           "duration": 4,
@@ -27,7 +28,7 @@
         },
         {
           "sourceKey": "animals/kitten-flowers/photos/pinterest_784681935144260020.jpg",
-          "key": "animals/pen-pal3/photos/pinterest_784681935144260020.jpg",
+          "key": "animals/kitten-flowers/photos/pinterest_784681935144260020.jpg",
           "sha256": "39a5346f6cd04217b766bf00fc590993d8a6f5546f191785ae2885748ab0e92b",
           "bytes": 227679,
           "duration": 4,
@@ -41,7 +42,7 @@
         },
         {
           "sourceKey": "animals/kitten-flowers/photos/pinterest_784681935144259989.jpg",
-          "key": "animals/pen-pal3/photos/pinterest_784681935144259989.jpg",
+          "key": "animals/kitten-flowers/photos/pinterest_784681935144259989.jpg",
           "sha256": "5ad6eb5aa5f43607e1d27366feccd7b8c8a0fd4ae482ddbaaa241f8d0066d288",
           "bytes": 224944,
           "duration": 4,
@@ -58,12 +59,13 @@
     "acct:twin47996": {
       "lane": "interiors",
       "subject": "twin47996",
+      "librarySubject": "lamplit-apartment",
       "totalDurationSeconds": 12,
       "brightnessGainFromOriginals": 0.85,
       "objects": [
         {
           "sourceKey": "interiors/lamplit-apartment/photos/pinterest_784681935144259920.jpg",
-          "key": "interiors/twin47996/photos/pinterest_784681935144259920.jpg",
+          "key": "interiors/lamplit-apartment/photos/pinterest_784681935144259920.jpg",
           "sha256": "cf5cafb364516ea0e2e333f9a7379bbb6b6be76e08e8fd6976ae73c8fd44d85f",
           "bytes": 130640,
           "duration": 12,

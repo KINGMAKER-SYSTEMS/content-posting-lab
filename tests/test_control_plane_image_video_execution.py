@@ -14,7 +14,8 @@ import routers.control_plane as cp
 ])
 def image_lab(request,monkeypatch,tmp_path):
     page,handle,format_slug,engine,niche,notion=request.param;photo=iv.image_video_plan(page)
-    library=ss.SyzygyLibrary(photo['libraryId'],photo['lane'],photo['subject'],tuple(ss.SyzygyObject(x['key'],x['bytes'],'https://r2.example/'+x['key'])for x in photo['media']),'c'*64)
+    storage_subject=photo['librarySubject'] or photo['subject']
+    library=ss.SyzygyLibrary(photo['libraryId'],photo['lane'],storage_subject,tuple(ss.SyzygyObject(x['key'],x['bytes'],'https://r2.example/'+x['key'])for x in photo['media']),'c'*64)
     for key,value in {'PAGE_ID':page,'HANDLE':handle,'SUBJECT':photo['subject'],'LANE':photo['lane'],'FORMAT':format_slug,'ENGINE':engine,'NICHE':niche,'LIBRARY_ID':photo['libraryId'],'RECIPE_ID':format_slug+':master'}.items():monkeypatch.setattr(base,key,value)
     # These are the actual observed Notion tuples, not a slideshow-normalized Twin.
     original_master_pages = base.master_pages
