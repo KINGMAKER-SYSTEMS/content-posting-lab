@@ -27,6 +27,11 @@ FAST_SHARE = 1 / 6
 ZOOM_SPREAD = 0.2
 FOCUS_SPREAD = 0.08
 MAX_TRIES = 8
+# The delivered clip (window / speed) must stay inside what the Worker admits,
+# 5-10 s (control-plane-worker sourceVideoBounds.js), with a margin for the
+# encoder's frame rounding. A speed that would leave it is never drawn.
+OUTPUT_MIN_MS = 5_200
+OUTPUT_MAX_MS = 9_800
 
 
 def varies_clips(page_id: str) -> bool:
@@ -42,8 +47,15 @@ def _clamp(value: float, low: float, high: float) -> float:
     return min(high, max(low, value))
 
 
-def _draw(seed: str, crop: dict[str, float]) -> tuple[float, dict[str, float]]:
-    speeds = FAST_SPEEDS if _unit(seed, "fast") < FAST_SHARE else SLOW_SPEEDS
+def allowed_speeds(speeds: tuple[float, ...], duration_ms: int) -> tuple[float, ...]:
+    """The speeds whose delivered length (window / speed) stays inside the bounds."""
+    return tuple(speed for speed in speeds if OUTPUT_MIN_MS <= duration_ms / speed <= OUTPUT_MAX_MS)
+
+
+def _draw(seed: str, crop: dict[str, float], duration_ms: int, base_speed: float) -> tuple[float, dict[str, float]]:
+    slow, fast = allowed_speeds(SLOW_SPEEDS, duration_ms), allowed_speeds(FAST_SPEEDS, duration_ms)
+    # The recipe's own speed is always legal for a window the planner chose.
+    speeds = (fast if fast and _unit(seed, "fast") < FAST_SHARE else slow or fast) or (base_speed,)
     speed = speeds[int(_unit(seed, "speed") * len(speeds))]
     return speed, {
         "zoom": round(_clamp(crop["zoom"] + (_unit(seed, "zoom") * 2 - 1) * ZOOM_SPREAD, 1.0, 3.0), 2),
@@ -57,11 +69,13 @@ def _key(speed: float, crop: dict[str, float]) -> tuple[float, float, float, flo
 
 
 def cut_variant(page_id: str, cut_slot_id: str, base_speed: float, base_crop: dict[str, float],
-                previous: tuple[float, dict[str, float]] | None = None) -> tuple[float, dict[str, float]]:
-    """The (speed, crop) one cut is made at.
+                previous: tuple[float, dict[str, float]] | None = None, *,
+                duration_ms: int) -> tuple[float, dict[str, float]]:
+    """The (speed, crop) one cut of ``duration_ms`` is made at.
 
-    Never the recipe's own look and never the look of ``previous`` (the cut
-    made just before it in the same job), so two cuts in a row never match.
+    Never the recipe's own look and never the look of ``previous`` (the
+    page's cut made just before it), so two cuts in a row never match, and
+    never a speed that takes the delivered clip outside OUTPUT_MIN_MS..MAX_MS.
     """
     if not isinstance(cut_slot_id, str) or not cut_slot_id:
         raise ValueError("cut_variant requires the cut's slot id")
@@ -71,13 +85,13 @@ def cut_variant(page_id: str, cut_slot_id: str, base_speed: float, base_crop: di
         avoid.add(_key(*previous))
     seed = f"{page_id}\0{cut_slot_id}"
     for attempt in range(MAX_TRIES):
-        speed, varied = _draw(seed if attempt == 0 else f"{seed}#{attempt}", crop)
+        speed, varied = _draw(seed if attempt == 0 else f"{seed}#{attempt}", crop, duration_ms, base_speed)
         if _key(speed, varied) not in avoid:
             return speed, varied
     # Eight colliding draws is not reachable with these ranges; walk the slow
     # list so the result still differs from both.
-    speed, varied = _draw(seed, crop)
-    for candidate in SLOW_SPEEDS:
+    speed, varied = _draw(seed, crop, duration_ms, base_speed)
+    for candidate in allowed_speeds(SLOW_SPEEDS + FAST_SPEEDS, duration_ms) or (base_speed,):
         if _key(candidate, varied) not in avoid:
             return candidate, varied
     raise ValueError("no distinct cut variant")

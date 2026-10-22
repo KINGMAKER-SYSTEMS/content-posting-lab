@@ -1833,3 +1833,20 @@ async def test_a_clip_varying_page_cuts_each_window_at_its_own_speed_and_records
         assert _probe_duration(output) == pytest.approx(cut["durationMs"] / 1000 / clip["clipSpeed"], abs=0.2)
         looks.append((visual["clipSpeed"], tuple(sorted(visual["clipCrop"].items()))))
     assert looks[0] != looks[1]
+
+
+def test_the_latest_page_cut_seeds_the_next_jobs_look(monkeypatch):
+    jobs = {
+        "old": {"pageId": PAGE_ID, "status": "completed", "sourceKind": "dossier_source_dna",
+                "completedAt": "2026-10-21T10:00:00+00:00",
+                "clips": [{"clipSpeed": 0.8, "clipCrop": {"zoom": 1.5, "focusX": 0.5, "focusY": 0.5}}]},
+        "new": {"pageId": PAGE_ID, "status": "completed", "sourceKind": "dossier_source_dna",
+                "completedAt": "2026-10-22T10:00:00+00:00",
+                "clips": [{"clipSpeed": 0.9, "clipCrop": {"zoom": 1.6, "focusX": 0.48, "focusY": 0.52}}]},
+        "other-page": {"pageId": "acct:other", "status": "completed", "sourceKind": "dossier_source_dna",
+                       "completedAt": "2026-10-22T11:00:00+00:00",
+                       "clips": [{"clipSpeed": 1.1, "clipCrop": {"zoom": 1.0, "focusX": 0.5, "focusY": 0.5}}]},
+    }
+    monkeypatch.setattr(cp, "_load_jobs", lambda: {"jobs": jobs})
+    assert cp._latest_page_cut_look(PAGE_ID, "running") == (0.9, {"zoom": 1.6, "focusX": 0.48, "focusY": 0.52})
+    assert cp._latest_page_cut_look("acct:none", "running") is None
