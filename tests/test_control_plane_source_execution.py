@@ -1836,10 +1836,14 @@ async def test_a_clip_varying_page_cuts_each_window_at_its_own_speed_and_records
         # The transforms ride on the manifest, never in the receipt.
         assert set(clip["clipTransforms"]) == {"mirror", "motion", "reverse"}
         assert "clipTransforms" not in clip["sourceTreatment"]
+        # The trial similarity record never blocks; the second cut is compared with the first.
+        assert clip["similarity"]["mode"] == "trial"
+        assert len(clip["similarity"]["fingerprint"]) == 8
         # The grade moved inside its bands, recorded in the receipt.
         for name, band in GRADE_BANDS.items():
             assert abs(visual["filters"][name] - (1.0 if name != "warmth" else 0.0)) <= band
     assert looks[0] != looks[1]
+    assert job["clips"][1]["similarity"]["nearestClip"] == f"{response.json()['jobId']}/0"
 
 
 def test_the_latest_page_cut_seeds_the_next_jobs_look(monkeypatch):
