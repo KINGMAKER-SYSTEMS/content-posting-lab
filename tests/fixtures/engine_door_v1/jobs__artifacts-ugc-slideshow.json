@@ -1,20 +1,87 @@
 {
   "artifacts": [
     {
-      "bytes": 42,
-      "sha256": "ece79679ad1b0b7e505d3d50bd9ee80d943123f28315e427c38a8b796865c314",
+      "bytes": 26,
+      "sha256": "97f0e75d7d45e15a4cdd2d8a3282300f46c6c7ef83aed445a19421a2182d4ff8",
       "source": {
+        "contentEngine": "sourced_slideshow",
+        "contentNiche": "slideshow",
         "kind": "syzygy_slideshow",
-        "planSignature": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        "librarySnapshotHash": "c36e7a06da228ea5c641b1f1772990d09c4228b40de8e9ddf22cb275b7f30ee5",
+        "masterPagesHash": "sha256:33a8f4f5f313d7748b31a74029ffb49544a0e5309b4ec2f538694c36e8b201c2",
+        "media": [
+          {
+            "bytes": 1000,
+            "etag": "\"etag-img-01-0058.jpg\"",
+            "objectKey": "ugc/french-core/photos/img-01-0058.jpg",
+            "sha256": "269d1751c6fb4f220b5f843f95cff00e793f4831577c3e59f7c33515e964039a"
+          },
+          {
+            "bytes": 1001,
+            "etag": "\"etag-img-02-0051.jpg\"",
+            "objectKey": "ugc/french-core/photos/img-02-0051.jpg",
+            "sha256": "483a6d94575c672fd6c7f757dc40ba1a234a2fb473b8d65c8492fe4cb82d00f5"
+          },
+          {
+            "bytes": 1002,
+            "etag": "\"etag-img-03-0052.jpg\"",
+            "objectKey": "ugc/french-core/photos/img-03-0052.jpg",
+            "sha256": "722210ee7340eb7490d68d41627452ac3949c0af4ea74dee2d78af4c1fc2474a"
+          }
+        ],
+        "pageId": "acct:culture-ugc-test",
+        "planSignature": "25139c442fa86cc33c696a7bb9245681aa8b68269ae1ccee2db5bfe5fc29021f",
+        "recipeId": "ugc-slideshow:master",
+        "recipeVersion": "dossier-ugc00000000",
+        "renderJobId": "render-job-0001",
+        "rendererRevision": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "schema": "content-lab.syzygy-slideshow-source.v1",
+        "sourceLibraryId": "syzygy:ugc:french-core",
+        "templateSlug": "clean-slideshow",
+        "vaultUrl": "https://shipstream.test/vault/french.core"
+      },
+      "sourceTreatment": {
+        "generationJobId": "cpl-0000000000000001",
+        "recipeSpecHash": "sha256:0b4e967775c211cc99e02a19fe7dcfc7e1de69f87f2f41d247dd098d05d64c9b",
+        "schema": "content-lab.source-treatment.v1",
+        "sourceRecipeTreatment": {
+          "captionStyle": {},
+          "clipCrop": {
+            "focusX": 0.5,
+            "focusY": 0.5,
+            "zoom": 1.0
+          },
+          "clipSpeed": 1.0,
+          "filters": {},
+          "stylePreset": null
+        },
+        "sourceSha256": "97f0e75d7d45e15a4cdd2d8a3282300f46c6c7ef83aed445a19421a2182d4ff8",
+        "visualTreatment": {
+          "clipCrop": {
+            "focusX": 0.5,
+            "focusY": 0.5,
+            "zoom": 1.0
+          },
+          "clipSpeed": 1.0,
+          "filters": {
+            "brightness": 1.0,
+            "contrast": 1.0,
+            "fade": 0.0,
+            "grain": 0.0,
+            "saturation": 1.0,
+            "vignette": 0.0,
+            "warmth": 0.0
+          }
+        }
       },
       "thumbnail": {
         "bytes": 40,
         "sha256": "791b62d84ea79e08ebbd95e86940841597bc0f86e77779d7035fe0a8191e0e96",
         "type": "image/jpeg",
-        "url": "http://testserver/api/control-plane/v1/jobs/cpl-0000000000000001/thumbnail/0?token=uuuuuuuuuuuuuuuuuuuuuuuu"
+        "url": "https://testserver/api/control-plane/v1/jobs/cpl-0000000000000001/thumbnail/0?token=uuuuuuuuuuuuuuuuuuuuuuuu"
       },
       "type": "video",
-      "url": "http://testserver/api/control-plane/v1/jobs/cpl-0000000000000001/download/0?token=uuuuuuuuuuuuuuuuuuuuuuuu"
+      "url": "https://testserver/api/control-plane/v1/jobs/cpl-0000000000000001/download/0?token=uuuuuuuuuuuuuuuuuuuuuuuu"
     }
   ],
   "jobId": "cpl-0000000000000001",

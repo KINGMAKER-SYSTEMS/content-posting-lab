@@ -69,6 +69,7 @@ POV_SOURCE_URL = "https://cdn.example.com/source/night-walk.mp4"
 VIDEO_BYTES = b"engine-door-provider-v1-sample-video-bytes"
 THUMB_BYTES = b"engine-door-provider-v1-sample-thumbnail"
 FIXED_NOW = _dt.datetime(2026, 1, 2, 3, 4, 5, 123456, tzinfo=_dt.timezone.utc)
+RENDERER_REVISION = "d" * 64
 
 
 class _DeterministicSecrets:
@@ -273,6 +274,57 @@ def _complete_ugc_job(job_id):
     return manifest, token
 
 
+def _fake_syzygy_boundary(monkeypatch, library):
+    """Stub the live Syzygy boundary so ``_run_syzygy_slideshow`` produces a real,
+    production-shaped artifact (full source provenance) without any network."""
+    observations = {
+        item.key: {
+            "objectKey": item.key,
+            "bytes": item.bytes,
+            "etag": f'"etag-{item.key.rsplit("/", 1)[-1]}"',
+            "sha256": hashlib.sha256(item.key.encode()).hexdigest(),
+        }
+        for item in library.objects
+    }
+    calls = {"submit": [], "download": []}
+
+    async def fake_revision():
+        return RENDERER_REVISION
+
+    async def fake_observe(_library, keys):
+        return [dict(observations[key]) for key in keys]
+
+    async def fake_submit(plan, *, page_id, recipe_version, format_slug=None):
+        calls["submit"].append((plan, page_id, recipe_version, format_slug))
+        return f"render-job-{len(calls['submit']):04d}", "draft"
+
+    async def fake_poll(render_job_id):
+        return f"/render-file/{render_job_id}.mp4"
+
+    async def fake_download(play_url, destination):
+        calls["download"].append(play_url)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(b"raw-render")
+
+    async def fake_render(src, dst, correction, **kwargs):
+        Path(dst).write_bytes(b"derived:" + Path(dst).name.encode())
+
+    async def fake_thumbnail(job_root, video, index):
+        target = job_root / "thumbnails" / f"{index:04d}.jpg"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(THUMB_BYTES)
+        return cp._generated_manifest(job_root, target)
+
+    monkeypatch.setattr(cp, "syzygy_revision", fake_revision)
+    monkeypatch.setattr(cp, "observe_library_media", fake_observe)
+    monkeypatch.setattr(cp, "submit_syzygy_render", fake_submit)
+    monkeypatch.setattr(cp, "poll_syzygy_render", fake_poll)
+    monkeypatch.setattr(cp, "download_syzygy_artifact", fake_download)
+    monkeypatch.setattr(cp, "run_color_correct", fake_render)
+    monkeypatch.setattr(cp, "_thumbnail_manifest", fake_thumbnail)
+    return calls
+
+
 @pytest.fixture
 def door(monkeypatch, tmp_path):
     monkeypatch.setenv("CONTROL_PLANE_TOKEN", TOKEN)
@@ -324,7 +376,7 @@ def door(monkeypatch, tmp_path):
     app.include_router(recipes.router, prefix="/api/control-plane")
     app.include_router(dossier.router, prefix="/api/control-plane")
     app.include_router(source_router.router, prefix="/api/control-plane")
-    client = TestClient(app)
+    client = TestClient(app, base_url="https://testserver")
     return SimpleNamespace(
         client=client, tmp_path=tmp_path, started=started, sweeps=sweeps,
         library=library,
@@ -539,11 +591,15 @@ def test_jobs_status_ugc_slideshow(door, monkeypatch):
     _write_fixture("jobs", "status-ugc-slideshow", body)
 
 
-def test_jobs_artifacts_ugc_slideshow(door, monkeypatch):
+@pytest.mark.asyncio
+async def test_jobs_artifacts_ugc_slideshow(door, monkeypatch):
     payload = _register_ugc(door.client, monkeypatch, door.library)
     created = _create_ugc_job(door.client, payload, "ugc-artifacts-0001")
     job_id = created["jobId"]
-    manifest, _token = _complete_ugc_job(job_id)
+    _fake_syzygy_boundary(monkeypatch, door.library)
+    await cp._run_syzygy_slideshow(job_id)
+    job = cp._load_jobs()["jobs"][job_id]
+    assert job["status"] == "completed", job.get("error")
     response = door.client.get(
         f"/api/control-plane/v1/jobs/{job_id}/artifacts",
         headers={"X-RT-Page-Id": UGC_PAGE_ID, "Authorization": f"Bearer {TOKEN}"},
@@ -555,9 +611,29 @@ def test_jobs_artifacts_ugc_slideshow(door, monkeypatch):
     assert len(body["artifacts"]) == 1
     artifact = body["artifacts"][0]
     assert artifact["type"] == "video"
-    assert artifact["sha256"] == manifest["sha256"]
-    assert artifact["bytes"] == manifest["bytes"]
+    # Production door is https-only; the recorded URLs must not be http://testserver.
+    assert artifact["url"].startswith("https://testserver/")
+    assert artifact["thumbnail"]["url"].startswith("https://testserver/")
     assert artifact["thumbnail"]["type"] == "image/jpeg"
+    # The source block must be the full production slideshow provenance, not an
+    # abbreviated kind+planSignature stub.
+    source = artifact["source"]
+    assert source["schema"] == "content-lab.syzygy-slideshow-source.v1"
+    assert source["kind"] == "syzygy_slideshow"
+    assert source["recipeId"] == UGC_RECIPE_ID
+    assert source["recipeVersion"] == payload["recipeVersion"]
+    assert source["sourceLibraryId"] == UGC_LIBRARY_ID
+    assert source["librarySnapshotHash"]
+    assert source["templateSlug"] == "clean-slideshow"
+    assert source["planSignature"]
+    assert source["rendererRevision"] == RENDERER_REVISION
+    assert source["renderJobId"] == "render-job-0001"
+    assert isinstance(source["media"], list) and source["media"]
+    assert source["pageId"] == UGC_PAGE_ID
+    assert source["masterPagesHash"]
+    assert source["contentNiche"] == UGC_NICHE
+    assert source["contentEngine"] == UGC_ENGINE
+    assert source["vaultUrl"]
     _write_fixture("jobs", "artifacts-ugc-slideshow", body)
 
 
@@ -798,7 +874,7 @@ def source_lab(monkeypatch, tmp_path):
     app.include_router(cp.router, prefix="/api/control-plane")
     app.include_router(recipes.router, prefix="/api/control-plane")
     app.include_router(source_router.router, prefix="/api/control-plane")
-    client = TestClient(app)
+    client = TestClient(app, base_url="https://testserver")
     publication_headers = {
         "Authorization": f"Bearer {TOKEN}",
         "X-RT-Lane": recipes.LANE,
