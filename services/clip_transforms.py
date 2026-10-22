@@ -13,8 +13,10 @@ is closed on both sides and the final render never re-applies them, so the
 Worker has nothing to attest.
 
 Reverse is bounded in memory: ffmpeg's reverse filter holds every frame it is
-given, so the clip is reversed in REVERSE_CHUNK_S pieces (about 30 decoded
-frames, ~90 MB at 1080x1920) that are then joined in reverse order.
+given, so the picture is reversed in REVERSE_CHUNK_S pieces (about 30 decoded
+frames, ~90 MB at 1080x1920) joined in reverse order, while the audio (a few
+MB of PCM) is reversed as one stream, so it has no gaps at the joins. Every
+re-encode keeps the colour tags the cut was written with.
 """
 from __future__ import annotations
 
@@ -110,14 +112,29 @@ def _motion_graph(motion: str, duration_s: float, width: int, height: int) -> st
 
 
 def _probe(path: Path) -> tuple[float, int, int, bool]:
+    duration_s, width, height, has_audio, _ = _probe_full(path)
+    return duration_s, width, height, has_audio
+
+
+def _probe_full(path: Path) -> tuple[float, int, int, bool, list[str]]:
+    """Duration, size, whether there is audio, and the clip's colour tags as
+    encoder arguments, so a re-encode keeps the tags the cut was written with
+    (an HDR-tagged cut stays HDR-tagged; untagged stays untagged)."""
     completed = subprocess.run([
-        "ffprobe", "-v", "error", "-show_entries", "format=duration:stream=codec_type,width,height",
+        "ffprobe", "-v", "error", "-show_entries",
+        "format=duration:stream=codec_type,width,height,color_primaries,color_transfer,color_space",
         "-of", "json", str(path),
     ], check=True, capture_output=True, text=True, timeout=120)
     data = json.loads(completed.stdout)
     video = next(stream for stream in data["streams"] if stream.get("codec_type") == "video")
     has_audio = any(stream.get("codec_type") == "audio" for stream in data["streams"])
-    return float(data["format"]["duration"]), int(video["width"]), int(video["height"]), has_audio
+    color = []
+    for key, option in (("color_primaries", "-color_primaries"), ("color_transfer", "-color_trc"),
+                        ("color_space", "-colorspace")):
+        value = video.get(key)
+        if isinstance(value, str) and value and value != "unknown":
+            color += [option, value]
+    return float(data["format"]["duration"]), int(video["width"]), int(video["height"]), has_audio, color
 
 
 def _run(args: list[str]) -> None:
@@ -126,7 +143,13 @@ def _run(args: list[str]) -> None:
 
 
 def _reverse_chunked(source: Path, destination: Path, duration_s: float, has_audio: bool,
-                     encode_args: list[str], work: Path) -> None:
+                     encode_args: list[str], color: list[str], work: Path) -> None:
+    """Video reversed in short pieces (bounded memory), audio reversed whole.
+
+    Audio is small (seconds of PCM), so it is reversed as one stream and laid
+    under the joined video: no per-piece audio priming gaps at the joins and
+    no drift against the picture.
+    """
     chunks: list[Path] = []
     start = 0.0
     index = 0
@@ -134,15 +157,19 @@ def _reverse_chunked(source: Path, destination: Path, duration_s: float, has_aud
         length = min(REVERSE_CHUNK_S, duration_s - start)
         chunk = work / f"reverse-{index:03d}.mp4"
         _run(["-ss", f"{start:.6f}", "-t", f"{length:.6f}", "-i", str(source),
-              "-vf", "reverse", *(["-af", "areverse"] if has_audio else ["-an"]),
-              *encode_args, str(chunk)])
+              "-vf", "reverse", "-an", *_video_only(encode_args), *color, str(chunk)])
         chunks.append(chunk)
         start += length
         index += 1
     listing = work / "reverse.txt"
     listing.write_text("".join(f"file '{chunk.name}'\n" for chunk in reversed(chunks)))
-    _run(["-f", "concat", "-safe", "0", "-i", str(listing), "-c", "copy",
-          "-movflags", "+faststart", str(destination)])
+    if not has_audio:
+        _run(["-f", "concat", "-safe", "0", "-i", str(listing), "-c", "copy",
+              "-movflags", "+faststart", str(destination)])
+        return
+    _run(["-f", "concat", "-safe", "0", "-i", str(listing), "-i", str(source),
+          "-map", "0:v:0", "-map", "1:a:0", "-c:v", "copy", "-af", "areverse",
+          *_audio_only(encode_args), "-shortest", "-movflags", "+faststart", str(destination)])
 
 
 def apply_transforms(path: Path, transforms: CutTransforms, encode_args: list[str]) -> None:
@@ -154,7 +181,7 @@ def apply_transforms(path: Path, transforms: CutTransforms, encode_args: list[st
     shutil.rmtree(work, ignore_errors=True)
     work.mkdir(mode=0o700)
     try:
-        duration_s, width, height, has_audio = _probe(path)
+        duration_s, width, height, has_audio, color = _probe_full(path)
         current = path
         if transforms.motion is not None or transforms.mirror:
             graph = (_motion_graph(transforms.motion, duration_s, width, height)
@@ -163,11 +190,11 @@ def apply_transforms(path: Path, transforms: CutTransforms, encode_args: list[st
             moved = work / "moved.mp4"
             _run(["-i", str(current), "-filter_complex", graph, "-map", "[v]",
                   *(["-map", "0:a", "-c:a", "copy"] if has_audio else ["-an"]),
-                  *_video_only(encode_args), str(moved)])
+                  *_video_only(encode_args), *color, str(moved)])
             current = moved
         if transforms.reverse:
             reversed_path = work / "reversed.mp4"
-            _reverse_chunked(current, reversed_path, duration_s, has_audio, encode_args, work)
+            _reverse_chunked(current, reversed_path, duration_s, has_audio, encode_args, color, work)
             current = reversed_path
         current.replace(path)
     finally:
@@ -187,3 +214,12 @@ def _video_only(encode_args: list[str]) -> list[str]:
             continue
         result.append(argument)
     return result
+
+
+def _audio_only(encode_args: list[str]) -> list[str]:
+    """The preset's audio settings (codec and bitrate), for the reversed audio."""
+    result: list[str] = []
+    for index, argument in enumerate(encode_args[:-1]):
+        if argument.startswith("-c:a") or argument.startswith("-b:a") or argument in ("-ar", "-ac"):
+            result += [argument, encode_args[index + 1]]
+    return result or ["-c:a", "aac"]
