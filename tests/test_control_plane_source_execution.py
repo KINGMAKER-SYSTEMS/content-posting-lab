@@ -1880,3 +1880,51 @@ async def test_a_varied_job_whose_history_read_fails_ends_failed_not_running(lab
     job = cp._load_jobs()["jobs"][response.json()["jobId"]]
     assert job["status"] == "failed"
     assert "job store unreadable" in job["error"]
+
+
+@pytest.mark.parametrize("backup_cuts,status", [((1,), "completed"), ((0, 1), "failed")])
+@pytest.mark.asyncio
+async def test_a_cut_on_a_backup_whose_file_is_missing_is_skipped_and_the_job_goes_on(
+    lab, monkeypatch, backup_cuts, status,
+):
+    from dataclasses import replace as dc_replace
+    client, tmp_path, _ = lab
+    backup_sha = "d" * 64
+    original_recipe = cp._dossier_source_recipe
+
+    def pooled(publication):
+        recipe = original_recipe(publication)
+        primary = recipe.masters[0]
+        backup = dc_replace(primary, source_id="zz-backup", sha256=backup_sha, role="backup",
+                            storage_key="source-dna/backup/" + backup_sha + ".mp4")
+        return dc_replace(recipe, masters=(primary, backup))
+
+    monkeypatch.setattr(cp, "_dossier_source_recipe", pooled)
+    response = client.post(
+        "/api/control-plane/v1/jobs", json=job_body(2),
+        headers=headers(f"source-job-backup-missing-{status}"),
+    )
+    job_id = response.json()["jobId"]
+    store = cp._load_jobs()
+    for index, cut in enumerate(store["jobs"][job_id]["sourceCuts"]):
+        start = index * 15_000
+        sha = backup_sha if index in backup_cuts else cut["masterSha256"]
+        cut.update({"masterSha256": sha, "slotId": f"{sha}:{start}:{cut['durationMs']}",
+                    "libraryStartMs": start, "startMs": start})
+    cp.atomic_save(cp._jobs_path(), store)
+    source = tmp_path / "master.mp4"
+    _write_av_test_clip(source, duration=40.0)
+
+    async def cached_source(page_id, master, job):
+        if master.sha256 == backup_sha:
+            raise RuntimeError("source_dna_master_unavailable")
+        return source
+
+    monkeypatch.setattr(cp, "_cached_source_master", cached_source)
+    await cp._run_dossier_source(job_id)
+    job = cp._load_jobs()["jobs"][job_id]
+    assert job["status"] == status, job.get("error")
+    if status == "completed":
+        assert len(job["clips"]) == 1
+    else:
+        assert job["error"] == "source_dna_master_unavailable"

@@ -35,7 +35,8 @@ PROVENANCE_FIELDS = {"sourceUrl", "acquiredAt", "authority"}
 MASTER_ROLES = ("primary", "backup")
 # A backup master may declare its own brightness (Eric 2026-10-22: backups
 # render at 0.65 where the page recipe says otherwise). Brightness only, inside
-# GRADE_OVERRIDE_BOUNDS; applied at cut time on clip-varying pages and written
+# GRADE_OVERRIDE_BOUNDS; applied at cut time on clip-varying pages (refused at
+# parse time on any other page) and written
 # into the clip's receipt. The master file itself is never re-encoded.
 GRADE_OVERRIDE_BOUNDS = {"brightness": (0.4, 1.0)}
 MIME_TYPES = {"video/mp4", "video/quicktime"}
@@ -126,7 +127,7 @@ def parse_source_dna_manifest(raw: bytes, expected_library_id: str | None = None
         role = row.get("role", "primary")
         if role not in MASTER_ROLES:
             raise SourceDnaError(f"source DNA masters[{index}].role is invalid")
-        grade_override = _grade_override(row.get("gradeOverride"), role, index)
+        grade_override = _grade_override(row.get("gradeOverride"), role, index, page_id)
         source_id = row.get("sourceId")
         sha256 = row.get("sha256")
         byte_count = row.get("bytes")
@@ -181,9 +182,14 @@ def parse_source_dna_manifest(raw: bytes, expected_library_id: str | None = None
     )
 
 
-def _grade_override(value: Any, role: str, index: int) -> dict[str, float] | None:
+def _grade_override(value: Any, role: str, index: int, page_id: str) -> dict[str, float] | None:
     if value is None:
         return None
+    # Applied only where cuts vary (services/clip_variation.py), so a declared
+    # grade on any other page would be silently ignored: refuse it instead.
+    from services.clip_variation import varies_clips
+    if not varies_clips(page_id):
+        raise SourceDnaError(f"source DNA masters[{index}].gradeOverride is only allowed on a clip-varying page")
     if (role != "backup" or not isinstance(value, dict) or not value
             or set(value) - set(GRADE_OVERRIDE_BOUNDS)
             or any(isinstance(item, bool) or not isinstance(item, (int, float))
