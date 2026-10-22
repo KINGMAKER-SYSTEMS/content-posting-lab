@@ -93,7 +93,7 @@ def test_every_known_format_has_a_strict_contract_and_registry_binding():
     profiles, _ = load_engine_registry()
     assert set(contracts) == set(profiles) == {
         "boat-lake", "coffee-tok", "construction-scenic", "lyric-edits", "lyric-video",
-        "meme-slideshow", "pov-dirt-bike", "pov-dusk-core",
+        "meme", "meme-slideshow", "pov-dirt-bike", "pov-dusk-core",
         "pov-club", "pov-night-core", "pov-night-core-ai", "pov-scenic",
         "silhouette-truck", "truck-scenic", "truck-ugc", "ugc-slideshow", "image-video", "single-image-video",
     }
@@ -110,7 +110,7 @@ def test_only_complete_hash_bound_formats_are_commissioned():
         slug for slug, profile in profiles.items()
         if profile.execution_status == "commissioned"
     } == {
-        "boat-lake", "coffee-tok", "lyric-edits", "lyric-video", "meme-slideshow",
+        "boat-lake", "coffee-tok", "lyric-edits", "lyric-video", "meme", "meme-slideshow",
         "pov-club", "pov-dirt-bike", "pov-night-core", "pov-scenic", "silhouette-truck",
         "truck-scenic", "ugc-slideshow", "image-video", "single-image-video",
     }
@@ -289,6 +289,44 @@ def test_scenic_is_page_bound_source_recut_not_a_generated_substitute():
     rejects = value["dimensions"]["negativeRules"]["rule"]
     assert "cross-page" in rejects
     assert "not synthesized" in value["dimensions"]["setting"]["rule"]
+
+
+def test_meme_is_a_commissioned_source_recut_format_like_scenic():
+    contracts, _ = load_format_contracts()
+    profiles, _ = load_engine_registry()
+    meme, scenic = contracts["meme"], contracts["pov-scenic"]
+    profile, scenic_profile = profiles["meme"], profiles["pov-scenic"]
+    assert meme.content_niche == profile.content_niche == "meme"
+    assert meme.content_engine == profile.content_engine == "sourced_video"
+    assert meme.material_source == "source_library"
+    assert meme.definition_status == "complete"
+    assert meme.definition_gaps == ()
+    assert profile.execution_status == "commissioned"
+    assert profile.max_quantity >= 1
+    assert profile.format_contract_version == f"sha256:{meme.contract_hash}"
+    # Same recut executor, review gates, output and length rules as Scenic.
+    assert meme.creative_authority == scenic.creative_authority
+    assert (profile.executor_kind, profile.executor_id, profile.executor_version) == (
+        scenic_profile.executor_kind,
+        scenic_profile.executor_id,
+        scenic_profile.executor_version,
+    )
+    assert profile.executor_id == "source-dna-recut"
+    assert meme.review_authority == scenic.review_authority
+    assert meme.review_gates == scenic.review_gates
+    assert meme.output == scenic.output
+    assert meme.distribution == scenic.distribution
+    assert meme.dimensions["duration"] == scenic.dimensions["duration"]
+    assert "exact page" in meme.dimensions["subject"]["rule"]
+    assert "cross-page" in meme.dimensions["negativeRules"]["rule"]
+    assert "not synthesized" in meme.dimensions["setting"]["rule"]
+    # The meme slideshow lane keeps its own engine, so a page's niche plus
+    # engine still picks exactly one format.
+    assert contracts["meme-slideshow"].content_engine == "sourced_slideshow"
+    assert [
+        slug for slug, contract in contracts.items()
+        if (contract.content_niche, contract.content_engine) == ("meme", "sourced_video")
+    ] == ["meme"]
 
 
 def test_contract_drift_with_a_stale_registry_hash_fails_closed(
