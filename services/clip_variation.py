@@ -10,6 +10,12 @@ so the final render takes the clip as it is and the Worker posts it at exactly
 those values (control-plane-worker src/domain/clipVariation.js, which holds the
 same page list). Grade, caption and sound are never touched here.
 
+Each cut also gets a small grade jitter around the recipe's own values
+(brightness, contrast, saturation, warmth; the recipe values stay the centre,
+so the page's look is kept), written into the receipt's filters. The Worker
+admits a jittered grade only inside GRADE_BANDS (its domain/clipVariation.js
+holds the same bands).
+
 Reverse is not offered: the receipt has no field for it, so no post could
 attest it, and ffmpeg's reverse filter buffers every decoded frame of the cut.
 """
@@ -95,3 +101,25 @@ def cut_variant(page_id: str, cut_slot_id: str, base_speed: float, base_crop: di
         if _key(candidate, varied) not in avoid:
             return candidate, varied
     raise ValueError("no distinct cut variant")
+
+
+# Grade jitter, symmetric around the recipe's own value (SOURCE-ENGINE-DESIGN-1022 §3).
+GRADE_BANDS = {"brightness": 0.04, "contrast": 0.05, "saturation": 0.06, "warmth": 0.03}
+_GRADE_LIMITS = {"brightness": (0.0, 3.0), "contrast": (0.0, 3.0), "saturation": (0.0, 3.0), "warmth": (-1.0, 1.0)}
+_GRADE_NEUTRAL = {"brightness": 1.0, "contrast": 1.0, "saturation": 1.0, "warmth": 0.0}
+
+
+def cut_grade(page_id: str, cut_slot_id: str, filters: dict) -> dict:
+    """The grade for one cut: the recipe filters with a small jitter.
+
+    Seeded by the cut's own time frame, so a resumed job grades it the same.
+    Values move at most GRADE_BANDS from the recipe and are rounded to
+    0.001, well inside the band the Worker admits.
+    """
+    seed = f"{page_id}\0{cut_slot_id}\0grade"
+    graded = dict(filters)
+    for name, band in GRADE_BANDS.items():
+        base = float(filters.get(name, _GRADE_NEUTRAL[name]))
+        low, high = _GRADE_LIMITS[name]
+        graded[name] = round(_clamp(base + (_unit(seed, name) * 2 - 1) * band * 0.98, low, high), 3)
+    return graded
