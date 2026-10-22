@@ -148,6 +148,7 @@ from services.master_pages_contract import SCHEMA as MASTER_PAGES_SCHEMA, canoni
 from services.page_frame import VERTICAL_FRAME, resolved_frame
 from services import generation_budget, moderation_retry
 from services.roster_public import require_roster_auth
+from services.clip_variation import cut_variant, varies_clips
 from services.source_treatment import (
     derived_source_treatment,
     recovery_treatment_matches,
@@ -3581,6 +3582,10 @@ async def _run_dossier_source(job_id: str) -> None:
         return
     manifests: list[dict[str, Any]] = []
     await asyncio.to_thread(_update_job,job_id, status="running", progress=0)
+    # A page listed in services/clip_variation.py cuts every clip at its own
+    # speed and framing; every other page keeps the recipe's one look.
+    vary = varies_clips(job["pageId"])
+    previous_variant: tuple[float, dict[str, float]] | None = None
     try:
         masters = {master.sha256: master for master in recipe.masters}
         for index, source_cut in enumerate(source_cuts):
@@ -3604,11 +3609,17 @@ async def _run_dossier_source(job_id: str) -> None:
             frame_cut = await _page_frame_cut_kwargs(
                 recipe.recipe_spec["renderTreatment"], source,
             )
+            cut_speed, cut_crop = clip_speed, clip_crop
+            if vary:
+                # Seeded by the cut's own time frame, so a resumed job recuts it identically.
+                cut_speed, cut_crop = cut_variant(job["pageId"], f"{master.sha256}:{start_ms}:{duration_ms}",
+                                                  clip_speed, clip_crop, previous_variant)
+                previous_variant = (cut_speed, cut_crop)
             await run_color_correct(
                 str(source), str(destination), color_correction, scale=None,
                 encode_args=delivery_encode_args(recipe.encode_preset),
-                playback_speed=clip_speed,
-                clip_crop=clip_crop,
+                playback_speed=cut_speed,
+                clip_crop=cut_crop,
                 clip_crop_size=(recipe.output_width, recipe.output_height),
                 clip_start_ms=start_ms,
                 clip_duration_ms=duration_ms,
@@ -3621,16 +3632,16 @@ async def _run_dossier_source(job_id: str) -> None:
                 if measured_duration is None or not 5.0 <= measured_duration <= 9.0:
                     raise RuntimeError("source_output_duration_unsupported")
             manifest = _generated_manifest(job_root, destination)
-            manifest["clipSpeed"] = clip_speed
-            manifest["clipCrop"] = clip_crop
+            manifest["clipSpeed"] = cut_speed
+            manifest["clipCrop"] = cut_crop
             if frame_cut:
                 manifest["frameCut"] = {"frame": frame_cut["page_frame"], "frameFit": frame_cut["frame_fit"]}
             manifest["sourceTreatment"] = source_treatment_receipt(
                 job,
                 recipe.recipe_spec["renderTreatment"],
                 manifest["sha256"],
-                clip_speed=clip_speed,
-                clip_crop=clip_crop,
+                clip_speed=cut_speed,
+                clip_crop=cut_crop,
             )
             manifest["source"] = _source_provenance(job, {
                 "recipeId": recipe.recipe_id,

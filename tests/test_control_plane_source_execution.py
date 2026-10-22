@@ -1793,3 +1793,43 @@ async def test_runner_cuts_fill_when_the_master_display_size_is_unprovable(lab, 
     assert "source_size" not in calls[0]
     assert job["clips"][0]["frameCut"] == {"frame": "16:9", "frameFit": "fill"}
     assert f"cutting master.mp4 fill, its display size is unavailable ({reason})" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_a_clip_varying_page_cuts_each_window_at_its_own_speed_and_records_it(
+    lab, monkeypatch,
+):
+    # services/clip_variation.py: the varied speed and crop are what the bytes
+    # carry AND what the receipt says, so the final render takes them as they are.
+    client, tmp_path, _ = lab
+    monkeypatch.setattr(cp, "varies_clips", lambda page_id: page_id == PAGE_ID)
+    response = client.post(
+        "/api/control-plane/v1/jobs", json=job_body(2),
+        headers=headers("source-job-varied"),
+    )
+    # Two early windows a short synthetic master covers.
+    store = cp._load_jobs()
+    for index, cut in enumerate(store["jobs"][response.json()["jobId"]]["sourceCuts"]):
+        start = index * 15_000
+        cut.update({"slotId": f"{cut['masterSha256']}:{start}:{cut['durationMs']}",
+                    "libraryStartMs": start, "startMs": start})
+    cp.atomic_save(cp._jobs_path(), store)
+    source = tmp_path / "master.mp4"
+    _write_av_test_clip(source, duration=40.0)
+
+    async def cached_source(*_):
+        return source
+
+    monkeypatch.setattr(cp, "_cached_source_master", cached_source)
+    await cp._run_dossier_source(response.json()["jobId"])
+    job = cp._load_jobs()["jobs"][response.json()["jobId"]]
+    assert job["status"] == "completed", job.get("error")
+    looks = []
+    for clip, cut in zip(job["clips"], job["sourceCuts"]):
+        visual = clip["sourceTreatment"]["visualTreatment"]
+        assert visual["clipSpeed"] == clip["clipSpeed"] != 1.0
+        assert visual["clipCrop"] == clip["clipCrop"]
+        output = Path(job["artifactRoot"]) / clip["path"]
+        assert _probe_duration(output) == pytest.approx(cut["durationMs"] / 1000 / clip["clipSpeed"], abs=0.2)
+        looks.append((visual["clipSpeed"], tuple(sorted(visual["clipCrop"].items()))))
+    assert looks[0] != looks[1]
