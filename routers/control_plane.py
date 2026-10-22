@@ -78,6 +78,7 @@ from routers.control_plane_recipes import (
     require_control_plane_bearer,
 )
 from services.control_plane_generation import (
+    filters_to_color_correction,
     CATALOG_PATH,
     MAX_CAPABILITY_QUANTITY,
     compose_prompt_combination,
@@ -148,7 +149,7 @@ from services.master_pages_contract import SCHEMA as MASTER_PAGES_SCHEMA, canoni
 from services.page_frame import VERTICAL_FRAME, resolved_frame
 from services import generation_budget, moderation_retry
 from services.roster_public import require_roster_auth
-from services.clip_variation import cut_variant, varies_clips
+from services.clip_variation import cut_grade, cut_variant, varies_clips
 from services.source_treatment import (
     derived_source_treatment,
     recovery_treatment_matches,
@@ -3628,14 +3629,18 @@ async def _run_dossier_source(job_id: str) -> None:
                 recipe.recipe_spec["renderTreatment"], source,
             )
             cut_speed, cut_crop = clip_speed, clip_crop
+            cut_filters, cut_cc = None, color_correction
             if vary:
                 # Seeded by the cut's own time frame, so a resumed job recuts it identically.
                 cut_speed, cut_crop = cut_variant(job["pageId"], f"{master.sha256}:{start_ms}:{duration_ms}",
                                                   clip_speed, clip_crop, previous_variant,
                                                   duration_ms=duration_ms)
                 previous_variant = (cut_speed, cut_crop)
+                cut_filters = cut_grade(job["pageId"], f"{master.sha256}:{start_ms}:{duration_ms}",
+                                        recipe.recipe_spec["renderTreatment"]["filters"])
+                cut_cc = filters_to_color_correction(cut_filters)
             await run_color_correct(
-                str(source), str(destination), color_correction, scale=None,
+                str(source), str(destination), cut_cc, scale=None,
                 encode_args=delivery_encode_args(recipe.encode_preset),
                 playback_speed=cut_speed,
                 clip_crop=cut_crop,
@@ -3663,6 +3668,7 @@ async def _run_dossier_source(job_id: str) -> None:
                 manifest["sha256"],
                 clip_speed=cut_speed,
                 clip_crop=cut_crop,
+                filters=cut_filters,
             )
             manifest["source"] = _source_provenance(job, {
                 "recipeId": recipe.recipe_id,

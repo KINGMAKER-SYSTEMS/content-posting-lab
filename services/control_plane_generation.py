@@ -747,7 +747,11 @@ def generation_options(recipe: GenerationRecipe) -> dict[str, Any]:
 
 
 def dossier_filters_to_color_correction(recipe: GenerationRecipe) -> dict[str, float]:
-    filters = recipe.recipe_spec["renderTreatment"]["filters"]
+    return filters_to_color_correction(recipe.recipe_spec["renderTreatment"]["filters"])
+
+
+def filters_to_color_correction(filters: dict) -> dict[str, float]:
+    """The ffmpeg colour-correction sliders for one Dossier filter map."""
     result: dict[str, float] = {}
     for source, target in (
         ("brightness", "brightness"),
