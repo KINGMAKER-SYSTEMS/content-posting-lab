@@ -742,7 +742,7 @@ async def _render(
     # is the planner's own vocabulary check, the same one _run_dossier_source
     # applies per cut. A stored window the planner would not emit is refused.
     recipe, master = _reload_planned_cut(command)
-    slot_id = command.get("cutSlotId") or f"{master.sha256}:{cut["start_ms"]}:{cut["duration_ms"]}"
+    slot_id = command.get("cutSlotId") or f"{master.sha256}:{cut['start_ms']}:{cut['duration_ms']}"
     if not source_cut_is_planned(
         recipe, master, cut["start_ms"], cut["duration_ms"], slot_id,
     ):
