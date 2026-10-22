@@ -9,6 +9,7 @@ import shutil
 import subprocess
 
 import pytest
+from services.clip_variation import GRADE_BANDS
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -1832,6 +1833,9 @@ async def test_a_clip_varying_page_cuts_each_window_at_its_own_speed_and_records
         output = Path(job["artifactRoot"]) / clip["path"]
         assert _probe_duration(output) == pytest.approx(cut["durationMs"] / 1000 / clip["clipSpeed"], abs=0.2)
         looks.append((visual["clipSpeed"], tuple(sorted(visual["clipCrop"].items()))))
+        # The grade moved inside its bands, recorded in the receipt.
+        for name, band in GRADE_BANDS.items():
+            assert abs(visual["filters"][name] - (1.0 if name != "warmth" else 0.0)) <= band
     assert looks[0] != looks[1]
 
 
