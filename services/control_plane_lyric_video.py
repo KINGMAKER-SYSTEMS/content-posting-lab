@@ -1,22 +1,30 @@
-"""Closed Burnt lyric-video selection: no caller-authored cue arrays or text."""
+"""Closed scoped lyric-video selection: no caller-authored cue arrays or text.
+
+Page identity (page id, account, sound, notion page) is derived from the page's
+bound lyric timing set, never from compiled-in constants. A page is registered
+iff its timing set exists and matches the request's page/account/notion identity.
+"""
 from __future__ import annotations
 import hashlib
 from pathlib import Path
-from services.lyric_timing import lyric_timing_catalog, resolve_lyric_timing
+from services.lyric_timing import (
+    lyric_timing_catalog,
+    resolve_lyric_timing,
+    _timing_set_for_page,
+)
 
-PAGE_ID = "acct:burnt-mill-rd"
-ACCOUNT = "burnt.mill.rd"
-SOUND_ID = "7611482162773035025"
-FORMAT_ID = "lyric-video"
-NOTION_ID = "3451465b-b829-80a8-b9d1-fb7e34b98ff5"
 EXECUTOR_PATH = Path(__file__).resolve().parents[1] / "recipes/executors/syzygy-slideshow-lyric-video.v1.json"
 
 
 def lyric_ingredient(*, page_id: str, master_pages: dict | None) -> dict:
     account = master_pages.get("handle") if isinstance(master_pages, dict) else None
-    options = (lyric_timing_catalog(page_id=page_id, account=account)
-               if isinstance(master_pages, dict) and master_pages.get("notionPageId") == NOTION_ID
-               and master_pages.get("automationMode") == "Automation" and master_pages.get("archived") is False else [])
+    options = lyric_timing_catalog(page_id=page_id, account=account) if isinstance(master_pages, dict) else []
+    if (not isinstance(master_pages, dict)
+            or not options
+            or master_pages.get("notionPageId") != options[0]["notionPageId"]
+            or master_pages.get("automationMode") != "Automation"
+            or master_pages.get("archived") is not False):
+        options = []
     return {"ingredientId": "lyric-timing", "kind": "timed_lyrics", "required": True,
             "status": "bound" if options else "missing", "binding": options[0] if options else None,
             "options": options, "selectionControl": "lyricTimingSetId"}
@@ -32,7 +40,7 @@ def validate_lyric_recipe(spec: dict) -> dict:
     master = spec.get("masterPages", {})
     production = spec.get("production", {})
     controls = production.get("controls", {}) if isinstance(production, dict) else None
-    if (not isinstance(master, dict) or master.get("notionPageId") != NOTION_ID
+    if (not isinstance(master, dict)
             or master.get("automationMode") != "Automation" or master.get("archived") is not False
             or not isinstance(controls, dict) or set(controls) != {"lyricTimingSetId"}):
         raise ValueError("lyric video requires exactly its advertised timing selector")
@@ -41,10 +49,12 @@ def validate_lyric_recipe(spec: dict) -> dict:
     if normalized_visual_treatment(spec.get("renderTreatment")) != expected_visual:
         raise ValueError("lyric video requires its approved once-graded 20-second source treatment")
     options = lyric_timing_catalog(page_id=master.get("pageId"), account=master.get("handle"))
-    if len(options) != 1 or controls["lyricTimingSetId"] != options[0]["id"]:
+    if (len(options) != 1
+            or controls["lyricTimingSetId"] != options[0]["id"]
+            or master.get("notionPageId") != options[0]["notionPageId"]):
         raise ValueError("lyric timing selection is not available for this page")
     timing = resolve_lyric_timing(controls["lyricTimingSetId"], page_id=master["pageId"],
-                                 account=master["handle"], sound_id=SOUND_ID, expected_sha256=options[0]["sha256"])
+                                 account=master["handle"], sound_id=options[0]["soundId"], expected_sha256=options[0]["sha256"])
     if hashlib.sha256(EXECUTOR_PATH.read_bytes()).hexdigest() != timing["sourceProgramSha256"]:
         raise ValueError("lyric source program revision differs from timing authority")
     return timing
@@ -54,11 +64,11 @@ def validate_lyric_wire_plan(plan: dict, page_id: str) -> None:
     """Refuse a foreign or altered video program even at the render-wire boundary."""
     import json
     from services.control_plane_slideshows import _parse_curated_video_plan, curated_plan_signature
-    options = lyric_timing_catalog(page_id=page_id, account=ACCOUNT)
-    if len(options) != 1:
+    timing_set = _timing_set_for_page(page_id)
+    if timing_set is None:
         raise ValueError("lyric video page is not registered")
-    timing = resolve_lyric_timing(options[0]["id"], page_id=page_id, account=ACCOUNT,
-                                 sound_id=SOUND_ID, expected_sha256=options[0]["sha256"])
+    timing = resolve_lyric_timing(timing_set["id"], page_id=page_id, account=timing_set["account"],
+                                 sound_id=timing_set["soundId"], expected_sha256=timing_set["sha256"])
     raw = EXECUTOR_PATH.read_bytes()
     if hashlib.sha256(raw).hexdigest() != timing["sourceProgramSha256"]:
         raise ValueError("lyric source program is stale")
@@ -90,7 +100,6 @@ def validate_managed_lyric_job(job: dict, publication: dict, recipe_spec: dict) 
             or hashlib.sha256(raw.encode()).hexdigest()!=expected.removeprefix('sha256:')
             or json.loads(raw)!=recipe_spec
             or job.get('recipeSpecHash')!=expected
-            or job.get('pageId')!=PAGE_ID or publication.get('pageId')!=PAGE_ID
             or job.get('recipeId')!='lyric-video:master' or publication.get('recipeId')!=job['recipeId']
             or job.get('engine')!='lyrics_slideshows' or publication.get('engine')!=job['engine']
             or job.get('recipeVersion')!=publication.get('recipeVersion')
@@ -98,7 +107,10 @@ def validate_managed_lyric_job(job: dict, publication: dict, recipe_spec: dict) 
             or any(not isinstance(job.get(k),str) or not job[k].strip() or len(job[k])>512
                    or any(ord(c)<32 for c in job[k]) for k in ('jobId','recipeVersion'))):
         raise ValueError('lyric managed job does not match its pinned publication')
-    return validate_lyric_recipe(recipe_spec)
+    timing = validate_lyric_recipe(recipe_spec)
+    if (job.get('pageId')!=timing['pageId'] or publication.get('pageId')!=timing['pageId']):
+        raise ValueError('lyric managed job does not match its pinned publication')
+    return timing
 
 
 def managed_lyric_binding(job: dict, publication: dict, recipe_spec: dict, source_sha256: str) -> dict:
@@ -108,7 +120,7 @@ def managed_lyric_binding(job: dict, publication: dict, recipe_spec: dict, sourc
     if not isinstance(source_sha256,str) or not re.fullmatch(r'[0-9a-f]{64}',source_sha256):
         raise ValueError('lyric source hash is missing')
     return {'schema':'content-lab.lyric-timing-binding.v1',
-            'pageId':PAGE_ID,'account':ACCOUNT,'notionPageId':NOTION_ID,
+            'pageId':timing['pageId'],'account':timing['account'],'notionPageId':timing['notionPageId'],
             'soundId':timing['soundId'],'timingSetId':timing['id'],'timingSha256':timing['sha256'],
             'manifestJson':timing['manifestJson'],
             'sourceProgramId':timing['sourceProgramId'],'sourceProgramSha256':timing['sourceProgramSha256'],

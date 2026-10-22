@@ -18,19 +18,22 @@ def test_registered_timing_matches_actual_approved_seven_phrase_anchors():
 def test_scope_and_revision_refuse_other_page_sound_or_changed_manifest(change):
     with pytest.raises(timing.LyricTimingError):resolve(**change)
 
-def test_unrelated_catalog_remains_available_when_burnt_manifest_is_missing(monkeypatch,tmp_path):
-    monkeypatch.setattr(timing,'_TIMING_PATH',tmp_path/'missing.json')
+def test_unrelated_catalog_remains_available_when_timing_directory_is_missing(monkeypatch,tmp_path):
+    monkeypatch.setattr(timing,'_TIMING_DIR',tmp_path/'missing-dir')
+    timing._reset_catalog()
     assert timing.lyric_timing_catalog(page_id='acct:culture-core-1',account='culture.core.1')==[]
     with pytest.raises(timing.LyricTimingError):resolve()
 
 @pytest.mark.parametrize('mutate',[lambda t:t['phrases'][1].update(startMs=100),lambda t:t['phrases'][-1].update(endMs=20120),lambda t:t['phrases'][0].update(startMs=True),lambda t:t.update(canonicalCaption='unrelated quote'),lambda t:t['phrases'][0].update(extra='unknown')])
 def test_structurally_invalid_approved_bytes_still_refuse(monkeypatch,tmp_path,mutate):
-    t=json.loads(timing._TIMING_PATH.read_bytes());mutate(t);raw=json.dumps(t).encode();path=tmp_path/'timing.json';path.write_bytes(raw);digest=hashlib.sha256(raw).hexdigest();monkeypatch.setattr(timing,'_TIMING_PATH',path);monkeypatch.setattr(timing,'_TIMING_SHA256',digest)
+    t=json.loads(timing._TIMING_PATH.read_bytes());mutate(t);raw=json.dumps(t).encode();path=tmp_path/'timing.v1.json';path.write_bytes(raw);monkeypatch.setattr(timing,'_TIMING_DIR',tmp_path)
+    timing._reset_catalog()
     with pytest.raises(timing.LyricTimingError):resolve()
 
 def test_same_length_content_tamper_fails_hash_before_loading(monkeypatch,tmp_path):
-    raw=timing._TIMING_PATH.read_bytes().replace(b'Love me now',b'Hate me now');p=tmp_path/'tampered.json';p.write_bytes(raw);monkeypatch.setattr(timing,'_TIMING_PATH',p)
-    with pytest.raises(timing.LyricTimingError,match='bytes differ'):resolve()
+    raw=timing._TIMING_PATH.read_bytes().replace(b'Love me now',b'Hate me now');p=tmp_path/'tampered.v1.json';p.write_bytes(raw);monkeypatch.setattr(timing,'_TIMING_DIR',tmp_path)
+    timing._reset_catalog()
+    with pytest.raises(timing.LyricTimingError,match='stale or invalid'):resolve()
 
 
 def test_manifest_export_preserves_exact_registered_utf8_bytes_not_catalog_payload():

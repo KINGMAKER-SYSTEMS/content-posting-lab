@@ -448,8 +448,13 @@ def slideshow_library_address(
             if subject != curated["subject"]:
                 return None
             lane = curated["lane"]
-    if profile.format_slug == LYRIC_VIDEO_FORMAT_SLUG and (master_pages.get("pageId"), master_pages.get("handle")) != ("acct:burnt-mill-rd", "burnt.mill.rd"):
-        return None
+    if profile.format_slug == LYRIC_VIDEO_FORMAT_SLUG:
+        from services.lyric_timing import lyric_timing_catalog
+        if (not isinstance(curated, dict)
+                or not lyric_timing_catalog(
+                    page_id=master_pages.get("pageId"),
+                    account=master_pages.get("handle"))):
+            return None
     library_id = f"syzygy:{lane}:{subject}"
     return library_id, lane, subject
 
