@@ -18,7 +18,7 @@ import os
 from pathlib import Path
 import re
 from typing import Any
-from urllib.parse import quote, urljoin, urlsplit
+from urllib.parse import parse_qsl, quote, unquote, urljoin, urlsplit
 
 import httpx
 
@@ -1043,6 +1043,42 @@ async def poll_syzygy_render(job_id: str) -> str:
     raise SyzygyUnavailable("Syzygy render timed out")
 
 
+_REDIRECT_STATUSES = frozenset({302, 303, 307, 308})
+
+
+def _signed_redirect_target(base: str, name: str, location: str | None) -> str:
+    """Validate a Syzygy render-file redirect mint and return the URL to GET.
+
+    The signed URL is a bearer credential: the API key must never travel on it.
+    Only a same-origin redirect back to the identical ``/render-file/<name>``
+    path carrying exactly one non-empty ``token`` query value is accepted;
+    everything else (cross-origin, renamed file, extra query keys, a fragment, a
+    missing/blank token) fails closed so the key is never leaked to an arbitrary
+    target. Error messages never include the token or the raw Location.
+    """
+    if not location:
+        raise SyzygyError("Syzygy artifact redirect rejected: missing Location header")
+    target = urljoin(base + "/", location)
+    parsed = urlsplit(target)
+    base_parsed = urlsplit(base)
+    if parsed.scheme != base_parsed.scheme or parsed.netloc != base_parsed.netloc:
+        raise SyzygyError("Syzygy artifact redirect rejected: cross-origin target")
+    if parsed.fragment:
+        raise SyzygyError("Syzygy artifact redirect rejected: fragment in target")
+    if unquote(parsed.path) != f"/render-file/{name}":
+        raise SyzygyError("Syzygy artifact redirect rejected: target is a different render file")
+    query = parse_qsl(parsed.query, keep_blank_values=True)
+    if len(query) != 1 or query[0][0] != "token" or not query[0][1]:
+        raise SyzygyError("Syzygy artifact redirect rejected: invalid token query")
+    return target
+
+
+async def _write_response_bytes(response: httpx.Response, destination: Path) -> None:
+    with destination.open("xb") as handle:
+        async for chunk in response.aiter_bytes():
+            handle.write(chunk)
+
+
 async def download_syzygy_artifact(play_url: str, destination: Path) -> None:
     runtime = _runtime()
     if runtime is None:
@@ -1051,17 +1087,38 @@ async def download_syzygy_artifact(play_url: str, destination: Path) -> None:
     absolute = urljoin(base + "/", play_url.lstrip("/"))
     if urlsplit(absolute).netloc != urlsplit(base).netloc:
         raise SyzygyError("Syzygy artifact origin is invalid")
+    name = play_url.removeprefix("/render-file/")
     destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     try:
         async with httpx.AsyncClient(timeout=120.0, follow_redirects=False) as client:
             async with client.stream("GET", absolute, headers=_headers(key)) as response:
-                if response.status_code != 200:
+                if response.status_code in _REDIRECT_STATUSES:
+                    target = _signed_redirect_target(
+                        base, name, response.headers.get("location"),
+                    )
+                    # The signed URL is the credential; never send the API key.
+                    # A transport error here must not retain the token-bearing
+                    # URL as __cause__, so it is raised from None.
+                    try:
+                        async with client.stream("GET", target) as signed:
+                            if signed.status_code in _REDIRECT_STATUSES:
+                                raise SyzygyError(
+                                    "Syzygy artifact redirect rejected: signed URL redirected again"
+                                )
+                            if signed.status_code != 200:
+                                raise SyzygyError(
+                                    f"Syzygy artifact returned {signed.status_code}"
+                                )
+                            await _write_response_bytes(signed, destination)
+                    except httpx.HTTPError:
+                        destination.unlink(missing_ok=True)
+                        raise SyzygyUnavailable("Syzygy artifact download failed") from None
+                elif response.status_code == 200:
+                    await _write_response_bytes(response, destination)
+                else:
                     raise SyzygyError(
                         f"Syzygy artifact returned {response.status_code}"
                     )
-                with destination.open("xb") as handle:
-                    async for chunk in response.aiter_bytes():
-                        handle.write(chunk)
     except httpx.HTTPError as error:
         destination.unlink(missing_ok=True)
         raise SyzygyUnavailable("Syzygy artifact download failed") from error
