@@ -1861,3 +1861,22 @@ def test_the_latest_page_cut_seeds_the_next_jobs_look(monkeypatch):
     monkeypatch.setattr(cp, "_load_jobs", lambda: {"jobs": jobs})
     assert cp._latest_page_cut_look(PAGE_ID, "running") == (0.9, {"zoom": 1.6, "focusX": 0.48, "focusY": 0.52})
     assert cp._latest_page_cut_look("acct:none", "running") is None
+
+
+@pytest.mark.asyncio
+async def test_a_varied_job_whose_history_read_fails_ends_failed_not_running(lab, monkeypatch):
+    client, tmp_path, _ = lab
+    monkeypatch.setattr(cp, "varies_clips", lambda page_id: page_id == PAGE_ID)
+    response = client.post(
+        "/api/control-plane/v1/jobs", json=job_body(1),
+        headers=headers("source-job-varied-history-fails"),
+    )
+
+    def broken(*_args, **_kwargs):
+        raise OSError("job store unreadable")
+
+    monkeypatch.setattr(cp.clip_similarity, "recent_fingerprints", broken)
+    await cp._run_dossier_source(response.json()["jobId"])
+    job = cp._load_jobs()["jobs"][response.json()["jobId"]]
+    assert job["status"] == "failed"
+    assert "job store unreadable" in job["error"]

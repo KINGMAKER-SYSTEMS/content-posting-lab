@@ -16,8 +16,8 @@ so the page's look is kept), written into the receipt's filters. The Worker
 admits a jittered grade only inside GRADE_BANDS (its domain/clipVariation.js
 holds the same bands).
 
-Reverse is not offered: the receipt has no field for it, so no post could
-attest it, and ffmpeg's reverse filter buffers every decoded frame of the cut.
+Mirror, slow camera moves and reverse are added after the cut by
+services/clip_transforms.py and recorded on the clip manifest.
 """
 from __future__ import annotations
 
