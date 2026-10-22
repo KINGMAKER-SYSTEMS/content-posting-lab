@@ -1097,16 +1097,22 @@ async def download_syzygy_artifact(play_url: str, destination: Path) -> None:
                         base, name, response.headers.get("location"),
                     )
                     # The signed URL is the credential; never send the API key.
-                    async with client.stream("GET", target) as signed:
-                        if signed.status_code in _REDIRECT_STATUSES:
-                            raise SyzygyError(
-                                "Syzygy artifact redirect rejected: signed URL redirected again"
-                            )
-                        if signed.status_code != 200:
-                            raise SyzygyError(
-                                f"Syzygy artifact returned {signed.status_code}"
-                            )
-                        await _write_response_bytes(signed, destination)
+                    # A transport error here must not retain the token-bearing
+                    # URL as __cause__, so it is raised from None.
+                    try:
+                        async with client.stream("GET", target) as signed:
+                            if signed.status_code in _REDIRECT_STATUSES:
+                                raise SyzygyError(
+                                    "Syzygy artifact redirect rejected: signed URL redirected again"
+                                )
+                            if signed.status_code != 200:
+                                raise SyzygyError(
+                                    f"Syzygy artifact returned {signed.status_code}"
+                                )
+                            await _write_response_bytes(signed, destination)
+                    except httpx.HTTPError:
+                        destination.unlink(missing_ok=True)
+                        raise SyzygyUnavailable("Syzygy artifact download failed") from None
                 elif response.status_code == 200:
                     await _write_response_bytes(response, destination)
                 else:

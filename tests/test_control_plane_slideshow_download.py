@@ -9,9 +9,14 @@ other target shape.
 
 import httpx
 import pytest
+import traceback
 
 import services.control_plane_slideshows as slideshows
-from services.control_plane_slideshows import SyzygyError, download_syzygy_artifact
+from services.control_plane_slideshows import (
+    SyzygyError,
+    SyzygyUnavailable,
+    download_syzygy_artifact,
+)
 
 
 BASE = "https://syzygy.example"
@@ -158,3 +163,24 @@ async def test_download_error_never_leaks_token(
     with pytest.raises(SyzygyError) as exc:
         await download_syzygy_artifact("/render-file/out.mp4", tmp_path / "r.mp4")
     assert SIGNED_TOKEN not in str(exc.value)
+
+
+@pytest.mark.asyncio
+async def test_download_signed_transport_error_drops_cause_and_token(
+    runtime_env, monkeypatch, tmp_path,
+):
+    # A transport error on the SIGNED request must not retain the underlying
+    # exception (whose str() embeds the token-bearing URL) as __cause__.
+    def handler(request):
+        if request.url.query:
+            raise httpx.ConnectError(f"connect failed to {request.url}", request=request)
+        return httpx.Response(307, headers={"location": _signed_location("out%2Emp4")})
+
+    _patch_client(monkeypatch, handler)
+    with pytest.raises(SyzygyUnavailable) as exc:
+        await download_syzygy_artifact("/render-file/out.mp4", tmp_path / "r.mp4")
+    assert exc.value.__cause__ is None
+    chain = "".join(
+        traceback.format_exception(type(exc.value), exc.value, exc.value.__traceback__)
+    )
+    assert SIGNED_TOKEN not in chain
