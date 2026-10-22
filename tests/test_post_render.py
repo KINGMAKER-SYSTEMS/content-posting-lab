@@ -26,10 +26,12 @@ TREATMENT = {"stylePreset": "treated-source-test", "filters": {"brightness": 0.8
 _NO_FRAME = object()
 
 
-def request(source_sha="a" * 64, frame=_NO_FRAME, frame_fit=_NO_FRAME, **changes):
+def request(source_sha="a" * 64, frame=_NO_FRAME, frame_fit=_NO_FRAME, caption_delivery=_NO_FRAME, **changes):
     slot_treatment = TREATMENT if frame is _NO_FRAME else {**TREATMENT, "frame": frame}
     if frame_fit is not _NO_FRAME:
         slot_treatment = {**slot_treatment, "frameFit": frame_fit}
+    if caption_delivery is not _NO_FRAME:
+        slot_treatment = {**slot_treatment, "captionDelivery": caption_delivery}
     treatment = json.dumps(slot_treatment, sort_keys=True, separators=(",", ":"))
     visual_json = json.dumps(normalized_visual_treatment(TREATMENT), sort_keys=True, separators=(",", ":"))
     payload = {"schema": render.REQUEST_SCHEMA, "slot_id": "slot:page-a:20260908T120000Z",
@@ -536,3 +538,94 @@ def test_frame_fit_is_accepted_with_a_frame_and_keeps_sources_reusable(frame, fi
 def test_frame_fit_without_a_frame_or_unknown_is_rejected_at_the_request_boundary(frame, fit):
     with pytest.raises(ValidationError):
         request(frame=frame, frame_fit=fit)
+
+
+# --- captionDelivery: "in_app" clean render ---------------------------------
+# The caption stays sha-bound but is not drawn, so TikTok's own text can sit on
+# the video in the app. Absent key means today's burned behaviour (byte-identical).
+_BASE_TREATMENT_SHA = "22eeef40060ec7f79b03a4dd4acea7fcdb2c567735bd03346317f3039d526c93"
+
+
+def test_absent_caption_delivery_keeps_the_exact_base_treatment_hash():
+    # The treatment JSON without captionDelivery is byte-identical to BASE;
+    # adding the optional key must not change its serialization or hash.
+    raw = json.dumps(TREATMENT, sort_keys=True, separators=(",", ":"))
+    assert render.sha256(raw.encode()) == _BASE_TREATMENT_SHA
+    assert request().treatment_sha256 == _BASE_TREATMENT_SHA
+    assert render._caption_delivery(request()) is None
+
+
+def test_in_app_graph_omits_the_overlay_input():
+    exact = render.MediaProbe(1080, 1920, 1000, "h264", "yuv420p", "1:1", 0)
+    assert render._video_graph(exact, None, in_app=True) == "[0:v:0]format=yuv420p[v]"
+    assert render._video_graph(exact, 608, in_app=True) == (
+        "[0:v:0]crop=1080:608:0:656,pad=1080:1920:0:656:black[delivery];[delivery]format=yuv420p[v]")
+    # The burned graph is unchanged by the new optional path.
+    assert render._video_graph(exact, None) == "[0:v:0][1:v:0]overlay=0:0:format=auto[v]"
+
+
+@pytest.mark.parametrize("value", [True, None, "", "burned", "IN_APP", "in-app", ["in_app"], {"v": "in_app"}])
+def test_unknown_caption_delivery_is_refused_before_any_io(tmp_path, value):
+    output = tmp_path / "render"
+    with pytest.raises(render.PostRenderError) as error:
+        render.render_post(tmp_path / "missing", output, request(caption_delivery=value), clock_ms=lambda: NOW)
+    assert error.value.code == "caption_delivery_invalid"
+    assert not output.exists()
+
+
+def test_in_app_with_inverted_is_refused_before_any_io(tmp_path):
+    treatment = {**TREATMENT, "captionStyle": {**STYLE, "inverted": True}, "captionDelivery": "in_app"}
+    raw = json.dumps(treatment, sort_keys=True, separators=(",", ":"))
+    req = request(render_treatment_json=raw, treatment_sha256=render.sha256(raw.encode()))
+    output = tmp_path / "render"
+    with pytest.raises(render.PostRenderError) as error:
+        render.render_post(tmp_path / "missing", output, req, clock_ms=lambda: NOW)
+    assert error.value.code == "in_app_inverted_unsupported"
+    assert not output.exists()
+
+
+def test_in_app_renders_a_clean_clip_with_no_caption_pixels(actual_source, tmp_path):
+    sha = render.sha256(actual_source.read_bytes())
+    burned = render.render_post(actual_source, tmp_path / "burned", request(sha), clock_ms=lambda: NOW)
+    in_app = render.render_post(actual_source, tmp_path / "in_app",
+                                request(sha, caption_delivery="in_app"), clock_ms=lambda: NOW)
+    burned_receipt = json.loads(burned.receipt_json)
+    in_app_receipt = json.loads(in_app.receipt_json)
+    # The delivery mode is bound only on the in_app receipt.
+    assert in_app_receipt["caption_delivery"] == "in_app"
+    assert "caption_delivery" not in burned_receipt
+    assert in_app_receipt["caption_sha256"] == burned_receipt["caption_sha256"] == render.sha256(b"already treated")
+    # No caption-render evidence is produced for in_app.
+    assert not (tmp_path / "in_app" / "caption-render.json").exists()
+    assert not (tmp_path / "in_app" / "overlay.png").exists()
+    assert (tmp_path / "burned" / "caption-render.json").exists()
+    # The fresh encode still holds: final differs from source.
+    assert in_app_receipt["final_sha256"] != sha
+    assert (in_app_receipt["width"], in_app_receipt["height"]) == (1080, 1920)
+
+    def caption_region(qa_path):
+        with Image.open(qa_path) as frame:
+            frame.load()
+            return frame.convert("RGB").crop((250, 900, 830, 1030))
+
+    # The burned clip carries caption pixels in that region; the clean clip does not.
+    burned_region, in_app_region = caption_region(burned.qa_frame_path), caption_region(in_app.qa_frame_path)
+    assert max(ImageStat.Stat(ImageChops.difference(burned_region, in_app_region)).mean) > 6
+
+    # The in_app caption region equals the clean source frame within tolerance,
+    # and the burned one does not (its caption text diverges by a wide margin).
+    reference = tmp_path / "reference.png"
+    reference_filter = "scale=1080:1920:flags=lanczos,setsar=1"
+    if in_app.source_probe.width == 704:
+        reference_filter = ("scale=1080:1920:force_original_aspect_ratio=increase:flags=lanczos,"
+                            "crop=1080:1920,setsar=1")
+    subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-ss", f"{in_app.qa_at_ms / 1000:.3f}",
+                    "-i", str(actual_source), "-vf", reference_filter,
+                    "-frames:v", "1", "-update", "1", str(reference)],
+                   check=True, timeout=20, capture_output=True)
+    with Image.open(reference) as before:
+        source_region = before.convert("RGB").crop((250, 900, 830, 1030))
+        in_app_delta = max(ImageStat.Stat(ImageChops.difference(source_region, in_app_region)).mean)
+        burned_delta = max(ImageStat.Stat(ImageChops.difference(source_region, burned_region)).mean)
+    assert in_app_delta < 12
+    assert burned_delta > 15
