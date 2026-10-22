@@ -209,3 +209,29 @@ def test_a_declared_backup_grade_is_refused_on_a_page_that_does_not_vary():
         parse_source_dna_manifest(raw)
     value["masters"][1].pop("gradeOverride")
     parse_source_dna_manifest((json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n").encode())
+
+
+# The Worker's BACKUP_MASTER_GRADES (control-plane-worker src/domain/clipVariation.js)
+# names these same declarations; both sides pin this exact table.
+BTL_DECLARED_BACKUPS = {
+    "ddbf980600f44e250dc3a076b0f9f3afa1f334520a2c9abb0221ba3d24ae6a63": {"brightness": 0.65},  # IMG_0766
+    "b716e9d6986d300a407be3c0080abc1fc1cc943421c2d6e909d761d88f13f26b": {"brightness": 0.65},  # IMG_4566
+    "34b8726404321c9a8078d37a0e00afeabe11255082becce06d76ac51171b797b": {"brightness": 0.65},  # IMG_4569
+    "dddada2a63cfe26a0f9d053cd26e67b891f4dd92103648e9b72525434a2a36a8": {"brightness": 0.65},  # IMG_6775 0-1121
+    "8526541b2588e91cacd2e500a566b22eed4ba90dc6062efed05d85673788996c": {"brightness": 0.65},  # IMG_6775 1121-2239
+    "be30bd5fd73edf765c00256b7d8df09133890736c96f1910e22301b2972b639d": {"brightness": 0.65},  # IMG_6776 0-761
+    "f20c57eb6486147e162ea46fbcd3f2f42286980f73b61ab5c20aea6ee57a08ad": {"brightness": 0.65},  # IMG_6776 761-1516
+}
+
+
+def test_btl_backups_are_exactly_the_declared_night_footage():
+    library = parse_source_dna_manifest(_BTL_FILE.read_bytes())
+    backups = {master.sha256: master.grade_override for master in library.masters if master.role == "backup"}
+    assert backups == BTL_DECLARED_BACKUPS
+    primary = [master for master in library.masters if master.role == "primary"]
+    assert [master.source_id for master in primary] == ["drive-1divlf1qpl1c3gfl8bmf5nbr5-0-800"]
+    # A split file keeps one origin: its parts share an identity and continue its timeline.
+    parts = sorted((master for master in library.masters if master.filename.startswith("IMG_6775")),
+                   key=lambda master: master.source_offset_ms)
+    assert parts[0].provenance["sourceUrl"] == parts[1].provenance["sourceUrl"]
+    assert parts[1].source_offset_ms >= parts[0].source_offset_ms + parts[0].duration_ms
