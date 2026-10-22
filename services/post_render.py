@@ -159,7 +159,10 @@ def _reject_nonfinite(_value: str):
 SLOT_TREATMENT_FIELDS = frozenset({"stylePreset", "filters", "captionStyle", "clipSpeed", "clipCrop"})
 # The page frame and its fit are not source treatment. Absent frame means
 # full-bleed 9:16; frameFit is legal only with a non-9:16 frame.
-SLOT_TREATMENT_OPTIONAL_FIELDS = frozenset({"frame", "frameFit"})
+# captionDelivery: "in_app" asks for a clean clip (the caption is bound but not
+# drawn) so TikTok's own text can sit on the video in the app.
+SLOT_TREATMENT_OPTIONAL_FIELDS = frozenset({"frame", "frameFit", "captionDelivery"})
+CAPTION_DELIVERY_IN_APP = "in_app"
 
 
 def _slot_treatment(request: PostRenderRequest) -> dict:
@@ -174,6 +177,22 @@ def _slot_treatment(request: PostRenderRequest) -> dict:
 
 def _frame_band_height(request: PostRenderRequest) -> int | None:
     return frame_band_height(_slot_treatment(request))
+
+
+def _caption_delivery(request: PostRenderRequest) -> str | None:
+    """Return "in_app" when the slot opts into app-side text, else None (burned).
+
+    Absent means today's burned behaviour. Only the exact string "in_app" is
+    accepted; any other value is a closed refusal so the Worker can fall back
+    to a burned render.
+    """
+    treatment = _slot_treatment(request)
+    if "captionDelivery" not in treatment:
+        return None
+    value = treatment["captionDelivery"]
+    if not isinstance(value, str) or value != CAPTION_DELIVERY_IN_APP:
+        raise PostRenderError("caption_delivery_invalid", "captionDelivery must be 'in_app' when present")
+    return value
 
 
 def _caption_request(request: PostRenderRequest) -> CaptionRenderRequest:
@@ -288,7 +307,7 @@ def _file_hash(path: Path, limit: int) -> tuple[str, int]:
     return digest.hexdigest(), total
 
 
-def _video_graph(source_probe: MediaProbe, frame_height: int | None = None) -> str:
+def _video_graph(source_probe: MediaProbe, frame_height: int | None = None, *, in_app: bool = False) -> str:
     chain = []
     if (source_probe.width, source_probe.height) != (1080, 1920):
         if abs(source_probe.width * 16 - source_probe.height * 9) <= 32:
@@ -307,18 +326,30 @@ def _video_graph(source_probe: MediaProbe, frame_height: int | None = None) -> s
         # The delivery frame is exactly 1080x1920 here. A page frame keeps its
         # centred band and letterboxes it in plain black on the same canvas.
         chain.append(letterbox_filter(frame_height))
+    if in_app:
+        # No caption overlay input: the clean clip is delivery-only. The
+        # encoder's -pix_fmt yuv420p still turns the chain into the delivery
+        # pixel format, so a bare source still needs an explicit [v] label.
+        if not chain:
+            return "[0:v:0]format=yuv420p[v]"
+        return f"[0:v:0]{','.join(chain)}[delivery];[delivery]format=yuv420p[v]"
     if not chain:
         return "[0:v:0][1:v:0]overlay=0:0:format=auto[v]"
     return f"[0:v:0]{','.join(chain)}[delivery];[delivery][1:v:0]overlay=0:0:format=auto[v]"
 
 
-def _encode_final(source: Path, overlay: Path, final: Path, source_probe: MediaProbe,
-                  tools: RenderTools, frame_height: int | None = None) -> MediaProbe:
-    graph = _video_graph(source_probe, frame_height)
+def _encode_final(source: Path, overlay: Path | None, final: Path, source_probe: MediaProbe,
+                  tools: RenderTools, frame_height: int | None = None, *, in_app: bool = False) -> MediaProbe:
+    graph = _video_graph(source_probe, frame_height, in_app=in_app)
     base = [tools.ffmpeg, "-nostdin", "-v", "error", "-xerror", "-protocol_whitelist", "file,pipe",
-            "-noautorotate", "-f", "mov", "-i", str(source),
-            "-protocol_whitelist", "file,pipe", "-i", str(overlay), "-filter_complex", graph,
-            "-map", "[v]", "-map", "0:a?", "-map_metadata", "-1", "-map_chapters", "-1"]
+            "-noautorotate", "-f", "mov", "-i", str(source)]
+    if in_app:
+        # The clean graph has no caption overlay input; the source's own audio
+        # (input 0) is still mapped through.
+        base += ["-filter_complex", graph, "-map", "[v]", "-map", "0:a?", "-map_metadata", "-1", "-map_chapters", "-1"]
+    else:
+        base += ["-protocol_whitelist", "file,pipe", "-i", str(overlay), "-filter_complex", graph,
+                 "-map", "[v]", "-map", "0:a?", "-map_metadata", "-1", "-map_chapters", "-1"]
     for attempt in range(2):
         encode = delivery_encode_args("tiktok_delivery_v1")
         if attempt:
@@ -368,6 +399,9 @@ def render_post(source_path: Path, output_directory: Path, request: PostRenderRe
         raise PostRenderError("regeneration_required", "source treatment provenance is unknown or differs from the requested treatment")
     if request.created_at_ms > clock_ms():
         raise PostRenderError("request_future_dated", "render request is future-dated")
+    in_app = _caption_delivery(request) == CAPTION_DELIVERY_IN_APP
+    if in_app and _caption_request(request).style.inverted:
+        raise PostRenderError("in_app_inverted_unsupported", "in_app caption delivery cannot be inverted")
     source_path, output_directory = Path(source_path).absolute(), Path(output_directory).absolute()
     output_directory.mkdir(mode=0o700, parents=False, exist_ok=False)
     try:
@@ -386,24 +420,30 @@ def render_post(source_path: Path, output_directory: Path, request: PostRenderRe
             raise PostRenderError("regeneration_required", "source must be upright square-pixel near-9:16 video at least 1080 pixels high")
         caption_request = _caption_request(request)
         band_height = _frame_band_height(request)
-        # A caption shrinks only if it would leave the visible picture: the
-        # framed page's band, or the whole canvas when full-screen (owner
-        # rule, 2026-10-04). The gate checks the same area.
-        band_rows = frame_band_rows(band_height) if band_height is not None else None
-        overlay = render_caption_overlay(caption_request, font_dir=font_dir or Path(__file__).parents[1] / "fonts",
-                                         fit_rows=band_rows)
-        overlay_bytes = base64.b64decode(overlay.overlay.base64, validate=True)
-        if (not 0 < len(overlay_bytes) <= MAX_OVERLAY_BYTES
-                or sha256(overlay_bytes) != overlay.overlay.sha256.removeprefix("sha256:")
-                or overlay.caption_sha256 != "sha256:" + request.caption_sha256):
-            raise PostRenderError("caption_evidence_mismatch", "typed caption renderer evidence does not match requested bytes")
-        if overlay_geometry_reasons(overlay.overlay.base64, caption_request.style.model_dump(exclude_none=True),
-                                    band_rows=band_rows):
-            raise PostRenderError("caption_geometry_invalid", "typed caption overlay failed the existing geometry check")
-        overlay_path = output_directory / "overlay.png"
-        overlay_path.write_bytes(overlay_bytes)
+        if in_app:
+            # The caption stays bound (caption_sha256 is required and validated
+            # on the request) but is not drawn: the ffmpeg graph has no [1:v]
+            # overlay input and no caption-render evidence is produced.
+            overlay_path = None
+        else:
+            # A caption shrinks only if it would leave the visible picture: the
+            # framed page's band, or the whole canvas when full-screen (owner
+            # rule, 2026-10-04). The gate checks the same area.
+            band_rows = frame_band_rows(band_height) if band_height is not None else None
+            overlay = render_caption_overlay(caption_request, font_dir=font_dir or Path(__file__).parents[1] / "fonts",
+                                             fit_rows=band_rows)
+            overlay_bytes = base64.b64decode(overlay.overlay.base64, validate=True)
+            if (not 0 < len(overlay_bytes) <= MAX_OVERLAY_BYTES
+                    or sha256(overlay_bytes) != overlay.overlay.sha256.removeprefix("sha256:")
+                    or overlay.caption_sha256 != "sha256:" + request.caption_sha256):
+                raise PostRenderError("caption_evidence_mismatch", "typed caption renderer evidence does not match requested bytes")
+            if overlay_geometry_reasons(overlay.overlay.base64, caption_request.style.model_dump(exclude_none=True),
+                                        band_rows=band_rows):
+                raise PostRenderError("caption_geometry_invalid", "typed caption overlay failed the existing geometry check")
+            overlay_path = output_directory / "overlay.png"
+            overlay_path.write_bytes(overlay_bytes)
         final_path = output_directory / "final.mp4"
-        final_probe = _encode_final(source, overlay_path, final_path, source_probe, tools, band_height)
+        final_probe = _encode_final(source, overlay_path, final_path, source_probe, tools, band_height, in_app=in_app)
         if (final_probe.width, final_probe.height, final_probe.video_codec, final_probe.pixel_format,
             final_probe.sample_aspect_ratio, final_probe.rotation) != (1080, 1920, "h264", "yuv420p", "1:1", 0):
             raise PostRenderError("final_probe_mismatch", "encoded final media facts do not match delivery contract")
@@ -438,10 +478,13 @@ def render_post(source_path: Path, output_directory: Path, request: PostRenderRe
             "final_object_key": f"posting/final/{final_sha}.mp4", "mime_type": "video/mp4",
             "width": final_probe.width, "height": final_probe.height, "duration_ms": final_probe.duration_ms,
             "qa_frame_sha256": qa_sha, "completed_at_ms": completed}
+        if in_app:
+            receipt["caption_delivery"] = "in_app"
         receipt_json = json.dumps(receipt, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
         receipt_path = output_directory / "receipt.json"
         receipt_path.write_bytes(receipt_json)
-        (output_directory / "caption-render.json").write_text(overlay.model_dump_json(by_alias=True))
+        if not in_app:
+            (output_directory / "caption-render.json").write_text(overlay.model_dump_json(by_alias=True))
         (output_directory / "request.json").write_text(request.model_dump_json(by_alias=True))
         (output_directory / "decode.json").write_text(json.dumps({
             "source_probe": source_probe.__dict__, "final_probe": final_probe.__dict__,
