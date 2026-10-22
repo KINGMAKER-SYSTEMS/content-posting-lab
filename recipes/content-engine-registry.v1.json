@@ -133,6 +133,18 @@
       "formatContractVersion": "sha256:31cbad392107972949f3977383427a344808f653e9022d6284d08d307bec9772",
       "maxQuantity": 10
     },
+    "meme": {
+      "contentNiche": "meme",
+      "contentEngine": "sourced_video",
+      "materialSource": "source_library",
+      "assetType": "video/mp4",
+      "executionStatus": "commissioned",
+      "executorKind": "source_dna_recut",
+      "executorId": "source-dna-recut",
+      "executorVersion": "sha256:2d0dd20fad4302f799272e7d5e1ba7de1ecb8b9a85646f68cf9720ac14569171",
+      "formatContractVersion": "sha256:f3ab4ad33505fe28bf4535b88ae84763975309fedab524a97ec8b84ad4f44e66",
+      "maxQuantity": 10
+    },
     "silhouette-truck": {
       "contentNiche": "silhouette",
       "contentEngine": "ai_video",
