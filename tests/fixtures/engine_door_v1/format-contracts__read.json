@@ -1,0 +1,1570 @@
+{
+  "contractsRegistryVersion": "sha256:870544ac0e2b8170e34feccc525c39ca9bfa2cb9afc728631ee3382c38c7810c",
+  "engineRegistryVersion": "sha256:16a3958dade262a625e56dd164aa01ed1c4c9037fc5f44cd365e546959a50b2e",
+  "formats": [
+    {
+      "assetType": "video/mp4",
+      "contentEngine": "ai_video",
+      "contentNiche": "BOAT",
+      "creativeAuthority": {
+        "id": "boat",
+        "kind": "prompt_family",
+        "version": "sha256:8183a0d7c3b5f773a553808a8fdb1b4548ace6f1628e9e196a9f037d4b262a4a"
+      },
+      "definitionGaps": [],
+      "definitionStatus": "complete",
+      "dimensions": {
+        "duration": {
+          "authority": "promptCatalog.providers.hailuo.base_input",
+          "rule": "Six-second MiniMax/Hailuo masters.",
+          "status": "defined"
+        },
+        "lighting": {
+          "authority": "promptCatalog.families.boat.slots.scene",
+          "rule": "Original night and dusk lighting from the existing boat bucket prompts.",
+          "status": "defined"
+        },
+        "motion": {
+          "authority": "promptCatalog.families.boat.template",
+          "rule": "Forward travel, natural wake and gentle handheld movement.",
+          "status": "defined"
+        },
+        "negativeRules": {
+          "authority": "promptCatalog.families.boat.quality_guards",
+          "rule": "No readable lettering, logos or synthetic camera orbits.",
+          "status": "defined"
+        },
+        "referenceExamples": {
+          "authority": "promptCatalog.families.boat.note",
+          "rule": "Operator-selected varied Minimax boat inventory; no fixed boat-image anchor.",
+          "status": "defined"
+        },
+        "setting": {
+          "authority": "promptCatalog.families.boat.slots.scene",
+          "rule": "Original harbor and city settings from the existing boat bucket prompts.",
+          "status": "defined"
+        },
+        "shotGrammar": {
+          "authority": "promptCatalog.families.boat.template",
+          "rule": "Onboard first-person phone footage; each landscape master supplies the existing five-way dual-plus-triptych vertical crops.",
+          "status": "defined"
+        },
+        "subject": {
+          "authority": "promptCatalog.families.boat.slots.scene",
+          "rule": "Varied onboard speedboat scenes from the existing operator-selected Minimax bucket prompts.",
+          "status": "defined"
+        },
+        "textPolicy": {
+          "authority": "promptCatalog.families.boat.quality_guards",
+          "rule": "No lettering anywhere in the generated frame.",
+          "status": "defined"
+        }
+      },
+      "distribution": {
+        "captions": "page_binding_required",
+        "sounds": "page_binding_required"
+      },
+      "executionStatus": "commissioned",
+      "executor": {
+        "id": "boat",
+        "kind": "prompt_family",
+        "maxQuantity": 10,
+        "version": "sha256:8183a0d7c3b5f773a553808a8fdb1b4548ace6f1628e9e196a9f037d4b262a4a"
+      },
+      "formatContractVersion": "sha256:8c19522bbc6f69cee3c6d9fe72fa294293ba4f75399c5938648350d24783c2de",
+      "formatSlug": "boat-lake",
+      "materialSource": "generated_video",
+      "output": {
+        "aspectRatio": "9:16",
+        "audioPolicy": "campaign_sound_bound_downstream",
+        "container": "video/mp4",
+        "durationPolicy": "executor_bound"
+      },
+      "reviewAuthority": "promptCatalog.families.boat.quality_guards",
+      "reviewGates": [
+        "technical_video",
+        "ocr_text",
+        "visual_dna",
+        "duplicate_and_never_reuse"
+      ]
+    },
+    {
+      "assetType": "video/mp4",
+      "contentEngine": "ai_video",
+      "contentNiche": "Coffee",
+      "creativeAuthority": {
+        "id": "coffee",
+        "kind": "prompt_family",
+        "version": "sha256:e7c2a13a818da636bb32ea3027cd3d2be1a88fd8c9c74e87cf67206f3188ceff"
+      },
+      "definitionGaps": [],
+      "definitionStatus": "complete",
+      "dimensions": {
+        "duration": {
+          "authority": "promptCatalog.providers.wan-i2v-fast.base_input",
+          "rule": "Duration is bound by the exact commissioned WAN image-to-video provider configuration.",
+          "status": "defined"
+        },
+        "lighting": {
+          "authority": "formatContract.userConfirmed.2026-09-11",
+          "rule": "Soft even diffuse studio light; matte porcelain with no plastic or glossy sheen; photographic, not CGI.",
+          "status": "defined"
+        },
+        "motion": {
+          "authority": "promptCatalog.families.coffee.motion_prompt",
+          "rule": "Only the coffee surface moves: the tan crema drifts slowly and gently clockwise like real liquid under surface tension, fine micro-foam wisps stretch and relax, tiny rim bubbles hold their size. The white porcelain cup, gold rim, gold handle, and saucer stay perfectly fixed and still \u2014 no cup rotation, no drift, no zoom. Locked overhead camera, pure black background, photorealistic, empty closed frame \u2014 nothing pours or enters, the scene is complete and unchanged except the coffee surface, gentle seamless loop.",
+          "status": "defined"
+        },
+        "negativeRules": {
+          "authority": "formatContract.userConfirmed.2026-09-11",
+          "rule": "Reject hands, people, pours, pitchers, second cups, spoons, props, steam, cup rotation or camera motion, morphing or fabric-like crema, non-black backgrounds, text, CGI sheen, and reused bytes.",
+          "status": "defined"
+        },
+        "referenceExamples": {
+          "authority": "promptCatalog.families.coffee.base_anchor",
+          "rule": "The byte-exact CoffeeTok crema-ribbon anchor is the required visual reference; every generated clip must bind this image and pass the CoffeeTok QA gate.",
+          "status": "defined"
+        },
+        "setting": {
+          "authority": "promptCatalog.families.coffee.quality_guards",
+          "rule": "photorealistic macro food photograph, EXACTLY ONE vintage white porcelain teacup on its saucer and nothing else, the crema is REAL and appetizing \u2014 genuine fresh-coffee foam over clean dark coffee, never a muddy flat manufactured blob, never latte art, never CGI; soft even diffuse studio light, matte surface, flat pure black (#000000) background with no gradient or vignette; cup+saucer large and dead-center, saucer edges at the frame edges, equal black caption space above and below; nothing else in frame \u2014 no hands, people, steam, food, text or logos; sharp focus, vertical 9:16 portrait",
+          "status": "defined"
+        },
+        "shotGrammar": {
+          "authority": "formatContract.userConfirmed.2026-09-11",
+          "rule": "Locked overhead flat-lay; cup and saucer large and dead-center with the saucer spanning the frame width and equal black caption space above and below.",
+          "status": "defined"
+        },
+        "subject": {
+          "authority": "promptCatalog.families.coffee.fixed_subject",
+          "rule": "one vintage white porcelain teacup (fine bone china) with a thin delicate gold rim and an ornate gold handle to the right, sitting on a matching white porcelain saucer, viewed from directly overhead in a perfect flat-lay, filled with dark near-black coffee, large and positioned in the EXACT dead center of the vertical frame, the cup and saucer filling the width with the saucer edges reaching the left and right edges of the frame, equal black space above and below, on a pure solid black background \u2014 the mindfulsources CoffeeTok look",
+          "status": "defined"
+        },
+        "textPolicy": {
+          "authority": "formatContract.userConfirmed.2026-09-11",
+          "rule": "No text, letters, numbers, or logos anywhere; captions are added downstream.",
+          "status": "defined"
+        }
+      },
+      "distribution": {
+        "captions": "page_binding_required",
+        "sounds": "page_binding_required"
+      },
+      "executionStatus": "commissioned",
+      "executor": {
+        "id": "coffee",
+        "kind": "prompt_family",
+        "maxQuantity": 10,
+        "version": "sha256:e7c2a13a818da636bb32ea3027cd3d2be1a88fd8c9c74e87cf67206f3188ceff"
+      },
+      "formatContractVersion": "sha256:ef0b121a66ec33c500c992a12e20a963c6234237017443da08747fc7a6753bfc",
+      "formatSlug": "coffee-tok",
+      "materialSource": "generated_video",
+      "output": {
+        "aspectRatio": "9:16",
+        "audioPolicy": "campaign_sound_bound_downstream",
+        "container": "video/mp4",
+        "durationPolicy": "executor_bound"
+      },
+      "reviewAuthority": "promptCatalog.families.coffee.quality_guards",
+      "reviewGates": [
+        "technical_video",
+        "ocr_text",
+        "visual_dna",
+        "duplicate_and_never_reuse"
+      ]
+    },
+    {
+      "assetType": "video/mp4",
+      "contentEngine": "ai_video",
+      "contentNiche": "Construction",
+      "creativeAuthority": null,
+      "definitionGaps": [
+        "creativeAuthority",
+        "duration",
+        "lighting",
+        "motion",
+        "negativeRules",
+        "referenceExamples",
+        "reviewAuthority",
+        "setting",
+        "shotGrammar",
+        "subject",
+        "textPolicy"
+      ],
+      "definitionStatus": "incomplete",
+      "dimensions": {
+        "duration": {
+          "authority": null,
+          "rule": null,
+          "status": "undefined"
+        },
+        "lighting": {
+          "authority": null,
+          "rule": null,
+          "status": "undefined"
+        },
+        "motion": {
+          "authority": null,
+          "rule": null,
+          "status": "undefined"
+        },
+        "negativeRules": {
+          "authority": null,
+          "rule": null,
+          "status": "undefined"
+        },
+        "referenceExamples": {
+          "authority": null,
+          "rule": null,
+          "status": "undefined"
+        },
+        "setting": {
+          "authority": null,
+          "rule": null,
+          "status": "undefined"
+        },
+        "shotGrammar": {
+          "authority": null,
+          "rule": null,
+          "status": "undefined"
+        },
+        "subject": {
+          "authority": null,
+          "rule": null,
+          "status": "undefined"
+        },
+        "textPolicy": {
+          "authority": null,
+          "rule": null,
+          "status": "undefined"
+        }
+      },
+      "distribution": {
+        "captions": "page_binding_required",
+        "sounds": "page_binding_required"
+      },
+      "executionStatus": "uncommissioned",
+      "executor": null,
+      "formatContractVersion": "sha256:1626968f80f030392c8d46e54ab239bfdce4ddd7c0c5f40db7aa1734ee04bd77",
+      "formatSlug": "construction-scenic",
+      "materialSource": "generated_video",
+      "output": {
+        "aspectRatio": "9:16",
+        "audioPolicy": "campaign_sound_bound_downstream",
+        "container": "video/mp4",
+        "durationPolicy": "executor_bound"
+      },
+      "reviewAuthority": null,
+      "reviewGates": [
+        "technical_video",
+        "ocr_text",
+        "visual_dna",
+        "duplicate_and_never_reuse"
+      ]
+    },
+    {
+      "assetType": "video/mp4",
+      "contentEngine": "sourced_slideshow",
+      "contentNiche": "slideshow",
+      "creativeAuthority": {
+        "id": "syzygy-slideshow",
+        "kind": "slideshow_renderer",
+        "version": "sha256:fee820be22a84f50cfa80330c5c0d6006b456a468a0bfa0373f9a652d25d599c"
+      },
+      "definitionGaps": [],
+      "definitionStatus": "complete",
+      "dimensions": {
+        "duration": {
+          "authority": "recipes/executors/syzygy-image-video.v1.json",
+          "rule": "Twelve seconds: three ordered four-second image holds.",
+          "status": "defined"
+        },
+        "lighting": {
+          "authority": "recipes/executors/syzygy-image-video.v1.json",
+          "rule": "Apply requested brightness .85 exactly once through managed source treatment.",
+          "status": "defined"
+        },
+        "motion": {
+          "authority": "recipes/executors/syzygy-image-video.v1.json",
+          "rule": "Three gentle .025 KenBurns inward holds.",
+          "status": "defined"
+        },
+        "negativeRules": {
+          "authority": "recipes/executors/syzygy-image-video.v1.json",
+          "rule": "No asset substitution, permutations, baked words, source audio, additional dimming, or fabricated treatment receipts.",
+          "status": "defined"
+        },
+        "referenceExamples": {
+          "authority": "recipes/executors/syzygy-image-video.v1.json",
+          "rule": "Exact original source keys, full SHA256 and bytes in scoped image-video executor.",
+          "status": "defined"
+        },
+        "setting": {
+          "authority": "recipes/executors/syzygy-image-video.v1.json",
+          "rule": "Retain the approved original cat and flower settings.",
+          "status": "defined"
+        },
+        "shotGrammar": {
+          "authority": "recipes/executors/syzygy-image-video.v1.json",
+          "rule": "Portrait cover crop with exact page-bound focal positions and ordered photo holds.",
+          "status": "defined"
+        },
+        "subject": {
+          "authority": "recipes/executors/syzygy-image-video.v1.json",
+          "rule": "Exact three page-owned cats-with-flowers photographs for PenPal only; no foreign-pool sampling.",
+          "status": "defined"
+        },
+        "textPolicy": {
+          "authority": "recipes/executors/syzygy-image-video.v1.json",
+          "rule": "Blank source background; captions and official sound are bound downstream.",
+          "status": "defined"
+        }
+      },
+      "distribution": {
+        "captions": "page_binding_required",
+        "sounds": "page_binding_required"
+      },
+      "executionStatus": "commissioned",
+      "executor": {
+        "id": "syzygy-slideshow",
+        "kind": "slideshow_renderer",
+        "maxQuantity": 1,
+        "version": "sha256:fee820be22a84f50cfa80330c5c0d6006b456a468a0bfa0373f9a652d25d599c"
+      },
+      "formatContractVersion": "sha256:7f9ab9cb54e74890e85b4cb453e0e24d44989781232243911b26e997f5166b16",
+      "formatSlug": "image-video",
+      "materialSource": "image_library",
+      "output": {
+        "aspectRatio": "9:16",
+        "audioPolicy": "campaign_sound_bound_downstream",
+        "container": "video/mp4",
+        "durationPolicy": "executor_bound"
+      },
+      "reviewAuthority": "recipes/executors/syzygy-image-video.v1.json",
+      "reviewGates": [
+        "technical_video",
+        "rights_and_provenance",
+        "text_layout",
+        "duplicate_and_never_reuse"
+      ]
+    },
+    {
+      "assetType": "video/mp4",
+      "contentEngine": "lyrics_slideshows",
+      "contentNiche": "lyric-edits",
+      "creativeAuthority": {
+        "id": "syzygy-slideshow",
+        "kind": "slideshow_renderer",
+        "version": "sha256:485feda76c885d7aab19be256f61c749edcce19417ebc560d265ba92b60974ad"
+      },
+      "definitionGaps": [],
+      "definitionStatus": "complete",
+      "dimensions": {
+        "duration": {
+          "authority": "syzygy-slideshow.output",
+          "rule": "The Syzygy executor renders the closed template sequence as a vertical short-form video and records its exact output duration in technical QA.",
+          "status": "defined"
+        },
+        "lighting": {
+          "authority": "artifact.source.media+dossier.treatment",
+          "rule": "Lighting comes from the selected approved media and the locked Dossier colour treatment; the renderer does not invent a different visual source.",
+          "status": "defined"
+        },
+        "motion": {
+          "authority": "syzygy-slideshow.selection",
+          "rule": "Motion is limited to the selected source clips and the chosen Syzygy slideshow template transitions.",
+          "status": "defined"
+        },
+        "negativeRules": {
+          "authority": "syzygy-slideshow.reservation+reviewGates",
+          "rule": "Reject missing, changed, cross-page, repeated-plan, or unproven library media and any output that fails technical, provenance, text-layout, or duplicate review.",
+          "status": "defined"
+        },
+        "referenceExamples": {
+          "authority": "artifact.source.media",
+          "rule": "The exact object keys, byte counts, ETags when available, and SHA-256 observations used by each render are preserved in its artifact source manifest.",
+          "status": "defined"
+        },
+        "setting": {
+          "authority": "artifact.source.media",
+          "rule": "Settings remain those present in the approved page-scoped R2 media selected for the render.",
+          "status": "defined"
+        },
+        "shotGrammar": {
+          "authority": "syzygy-slideshow.formats.lyric-edits.templates",
+          "rule": "A vertical sequence uses one of the closed karaoke-postcard, memory-slideshow, or blue-hour templates and the template's exact ordered media count.",
+          "status": "defined"
+        },
+        "subject": {
+          "authority": "production.sourceLibraryId",
+          "rule": "Every frame comes from the exact page-scoped Syzygy lyric-image library; another page's media may not substitute for it.",
+          "status": "defined"
+        },
+        "textPolicy": {
+          "authority": "syzygy-slideshow.output.audioPolicy",
+          "rule": "The visual render introduces no page caption copy; the locked Dossier caption corpus and campaign sound remain downstream bindings.",
+          "status": "defined"
+        }
+      },
+      "distribution": {
+        "captions": "page_binding_required",
+        "sounds": "page_binding_required"
+      },
+      "executionStatus": "commissioned",
+      "executor": {
+        "id": "syzygy-slideshow",
+        "kind": "slideshow_renderer",
+        "maxQuantity": 10,
+        "version": "sha256:485feda76c885d7aab19be256f61c749edcce19417ebc560d265ba92b60974ad"
+      },
+      "formatContractVersion": "sha256:bc99dded5acb05ea517ea0d244e2f58481a430dececbd7f3df7bd785a7c9a1a2",
+      "formatSlug": "lyric-edits",
+      "materialSource": "lyric_image_library",
+      "output": {
+        "aspectRatio": "9:16",
+        "audioPolicy": "campaign_sound_bound_downstream",
+        "container": "video/mp4",
+        "durationPolicy": "executor_bound"
+      },
+      "reviewAuthority": "syzygy-slideshow.output+artifact.source.media",
+      "reviewGates": [
+        "technical_video",
+        "rights_and_provenance",
+        "text_layout",
+        "duplicate_and_never_reuse"
+      ]
+    },
+    {
+      "assetType": "video/mp4",
+      "contentEngine": "lyrics_slideshows",
+      "contentNiche": "lyric-edits",
+      "creativeAuthority": {
+        "id": "syzygy-slideshow",
+        "kind": "slideshow_renderer",
+        "version": "sha256:78da457008391bd873dbc23c57fc7621f9707b8e139781e8d98cea4cdb9f65c9"
+      },
+      "definitionGaps": [],
+      "definitionStatus": "complete",
+      "dimensions": {
+        "duration": {
+          "authority": "recipes/executors/syzygy-slideshow-lyric-video.v1.json",
+          "rule": "Exactly 20 seconds at 30 frames per second.",
+          "status": "defined"
+        },
+        "lighting": {
+          "authority": "recipes/executors/syzygy-slideshow-lyric-video.v1.json",
+          "rule": "Original day/night progression; apply RGB gain 0.85 once to original source footage.",
+          "status": "defined"
+        },
+        "motion": {
+          "authority": "recipes/executors/syzygy-slideshow-lyric-video.v1.json",
+          "rule": "Original source movement at speed 1, muted hard cuts and explicitly authored phrase-driven windows.",
+          "status": "defined"
+        },
+        "negativeRules": {
+          "authority": "recipes/executors/syzygy-slideshow-lyric-video.v1.json",
+          "rule": "No arbitrary lyric text, foreign page/sound/timing hash, random country mix, source audio, or repeated photo filler.",
+          "status": "defined"
+        },
+        "referenceExamples": {
+          "authority": "recipes/executors/syzygy-slideshow-lyric-video.v1.json",
+          "rule": "Owner-approved moving-v3 Tirana program and the independently verified Lab timed-lyric QA reference; reference is not an admitted production artifact.",
+          "status": "defined"
+        },
+        "setting": {
+          "authority": "recipes/executors/syzygy-slideshow-lyric-video.v1.json",
+          "rule": "Tirana, Albania across the preserved October 14\u201318 source dates; do not imply one simultaneous event.",
+          "status": "defined"
+        },
+        "shotGrammar": {
+          "authority": "recipes/executors/syzygy-slideshow-lyric-video.v1.json",
+          "rule": "The immutable 27-window 20-second video program with pinned original SHA-256/bytes/source trims/order/focal crops. No photo cycles.",
+          "status": "defined"
+        },
+        "subject": {
+          "authority": "recipes/executors/syzygy-slideshow-lyric-video.v1.json",
+          "rule": "Burnt Mill Road only: the approved Tirana moving protest portrait, 20 original source videos and 27 ordered windows.",
+          "status": "defined"
+        },
+        "textPolicy": {
+          "authority": "recipes/executors/syzygy-slideshow-lyric-video.v1.json",
+          "rule": "Syzygy background has no words. Content Lab final renderer resolves seven immutable Heavy Foot phrases from the page-scoped timing selector; official music remains downstream.",
+          "status": "defined"
+        }
+      },
+      "distribution": {
+        "captions": "page_binding_required",
+        "sounds": "page_binding_required"
+      },
+      "executionStatus": "commissioned",
+      "executor": {
+        "id": "syzygy-slideshow",
+        "kind": "slideshow_renderer",
+        "maxQuantity": 1,
+        "version": "sha256:78da457008391bd873dbc23c57fc7621f9707b8e139781e8d98cea4cdb9f65c9"
+      },
+      "formatContractVersion": "sha256:380e6688c1344dc227fb3099fad375fa4016107b363526f19736b53ffed97234",
+      "formatSlug": "lyric-video",
+      "materialSource": "lyric_image_library",
+      "output": {
+        "aspectRatio": "9:16",
+        "audioPolicy": "campaign_sound_bound_downstream",
+        "container": "video/mp4",
+        "durationPolicy": "executor_bound"
+      },
+      "reviewAuthority": "syzygy-slideshow.output+artifact.source.media",
+      "reviewGates": [
+        "technical_video",
+        "rights_and_provenance",
+        "text_layout",
+        "duplicate_and_never_reuse"
+      ]
+    },
+    {
+      "assetType": "video/mp4",
+      "contentEngine": "sourced_slideshow",
+      "contentNiche": "meme",
+      "creativeAuthority": {
+        "id": "syzygy-slideshow",
+        "kind": "slideshow_renderer",
+        "version": "sha256:485feda76c885d7aab19be256f61c749edcce19417ebc560d265ba92b60974ad"
+      },
+      "definitionGaps": [],
+      "definitionStatus": "complete",
+      "dimensions": {
+        "duration": {
+          "authority": "syzygy-slideshow.output",
+          "rule": "The Syzygy executor renders the closed template sequence as a vertical short-form video and records its exact output duration in technical QA.",
+          "status": "defined"
+        },
+        "lighting": {
+          "authority": "artifact.source.media+dossier.treatment",
+          "rule": "Lighting comes from the selected approved media and the locked Dossier colour treatment; the renderer does not invent a different visual source.",
+          "status": "defined"
+        },
+        "motion": {
+          "authority": "syzygy-slideshow.selection",
+          "rule": "Motion is limited to the selected source clips and the chosen Syzygy slideshow template transitions.",
+          "status": "defined"
+        },
+        "negativeRules": {
+          "authority": "syzygy-slideshow.reservation+reviewGates",
+          "rule": "Reject missing, changed, cross-page, repeated-plan, or unproven library media and any output that fails technical, provenance, text-layout, or duplicate review.",
+          "status": "defined"
+        },
+        "referenceExamples": {
+          "authority": "artifact.source.media",
+          "rule": "The exact object keys, byte counts, ETags when available, and SHA-256 observations used by each render are preserved in its artifact source manifest.",
+          "status": "defined"
+        },
+        "setting": {
+          "authority": "artifact.source.media",
+          "rule": "Settings remain those present in the approved page-scoped R2 photos or clips selected for the render.",
+          "status": "defined"
+        },
+        "shotGrammar": {
+          "authority": "syzygy-slideshow.formats.meme-slideshow.templates",
+          "rule": "A vertical five-item sequence uses one of the closed digital-postcard-hook, clean-slideshow, or mirror-split templates.",
+          "status": "defined"
+        },
+        "subject": {
+          "authority": "production.sourceLibraryId",
+          "rule": "Every frame comes from the exact page-scoped Syzygy meme library; another page's media may not substitute for it.",
+          "status": "defined"
+        },
+        "textPolicy": {
+          "authority": "syzygy-slideshow.output.audioPolicy",
+          "rule": "The visual render introduces no page caption copy; the locked Dossier caption corpus and campaign sound remain downstream bindings.",
+          "status": "defined"
+        }
+      },
+      "distribution": {
+        "captions": "page_binding_required",
+        "sounds": "page_binding_required"
+      },
+      "executionStatus": "commissioned",
+      "executor": {
+        "id": "syzygy-slideshow",
+        "kind": "slideshow_renderer",
+        "maxQuantity": 10,
+        "version": "sha256:485feda76c885d7aab19be256f61c749edcce19417ebc560d265ba92b60974ad"
+      },
+      "formatContractVersion": "sha256:62f95a4f421215c59cc352e4c63b60606b5c9653d214e95546a9e60fc28bf459",
+      "formatSlug": "meme-slideshow",
+      "materialSource": "image_library",
+      "output": {
+        "aspectRatio": "9:16",
+        "audioPolicy": "campaign_sound_bound_downstream",
+        "container": "video/mp4",
+        "durationPolicy": "executor_bound"
+      },
+      "reviewAuthority": "syzygy-slideshow.output+artifact.source.media",
+      "reviewGates": [
+        "technical_video",
+        "rights_and_provenance",
+        "text_layout",
+        "duplicate_and_never_reuse"
+      ]
+    },
+    {
+      "assetType": "video/mp4",
+      "contentEngine": "sourced_video",
+      "contentNiche": "POV-Club",
+      "creativeAuthority": {
+        "id": "source-dna-recut",
+        "kind": "source_dna_recut",
+        "version": "sha256:2d0dd20fad4302f799272e7d5e1ba7de1ecb8b9a85646f68cf9720ac14569171"
+      },
+      "definitionGaps": [],
+      "definitionStatus": "complete",
+      "dimensions": {
+        "duration": {
+          "authority": "sourceDnaRecut.cutWindow_and_clipSpeed; Dossier.renderTreatment",
+          "rule": "Select a unique 5-9 second source window from the page-scoped master and require the measured final output to remain 5-9 seconds after typed Dossier playback speed. If no source length satisfies both bounds, refuse before reserving source windows with source_speed_duration_unsupported; never use a longer legacy source window. Crop and visual filters follow typed Dossier render treatment.",
+          "status": "defined"
+        },
+        "lighting": {
+          "authority": "sourceDna.masters; Dossier.renderTreatment",
+          "rule": "Lighting originates in the exact approved source; do not synthesize or replace it. Permit only typed Dossier visual grading and filters.",
+          "status": "defined"
+        },
+        "motion": {
+          "authority": "sourceDnaRecut.cutWindow_and_clipSpeed",
+          "rule": "Motion comes only from the approved source footage and the typed Dossier playback speed.",
+          "status": "defined"
+        },
+        "negativeRules": {
+          "authority": "sourceDnaRecut.selection; technical_video; duplicate_and_never_reuse",
+          "rule": "Reject unregistered or cross-page source bytes, repeated cut windows, technical failures, and reused output bytes.",
+          "status": "defined"
+        },
+        "referenceExamples": {
+          "authority": "sourceDna.masters.sha256",
+          "rule": "The exact page-scoped master SHA-256 set is the complete visual reference library for this page.",
+          "status": "defined"
+        },
+        "setting": {
+          "authority": "sourceDna.masters",
+          "rule": "Club, electronic-music, and festival settings remain source-bound to the approved page master; do not synthesize or replace the setting.",
+          "status": "defined"
+        },
+        "shotGrammar": {
+          "authority": "sourceDnaRecut.selection",
+          "rule": "Preserve the source shot's recorded point of view and select a new, non-repeated cut window from the same page-scoped master.",
+          "status": "defined"
+        },
+        "subject": {
+          "authority": "sourceDna.masters",
+          "rule": "Use only the exact page-scoped source master selected for this POV-Club page; do not substitute another page's footage.",
+          "status": "defined"
+        },
+        "textPolicy": {
+          "authority": "sourceDna.masters",
+          "rule": "Source imagery remains bound to the exact approved page master. Completed outputs use existing downstream admission without waiting for a separate vision scan; preserve existing scan evidence and do not claim a new clean decision.",
+          "status": "defined"
+        }
+      },
+      "distribution": {
+        "captions": "page_binding_required",
+        "sounds": "page_binding_required"
+      },
+      "executionStatus": "commissioned",
+      "executor": {
+        "id": "source-dna-recut",
+        "kind": "source_dna_recut",
+        "maxQuantity": 10,
+        "version": "sha256:2d0dd20fad4302f799272e7d5e1ba7de1ecb8b9a85646f68cf9720ac14569171"
+      },
+      "formatContractVersion": "sha256:147878ce267909054b290de357be78db0299f29424b818d0032666d99ce1fe6c",
+      "formatSlug": "pov-club",
+      "materialSource": "source_library",
+      "output": {
+        "aspectRatio": "9:16",
+        "audioPolicy": "campaign_sound_bound_downstream",
+        "container": "video/mp4",
+        "durationPolicy": "source_bound"
+      },
+      "reviewAuthority": "sourceDna.provenance",
+      "reviewGates": [
+        "byte_exact_provenance",
+        "cut_window_lineage",
+        "technical_video",
+        "duplicate_and_never_reuse"
+      ]
+    },
+    {
+      "assetType": "video/mp4",
+      "contentEngine": "sourced_video",
+      "contentNiche": "POV - Dirtbike",
+      "creativeAuthority": {
+        "id": "source-dna-recut",
+        "kind": "source_dna_recut",
+        "version": "sha256:2d0dd20fad4302f799272e7d5e1ba7de1ecb8b9a85646f68cf9720ac14569171"
+      },
+      "definitionGaps": [],
+      "definitionStatus": "complete",
+      "dimensions": {
+        "duration": {
+          "authority": "sourceDnaRecut.cutWindow_and_clipSpeed",
+          "rule": "Each output is a unique 6-8 second window from the selected master, transformed by the dossier playback speed.",
+          "status": "defined"
+        },
+        "lighting": {
+          "authority": "sourceDna.masters",
+          "rule": "Lighting is source-bound to the exact master bytes and may not be synthesized.",
+          "status": "defined"
+        },
+        "motion": {
+          "authority": "sourceDna.masters",
+          "rule": "Natural ride motion is source-bound to the exact master bytes.",
+          "status": "defined"
+        },
+        "negativeRules": {
+          "authority": "sourceDnaRecut.selection",
+          "rule": "Reject unregistered masters, repeated cut windows, text-scan failures, QA failures, and content outside dirt-bike POV.",
+          "status": "defined"
+        },
+        "referenceExamples": {
+          "authority": "sourceDna.masters.sha256",
+          "rule": "The selected immutable master SHA-256 set is the complete visual reference library.",
+          "status": "defined"
+        },
+        "setting": {
+          "authority": "sourceDna.masters",
+          "rule": "Trail and off-road settings are fixed by the reviewed page-scoped master library.",
+          "status": "defined"
+        },
+        "shotGrammar": {
+          "authority": "sourceDna.format",
+          "rule": "First-person dirt-bike POV only; no substituted scenic or vehicle format.",
+          "status": "defined"
+        },
+        "subject": {
+          "authority": "sourceDna.masters",
+          "rule": "First-person dirt-bike riding footage from the exact page-scoped master bytes.",
+          "status": "defined"
+        },
+        "textPolicy": {
+          "authority": "review.text_scan",
+          "rule": "Every derived cut must pass the commissioned text scan before admission.",
+          "status": "defined"
+        }
+      },
+      "distribution": {
+        "captions": "page_binding_required",
+        "sounds": "page_binding_required"
+      },
+      "executionStatus": "commissioned",
+      "executor": {
+        "id": "source-dna-recut",
+        "kind": "source_dna_recut",
+        "maxQuantity": 10,
+        "version": "sha256:2d0dd20fad4302f799272e7d5e1ba7de1ecb8b9a85646f68cf9720ac14569171"
+      },
+      "formatContractVersion": "sha256:f04e1ffa16ae787111ebb0a102397a196e25f92ddf9ddbb77048b18dee21fbcf",
+      "formatSlug": "pov-dirt-bike",
+      "materialSource": "source_library",
+      "output": {
+        "aspectRatio": "9:16",
+        "audioPolicy": "campaign_sound_bound_downstream",
+        "container": "video/mp4",
+        "durationPolicy": "source_bound"
+      },
+      "reviewAuthority": "sourceDna.provenance",
+      "reviewGates": [
+        "byte_exact_provenance",
+        "cut_window_lineage",
+        "technical_video",
+        "text_scan",
+        "operator_visual_qa",
+        "duplicate_and_never_reuse"
+      ]
+    },
+    {
+      "assetType": "video/mp4",
+      "contentEngine": "sourced_video",
+      "contentNiche": "POV",
+      "creativeAuthority": null,
+      "definitionGaps": [
+        "creativeAuthority",
+        "duration",
+        "lighting",
+        "motion",
+        "negativeRules",
+        "referenceExamples",
+        "reviewAuthority",
+        "setting",
+        "shotGrammar",
+        "subject",
+        "textPolicy"
+      ],
+      "definitionStatus": "incomplete",
+      "dimensions": {
+        "duration": {
+          "authority": null,
+          "rule": null,
+          "status": "undefined"
+        },
+        "lighting": {
+          "authority": null,
+          "rule": null,
+          "status": "undefined"
+        },
+        "motion": {
+          "authority": null,
+          "rule": null,
+          "status": "undefined"
+        },
+        "negativeRules": {
+          "authority": null,
+          "rule": null,
+          "status": "undefined"
+        },
+        "referenceExamples": {
+          "authority": null,
+          "rule": null,
+          "status": "undefined"
+        },
+        "setting": {
+          "authority": null,
+          "rule": null,
+          "status": "undefined"
+        },
+        "shotGrammar": {
+          "authority": null,
+          "rule": null,
+          "status": "undefined"
+        },
+        "subject": {
+          "authority": null,
+          "rule": null,
+          "status": "undefined"
+        },
+        "textPolicy": {
+          "authority": null,
+          "rule": null,
+          "status": "undefined"
+        }
+      },
+      "distribution": {
+        "captions": "page_binding_required",
+        "sounds": "page_binding_required"
+      },
+      "executionStatus": "uncommissioned",
+      "executor": null,
+      "formatContractVersion": "sha256:9b857f7bde4a1d7f570f6f7bfab481e423f22d9b42a60ba300fd59f0d44c6574",
+      "formatSlug": "pov-dusk-core",
+      "materialSource": "source_library",
+      "output": {
+        "aspectRatio": "9:16",
+        "audioPolicy": "campaign_sound_bound_downstream",
+        "container": "video/mp4",
+        "durationPolicy": "source_bound"
+      },
+      "reviewAuthority": null,
+      "reviewGates": [
+        "byte_exact_provenance",
+        "technical_video",
+        "text_scan",
+        "operator_visual_qa",
+        "duplicate_and_never_reuse"
+      ]
+    },
+    {
+      "assetType": "video/mp4",
+      "contentEngine": "sourced_video",
+      "contentNiche": "POV \u2014 Night Core",
+      "creativeAuthority": {
+        "id": "source-dna-recut",
+        "kind": "source_dna_recut",
+        "version": "sha256:2d0dd20fad4302f799272e7d5e1ba7de1ecb8b9a85646f68cf9720ac14569171"
+      },
+      "definitionGaps": [],
+      "definitionStatus": "complete",
+      "dimensions": {
+        "duration": {
+          "authority": "sourceDnaRecut.cutWindow_and_clipSpeed",
+          "rule": "Each output is a unique 6-8 second window from the selected page-scoped master, transformed only by the typed Dossier playback speed and crop treatment.",
+          "status": "defined"
+        },
+        "lighting": {
+          "authority": "formatContract.userConfirmed.2026-08-29",
+          "rule": "Nighttime exposure and road lighting; daylight scenic and truck glamour footage are excluded.",
+          "status": "defined"
+        },
+        "motion": {
+          "authority": "formatContract.userConfirmed.2026-08-29",
+          "rule": "Natural forward driving motion from sourced footage; no AI-created motion.",
+          "status": "defined"
+        },
+        "negativeRules": {
+          "authority": "formatContract.userConfirmed.2026-08-29",
+          "rule": "Reject trucks as the visual subject, AI-generated visuals, non-driving POV, daylight scenic clips, embedded text, and reused bytes.",
+          "status": "defined"
+        },
+        "referenceExamples": {
+          "authority": "sourceDna.masters.sha256",
+          "rule": "The exact page-scoped master SHA-256 set is the complete visual reference library; no other driving footage may substitute for it.",
+          "status": "defined"
+        },
+        "setting": {
+          "authority": "formatContract.userConfirmed.2026-08-29",
+          "rule": "Night roads and nighttime driving environments only.",
+          "status": "defined"
+        },
+        "shotGrammar": {
+          "authority": "formatContract.userConfirmed.2026-08-29",
+          "rule": "Continuous first-person road-facing driving POV sourced from real clips.",
+          "status": "defined"
+        },
+        "subject": {
+          "authority": "formatContract.userConfirmed.2026-08-29",
+          "rule": "First-person driving footage only; this is not a truck page and the vehicle itself is not the subject.",
+          "status": "defined"
+        },
+        "textPolicy": {
+          "authority": "postingDocumentation.LocalContracts.sourced-video",
+          "rule": "Source clips must pass OCR/text review before admission.",
+          "status": "defined"
+        }
+      },
+      "distribution": {
+        "captions": "page_binding_required",
+        "sounds": "page_binding_required"
+      },
+      "executionStatus": "commissioned",
+      "executor": {
+        "id": "source-dna-recut",
+        "kind": "source_dna_recut",
+        "maxQuantity": 10,
+        "version": "sha256:2d0dd20fad4302f799272e7d5e1ba7de1ecb8b9a85646f68cf9720ac14569171"
+      },
+      "formatContractVersion": "sha256:00e7ff5b0ffcdf602fde7ccab7f38bdbe3a5cdc05b7c513f015d1f1723749ec6",
+      "formatSlug": "pov-night-core",
+      "materialSource": "source_library",
+      "output": {
+        "aspectRatio": "9:16",
+        "audioPolicy": "campaign_sound_bound_downstream",
+        "container": "video/mp4",
+        "durationPolicy": "source_bound"
+      },
+      "reviewAuthority": "sourceDna.provenance",
+      "reviewGates": [
+        "byte_exact_provenance",
+        "cut_window_lineage",
+        "technical_video",
+        "text_scan",
+        "operator_visual_qa",
+        "duplicate_and_never_reuse"
+      ]
+    },
+    {
+      "assetType": "video/mp4",
+      "contentEngine": "ai_video",
+      "contentNiche": "Night Core",
+      "creativeAuthority": null,
+      "definitionGaps": [
+        "creativeAuthority",
+        "duration",
+        "lighting",
+        "motion",
+        "negativeRules",
+        "referenceExamples",
+        "reviewAuthority",
+        "setting",
+        "shotGrammar",
+        "subject",
+        "textPolicy"
+      ],
+      "definitionStatus": "incomplete",
+      "dimensions": {
+        "duration": {
+          "authority": null,
+          "rule": null,
+          "status": "undefined"
+        },
+        "lighting": {
+          "authority": null,
+          "rule": null,
+          "status": "undefined"
+        },
+        "motion": {
+          "authority": null,
+          "rule": null,
+          "status": "undefined"
+        },
+        "negativeRules": {
+          "authority": null,
+          "rule": null,
+          "status": "undefined"
+        },
+        "referenceExamples": {
+          "authority": null,
+          "rule": null,
+          "status": "undefined"
+        },
+        "setting": {
+          "authority": null,
+          "rule": null,
+          "status": "undefined"
+        },
+        "shotGrammar": {
+          "authority": null,
+          "rule": null,
+          "status": "undefined"
+        },
+        "subject": {
+          "authority": null,
+          "rule": null,
+          "status": "undefined"
+        },
+        "textPolicy": {
+          "authority": null,
+          "rule": null,
+          "status": "undefined"
+        }
+      },
+      "distribution": {
+        "captions": "page_binding_required",
+        "sounds": "page_binding_required"
+      },
+      "executionStatus": "uncommissioned",
+      "executor": null,
+      "formatContractVersion": "sha256:318be57f30229f4a028b78b88e4ae59783dc5a08c92259eca78b7b94ae024485",
+      "formatSlug": "pov-night-core-ai",
+      "materialSource": "generated_video",
+      "output": {
+        "aspectRatio": "9:16",
+        "audioPolicy": "campaign_sound_bound_downstream",
+        "container": "video/mp4",
+        "durationPolicy": "executor_bound"
+      },
+      "reviewAuthority": null,
+      "reviewGates": [
+        "technical_video",
+        "ocr_text",
+        "visual_dna",
+        "duplicate_and_never_reuse"
+      ]
+    },
+    {
+      "assetType": "video/mp4",
+      "contentEngine": "sourced_video",
+      "contentNiche": "POV \u2014 Scenic",
+      "creativeAuthority": {
+        "id": "source-dna-recut",
+        "kind": "source_dna_recut",
+        "version": "sha256:2d0dd20fad4302f799272e7d5e1ba7de1ecb8b9a85646f68cf9720ac14569171"
+      },
+      "definitionGaps": [],
+      "definitionStatus": "complete",
+      "dimensions": {
+        "duration": {
+          "authority": "sourceDnaRecut.cutWindow_and_clipSpeed",
+          "rule": "Each output is a unique 6-8 second window from the selected page-scoped master, transformed only by the typed Dossier playback speed and crop treatment.",
+          "status": "defined"
+        },
+        "lighting": {
+          "authority": "sourceDna.masters",
+          "rule": "Lighting remains source-bound to the exact approved bytes; the recut path does not generate a new scene or lighting treatment.",
+          "status": "defined"
+        },
+        "motion": {
+          "authority": "sourceDnaRecut.cutWindow_and_clipSpeed",
+          "rule": "Motion comes only from the approved source footage and the typed Dossier playback speed.",
+          "status": "defined"
+        },
+        "negativeRules": {
+          "authority": "sourceDnaRecut.selection",
+          "rule": "Reject unregistered or cross-page source bytes, repeated cut windows, text-scan failures, technical failures, and reused output bytes.",
+          "status": "defined"
+        },
+        "referenceExamples": {
+          "authority": "sourceDna.masters.sha256",
+          "rule": "The exact page-scoped master SHA-256 set is the complete visual reference library for this page.",
+          "status": "defined"
+        },
+        "setting": {
+          "authority": "sourceDna.masters",
+          "rule": "The setting is whatever exists in the page-scoped approved source master and is not synthesized or replaced.",
+          "status": "defined"
+        },
+        "shotGrammar": {
+          "authority": "sourceDnaRecut.selection",
+          "rule": "Preserve the source master's original point of view while selecting a new non-repeated cut window.",
+          "status": "defined"
+        },
+        "subject": {
+          "authority": "sourceDna.masters",
+          "rule": "The visual subject is fixed by the exact page-scoped source master selected for this page; another page's footage may not substitute for it.",
+          "status": "defined"
+        },
+        "textPolicy": {
+          "authority": "review.text_scan",
+          "rule": "Every derived cut must pass the commissioned text scan before admission.",
+          "status": "defined"
+        }
+      },
+      "distribution": {
+        "captions": "page_binding_required",
+        "sounds": "page_binding_required"
+      },
+      "executionStatus": "commissioned",
+      "executor": {
+        "id": "source-dna-recut",
+        "kind": "source_dna_recut",
+        "maxQuantity": 10,
+        "version": "sha256:2d0dd20fad4302f799272e7d5e1ba7de1ecb8b9a85646f68cf9720ac14569171"
+      },
+      "formatContractVersion": "sha256:31cbad392107972949f3977383427a344808f653e9022d6284d08d307bec9772",
+      "formatSlug": "pov-scenic",
+      "materialSource": "source_library",
+      "output": {
+        "aspectRatio": "9:16",
+        "audioPolicy": "campaign_sound_bound_downstream",
+        "container": "video/mp4",
+        "durationPolicy": "source_bound"
+      },
+      "reviewAuthority": "sourceDna.provenance",
+      "reviewGates": [
+        "byte_exact_provenance",
+        "cut_window_lineage",
+        "technical_video",
+        "text_scan",
+        "operator_visual_qa",
+        "duplicate_and_never_reuse"
+      ]
+    },
+    {
+      "assetType": "video/mp4",
+      "contentEngine": "ai_video",
+      "contentNiche": "silhouette",
+      "creativeAuthority": {
+        "id": "silhouette",
+        "kind": "prompt_family",
+        "version": "sha256:2ba10a69a2a25eb0c60ed238b9badb5b7531a994a364e0f06ef4acfcc7bda3a0"
+      },
+      "definitionGaps": [],
+      "definitionStatus": "complete",
+      "dimensions": {
+        "duration": {
+          "authority": "promptCatalog.providers.flux-image.base_input",
+          "rule": "The exact generated still is held for seven seconds by the commissioned provider configuration.",
+          "status": "defined"
+        },
+        "lighting": {
+          "authority": "promptCatalog.families.silhouette.quality_guards",
+          "rule": "Deep, low-exposure dusk with controlled highlights; no pale or washed-out sky.",
+          "status": "defined"
+        },
+        "motion": {
+          "authority": "promptCatalog.families.silhouette.method",
+          "rule": "The generated photo is held completely static with no synthetic subject or camera motion.",
+          "status": "defined"
+        },
+        "negativeRules": {
+          "authority": "promptCatalog.families.silhouette.note",
+          "rule": "Reject readable faces, clothing detail, lettering, subject drift, pale skies, geometry faults, and reused imagery.",
+          "status": "defined"
+        },
+        "referenceExamples": {
+          "authority": "promptCatalog.providers.flux-image.replicate_model",
+          "rule": "Every artifact retains the exact generated FLUX.2 source still and its byte hash.",
+          "status": "defined"
+        },
+        "setting": {
+          "authority": "promptCatalog.families.silhouette.slots.setting",
+          "rule": "Dusk fields, wheat fields, meadows, grassy hilltops, and field tracks from the reviewed menu.",
+          "status": "defined"
+        },
+        "shotGrammar": {
+          "authority": "promptCatalog.families.silhouette.slots.composition",
+          "rule": "The couple and truck remain readable beneath a large clean caption sky in one of the reviewed compositions.",
+          "status": "defined"
+        },
+        "subject": {
+          "authority": "promptCatalog.families.silhouette.fixed_subject",
+          "rule": "Exactly two adult featureless black silhouettes embrace beside one complete unbadged dark pickup in an open field.",
+          "status": "defined"
+        },
+        "textPolicy": {
+          "authority": "promptCatalog.families.silhouette.quality_guards",
+          "rule": "No lettering in the source frame and clean sky is reserved for downstream captions.",
+          "status": "defined"
+        }
+      },
+      "distribution": {
+        "captions": "page_binding_required",
+        "sounds": "page_binding_required"
+      },
+      "executionStatus": "commissioned",
+      "executor": {
+        "id": "silhouette",
+        "kind": "prompt_family",
+        "maxQuantity": 10,
+        "version": "sha256:2ba10a69a2a25eb0c60ed238b9badb5b7531a994a364e0f06ef4acfcc7bda3a0"
+      },
+      "formatContractVersion": "sha256:95608c1d7c9be8646ad571333e8a19de2c7e6b046d5370a7642e189758eed7d6",
+      "formatSlug": "silhouette-truck",
+      "materialSource": "generated_video",
+      "output": {
+        "aspectRatio": "9:16",
+        "audioPolicy": "campaign_sound_bound_downstream",
+        "container": "video/mp4",
+        "durationPolicy": "executor_bound"
+      },
+      "reviewAuthority": "promptCatalog.families.silhouette.quality_guards",
+      "reviewGates": [
+        "technical_video",
+        "ocr_text",
+        "visual_dna",
+        "geometry",
+        "duplicate_and_never_reuse"
+      ]
+    },
+    {
+      "assetType": "video/mp4",
+      "contentEngine": "sourced_image",
+      "contentNiche": "POV",
+      "creativeAuthority": {
+        "id": "syzygy-slideshow",
+        "kind": "slideshow_renderer",
+        "version": "sha256:fee820be22a84f50cfa80330c5c0d6006b456a468a0bfa0373f9a652d25d599c"
+      },
+      "definitionGaps": [],
+      "definitionStatus": "complete",
+      "dimensions": {
+        "duration": {
+          "authority": "recipes/executors/syzygy-image-video.v1.json",
+          "rule": "Twelve seconds holding exactly one image.",
+          "status": "defined"
+        },
+        "lighting": {
+          "authority": "recipes/executors/syzygy-image-video.v1.json",
+          "rule": "Apply requested brightness .85 exactly once through managed source treatment.",
+          "status": "defined"
+        },
+        "motion": {
+          "authority": "recipes/executors/syzygy-image-video.v1.json",
+          "rule": "One static hold with zero zoom and transition.",
+          "status": "defined"
+        },
+        "negativeRules": {
+          "authority": "recipes/executors/syzygy-image-video.v1.json",
+          "rule": "No asset substitution, permutations, baked words, source audio, additional dimming, or fabricated treatment receipts.",
+          "status": "defined"
+        },
+        "referenceExamples": {
+          "authority": "recipes/executors/syzygy-image-video.v1.json",
+          "rule": "Exact original source keys, full SHA256 and bytes in scoped image-video executor.",
+          "status": "defined"
+        },
+        "setting": {
+          "authority": "recipes/executors/syzygy-image-video.v1.json",
+          "rule": "Retain the approved original apartment setting.",
+          "status": "defined"
+        },
+        "shotGrammar": {
+          "authority": "recipes/executors/syzygy-image-video.v1.json",
+          "rule": "Portrait cover crop with exact page-bound focal positions and ordered photo holds.",
+          "status": "defined"
+        },
+        "subject": {
+          "authority": "recipes/executors/syzygy-image-video.v1.json",
+          "rule": "Exact page-owned single lamplit apartment image for Twin only; no foreign-pool sampling.",
+          "status": "defined"
+        },
+        "textPolicy": {
+          "authority": "recipes/executors/syzygy-image-video.v1.json",
+          "rule": "Blank source background; captions and official sound are bound downstream.",
+          "status": "defined"
+        }
+      },
+      "distribution": {
+        "captions": "page_binding_required",
+        "sounds": "page_binding_required"
+      },
+      "executionStatus": "commissioned",
+      "executor": {
+        "id": "syzygy-slideshow",
+        "kind": "slideshow_renderer",
+        "maxQuantity": 1,
+        "version": "sha256:fee820be22a84f50cfa80330c5c0d6006b456a468a0bfa0373f9a652d25d599c"
+      },
+      "formatContractVersion": "sha256:26717c7ce89fa7a89c8286a9ec1fac9184613b514867daf641352f6c97f9a917",
+      "formatSlug": "single-image-video",
+      "materialSource": "image_library",
+      "output": {
+        "aspectRatio": "9:16",
+        "audioPolicy": "campaign_sound_bound_downstream",
+        "container": "video/mp4",
+        "durationPolicy": "executor_bound"
+      },
+      "reviewAuthority": "recipes/executors/syzygy-image-video.v1.json",
+      "reviewGates": [
+        "technical_video",
+        "rights_and_provenance",
+        "text_layout",
+        "duplicate_and_never_reuse"
+      ]
+    },
+    {
+      "assetType": "video/mp4",
+      "contentEngine": "ai_video",
+      "contentNiche": "TRUCK",
+      "creativeAuthority": {
+        "id": "truck",
+        "kind": "prompt_family",
+        "version": "sha256:e7c2a13a818da636bb32ea3027cd3d2be1a88fd8c9c74e87cf67206f3188ceff"
+      },
+      "definitionGaps": [],
+      "definitionStatus": "complete",
+      "dimensions": {
+        "duration": {
+          "authority": "promptCatalog.providers.hailuo.base_input.duration",
+          "rule": "Six-second generation is bound by the exact commissioned Hailuo provider configuration.",
+          "status": "defined"
+        },
+        "lighting": {
+          "authority": "promptCatalog.families.truck.slots.light",
+          "rule": "Dark, low-exposure, muted natural light with controlled highlights and readable shadow detail.",
+          "status": "defined"
+        },
+        "motion": {
+          "authority": "promptCatalog.families.truck.quality_guards",
+          "rule": "Truck and wheels remain completely stationary; camera is static or has barely perceptible natural drift.",
+          "status": "defined"
+        },
+        "negativeRules": {
+          "authority": "promptCatalog.families.truck.visual_reference.reject",
+          "rule": "Reject occupants, plates, morphs, duplicates, bright washed-out grades, product-render sharpness, and incomplete truck framing.",
+          "status": "defined"
+        },
+        "referenceExamples": {
+          "authority": "promptCatalog.families.truck.visual_reference.leader_video_ids",
+          "rule": "The two measured early iPhone-Mirroring winner videos are the admission reference.",
+          "status": "defined"
+        },
+        "setting": {
+          "authority": "promptCatalog.families.truck.slots.setting",
+          "rule": "Muted pond, lake, field, forest, mountain, farmyard, pasture, riverbank, and meadow settings only.",
+          "status": "defined"
+        },
+        "shotGrammar": {
+          "authority": "promptCatalog.families.truck.template",
+          "rule": "Extreme-wide, low wheel-height front-quarter, rear-quarter, or near-side view with the complete truck and landscape visible.",
+          "status": "defined"
+        },
+        "subject": {
+          "authority": "promptCatalog.families.truck.fixed_subject",
+          "rule": "A clean dark navy-black full-size crew-cab pickup with natural factory proportions, empty windows, and no markings.",
+          "status": "defined"
+        },
+        "textPolicy": {
+          "authority": "promptCatalog.families.truck.quality_guards",
+          "rule": "No readable lettering, badges, or license plates.",
+          "status": "defined"
+        }
+      },
+      "distribution": {
+        "captions": "page_binding_required",
+        "sounds": "page_binding_required"
+      },
+      "executionStatus": "commissioned",
+      "executor": {
+        "id": "truck",
+        "kind": "prompt_family",
+        "maxQuantity": 10,
+        "version": "sha256:e7c2a13a818da636bb32ea3027cd3d2be1a88fd8c9c74e87cf67206f3188ceff"
+      },
+      "formatContractVersion": "sha256:89bb6c2718e3720302e8bee167660d8a2528a1dbe15fed43aaacea88e6671851",
+      "formatSlug": "truck-scenic",
+      "materialSource": "generated_video",
+      "output": {
+        "aspectRatio": "9:16",
+        "audioPolicy": "campaign_sound_bound_downstream",
+        "container": "video/mp4",
+        "durationPolicy": "executor_bound"
+      },
+      "reviewAuthority": "promptCatalog.families.truck.visual_reference",
+      "reviewGates": [
+        "technical_video",
+        "ocr_text",
+        "visual_dna",
+        "complete_subject_geometry",
+        "duplicate_and_never_reuse"
+      ]
+    },
+    {
+      "assetType": "video/mp4",
+      "contentEngine": "ai_video",
+      "contentNiche": "TRUCK",
+      "creativeAuthority": {
+        "id": "ugc",
+        "kind": "prompt_family",
+        "version": "sha256:e7c2a13a818da636bb32ea3027cd3d2be1a88fd8c9c74e87cf67206f3188ceff"
+      },
+      "definitionGaps": [],
+      "definitionStatus": "complete",
+      "dimensions": {
+        "duration": {
+          "authority": "promptCatalog.providers.hailuo.base_input.duration",
+          "rule": "Six-second generation is bound by the exact commissioned Hailuo provider configuration.",
+          "status": "defined"
+        },
+        "lighting": {
+          "authority": "promptCatalog.families.ugc.slots.light",
+          "rule": "Golden hour, warm afternoon, overcast daylight, or early-morning gold from the reviewed menu.",
+          "status": "defined"
+        },
+        "motion": {
+          "authority": "promptCatalog.families.ugc.quality_guards",
+          "rule": "Handheld camera drift only; the truck and wheels stay completely stationary.",
+          "status": "defined"
+        },
+        "negativeRules": {
+          "authority": "promptCatalog.families.ugc.quality_guards",
+          "rule": "Reject people, wheel motion, geometry inconsistency, unapproved text, and reused imagery.",
+          "status": "defined"
+        },
+        "referenceExamples": {
+          "authority": "promptCatalog.formats.truck-ugc.note",
+          "rule": "The prompt family is fully specified but remains parked because measured keeper yield is unacceptable.",
+          "status": "defined"
+        },
+        "setting": {
+          "authority": "promptCatalog.families.ugc.slots.setting",
+          "rule": "Farm, muddy backroad, gravel lot, dirt turnout, and ranch-drive settings from the reviewed menu.",
+          "status": "defined"
+        },
+        "shotGrammar": {
+          "authority": "promptCatalog.families.ugc.template",
+          "rule": "Handheld smartphone UGC framing with gentle phone drift and the truck filling most of frame.",
+          "status": "defined"
+        },
+        "subject": {
+          "authority": "promptCatalog.families.ugc.fixed_subject",
+          "rule": "A lifted black crew-cab pickup on 35-inch mud tires with only the reviewed grille lettering.",
+          "status": "defined"
+        },
+        "textPolicy": {
+          "authority": "promptCatalog.families.ugc.quality_guards",
+          "rule": "No on-screen text and no lettering outside the reviewed grille treatment.",
+          "status": "defined"
+        }
+      },
+      "distribution": {
+        "captions": "page_binding_required",
+        "sounds": "page_binding_required"
+      },
+      "executionStatus": "uncommissioned",
+      "executor": null,
+      "formatContractVersion": "sha256:18e41f914afada14bbf46f5abe18bf1f3885ad680bd24bda908b417191110aae",
+      "formatSlug": "truck-ugc",
+      "materialSource": "generated_video",
+      "output": {
+        "aspectRatio": "9:16",
+        "audioPolicy": "campaign_sound_bound_downstream",
+        "container": "video/mp4",
+        "durationPolicy": "executor_bound"
+      },
+      "reviewAuthority": "promptCatalog.families.ugc.quality_guards",
+      "reviewGates": [
+        "technical_video",
+        "ocr_text",
+        "visual_dna",
+        "geometry",
+        "duplicate_and_never_reuse",
+        "keeper_yield_release_gate"
+      ]
+    },
+    {
+      "assetType": "video/mp4",
+      "contentEngine": "sourced_slideshow",
+      "contentNiche": "slideshow",
+      "creativeAuthority": {
+        "id": "syzygy-slideshow",
+        "kind": "slideshow_renderer",
+        "version": "sha256:1c800420efd659f1f0a38608f6e34d3a38d16da53a43cdf8cc27c67f7cb0440e"
+      },
+      "definitionGaps": [],
+      "definitionStatus": "complete",
+      "dimensions": {
+        "duration": {
+          "authority": "syzygy-slideshow.output",
+          "rule": "The Syzygy executor renders the closed template sequence as a vertical short-form video and records its exact output duration in technical QA.",
+          "status": "defined"
+        },
+        "lighting": {
+          "authority": "artifact.source.media+dossier.treatment",
+          "rule": "Lighting comes from the selected approved media and the locked Dossier colour treatment; the renderer does not invent a different visual source.",
+          "status": "defined"
+        },
+        "motion": {
+          "authority": "syzygy-slideshow.selection",
+          "rule": "Motion is limited to the selected source clips and the chosen Syzygy slideshow template transitions.",
+          "status": "defined"
+        },
+        "negativeRules": {
+          "authority": "syzygy-slideshow.reservation+reviewGates",
+          "rule": "Reject missing, changed, cross-page, repeated-plan, or unproven library media, and any output that bakes a caption, hook, lyric, or original-audio into the neutral background; output must pass technical, provenance, text-layout, and duplicate review.",
+          "status": "defined"
+        },
+        "referenceExamples": {
+          "authority": "artifact.source.media",
+          "rule": "The exact object keys, byte counts, ETags when available, and SHA-256 observations used by each render are preserved in its artifact source manifest.",
+          "status": "defined"
+        },
+        "setting": {
+          "authority": "artifact.source.media",
+          "rule": "Settings remain those present in the approved page-scoped R2 photos or clips selected for the render.",
+          "status": "defined"
+        },
+        "shotGrammar": {
+          "authority": "syzygy-slideshow.formats.ugc-slideshow.templates+pageTreatments.curatedVideoPlan",
+          "rule": "Generic UGC pages render a neutral vertical clean-slideshow sequence using the template's exact ordered media count; the Culture Core page renders an operator-approved curated video montage of ordered source clip windows instead of a fixed photo cycle.",
+          "status": "defined"
+        },
+        "subject": {
+          "authority": "production.sourceLibraryId",
+          "rule": "Every frame comes from the exact page-scoped Syzygy library of approved photos or source clip windows; another page's media may not substitute for it.",
+          "status": "defined"
+        },
+        "textPolicy": {
+          "authority": "syzygy-slideshow.output.audioPolicy",
+          "rule": "The visual render introduces no page caption, hook, or lyric copy. The UGC format is submitted with an explicit blank hook (empty text, position none), empty lyrics, and no captions so the neutral background carries no baked text; the page caption bank is bound downstream by Control Plane.",
+          "status": "defined"
+        }
+      },
+      "distribution": {
+        "captions": "page_binding_required",
+        "sounds": "page_binding_required"
+      },
+      "executionStatus": "commissioned",
+      "executor": {
+        "id": "syzygy-slideshow",
+        "kind": "slideshow_renderer",
+        "maxQuantity": 10,
+        "version": "sha256:1c800420efd659f1f0a38608f6e34d3a38d16da53a43cdf8cc27c67f7cb0440e"
+      },
+      "formatContractVersion": "sha256:9b13a25a76ece570244c08bc7dc316f15818113b6cc8352916c7a0bc1f50b65f",
+      "formatSlug": "ugc-slideshow",
+      "materialSource": "image_library",
+      "output": {
+        "aspectRatio": "9:16",
+        "audioPolicy": "campaign_sound_bound_downstream",
+        "container": "video/mp4",
+        "durationPolicy": "executor_bound"
+      },
+      "reviewAuthority": "syzygy-slideshow.output+artifact.source.media",
+      "reviewGates": [
+        "technical_video",
+        "rights_and_provenance",
+        "text_layout",
+        "duplicate_and_never_reuse"
+      ]
+    }
+  ],
+  "schema": "content-lab.format-contract-status.v1"
+}

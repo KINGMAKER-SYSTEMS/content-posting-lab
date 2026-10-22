@@ -1,0 +1,43 @@
+{
+  "bytes": 42,
+  "jobId": "cpl-0000000000000001",
+  "model": {
+    "fallback": false,
+    "fallbackReason": null,
+    "name": "glm-4.6v-flash",
+    "provider": "z.ai",
+    "sampledFrames": [],
+    "status": "unavailable",
+    "urlHost": "api.z.ai"
+  },
+  "ocr": {
+    "candidateFrames": [],
+    "engine": "tesseract",
+    "languages": [
+      "eng",
+      "osd"
+    ],
+    "minimumAlphanumericCharacters": 2,
+    "minimumWordConfidence": 80,
+    "orientations": [
+      0,
+      180
+    ],
+    "psm": 12,
+    "status": "unavailable",
+    "workingLongEdge": "native"
+  },
+  "outputIndex": 0,
+  "pageId": "acct:culture-ugc-test",
+  "reason": "scan_pending",
+  "sampling": {
+    "algorithm": "tesseract-psm12-words-vision-corroborated-v6",
+    "expectedFrameCount": 0,
+    "frameCount": 0,
+    "mode": "all_frames"
+  },
+  "scannedAt": "2026-01-02T03:04:05.123456+00:00",
+  "schema": "content-lab.visual-admission.v1",
+  "sha256": "ece79679ad1b0b7e505d3d50bd9ee80d943123f28315e427c38a8b796865c314",
+  "verdict": "unavailable"
+}

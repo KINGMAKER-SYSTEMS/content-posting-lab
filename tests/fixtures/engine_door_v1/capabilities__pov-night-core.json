@@ -1,0 +1,11 @@
+{
+  "capabilities": [
+    {
+      "engine": "sourced_video",
+      "maxQuantity": 10,
+      "recipeId": "pov-night-core:master",
+      "recipeVersion": "sha256:00e7ff5b0ffcdf602fde7ccab7f38bdbe3a5cdc05b7c513f015d1f1723749ec6"
+    }
+  ],
+  "schema": "content-lab.response.v1"
+}

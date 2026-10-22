@@ -1,0 +1,29 @@
+{
+  "capturedAt": "2026-01-02T03:04:05.123456+00:00",
+  "pages": [
+    {
+      "accountType": "ugc",
+      "archived": false,
+      "automationMode": "Automation",
+      "contentEngine": "ai_video",
+      "contentNiche": "TRUCK",
+      "group": "WARNER",
+      "groupLabel": "Warner UGC",
+      "handle": "roster.page",
+      "notionPageId": "2f4b1c40-aaaa-bbbb-cccc-ddddeeeeffff",
+      "pageId": "acct:roster-page",
+      "pageType": "UGC theme page",
+      "pipeline": "Flow Stage",
+      "posterName": "mon",
+      "project": "trucks",
+      "soundsReference": null,
+      "source": "notion",
+      "status": "Active",
+      "tiktokUrl": "https://www.tiktok.com/@roster.page",
+      "vaultUrl": "https://shipstream.test/vault/roster.page"
+    }
+  ],
+  "projectionHash": "sha256:9efca9433344044980bb2cd01957e2f4000075c1e454b2c24afa7b7ec48cc0b1",
+  "schema": "content-lab.response.v1",
+  "snapshotVersion": "r9efca9433344"
+}

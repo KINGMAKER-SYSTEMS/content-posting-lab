@@ -1,0 +1,9 @@
+{
+  "dossierRevision": "rev-ugc",
+  "engine": "sourced_slideshow",
+  "recipeId": "ugc-slideshow:master",
+  "recipeSpecHash": "sha256:0b4e967775c211cc99e02a19fe7dcfc7e1de69f87f2f41d247dd098d05d64c9b",
+  "recipeVersion": "dossier-ugc00000000",
+  "schema": "content-lab.response.v1",
+  "status": "registered"
+}

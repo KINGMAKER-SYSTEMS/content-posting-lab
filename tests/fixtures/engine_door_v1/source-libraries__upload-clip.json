@@ -1,0 +1,9 @@
+{
+  "bytes": 21,
+  "clipSha256": "56b10baa965433614b192e960b5d52f438138820e0ee7de12bb52bef5f8740e6",
+  "libraryId": "pov-dirt-bike-8791-20260828",
+  "manifestSha256": "sha256:56a6003fc1e8c0aa3afc26e90990396a02058e0d614e1f9b11e9e148657c2453",
+  "recipeVersion": "v56a6003fc1e8",
+  "schema": "content-lab.source-library-response.v1",
+  "status": "staged"
+}

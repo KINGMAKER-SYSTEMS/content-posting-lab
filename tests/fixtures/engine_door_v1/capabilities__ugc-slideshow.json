@@ -1,0 +1,11 @@
+{
+  "capabilities": [
+    {
+      "engine": "sourced_slideshow",
+      "maxQuantity": 1,
+      "recipeId": "ugc-slideshow:master",
+      "recipeVersion": "dossier-ugc00000000"
+    }
+  ],
+  "schema": "content-lab.response.v1"
+}

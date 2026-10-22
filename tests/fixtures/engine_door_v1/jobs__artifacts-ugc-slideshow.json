@@ -1,0 +1,22 @@
+{
+  "artifacts": [
+    {
+      "bytes": 42,
+      "sha256": "ece79679ad1b0b7e505d3d50bd9ee80d943123f28315e427c38a8b796865c314",
+      "source": {
+        "kind": "syzygy_slideshow",
+        "planSignature": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "thumbnail": {
+        "bytes": 40,
+        "sha256": "791b62d84ea79e08ebbd95e86940841597bc0f86e77779d7035fe0a8191e0e96",
+        "type": "image/jpeg",
+        "url": "http://testserver/api/control-plane/v1/jobs/cpl-0000000000000001/thumbnail/0?token=uuuuuuuuuuuuuuuuuuuuuuuu"
+      },
+      "type": "video",
+      "url": "http://testserver/api/control-plane/v1/jobs/cpl-0000000000000001/download/0?token=uuuuuuuuuuuuuuuuuuuuuuuu"
+    }
+  ],
+  "jobId": "cpl-0000000000000001",
+  "schema": "content-lab.response.v1"
+}

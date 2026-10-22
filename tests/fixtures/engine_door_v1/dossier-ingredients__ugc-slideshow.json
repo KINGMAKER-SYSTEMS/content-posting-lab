@@ -1,0 +1,4017 @@
+{
+  "catalogVersion": "sha256:d5f40808c4982f0e30b53aae9de140258918b3c74bc0cddec2b6d4543ff4c3f1",
+  "currentFormatCandidates": [
+    "image-video",
+    "ugc-slideshow"
+  ],
+  "formats": [
+    {
+      "blockers": [],
+      "contentEngine": "ai_video",
+      "contentNiche": "BOAT",
+      "definitionStatus": "complete",
+      "executionStatus": "commissioned",
+      "executor": {
+        "id": "boat",
+        "kind": "prompt_family",
+        "maxQuantity": 10,
+        "version": "sha256:8183a0d7c3b5f773a553808a8fdb1b4548ace6f1628e9e196a9f037d4b262a4a"
+      },
+      "formatContractVersion": "sha256:8c19522bbc6f69cee3c6d9fe72fa294293ba4f75399c5938648350d24783c2de",
+      "formatId": "boat-lake",
+      "ingredients": [
+        {
+          "binding": {
+            "defaults": {
+              "duration": 6,
+              "optimize_prompt": false,
+              "resolution": "1080p"
+            },
+            "familyOverrides": {
+              "crop_mode": "both",
+              "optimize_prompt": false
+            },
+            "inputContract": {
+              "lastImage": false,
+              "referenceImage": "not_advertised"
+            },
+            "modelId": "minimax/hailuo-2.3",
+            "providerId": "hailuo"
+          },
+          "ingredientId": "visual-model",
+          "kind": "model",
+          "options": [
+            {
+              "controls": {},
+              "defaults": {
+                "aspect_ratio": "9:16",
+                "duration": 7,
+                "image_resolution": "2 MP",
+                "output_format": "jpg",
+                "output_quality": 95,
+                "resolution": "1080p"
+              },
+              "inputContract": {
+                "lastImage": false,
+                "referenceImage": "not_advertised"
+              },
+              "modelId": "black-forest-labs/flux-2-pro",
+              "providerId": "flux-image",
+              "providerLabel": "FLUX.2 Pro Still"
+            },
+            {
+              "controls": {
+                "crop_mode": {
+                  "default": "both",
+                  "label": "Multi-Crop",
+                  "note": "dual=2, triptych=3, both=5 crops from one 16:9",
+                  "options": [
+                    "none",
+                    "dual",
+                    "triptych",
+                    "both"
+                  ],
+                  "type": "select"
+                },
+                "duration": {
+                  "default": 6,
+                  "label": "Duration (seconds)",
+                  "note": "10s only at 768p",
+                  "options": [
+                    6,
+                    10
+                  ],
+                  "type": "select"
+                },
+                "optimize_prompt": {
+                  "default": true,
+                  "label": "Prompt Optimizer",
+                  "type": "toggle"
+                },
+                "resolution": {
+                  "default": "768p",
+                  "label": "Resolution",
+                  "note": "1080p locks duration to 6s",
+                  "options": [
+                    "768p",
+                    "1080p"
+                  ],
+                  "type": "select"
+                }
+              },
+              "defaults": {
+                "duration": 6,
+                "optimize_prompt": false,
+                "resolution": "1080p"
+              },
+              "inputContract": {
+                "lastImage": false,
+                "referenceImage": "not_advertised"
+              },
+              "modelId": "minimax/hailuo-2.3",
+              "providerId": "hailuo",
+              "providerLabel": "Hailuo 2.3"
+            }
+          ],
+          "required": true,
+          "status": "bound"
+        },
+        {
+          "binding": {
+            "familyId": "boat",
+            "fixedSubject": "Varied onboard boat scenes from the existing Minimax bucket",
+            "method": "t2v",
+            "motion": null,
+            "qualityGuards": "Use the original boat prompt wording and the existing five-way crop; no fixed image anchor.",
+            "template": "{scene}",
+            "variationGroups": {
+              "scene": [
+                "POV Tik Tok style video from onboard a speedboat at night in the harbor of Shanghai, the moody dark waters reflect the towers skyline's bright fluorescent lights that adorn the scaffolding, cinematic raw vibes, camera pans from a view of the dark choppy water to a handheld semi shaky reveal of the city skyline lit up at night",
+                "POV Tik Tok style video from onboard a speedboat at night in the harbor of Shanghai, the moody dark waters reflect the towers skyline's bright fluorescent lights that adorn the scaffolding, cinematic raw vibes, camera pans from a view of the dark choppy water to a handheld semi shaky reveal of the city skyline lit up at night Every visible boat surface is plain and unmarked. Absolutely no brand names, fake or misspelled brands, logos, badges, decals, registration numbers, model names, pseudo-text, lettering, labels, readable instruments, captions, subtitles, watermarks, channel marks, or readable signs anywhere in frame.",
+                "POV TikTok-style video from onboard a fast speedboat at dusk in Singapore Marina Bay. Fast hook opening: camera starts low and tight on dark choppy water rushing past the boat, neon and sunset reflections streaking across the waves, water spray hitting the lens, intense speed and handheld shake. After 1 second, the camera does a quick cinematic whip-tilt / pan up from the water into a dramatic reveal of the Singapore skyline, glowing high-rise tower lights and pastel dusk sky reflecting on the moody harbor water. Raw nightlife energy, semi-shaky handheld phone footage, fast zoom feeling, cinematic but realistic, no text, no logos. Every visible boat surface is plain and unmarked. Absolutely no brand names, fake or misspelled brands, logos, badges, decals, registration numbers, model names, pseudo-text, lettering, labels, readable instruments, captions, subtitles, watermarks, channel marks, or readable signs anywhere in frame.",
+                "POV TikTok-style video from onboard a fast speedboat at dusk in New York Harbor. Fast hook opening: camera starts low and tight on dark choppy water rushing past the boat, neon and sunset reflections streaking across the waves, water spray hitting the lens, intense speed and handheld shake. After 1 second, the camera does a quick cinematic whip-tilt / pan up from the water into a dramatic reveal of the Manhattan skyline, glowing high-rise tower lights and pastel dusk sky reflecting on the moody harbor water. Raw nightlife energy, semi-shaky handheld phone footage, fast zoom feeling, cinematic but realistic, no text, no logos. Every visible boat surface is plain and unmarked. Absolutely no brand names, fake or misspelled brands, logos, badges, decals, registration numbers, model names, pseudo-text, lettering, labels, readable instruments, captions, subtitles, watermarks, channel marks, or readable signs anywhere in frame.",
+                "POV TikTok-style video from onboard a fast speedboat at dusk in Dubai Marina. Fast hook opening: camera starts low and tight on dark choppy water rushing past the boat, neon and sunset reflections streaking across the waves, water spray hitting the lens, intense speed and handheld shake. After 1 second, the camera does a quick cinematic whip-tilt / pan up from the water into a dramatic reveal of the Dubai skyline, glowing high-rise tower lights and pastel dusk sky reflecting on the moody harbor water. Raw nightlife energy, semi-shaky handheld phone footage, fast zoom feeling, cinematic but realistic, no text, no logos. Every visible boat surface is plain and unmarked. Absolutely no brand names, fake or misspelled brands, logos, badges, decals, registration numbers, model names, pseudo-text, lettering, labels, readable instruments, captions, subtitles, watermarks, channel marks, or readable signs anywhere in frame.",
+                "POV TikTok-style video from onboard a fast speedboat at dusk in Hong Kong Victoria Harbour. Fast hook opening: camera starts low and tight on dark choppy water rushing past the boat, neon and sunset reflections streaking across the waves, water spray hitting the lens, intense speed and handheld shake. After 1 second, the camera does a quick cinematic whip-tilt / pan up from the water into a dramatic reveal of the Hong Kong skyline, glowing high-rise tower lights and pastel dusk sky reflecting on the moody harbor water. Raw nightlife energy, semi-shaky handheld phone footage, fast zoom feeling, cinematic but realistic, no text, no logos. Every visible boat surface is plain and unmarked. Absolutely no brand names, fake or misspelled brands, logos, badges, decals, registration numbers, model names, pseudo-text, lettering, labels, readable instruments, captions, subtitles, watermarks, channel marks, or readable signs anywhere in frame."
+              ]
+            }
+          },
+          "ingredientId": "prompt-module",
+          "kind": "prompt_module",
+          "options": [],
+          "required": true,
+          "status": "bound"
+        },
+        {
+          "binding": null,
+          "ingredientId": "reference-media",
+          "kind": "reference_media",
+          "options": [],
+          "required": false,
+          "status": "optional"
+        },
+        {
+          "binding": {
+            "clipCrop": {
+              "focusX": {
+                "default": 0.5,
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "type": "range"
+              },
+              "focusY": {
+                "default": 0.5,
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "type": "range"
+              },
+              "zoom": {
+                "default": 1.0,
+                "maximum": 3.0,
+                "minimum": 1.0,
+                "type": "range"
+              }
+            },
+            "clipSpeed": {
+              "default": 1.0,
+              "maximum": 2.0,
+              "minimum": 0.5,
+              "type": "range"
+            },
+            "filters": {
+              "brightness": {
+                "default": 1.0,
+                "label": "Brightness",
+                "maximum": 3.0,
+                "minimum": 0.0,
+                "step": 0.05,
+                "type": "range"
+              },
+              "contrast": {
+                "default": 1.0,
+                "label": "Contrast",
+                "maximum": 3.0,
+                "minimum": 0.0,
+                "step": 0.05,
+                "type": "range"
+              },
+              "fade": {
+                "default": 0.0,
+                "label": "Fade",
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "step": 0.05,
+                "type": "range"
+              },
+              "grain": {
+                "default": 0.0,
+                "label": "Grain",
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "step": 0.05,
+                "type": "range"
+              },
+              "saturation": {
+                "default": 1.0,
+                "label": "Saturation",
+                "maximum": 3.0,
+                "minimum": 0.0,
+                "step": 0.05,
+                "type": "range"
+              },
+              "vignette": {
+                "default": 0.0,
+                "label": "Vignette",
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "step": 0.05,
+                "type": "range"
+              },
+              "warmth": {
+                "default": 0.0,
+                "label": "Warmth",
+                "maximum": 1.0,
+                "minimum": -1.0,
+                "step": 0.05,
+                "type": "range"
+              }
+            }
+          },
+          "ingredientId": "clip-treatment",
+          "kind": "render_treatment",
+          "options": [],
+          "required": true,
+          "status": "bound"
+        },
+        {
+          "binding": null,
+          "ingredientId": "caption-bank",
+          "kind": "caption_bank",
+          "options": [],
+          "required": true,
+          "status": "page_binding_required"
+        },
+        {
+          "binding": null,
+          "ingredientId": "sound-collection",
+          "kind": "sound_collection",
+          "options": [],
+          "required": true,
+          "status": "page_binding_required"
+        }
+      ],
+      "materialSource": "generated_video",
+      "productionSelections": [
+        {
+          "catalogVersion": "sha256:55c05c8be486120cb524c61239adc9b0e56abfa59f847f5e4c11277e7411c15b",
+          "modelId": "black-forest-labs/flux-2-pro",
+          "promptModuleId": "boat",
+          "providerId": "flux-image",
+          "referenceSetId": null,
+          "sourceLibraryId": null
+        },
+        {
+          "catalogVersion": "sha256:f910655a93ef0583c19ee6389ec642496f316e378ab6598034862e152bf39a2b",
+          "modelId": "minimax/hailuo-2.3",
+          "promptModuleId": "boat",
+          "providerId": "hailuo",
+          "referenceSetId": null,
+          "sourceLibraryId": null
+        }
+      ],
+      "recipeId": "boat-lake:master",
+      "review": {
+        "authority": "promptCatalog.families.boat.quality_guards",
+        "gates": [
+          "technical_video",
+          "ocr_text",
+          "visual_dna",
+          "duplicate_and_never_reuse"
+        ]
+      }
+    },
+    {
+      "blockers": [],
+      "contentEngine": "ai_video",
+      "contentNiche": "Coffee",
+      "definitionStatus": "complete",
+      "executionStatus": "commissioned",
+      "executor": {
+        "id": "coffee",
+        "kind": "prompt_family",
+        "maxQuantity": 10,
+        "version": "sha256:e7c2a13a818da636bb32ea3027cd3d2be1a88fd8c9c74e87cf67206f3188ceff"
+      },
+      "formatContractVersion": "sha256:ef0b121a66ec33c500c992a12e20a963c6234237017443da08747fc7a6753bfc",
+      "formatId": "coffee-tok",
+      "ingredients": [
+        {
+          "binding": {
+            "defaults": {
+              "resolution": "720p"
+            },
+            "familyOverrides": {},
+            "inputContract": {
+              "lastImage": true,
+              "referenceImage": "required"
+            },
+            "modelId": "wan-video/wan-2.2-i2v-fast",
+            "providerId": "wan-i2v-fast"
+          },
+          "ingredientId": "visual-model",
+          "kind": "model",
+          "options": [
+            {
+              "controls": {
+                "_advanced": {
+                  "frames_per_second": {
+                    "default": 16,
+                    "label": "FPS",
+                    "max": 30,
+                    "min": 5,
+                    "step": 1,
+                    "type": "range"
+                  },
+                  "go_fast": {
+                    "default": true,
+                    "label": "Go Fast",
+                    "type": "toggle"
+                  },
+                  "interpolate_output": {
+                    "default": false,
+                    "label": "Interpolate to 30fps",
+                    "type": "toggle"
+                  },
+                  "lora_scale_transformer": {
+                    "default": 1,
+                    "label": "LoRA Scale",
+                    "max": 2,
+                    "min": 0,
+                    "step": 0.1,
+                    "type": "range"
+                  },
+                  "lora_weights_transformer": {
+                    "default": "",
+                    "label": "LoRA Weights URL",
+                    "placeholder": "https://huggingface.co/.../lora.safetensors",
+                    "type": "text"
+                  },
+                  "negative_prompt": {
+                    "default": "",
+                    "label": "Negative Prompt",
+                    "placeholder": "motion, morphing, text, extra vehicles...",
+                    "type": "text"
+                  },
+                  "sample_shift": {
+                    "default": 12,
+                    "label": "Sample Shift",
+                    "max": 20,
+                    "min": 1,
+                    "step": 1,
+                    "type": "range"
+                  }
+                },
+                "image_required": true,
+                "last_image_supported": true,
+                "num_frames": {
+                  "default": 81,
+                  "label": "Frames",
+                  "max": 121,
+                  "min": 81,
+                  "note": "81 = ~5s, 121 = ~7.5s at 16fps",
+                  "step": 4,
+                  "type": "range"
+                },
+                "resolution": {
+                  "default": "480p",
+                  "label": "Resolution",
+                  "options": [
+                    "480p",
+                    "720p"
+                  ],
+                  "type": "select"
+                }
+              },
+              "defaults": {
+                "resolution": "720p"
+              },
+              "inputContract": {
+                "lastImage": true,
+                "referenceImage": "required"
+              },
+              "modelId": "wan-video/wan-2.2-i2v-fast",
+              "providerId": "wan-i2v-fast",
+              "providerLabel": "Image-to-Video Fast (2.2 14B)"
+            }
+          ],
+          "required": true,
+          "status": "bound"
+        },
+        {
+          "binding": {
+            "familyId": "coffee",
+            "fixedSubject": "one vintage white porcelain teacup (fine bone china) with a thin delicate gold rim and an ornate gold handle to the right, sitting on a matching white porcelain saucer, viewed from directly overhead in a perfect flat-lay, filled with dark near-black coffee, large and positioned in the EXACT dead center of the vertical frame, the cup and saucer filling the width with the saucer edges reaching the left and right edges of the frame, equal black space above and below, on a pure solid black background \u2014 the mindfulsources CoffeeTok look",
+            "method": "i2v",
+            "motion": "Only the coffee surface moves: the tan crema drifts slowly and gently clockwise like real liquid under surface tension, fine micro-foam wisps stretch and relax, tiny rim bubbles hold their size. The white porcelain cup, gold rim, gold handle, and saucer stay perfectly fixed and still \u2014 no cup rotation, no drift, no zoom. Locked overhead camera, pure black background, photorealistic, empty closed frame \u2014 nothing pours or enters, no pitcher, no jug, no kettle, no pour stream, no liquid poured in, no hand, no arm, no object enters from any edge, the scene is complete and unchanged except the coffee surface, no people, no spoon, no second cup, no steam, no text, gentle seamless loop.",
+            "qualityGuards": "photorealistic macro food photograph, EXACTLY ONE vintage white porcelain teacup on its saucer and nothing else, the crema is REAL, clean and appetizing \u2014 genuine fresh-coffee foam (golden crema over clean dark coffee), whether a full bright layer or a sparse scatter of fine golden bubbles; NEVER a muddy, uniform, flat, or manufactured dark blob; candid with fine natural micro-foam and tiny bubbles (never latte art, never a milky latte, never a painted or CGI graphic), soft even diffuse studio light, matte surface with no plastic or glossy sheen, flat pure black (#000000) background with NO gradient, vignette, or grey wash, the cup+saucer large and dead-center, saucer edges reaching the left and right frame edges, with equal generous black caption space above and below, absolutely nothing else in frame \u2014 no second cup, no spoon, no hands, no arms, no people, no steam, no food, no text, no letters, no numbers, no logos, sharp focus, vertical 9:16 portrait",
+            "template": "Photorealistic top-down flat-lay macro photograph of one vintage white porcelain teacup with a thin gold rim {cup_detail} and an ornate gold handle to the right, on a matching white saucer, filled with dark near-black coffee showing {crema}, centered on a flat pure black (#000000) background with no gradient or vignette. {guards}",
+            "variationGroups": {
+              "crema": [
+                "a full light golden-tan crema covering most of the surface with a soft swirl in the center",
+                "a full light golden crema with a gentle off-center spiral and fine bubbles",
+                "an even bright creamy tan crema blanket with delicate micro-bubbles across the whole surface",
+                "an appetizing marbled golden-tan crema with visible round bubble holes and a little dark coffee peeking through the foam",
+                "mostly clean rich dark black coffee with a delicate sparse scatter of fine golden crema bubbles across the surface",
+                "a bright creamy tan crema with clustered fine bubbles and a soft central eye"
+              ],
+              "cup_detail": [
+                "and a plain clean rim",
+                "with a second fine inner gold band",
+                "with a softly scalloped fluted rim"
+              ]
+            }
+          },
+          "ingredientId": "prompt-module",
+          "kind": "prompt_module",
+          "options": [],
+          "required": true,
+          "status": "bound"
+        },
+        {
+          "binding": {
+            "bytes": 973371,
+            "kind": "image",
+            "path": "anchors/coffee-crema-ribbon-anchor.png",
+            "referenceSetId": "anchor:ee2dd41949eb6566a858db9c88ae9c9349dcc77a199d08088336143a4e1d1649",
+            "sha256": "ee2dd41949eb6566a858db9c88ae9c9349dcc77a199d08088336143a4e1d1649"
+          },
+          "ingredientId": "reference-media",
+          "kind": "reference_media",
+          "options": [],
+          "required": true,
+          "status": "bound"
+        },
+        {
+          "binding": {
+            "clipCrop": {
+              "focusX": {
+                "default": 0.5,
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "type": "range"
+              },
+              "focusY": {
+                "default": 0.5,
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "type": "range"
+              },
+              "zoom": {
+                "default": 1.0,
+                "maximum": 3.0,
+                "minimum": 1.0,
+                "type": "range"
+              }
+            },
+            "clipSpeed": {
+              "default": 1.0,
+              "maximum": 2.0,
+              "minimum": 0.5,
+              "type": "range"
+            },
+            "filters": {
+              "brightness": {
+                "default": 1.0,
+                "label": "Brightness",
+                "maximum": 3.0,
+                "minimum": 0.0,
+                "step": 0.05,
+                "type": "range"
+              },
+              "contrast": {
+                "default": 1.0,
+                "label": "Contrast",
+                "maximum": 3.0,
+                "minimum": 0.0,
+                "step": 0.05,
+                "type": "range"
+              },
+              "fade": {
+                "default": 0.0,
+                "label": "Fade",
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "step": 0.05,
+                "type": "range"
+              },
+              "grain": {
+                "default": 0.0,
+                "label": "Grain",
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "step": 0.05,
+                "type": "range"
+              },
+              "saturation": {
+                "default": 1.0,
+                "label": "Saturation",
+                "maximum": 3.0,
+                "minimum": 0.0,
+                "step": 0.05,
+                "type": "range"
+              },
+              "vignette": {
+                "default": 0.0,
+                "label": "Vignette",
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "step": 0.05,
+                "type": "range"
+              },
+              "warmth": {
+                "default": 0.0,
+                "label": "Warmth",
+                "maximum": 1.0,
+                "minimum": -1.0,
+                "step": 0.05,
+                "type": "range"
+              }
+            }
+          },
+          "ingredientId": "clip-treatment",
+          "kind": "render_treatment",
+          "options": [],
+          "required": true,
+          "status": "bound"
+        },
+        {
+          "binding": null,
+          "ingredientId": "caption-bank",
+          "kind": "caption_bank",
+          "options": [],
+          "required": true,
+          "status": "page_binding_required"
+        },
+        {
+          "binding": null,
+          "ingredientId": "sound-collection",
+          "kind": "sound_collection",
+          "options": [],
+          "required": true,
+          "status": "page_binding_required"
+        }
+      ],
+      "materialSource": "generated_video",
+      "productionSelections": [
+        {
+          "catalogVersion": "sha256:94dd504f4193e397a66de83ac82f76a260ac8ebad6fc8683a1bc07e086625cb2",
+          "modelId": "wan-video/wan-2.2-i2v-fast",
+          "promptModuleId": "coffee",
+          "providerId": "wan-i2v-fast",
+          "referenceSetId": "anchor:ee2dd41949eb6566a858db9c88ae9c9349dcc77a199d08088336143a4e1d1649",
+          "sourceLibraryId": null
+        }
+      ],
+      "recipeId": "coffee-tok:master",
+      "review": {
+        "authority": "promptCatalog.families.coffee.quality_guards",
+        "gates": [
+          "technical_video",
+          "ocr_text",
+          "visual_dna",
+          "duplicate_and_never_reuse"
+        ]
+      }
+    },
+    {
+      "blockers": [
+        "creativeAuthority",
+        "duration",
+        "lighting",
+        "motion",
+        "negativeRules",
+        "prompt-module:missing",
+        "referenceExamples",
+        "reviewAuthority",
+        "setting",
+        "shotGrammar",
+        "subject",
+        "textPolicy",
+        "visual-model:missing"
+      ],
+      "contentEngine": "ai_video",
+      "contentNiche": "Construction",
+      "definitionStatus": "incomplete",
+      "executionStatus": "uncommissioned",
+      "executor": null,
+      "formatContractVersion": "sha256:1626968f80f030392c8d46e54ab239bfdce4ddd7c0c5f40db7aa1734ee04bd77",
+      "formatId": "construction-scenic",
+      "ingredients": [
+        {
+          "binding": null,
+          "ingredientId": "visual-model",
+          "kind": "model",
+          "options": [
+            {
+              "controls": {},
+              "defaults": {
+                "aspect_ratio": "9:16",
+                "duration": 7,
+                "image_resolution": "2 MP",
+                "output_format": "jpg",
+                "output_quality": 95,
+                "resolution": "1080p"
+              },
+              "inputContract": {
+                "lastImage": false,
+                "referenceImage": "not_advertised"
+              },
+              "modelId": "black-forest-labs/flux-2-pro",
+              "providerId": "flux-image",
+              "providerLabel": "FLUX.2 Pro Still"
+            },
+            {
+              "controls": {
+                "crop_mode": {
+                  "default": "both",
+                  "label": "Multi-Crop",
+                  "note": "dual=2, triptych=3, both=5 crops from one 16:9",
+                  "options": [
+                    "none",
+                    "dual",
+                    "triptych",
+                    "both"
+                  ],
+                  "type": "select"
+                },
+                "duration": {
+                  "default": 6,
+                  "label": "Duration (seconds)",
+                  "note": "10s only at 768p",
+                  "options": [
+                    6,
+                    10
+                  ],
+                  "type": "select"
+                },
+                "optimize_prompt": {
+                  "default": true,
+                  "label": "Prompt Optimizer",
+                  "type": "toggle"
+                },
+                "resolution": {
+                  "default": "768p",
+                  "label": "Resolution",
+                  "note": "1080p locks duration to 6s",
+                  "options": [
+                    "768p",
+                    "1080p"
+                  ],
+                  "type": "select"
+                }
+              },
+              "defaults": {
+                "duration": 6,
+                "optimize_prompt": false,
+                "resolution": "1080p"
+              },
+              "inputContract": {
+                "lastImage": false,
+                "referenceImage": "not_advertised"
+              },
+              "modelId": "minimax/hailuo-2.3",
+              "providerId": "hailuo",
+              "providerLabel": "Hailuo 2.3"
+            }
+          ],
+          "required": true,
+          "status": "missing"
+        },
+        {
+          "binding": null,
+          "ingredientId": "prompt-module",
+          "kind": "prompt_module",
+          "options": [],
+          "required": true,
+          "status": "missing"
+        },
+        {
+          "binding": null,
+          "ingredientId": "reference-media",
+          "kind": "reference_media",
+          "options": [],
+          "required": false,
+          "status": "optional"
+        },
+        {
+          "binding": {
+            "clipCrop": {
+              "focusX": {
+                "default": 0.5,
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "type": "range"
+              },
+              "focusY": {
+                "default": 0.5,
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "type": "range"
+              },
+              "zoom": {
+                "default": 1.0,
+                "maximum": 3.0,
+                "minimum": 1.0,
+                "type": "range"
+              }
+            },
+            "clipSpeed": {
+              "default": 1.0,
+              "maximum": 2.0,
+              "minimum": 0.5,
+              "type": "range"
+            },
+            "filters": {
+              "brightness": {
+                "default": 1.0,
+                "label": "Brightness",
+                "maximum": 3.0,
+                "minimum": 0.0,
+                "step": 0.05,
+                "type": "range"
+              },
+              "contrast": {
+                "default": 1.0,
+                "label": "Contrast",
+                "maximum": 3.0,
+                "minimum": 0.0,
+                "step": 0.05,
+                "type": "range"
+              },
+              "fade": {
+                "default": 0.0,
+                "label": "Fade",
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "step": 0.05,
+                "type": "range"
+              },
+              "grain": {
+                "default": 0.0,
+                "label": "Grain",
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "step": 0.05,
+                "type": "range"
+              },
+              "saturation": {
+                "default": 1.0,
+                "label": "Saturation",
+                "maximum": 3.0,
+                "minimum": 0.0,
+                "step": 0.05,
+                "type": "range"
+              },
+              "vignette": {
+                "default": 0.0,
+                "label": "Vignette",
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "step": 0.05,
+                "type": "range"
+              },
+              "warmth": {
+                "default": 0.0,
+                "label": "Warmth",
+                "maximum": 1.0,
+                "minimum": -1.0,
+                "step": 0.05,
+                "type": "range"
+              }
+            }
+          },
+          "ingredientId": "clip-treatment",
+          "kind": "render_treatment",
+          "options": [],
+          "required": true,
+          "status": "bound"
+        },
+        {
+          "binding": null,
+          "ingredientId": "caption-bank",
+          "kind": "caption_bank",
+          "options": [],
+          "required": true,
+          "status": "page_binding_required"
+        },
+        {
+          "binding": null,
+          "ingredientId": "sound-collection",
+          "kind": "sound_collection",
+          "options": [],
+          "required": true,
+          "status": "page_binding_required"
+        }
+      ],
+      "materialSource": "generated_video",
+      "productionSelections": [
+        {
+          "catalogVersion": "sha256:2a5a6ba2294163dc923f331910dfff9dace8901e22b8069f0565f140a6d49200",
+          "modelId": "black-forest-labs/flux-2-pro",
+          "promptModuleId": null,
+          "providerId": "flux-image",
+          "referenceSetId": null,
+          "sourceLibraryId": null
+        },
+        {
+          "catalogVersion": "sha256:bbd992b001d85d94637756055735f7c28c63b79062327eb72feaac4acdb7d4ee",
+          "modelId": "minimax/hailuo-2.3",
+          "promptModuleId": null,
+          "providerId": "hailuo",
+          "referenceSetId": null,
+          "sourceLibraryId": null
+        }
+      ],
+      "recipeId": "construction-scenic:master",
+      "review": {
+        "authority": null,
+        "gates": [
+          "technical_video",
+          "ocr_text",
+          "visual_dna",
+          "duplicate_and_never_reuse"
+        ]
+      }
+    },
+    {
+      "blockers": [
+        "image-library:missing",
+        "slideshow-treatment:missing"
+      ],
+      "contentEngine": "sourced_slideshow",
+      "contentNiche": "slideshow",
+      "definitionStatus": "complete",
+      "executionStatus": "commissioned",
+      "executor": {
+        "id": "syzygy-slideshow",
+        "kind": "slideshow_renderer",
+        "maxQuantity": 1,
+        "version": "sha256:fee820be22a84f50cfa80330c5c0d6006b456a468a0bfa0373f9a652d25d599c"
+      },
+      "formatContractVersion": "sha256:7f9ab9cb54e74890e85b4cb453e0e24d44989781232243911b26e997f5166b16",
+      "formatId": "image-video",
+      "ingredients": [
+        {
+          "binding": null,
+          "ingredientId": "image-library",
+          "kind": "image_library",
+          "options": [],
+          "required": true,
+          "status": "missing"
+        },
+        {
+          "binding": null,
+          "ingredientId": "slideshow-treatment",
+          "kind": "slideshow_treatment",
+          "options": [],
+          "required": true,
+          "status": "missing"
+        },
+        {
+          "binding": null,
+          "ingredientId": "caption-bank",
+          "kind": "caption_bank",
+          "options": [],
+          "required": true,
+          "status": "page_binding_required"
+        },
+        {
+          "binding": null,
+          "ingredientId": "sound-collection",
+          "kind": "sound_collection",
+          "options": [],
+          "required": true,
+          "status": "page_binding_required"
+        }
+      ],
+      "materialSource": "image_library",
+      "productionSelections": [],
+      "recipeId": "image-video:master",
+      "review": {
+        "authority": "recipes/executors/syzygy-image-video.v1.json",
+        "gates": [
+          "technical_video",
+          "rights_and_provenance",
+          "text_layout",
+          "duplicate_and_never_reuse"
+        ]
+      }
+    },
+    {
+      "blockers": [
+        "image-library:missing",
+        "slideshow-treatment:missing"
+      ],
+      "contentEngine": "lyrics_slideshows",
+      "contentNiche": "lyric-edits",
+      "definitionStatus": "complete",
+      "executionStatus": "commissioned",
+      "executor": {
+        "id": "syzygy-slideshow",
+        "kind": "slideshow_renderer",
+        "maxQuantity": 10,
+        "version": "sha256:485feda76c885d7aab19be256f61c749edcce19417ebc560d265ba92b60974ad"
+      },
+      "formatContractVersion": "sha256:bc99dded5acb05ea517ea0d244e2f58481a430dececbd7f3df7bd785a7c9a1a2",
+      "formatId": "lyric-edits",
+      "ingredients": [
+        {
+          "binding": null,
+          "ingredientId": "image-library",
+          "kind": "lyric_image_library",
+          "options": [],
+          "required": true,
+          "status": "missing"
+        },
+        {
+          "binding": null,
+          "ingredientId": "slideshow-treatment",
+          "kind": "slideshow_treatment",
+          "options": [],
+          "required": true,
+          "status": "missing"
+        },
+        {
+          "binding": null,
+          "ingredientId": "caption-bank",
+          "kind": "caption_bank",
+          "options": [],
+          "required": true,
+          "status": "page_binding_required"
+        },
+        {
+          "binding": null,
+          "ingredientId": "sound-collection",
+          "kind": "sound_collection",
+          "options": [],
+          "required": true,
+          "status": "page_binding_required"
+        }
+      ],
+      "materialSource": "lyric_image_library",
+      "productionSelections": [],
+      "recipeId": "lyric-edits:master",
+      "review": {
+        "authority": "syzygy-slideshow.output+artifact.source.media",
+        "gates": [
+          "technical_video",
+          "rights_and_provenance",
+          "text_layout",
+          "duplicate_and_never_reuse"
+        ]
+      }
+    },
+    {
+      "blockers": [
+        "image-library:missing",
+        "lyric-timing:missing",
+        "slideshow-treatment:missing"
+      ],
+      "contentEngine": "lyrics_slideshows",
+      "contentNiche": "lyric-edits",
+      "definitionStatus": "complete",
+      "executionStatus": "commissioned",
+      "executor": {
+        "id": "syzygy-slideshow",
+        "kind": "slideshow_renderer",
+        "maxQuantity": 1,
+        "version": "sha256:78da457008391bd873dbc23c57fc7621f9707b8e139781e8d98cea4cdb9f65c9"
+      },
+      "formatContractVersion": "sha256:380e6688c1344dc227fb3099fad375fa4016107b363526f19736b53ffed97234",
+      "formatId": "lyric-video",
+      "ingredients": [
+        {
+          "binding": null,
+          "ingredientId": "image-library",
+          "kind": "lyric_image_library",
+          "options": [],
+          "required": true,
+          "status": "missing"
+        },
+        {
+          "binding": null,
+          "ingredientId": "slideshow-treatment",
+          "kind": "slideshow_treatment",
+          "options": [],
+          "required": true,
+          "status": "missing"
+        },
+        {
+          "binding": null,
+          "ingredientId": "lyric-timing",
+          "kind": "timed_lyrics",
+          "options": [],
+          "required": true,
+          "selectionControl": "lyricTimingSetId",
+          "status": "missing"
+        },
+        {
+          "binding": null,
+          "ingredientId": "caption-bank",
+          "kind": "caption_bank",
+          "options": [],
+          "required": true,
+          "status": "page_binding_required"
+        },
+        {
+          "binding": null,
+          "ingredientId": "sound-collection",
+          "kind": "sound_collection",
+          "options": [],
+          "required": true,
+          "status": "page_binding_required"
+        }
+      ],
+      "materialSource": "lyric_image_library",
+      "productionSelections": [],
+      "recipeId": "lyric-video:master",
+      "review": {
+        "authority": "syzygy-slideshow.output+artifact.source.media",
+        "gates": [
+          "technical_video",
+          "rights_and_provenance",
+          "text_layout",
+          "duplicate_and_never_reuse"
+        ]
+      }
+    },
+    {
+      "blockers": [
+        "image-library:missing",
+        "slideshow-treatment:missing"
+      ],
+      "contentEngine": "sourced_slideshow",
+      "contentNiche": "meme",
+      "definitionStatus": "complete",
+      "executionStatus": "commissioned",
+      "executor": {
+        "id": "syzygy-slideshow",
+        "kind": "slideshow_renderer",
+        "maxQuantity": 10,
+        "version": "sha256:485feda76c885d7aab19be256f61c749edcce19417ebc560d265ba92b60974ad"
+      },
+      "formatContractVersion": "sha256:62f95a4f421215c59cc352e4c63b60606b5c9653d214e95546a9e60fc28bf459",
+      "formatId": "meme-slideshow",
+      "ingredients": [
+        {
+          "binding": null,
+          "ingredientId": "image-library",
+          "kind": "image_library",
+          "options": [],
+          "required": true,
+          "status": "missing"
+        },
+        {
+          "binding": null,
+          "ingredientId": "slideshow-treatment",
+          "kind": "slideshow_treatment",
+          "options": [],
+          "required": true,
+          "status": "missing"
+        },
+        {
+          "binding": null,
+          "ingredientId": "caption-bank",
+          "kind": "caption_bank",
+          "options": [],
+          "required": true,
+          "status": "page_binding_required"
+        },
+        {
+          "binding": null,
+          "ingredientId": "sound-collection",
+          "kind": "sound_collection",
+          "options": [],
+          "required": true,
+          "status": "page_binding_required"
+        }
+      ],
+      "materialSource": "image_library",
+      "productionSelections": [],
+      "recipeId": "meme-slideshow:master",
+      "review": {
+        "authority": "syzygy-slideshow.output+artifact.source.media",
+        "gates": [
+          "technical_video",
+          "rights_and_provenance",
+          "text_layout",
+          "duplicate_and_never_reuse"
+        ]
+      }
+    },
+    {
+      "blockers": [
+        "master-source-video:missing"
+      ],
+      "contentEngine": "sourced_video",
+      "contentNiche": "POV-Club",
+      "definitionStatus": "complete",
+      "executionStatus": "commissioned",
+      "executor": {
+        "id": "source-dna-recut",
+        "kind": "source_dna_recut",
+        "maxQuantity": 10,
+        "version": "sha256:2d0dd20fad4302f799272e7d5e1ba7de1ecb8b9a85646f68cf9720ac14569171"
+      },
+      "formatContractVersion": "sha256:147878ce267909054b290de357be78db0299f29424b818d0032666d99ce1fe6c",
+      "formatId": "pov-club",
+      "ingredients": [
+        {
+          "binding": null,
+          "ingredientId": "master-source-video",
+          "kind": "master_video_library",
+          "options": [],
+          "required": true,
+          "status": "missing"
+        },
+        {
+          "binding": null,
+          "ingredientId": "approved-cut-library",
+          "kind": "approved_derivative_video_library",
+          "options": [],
+          "required": false,
+          "status": "missing"
+        },
+        {
+          "binding": {
+            "clipCrop": {
+              "focusX": {
+                "default": 0.5,
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "type": "range"
+              },
+              "focusY": {
+                "default": 0.5,
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "type": "range"
+              },
+              "zoom": {
+                "default": 1.0,
+                "maximum": 3.0,
+                "minimum": 1.0,
+                "type": "range"
+              }
+            },
+            "clipSpeed": {
+              "default": 1.0,
+              "maximum": 2.0,
+              "minimum": 0.5,
+              "type": "range"
+            },
+            "controls": {
+              "cutDurationMs": {
+                "default": 7000,
+                "max": 9000,
+                "min": 5000,
+                "step": 1000,
+                "type": "range"
+              }
+            },
+            "filters": {
+              "brightness": {
+                "default": 1.0,
+                "label": "Brightness",
+                "maximum": 3.0,
+                "minimum": 0.0,
+                "step": 0.05,
+                "type": "range"
+              },
+              "contrast": {
+                "default": 1.0,
+                "label": "Contrast",
+                "maximum": 3.0,
+                "minimum": 0.0,
+                "step": 0.05,
+                "type": "range"
+              },
+              "fade": {
+                "default": 0.0,
+                "label": "Fade",
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "step": 0.05,
+                "type": "range"
+              },
+              "grain": {
+                "default": 0.0,
+                "label": "Grain",
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "step": 0.05,
+                "type": "range"
+              },
+              "saturation": {
+                "default": 1.0,
+                "label": "Saturation",
+                "maximum": 3.0,
+                "minimum": 0.0,
+                "step": 0.05,
+                "type": "range"
+              },
+              "vignette": {
+                "default": 0.0,
+                "label": "Vignette",
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "step": 0.05,
+                "type": "range"
+              },
+              "warmth": {
+                "default": 0.0,
+                "label": "Warmth",
+                "maximum": 1.0,
+                "minimum": -1.0,
+                "step": 0.05,
+                "type": "range"
+              }
+            },
+            "output": {
+              "aspectRatio": "9:16",
+              "encodePreset": "tiktok_delivery_v1",
+              "height": 1920,
+              "width": 1080
+            },
+            "recutWindow": "deterministic_varied_duration_without_replacement",
+            "reservation": "active_jobs_and_completed_outputs",
+            "scope": "master_source_window"
+          },
+          "ingredientId": "clip-treatment",
+          "kind": "render_treatment",
+          "options": [],
+          "required": true,
+          "status": "bound"
+        },
+        {
+          "binding": null,
+          "ingredientId": "caption-bank",
+          "kind": "caption_bank",
+          "options": [],
+          "required": true,
+          "status": "page_binding_required"
+        },
+        {
+          "binding": null,
+          "ingredientId": "sound-collection",
+          "kind": "sound_collection",
+          "options": [],
+          "required": true,
+          "status": "page_binding_required"
+        }
+      ],
+      "materialSource": "source_library",
+      "productionSelections": [],
+      "recipeId": "pov-club:master",
+      "review": {
+        "authority": "sourceDna.provenance",
+        "gates": [
+          "byte_exact_provenance",
+          "cut_window_lineage",
+          "technical_video",
+          "duplicate_and_never_reuse"
+        ]
+      }
+    },
+    {
+      "blockers": [
+        "master-source-video:missing"
+      ],
+      "contentEngine": "sourced_video",
+      "contentNiche": "POV - Dirtbike",
+      "definitionStatus": "complete",
+      "executionStatus": "commissioned",
+      "executor": {
+        "id": "source-dna-recut",
+        "kind": "source_dna_recut",
+        "maxQuantity": 10,
+        "version": "sha256:2d0dd20fad4302f799272e7d5e1ba7de1ecb8b9a85646f68cf9720ac14569171"
+      },
+      "formatContractVersion": "sha256:f04e1ffa16ae787111ebb0a102397a196e25f92ddf9ddbb77048b18dee21fbcf",
+      "formatId": "pov-dirt-bike",
+      "ingredients": [
+        {
+          "binding": null,
+          "ingredientId": "master-source-video",
+          "kind": "master_video_library",
+          "options": [],
+          "required": true,
+          "status": "missing"
+        },
+        {
+          "binding": {
+            "clipCount": 39,
+            "clips": [
+              {
+                "bytes": 26628789,
+                "cutWindow": null,
+                "filename": "dirtbike-ozark-fresh_016.mp4",
+                "parentSource": null,
+                "railPath": "out/clips/pov-dirt-bike/dirtbike-ozark-fresh_016.mp4",
+                "sha256": "047417e658a65fb820417cc65c3fcf958240f104ad3f7cb6400fc4315fa61290"
+              },
+              {
+                "bytes": 13692208,
+                "cutWindow": null,
+                "filename": "dirtbike-yz250x-fresh_008.mp4",
+                "parentSource": null,
+                "railPath": "out/clips/pov-dirt-bike/dirtbike-yz250x-fresh_008.mp4",
+                "sha256": "0df47469b9489eec6f18082b9e50557bd5b043f05ae9e4cde41005688b55003b"
+              },
+              {
+                "bytes": 29391326,
+                "cutWindow": null,
+                "filename": "pov-dirt-bike-ozark-300-510_020.mp4",
+                "parentSource": null,
+                "railPath": "out/clips/pov-dirt-bike/pov-dirt-bike-ozark-300-510_020.mp4",
+                "sha256": "0f61cc90585ee56d95efdd447a3e3b490b0405f9253db06926ca4738192e7b90"
+              },
+              {
+                "bytes": 33698187,
+                "cutWindow": null,
+                "filename": "dirtbike-ozark-fresh_011.mp4",
+                "parentSource": null,
+                "railPath": "out/clips/pov-dirt-bike/dirtbike-ozark-fresh_011.mp4",
+                "sha256": "13fb7eec52ea9e47ce26ed3297754b355fd2e1c36bdc29f8032c42edf9817539"
+              },
+              {
+                "bytes": 21035976,
+                "cutWindow": null,
+                "filename": "dirtbike-yz250x-fresh_022.mp4",
+                "parentSource": null,
+                "railPath": "out/clips/pov-dirt-bike/dirtbike-yz250x-fresh_022.mp4",
+                "sha256": "18a7f1840d2e6dabc71db2b8a6715bcb2117d629cd700abd048f6b93e5f6883b"
+              },
+              {
+                "bytes": 28590696,
+                "cutWindow": null,
+                "filename": "dirtbike-ozark-fresh_008.mp4",
+                "parentSource": null,
+                "railPath": "out/clips/pov-dirt-bike/dirtbike-ozark-fresh_008.mp4",
+                "sha256": "1f212cddfd75359abb16cd5d3e4e2a12525f7d0bfd84d7ac0b3fe77a88526040"
+              },
+              {
+                "bytes": 14038094,
+                "cutWindow": null,
+                "filename": "uI3u6m3-Rac-seg-0-900_049.mp4",
+                "parentSource": null,
+                "railPath": "out/clips/pov-dirt-bike/uI3u6m3-Rac-seg-0-900_049.mp4",
+                "sha256": "2149da764aa14dac63d111b9aa583535d559267ed129bbaceac7079a827d735b"
+              },
+              {
+                "bytes": 13509728,
+                "cutWindow": null,
+                "filename": "dirtbike-yz250x-fresh_014.mp4",
+                "parentSource": null,
+                "railPath": "out/clips/pov-dirt-bike/dirtbike-yz250x-fresh_014.mp4",
+                "sha256": "3015ee79e1306b1ef132a1e1a9e8e8f576d4647bac136234a41a4293dacd0d1e"
+              },
+              {
+                "bytes": 13746201,
+                "cutWindow": null,
+                "filename": "uI3u6m3-Rac-seg-0-900_043.mp4",
+                "parentSource": null,
+                "railPath": "out/clips/pov-dirt-bike/uI3u6m3-Rac-seg-0-900_043.mp4",
+                "sha256": "346500411fa9875f53c8dfcbd8e707231903f6eaee52f23da675a3ba731b4201"
+              },
+              {
+                "bytes": 15404782,
+                "cutWindow": null,
+                "filename": "dirtbike-yz250x-fresh_017.mp4",
+                "parentSource": null,
+                "railPath": "out/clips/pov-dirt-bike/dirtbike-yz250x-fresh_017.mp4",
+                "sha256": "3f59a6320a11529fb2d81cd9fa2cfbee55b6224f4ccb760b99a1c36803337cd7"
+              },
+              {
+                "bytes": 13848874,
+                "cutWindow": null,
+                "filename": "dirtbike-yz250x-fresh_018.mp4",
+                "parentSource": null,
+                "railPath": "out/clips/pov-dirt-bike/dirtbike-yz250x-fresh_018.mp4",
+                "sha256": "43ba2714c89f9ca9eeda4fe3651a0eac050dfc21ac62f6923fb7ceb234b0a7fe"
+              },
+              {
+                "bytes": 23361851,
+                "cutWindow": null,
+                "filename": "dirtbike-ozark-fresh_003.mp4",
+                "parentSource": null,
+                "railPath": "out/clips/pov-dirt-bike/dirtbike-ozark-fresh_003.mp4",
+                "sha256": "47cc7f64a16714959fcc6f46099fdb65cc92019dc4405f0c7f71c583c0dd942c"
+              },
+              {
+                "bytes": 28725363,
+                "cutWindow": null,
+                "filename": "dirtbike-ozark-fresh_005.mp4",
+                "parentSource": null,
+                "railPath": "out/clips/pov-dirt-bike/dirtbike-ozark-fresh_005.mp4",
+                "sha256": "4915c9a4183333ec6aac10c7cd2940eceac5a499e5552382d266515579ea1590"
+              },
+              {
+                "bytes": 16386478,
+                "cutWindow": null,
+                "filename": "uI3u6m3-Rac-seg-0-900_045.mp4",
+                "parentSource": null,
+                "railPath": "out/clips/pov-dirt-bike/uI3u6m3-Rac-seg-0-900_045.mp4",
+                "sha256": "568c6ac8ebc932668443fd2e283375e37ea2ad87f06a1cc5d05b64848664bab9"
+              },
+              {
+                "bytes": 19863115,
+                "cutWindow": null,
+                "filename": "uI3u6m3-Rac-seg-0-900_051.mp4",
+                "parentSource": null,
+                "railPath": "out/clips/pov-dirt-bike/uI3u6m3-Rac-seg-0-900_051.mp4",
+                "sha256": "5bbaac034f46fecf19cd3a5fa59bec16ca99a0d4dc7faf4afb2454a1a50b65fd"
+              },
+              {
+                "bytes": 38753353,
+                "cutWindow": null,
+                "filename": "dirtbike-ozark-fresh_020.mp4",
+                "parentSource": null,
+                "railPath": "out/clips/pov-dirt-bike/dirtbike-ozark-fresh_020.mp4",
+                "sha256": "5f2eb0823c7cd4b87b1058c6d2b24622fc8d0946816a76bd4455631badd797b0"
+              },
+              {
+                "bytes": 28736220,
+                "cutWindow": null,
+                "filename": "pov-dirt-bike-ozark-300-510_001.mp4",
+                "parentSource": null,
+                "railPath": "out/clips/pov-dirt-bike/pov-dirt-bike-ozark-300-510_001.mp4",
+                "sha256": "7aeeadec068bdaf6b4845cab96de48d389ed59194363dfb467a8e722829647bf"
+              },
+              {
+                "bytes": 14451692,
+                "cutWindow": null,
+                "filename": "dirtbike-yz250x-fresh_003.mp4",
+                "parentSource": null,
+                "railPath": "out/clips/pov-dirt-bike/dirtbike-yz250x-fresh_003.mp4",
+                "sha256": "7c8df5951def9946ae3eddbde1939d644988e6eb5d7bef2b9d19313f9b09a046"
+              },
+              {
+                "bytes": 21063877,
+                "cutWindow": null,
+                "filename": "dirtbike-ozark-fresh_022.mp4",
+                "parentSource": null,
+                "railPath": "out/clips/pov-dirt-bike/dirtbike-ozark-fresh_022.mp4",
+                "sha256": "87eb1b1b9836823760e47064fe4bdb286aaf06ce77bdfe408840271b471fe835"
+              },
+              {
+                "bytes": 27727508,
+                "cutWindow": null,
+                "filename": "dirtbike-ozark-fresh_007.mp4",
+                "parentSource": null,
+                "railPath": "out/clips/pov-dirt-bike/dirtbike-ozark-fresh_007.mp4",
+                "sha256": "8e1142fd4b8149e70f6a004a135702e6b8ef05010e9d1688bb3813d1933b7589"
+              },
+              {
+                "bytes": 27743976,
+                "cutWindow": null,
+                "filename": "pov-dirt-bike-ozark-300-510_010.mp4",
+                "parentSource": null,
+                "railPath": "out/clips/pov-dirt-bike/pov-dirt-bike-ozark-300-510_010.mp4",
+                "sha256": "933139cb0fab14f43cc581c452db554e5c2972cc53badb4ae843280a243c5894"
+              },
+              {
+                "bytes": 16662898,
+                "cutWindow": null,
+                "filename": "uI3u6m3-Rac-seg-0-900_044.mp4",
+                "parentSource": null,
+                "railPath": "out/clips/pov-dirt-bike/uI3u6m3-Rac-seg-0-900_044.mp4",
+                "sha256": "946b19c54462fc1b5f2cfd4707e294052cedc9f2e99d08d91ba8773356deb727"
+              },
+              {
+                "bytes": 17586241,
+                "cutWindow": null,
+                "filename": "uI3u6m3-Rac-seg-0-900_041.mp4",
+                "parentSource": null,
+                "railPath": "out/clips/pov-dirt-bike/uI3u6m3-Rac-seg-0-900_041.mp4",
+                "sha256": "9adc13355313f88a8c57ae5e4f95ff51fc7be251204ac193610c69e5048333b9"
+              },
+              {
+                "bytes": 24577018,
+                "cutWindow": null,
+                "filename": "dirtbike-ozark-fresh_021.mp4",
+                "parentSource": null,
+                "railPath": "out/clips/pov-dirt-bike/dirtbike-ozark-fresh_021.mp4",
+                "sha256": "a005d57d5dfba563fb45e22a2a31025781a4fa03d6ede0efe55c3846e7b0623c"
+              },
+              {
+                "bytes": 23615814,
+                "cutWindow": null,
+                "filename": "uI3u6m3-Rac-seg-0-900_048.mp4",
+                "parentSource": null,
+                "railPath": "out/clips/pov-dirt-bike/uI3u6m3-Rac-seg-0-900_048.mp4",
+                "sha256": "a00763f4e3ba8f615d596f3f90e4b39395feeb4b7a2dc4c19f322a1ec39404d8"
+              },
+              {
+                "bytes": 24159201,
+                "cutWindow": null,
+                "filename": "dirtbike-ozark-fresh_004.mp4",
+                "parentSource": null,
+                "railPath": "out/clips/pov-dirt-bike/dirtbike-ozark-fresh_004.mp4",
+                "sha256": "a5acbeb6b3f75d6e096160fdcf8622fe277c73c84110a48d85f95d167aacf362"
+              },
+              {
+                "bytes": 18579257,
+                "cutWindow": null,
+                "filename": "uI3u6m3-Rac-seg-0-900_047.mp4",
+                "parentSource": null,
+                "railPath": "out/clips/pov-dirt-bike/uI3u6m3-Rac-seg-0-900_047.mp4",
+                "sha256": "b05e3cfc2b50309a50ef624a0ffad40c9cca0a5fb0672eeed451bc208f2878d7"
+              },
+              {
+                "bytes": 18860699,
+                "cutWindow": null,
+                "filename": "dirtbike-yz250x-fresh_000.mp4",
+                "parentSource": null,
+                "railPath": "out/clips/pov-dirt-bike/dirtbike-yz250x-fresh_000.mp4",
+                "sha256": "b66212aa4a76850730756943e06dfb070d90a01e1feeff437bdbd80310aeac7a"
+              },
+              {
+                "bytes": 20804881,
+                "cutWindow": null,
+                "filename": "dirtbike-yz250x-fresh_001.mp4",
+                "parentSource": null,
+                "railPath": "out/clips/pov-dirt-bike/dirtbike-yz250x-fresh_001.mp4",
+                "sha256": "c328fbf13c257ba5f653d96bccc6c4f9a18896b8a2ce2724cc937aa5e67b39cd"
+              },
+              {
+                "bytes": 17575078,
+                "cutWindow": null,
+                "filename": "uI3u6m3-Rac-seg-0-900_050.mp4",
+                "parentSource": null,
+                "railPath": "out/clips/pov-dirt-bike/uI3u6m3-Rac-seg-0-900_050.mp4",
+                "sha256": "ca16e478fcbec1c18bf71094f1722296904de749ae090fe13ef45cca9c25a339"
+              },
+              {
+                "bytes": 20578873,
+                "cutWindow": null,
+                "filename": "dirtbike-yz250x-fresh_015.mp4",
+                "parentSource": null,
+                "railPath": "out/clips/pov-dirt-bike/dirtbike-yz250x-fresh_015.mp4",
+                "sha256": "ce1b90e1bab0ce19d7940ad03b8003d5d92353579ae8346555b6ee7119477307"
+              },
+              {
+                "bytes": 13151805,
+                "cutWindow": null,
+                "filename": "dirtbike-yz250x-fresh_023.mp4",
+                "parentSource": null,
+                "railPath": "out/clips/pov-dirt-bike/dirtbike-yz250x-fresh_023.mp4",
+                "sha256": "d6e769ecd5baf59c5d68c550f4692234eaa3e9a3cccacc5399efd75c2e9b9854"
+              },
+              {
+                "bytes": 10980671,
+                "cutWindow": null,
+                "filename": "uI3u6m3-Rac-seg-0-900_040.mp4",
+                "parentSource": null,
+                "railPath": "out/clips/pov-dirt-bike/uI3u6m3-Rac-seg-0-900_040.mp4",
+                "sha256": "d94c14136cf20a7f15ac18c452ccc92598cf6cb5887bafce0427d4c55f4bf62f"
+              },
+              {
+                "bytes": 27974987,
+                "cutWindow": null,
+                "filename": "dirtbike-ozark-fresh_013.mp4",
+                "parentSource": null,
+                "railPath": "out/clips/pov-dirt-bike/dirtbike-ozark-fresh_013.mp4",
+                "sha256": "e2ed03ea1a23cbf3146e20f75763d9b54b4b51d34b4c5a34c6c0c84dd95f4761"
+              },
+              {
+                "bytes": 23037733,
+                "cutWindow": null,
+                "filename": "dirtbike-ozark-fresh_015.mp4",
+                "parentSource": null,
+                "railPath": "out/clips/pov-dirt-bike/dirtbike-ozark-fresh_015.mp4",
+                "sha256": "ea41fc29705b6bbfacd3024818dfcfc68b3cc1a2235b7884c2ecf3a9646703a3"
+              },
+              {
+                "bytes": 18307211,
+                "cutWindow": null,
+                "filename": "uI3u6m3-Rac-seg-0-900_042.mp4",
+                "parentSource": null,
+                "railPath": "out/clips/pov-dirt-bike/uI3u6m3-Rac-seg-0-900_042.mp4",
+                "sha256": "ec05c668a8e96e6739c2dac158f129c3d593c48843542fa3ac1175ab1afd66d4"
+              },
+              {
+                "bytes": 17269329,
+                "cutWindow": null,
+                "filename": "dirtbike-yz250x-fresh_011.mp4",
+                "parentSource": null,
+                "railPath": "out/clips/pov-dirt-bike/dirtbike-yz250x-fresh_011.mp4",
+                "sha256": "edb2473c0af6f4c605de0965c7f2206a583fa8f0a85e1a31cd4ad597897e7d12"
+              },
+              {
+                "bytes": 25787690,
+                "cutWindow": null,
+                "filename": "dirtbike-ozark-fresh_012.mp4",
+                "parentSource": null,
+                "railPath": "out/clips/pov-dirt-bike/dirtbike-ozark-fresh_012.mp4",
+                "sha256": "f33189348f01275fed8daf164abd138ed74f4ca73814be073fd27629d062f617"
+              },
+              {
+                "bytes": 13324453,
+                "cutWindow": null,
+                "filename": "uI3u6m3-Rac-seg-0-900_046.mp4",
+                "parentSource": null,
+                "railPath": "out/clips/pov-dirt-bike/uI3u6m3-Rac-seg-0-900_046.mp4",
+                "sha256": "f9f20f85b755d78352ab8475a4c0a07751eaeeaf4c19a01e9a301981be0eb778"
+              }
+            ],
+            "libraryId": "pov-dirt-bike-8791-20260828",
+            "lineageStatus": "parent_source_and_cut_window_missing",
+            "recutEligible": false,
+            "role": "approved_derivative_clips",
+            "selectionAuthority": "eligible true; qa_sweep verdict pass by operator:8791; text_scan pass; extant bytes equal clip-bank SHA-256",
+            "totalBytes": 823232133,
+            "version": "sha256:32169e75b485f89b20e79f8a78df968aff490cb256adbbd358cbc13f9e35106e"
+          },
+          "ingredientId": "approved-cut-library",
+          "kind": "approved_derivative_video_library",
+          "options": [
+            {
+              "clipCount": 39,
+              "clips": [
+                {
+                  "bytes": 26628789,
+                  "cutWindow": null,
+                  "filename": "dirtbike-ozark-fresh_016.mp4",
+                  "parentSource": null,
+                  "railPath": "out/clips/pov-dirt-bike/dirtbike-ozark-fresh_016.mp4",
+                  "sha256": "047417e658a65fb820417cc65c3fcf958240f104ad3f7cb6400fc4315fa61290"
+                },
+                {
+                  "bytes": 13692208,
+                  "cutWindow": null,
+                  "filename": "dirtbike-yz250x-fresh_008.mp4",
+                  "parentSource": null,
+                  "railPath": "out/clips/pov-dirt-bike/dirtbike-yz250x-fresh_008.mp4",
+                  "sha256": "0df47469b9489eec6f18082b9e50557bd5b043f05ae9e4cde41005688b55003b"
+                },
+                {
+                  "bytes": 29391326,
+                  "cutWindow": null,
+                  "filename": "pov-dirt-bike-ozark-300-510_020.mp4",
+                  "parentSource": null,
+                  "railPath": "out/clips/pov-dirt-bike/pov-dirt-bike-ozark-300-510_020.mp4",
+                  "sha256": "0f61cc90585ee56d95efdd447a3e3b490b0405f9253db06926ca4738192e7b90"
+                },
+                {
+                  "bytes": 33698187,
+                  "cutWindow": null,
+                  "filename": "dirtbike-ozark-fresh_011.mp4",
+                  "parentSource": null,
+                  "railPath": "out/clips/pov-dirt-bike/dirtbike-ozark-fresh_011.mp4",
+                  "sha256": "13fb7eec52ea9e47ce26ed3297754b355fd2e1c36bdc29f8032c42edf9817539"
+                },
+                {
+                  "bytes": 21035976,
+                  "cutWindow": null,
+                  "filename": "dirtbike-yz250x-fresh_022.mp4",
+                  "parentSource": null,
+                  "railPath": "out/clips/pov-dirt-bike/dirtbike-yz250x-fresh_022.mp4",
+                  "sha256": "18a7f1840d2e6dabc71db2b8a6715bcb2117d629cd700abd048f6b93e5f6883b"
+                },
+                {
+                  "bytes": 28590696,
+                  "cutWindow": null,
+                  "filename": "dirtbike-ozark-fresh_008.mp4",
+                  "parentSource": null,
+                  "railPath": "out/clips/pov-dirt-bike/dirtbike-ozark-fresh_008.mp4",
+                  "sha256": "1f212cddfd75359abb16cd5d3e4e2a12525f7d0bfd84d7ac0b3fe77a88526040"
+                },
+                {
+                  "bytes": 14038094,
+                  "cutWindow": null,
+                  "filename": "uI3u6m3-Rac-seg-0-900_049.mp4",
+                  "parentSource": null,
+                  "railPath": "out/clips/pov-dirt-bike/uI3u6m3-Rac-seg-0-900_049.mp4",
+                  "sha256": "2149da764aa14dac63d111b9aa583535d559267ed129bbaceac7079a827d735b"
+                },
+                {
+                  "bytes": 13509728,
+                  "cutWindow": null,
+                  "filename": "dirtbike-yz250x-fresh_014.mp4",
+                  "parentSource": null,
+                  "railPath": "out/clips/pov-dirt-bike/dirtbike-yz250x-fresh_014.mp4",
+                  "sha256": "3015ee79e1306b1ef132a1e1a9e8e8f576d4647bac136234a41a4293dacd0d1e"
+                },
+                {
+                  "bytes": 13746201,
+                  "cutWindow": null,
+                  "filename": "uI3u6m3-Rac-seg-0-900_043.mp4",
+                  "parentSource": null,
+                  "railPath": "out/clips/pov-dirt-bike/uI3u6m3-Rac-seg-0-900_043.mp4",
+                  "sha256": "346500411fa9875f53c8dfcbd8e707231903f6eaee52f23da675a3ba731b4201"
+                },
+                {
+                  "bytes": 15404782,
+                  "cutWindow": null,
+                  "filename": "dirtbike-yz250x-fresh_017.mp4",
+                  "parentSource": null,
+                  "railPath": "out/clips/pov-dirt-bike/dirtbike-yz250x-fresh_017.mp4",
+                  "sha256": "3f59a6320a11529fb2d81cd9fa2cfbee55b6224f4ccb760b99a1c36803337cd7"
+                },
+                {
+                  "bytes": 13848874,
+                  "cutWindow": null,
+                  "filename": "dirtbike-yz250x-fresh_018.mp4",
+                  "parentSource": null,
+                  "railPath": "out/clips/pov-dirt-bike/dirtbike-yz250x-fresh_018.mp4",
+                  "sha256": "43ba2714c89f9ca9eeda4fe3651a0eac050dfc21ac62f6923fb7ceb234b0a7fe"
+                },
+                {
+                  "bytes": 23361851,
+                  "cutWindow": null,
+                  "filename": "dirtbike-ozark-fresh_003.mp4",
+                  "parentSource": null,
+                  "railPath": "out/clips/pov-dirt-bike/dirtbike-ozark-fresh_003.mp4",
+                  "sha256": "47cc7f64a16714959fcc6f46099fdb65cc92019dc4405f0c7f71c583c0dd942c"
+                },
+                {
+                  "bytes": 28725363,
+                  "cutWindow": null,
+                  "filename": "dirtbike-ozark-fresh_005.mp4",
+                  "parentSource": null,
+                  "railPath": "out/clips/pov-dirt-bike/dirtbike-ozark-fresh_005.mp4",
+                  "sha256": "4915c9a4183333ec6aac10c7cd2940eceac5a499e5552382d266515579ea1590"
+                },
+                {
+                  "bytes": 16386478,
+                  "cutWindow": null,
+                  "filename": "uI3u6m3-Rac-seg-0-900_045.mp4",
+                  "parentSource": null,
+                  "railPath": "out/clips/pov-dirt-bike/uI3u6m3-Rac-seg-0-900_045.mp4",
+                  "sha256": "568c6ac8ebc932668443fd2e283375e37ea2ad87f06a1cc5d05b64848664bab9"
+                },
+                {
+                  "bytes": 19863115,
+                  "cutWindow": null,
+                  "filename": "uI3u6m3-Rac-seg-0-900_051.mp4",
+                  "parentSource": null,
+                  "railPath": "out/clips/pov-dirt-bike/uI3u6m3-Rac-seg-0-900_051.mp4",
+                  "sha256": "5bbaac034f46fecf19cd3a5fa59bec16ca99a0d4dc7faf4afb2454a1a50b65fd"
+                },
+                {
+                  "bytes": 38753353,
+                  "cutWindow": null,
+                  "filename": "dirtbike-ozark-fresh_020.mp4",
+                  "parentSource": null,
+                  "railPath": "out/clips/pov-dirt-bike/dirtbike-ozark-fresh_020.mp4",
+                  "sha256": "5f2eb0823c7cd4b87b1058c6d2b24622fc8d0946816a76bd4455631badd797b0"
+                },
+                {
+                  "bytes": 28736220,
+                  "cutWindow": null,
+                  "filename": "pov-dirt-bike-ozark-300-510_001.mp4",
+                  "parentSource": null,
+                  "railPath": "out/clips/pov-dirt-bike/pov-dirt-bike-ozark-300-510_001.mp4",
+                  "sha256": "7aeeadec068bdaf6b4845cab96de48d389ed59194363dfb467a8e722829647bf"
+                },
+                {
+                  "bytes": 14451692,
+                  "cutWindow": null,
+                  "filename": "dirtbike-yz250x-fresh_003.mp4",
+                  "parentSource": null,
+                  "railPath": "out/clips/pov-dirt-bike/dirtbike-yz250x-fresh_003.mp4",
+                  "sha256": "7c8df5951def9946ae3eddbde1939d644988e6eb5d7bef2b9d19313f9b09a046"
+                },
+                {
+                  "bytes": 21063877,
+                  "cutWindow": null,
+                  "filename": "dirtbike-ozark-fresh_022.mp4",
+                  "parentSource": null,
+                  "railPath": "out/clips/pov-dirt-bike/dirtbike-ozark-fresh_022.mp4",
+                  "sha256": "87eb1b1b9836823760e47064fe4bdb286aaf06ce77bdfe408840271b471fe835"
+                },
+                {
+                  "bytes": 27727508,
+                  "cutWindow": null,
+                  "filename": "dirtbike-ozark-fresh_007.mp4",
+                  "parentSource": null,
+                  "railPath": "out/clips/pov-dirt-bike/dirtbike-ozark-fresh_007.mp4",
+                  "sha256": "8e1142fd4b8149e70f6a004a135702e6b8ef05010e9d1688bb3813d1933b7589"
+                },
+                {
+                  "bytes": 27743976,
+                  "cutWindow": null,
+                  "filename": "pov-dirt-bike-ozark-300-510_010.mp4",
+                  "parentSource": null,
+                  "railPath": "out/clips/pov-dirt-bike/pov-dirt-bike-ozark-300-510_010.mp4",
+                  "sha256": "933139cb0fab14f43cc581c452db554e5c2972cc53badb4ae843280a243c5894"
+                },
+                {
+                  "bytes": 16662898,
+                  "cutWindow": null,
+                  "filename": "uI3u6m3-Rac-seg-0-900_044.mp4",
+                  "parentSource": null,
+                  "railPath": "out/clips/pov-dirt-bike/uI3u6m3-Rac-seg-0-900_044.mp4",
+                  "sha256": "946b19c54462fc1b5f2cfd4707e294052cedc9f2e99d08d91ba8773356deb727"
+                },
+                {
+                  "bytes": 17586241,
+                  "cutWindow": null,
+                  "filename": "uI3u6m3-Rac-seg-0-900_041.mp4",
+                  "parentSource": null,
+                  "railPath": "out/clips/pov-dirt-bike/uI3u6m3-Rac-seg-0-900_041.mp4",
+                  "sha256": "9adc13355313f88a8c57ae5e4f95ff51fc7be251204ac193610c69e5048333b9"
+                },
+                {
+                  "bytes": 24577018,
+                  "cutWindow": null,
+                  "filename": "dirtbike-ozark-fresh_021.mp4",
+                  "parentSource": null,
+                  "railPath": "out/clips/pov-dirt-bike/dirtbike-ozark-fresh_021.mp4",
+                  "sha256": "a005d57d5dfba563fb45e22a2a31025781a4fa03d6ede0efe55c3846e7b0623c"
+                },
+                {
+                  "bytes": 23615814,
+                  "cutWindow": null,
+                  "filename": "uI3u6m3-Rac-seg-0-900_048.mp4",
+                  "parentSource": null,
+                  "railPath": "out/clips/pov-dirt-bike/uI3u6m3-Rac-seg-0-900_048.mp4",
+                  "sha256": "a00763f4e3ba8f615d596f3f90e4b39395feeb4b7a2dc4c19f322a1ec39404d8"
+                },
+                {
+                  "bytes": 24159201,
+                  "cutWindow": null,
+                  "filename": "dirtbike-ozark-fresh_004.mp4",
+                  "parentSource": null,
+                  "railPath": "out/clips/pov-dirt-bike/dirtbike-ozark-fresh_004.mp4",
+                  "sha256": "a5acbeb6b3f75d6e096160fdcf8622fe277c73c84110a48d85f95d167aacf362"
+                },
+                {
+                  "bytes": 18579257,
+                  "cutWindow": null,
+                  "filename": "uI3u6m3-Rac-seg-0-900_047.mp4",
+                  "parentSource": null,
+                  "railPath": "out/clips/pov-dirt-bike/uI3u6m3-Rac-seg-0-900_047.mp4",
+                  "sha256": "b05e3cfc2b50309a50ef624a0ffad40c9cca0a5fb0672eeed451bc208f2878d7"
+                },
+                {
+                  "bytes": 18860699,
+                  "cutWindow": null,
+                  "filename": "dirtbike-yz250x-fresh_000.mp4",
+                  "parentSource": null,
+                  "railPath": "out/clips/pov-dirt-bike/dirtbike-yz250x-fresh_000.mp4",
+                  "sha256": "b66212aa4a76850730756943e06dfb070d90a01e1feeff437bdbd80310aeac7a"
+                },
+                {
+                  "bytes": 20804881,
+                  "cutWindow": null,
+                  "filename": "dirtbike-yz250x-fresh_001.mp4",
+                  "parentSource": null,
+                  "railPath": "out/clips/pov-dirt-bike/dirtbike-yz250x-fresh_001.mp4",
+                  "sha256": "c328fbf13c257ba5f653d96bccc6c4f9a18896b8a2ce2724cc937aa5e67b39cd"
+                },
+                {
+                  "bytes": 17575078,
+                  "cutWindow": null,
+                  "filename": "uI3u6m3-Rac-seg-0-900_050.mp4",
+                  "parentSource": null,
+                  "railPath": "out/clips/pov-dirt-bike/uI3u6m3-Rac-seg-0-900_050.mp4",
+                  "sha256": "ca16e478fcbec1c18bf71094f1722296904de749ae090fe13ef45cca9c25a339"
+                },
+                {
+                  "bytes": 20578873,
+                  "cutWindow": null,
+                  "filename": "dirtbike-yz250x-fresh_015.mp4",
+                  "parentSource": null,
+                  "railPath": "out/clips/pov-dirt-bike/dirtbike-yz250x-fresh_015.mp4",
+                  "sha256": "ce1b90e1bab0ce19d7940ad03b8003d5d92353579ae8346555b6ee7119477307"
+                },
+                {
+                  "bytes": 13151805,
+                  "cutWindow": null,
+                  "filename": "dirtbike-yz250x-fresh_023.mp4",
+                  "parentSource": null,
+                  "railPath": "out/clips/pov-dirt-bike/dirtbike-yz250x-fresh_023.mp4",
+                  "sha256": "d6e769ecd5baf59c5d68c550f4692234eaa3e9a3cccacc5399efd75c2e9b9854"
+                },
+                {
+                  "bytes": 10980671,
+                  "cutWindow": null,
+                  "filename": "uI3u6m3-Rac-seg-0-900_040.mp4",
+                  "parentSource": null,
+                  "railPath": "out/clips/pov-dirt-bike/uI3u6m3-Rac-seg-0-900_040.mp4",
+                  "sha256": "d94c14136cf20a7f15ac18c452ccc92598cf6cb5887bafce0427d4c55f4bf62f"
+                },
+                {
+                  "bytes": 27974987,
+                  "cutWindow": null,
+                  "filename": "dirtbike-ozark-fresh_013.mp4",
+                  "parentSource": null,
+                  "railPath": "out/clips/pov-dirt-bike/dirtbike-ozark-fresh_013.mp4",
+                  "sha256": "e2ed03ea1a23cbf3146e20f75763d9b54b4b51d34b4c5a34c6c0c84dd95f4761"
+                },
+                {
+                  "bytes": 23037733,
+                  "cutWindow": null,
+                  "filename": "dirtbike-ozark-fresh_015.mp4",
+                  "parentSource": null,
+                  "railPath": "out/clips/pov-dirt-bike/dirtbike-ozark-fresh_015.mp4",
+                  "sha256": "ea41fc29705b6bbfacd3024818dfcfc68b3cc1a2235b7884c2ecf3a9646703a3"
+                },
+                {
+                  "bytes": 18307211,
+                  "cutWindow": null,
+                  "filename": "uI3u6m3-Rac-seg-0-900_042.mp4",
+                  "parentSource": null,
+                  "railPath": "out/clips/pov-dirt-bike/uI3u6m3-Rac-seg-0-900_042.mp4",
+                  "sha256": "ec05c668a8e96e6739c2dac158f129c3d593c48843542fa3ac1175ab1afd66d4"
+                },
+                {
+                  "bytes": 17269329,
+                  "cutWindow": null,
+                  "filename": "dirtbike-yz250x-fresh_011.mp4",
+                  "parentSource": null,
+                  "railPath": "out/clips/pov-dirt-bike/dirtbike-yz250x-fresh_011.mp4",
+                  "sha256": "edb2473c0af6f4c605de0965c7f2206a583fa8f0a85e1a31cd4ad597897e7d12"
+                },
+                {
+                  "bytes": 25787690,
+                  "cutWindow": null,
+                  "filename": "dirtbike-ozark-fresh_012.mp4",
+                  "parentSource": null,
+                  "railPath": "out/clips/pov-dirt-bike/dirtbike-ozark-fresh_012.mp4",
+                  "sha256": "f33189348f01275fed8daf164abd138ed74f4ca73814be073fd27629d062f617"
+                },
+                {
+                  "bytes": 13324453,
+                  "cutWindow": null,
+                  "filename": "uI3u6m3-Rac-seg-0-900_046.mp4",
+                  "parentSource": null,
+                  "railPath": "out/clips/pov-dirt-bike/uI3u6m3-Rac-seg-0-900_046.mp4",
+                  "sha256": "f9f20f85b755d78352ab8475a4c0a07751eaeeaf4c19a01e9a301981be0eb778"
+                }
+              ],
+              "libraryId": "pov-dirt-bike-8791-20260828",
+              "lineageStatus": "parent_source_and_cut_window_missing",
+              "recutEligible": false,
+              "role": "approved_derivative_clips",
+              "selectionAuthority": "eligible true; qa_sweep verdict pass by operator:8791; text_scan pass; extant bytes equal clip-bank SHA-256",
+              "totalBytes": 823232133,
+              "version": "sha256:32169e75b485f89b20e79f8a78df968aff490cb256adbbd358cbc13f9e35106e"
+            }
+          ],
+          "required": false,
+          "status": "reference"
+        },
+        {
+          "binding": {
+            "clipCrop": {
+              "focusX": {
+                "default": 0.5,
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "type": "range"
+              },
+              "focusY": {
+                "default": 0.5,
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "type": "range"
+              },
+              "zoom": {
+                "default": 1.0,
+                "maximum": 3.0,
+                "minimum": 1.0,
+                "type": "range"
+              }
+            },
+            "clipSpeed": {
+              "default": 1.0,
+              "maximum": 2.0,
+              "minimum": 0.5,
+              "type": "range"
+            },
+            "controls": {
+              "cutDurationMs": {
+                "default": 7000,
+                "max": 9000,
+                "min": 5000,
+                "step": 1000,
+                "type": "range"
+              }
+            },
+            "filters": {
+              "brightness": {
+                "default": 1.0,
+                "label": "Brightness",
+                "maximum": 3.0,
+                "minimum": 0.0,
+                "step": 0.05,
+                "type": "range"
+              },
+              "contrast": {
+                "default": 1.0,
+                "label": "Contrast",
+                "maximum": 3.0,
+                "minimum": 0.0,
+                "step": 0.05,
+                "type": "range"
+              },
+              "fade": {
+                "default": 0.0,
+                "label": "Fade",
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "step": 0.05,
+                "type": "range"
+              },
+              "grain": {
+                "default": 0.0,
+                "label": "Grain",
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "step": 0.05,
+                "type": "range"
+              },
+              "saturation": {
+                "default": 1.0,
+                "label": "Saturation",
+                "maximum": 3.0,
+                "minimum": 0.0,
+                "step": 0.05,
+                "type": "range"
+              },
+              "vignette": {
+                "default": 0.0,
+                "label": "Vignette",
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "step": 0.05,
+                "type": "range"
+              },
+              "warmth": {
+                "default": 0.0,
+                "label": "Warmth",
+                "maximum": 1.0,
+                "minimum": -1.0,
+                "step": 0.05,
+                "type": "range"
+              }
+            },
+            "output": {
+              "aspectRatio": "9:16",
+              "encodePreset": "tiktok_delivery_v1",
+              "height": 1920,
+              "width": 1080
+            },
+            "recutWindow": "deterministic_varied_duration_without_replacement",
+            "reservation": "active_jobs_and_completed_outputs",
+            "scope": "master_source_window"
+          },
+          "ingredientId": "clip-treatment",
+          "kind": "render_treatment",
+          "options": [],
+          "required": true,
+          "status": "bound"
+        },
+        {
+          "binding": null,
+          "ingredientId": "caption-bank",
+          "kind": "caption_bank",
+          "options": [],
+          "required": true,
+          "status": "page_binding_required"
+        },
+        {
+          "binding": null,
+          "ingredientId": "sound-collection",
+          "kind": "sound_collection",
+          "options": [],
+          "required": true,
+          "status": "page_binding_required"
+        }
+      ],
+      "materialSource": "source_library",
+      "productionSelections": [],
+      "recipeId": "pov-dirt-bike:master",
+      "review": {
+        "authority": "sourceDna.provenance",
+        "gates": [
+          "byte_exact_provenance",
+          "cut_window_lineage",
+          "technical_video",
+          "text_scan",
+          "operator_visual_qa",
+          "duplicate_and_never_reuse"
+        ]
+      }
+    },
+    {
+      "blockers": [
+        "creativeAuthority",
+        "duration",
+        "lighting",
+        "master-source-video:missing",
+        "motion",
+        "negativeRules",
+        "referenceExamples",
+        "reviewAuthority",
+        "setting",
+        "shotGrammar",
+        "subject",
+        "textPolicy"
+      ],
+      "contentEngine": "sourced_video",
+      "contentNiche": "POV",
+      "definitionStatus": "incomplete",
+      "executionStatus": "uncommissioned",
+      "executor": null,
+      "formatContractVersion": "sha256:9b857f7bde4a1d7f570f6f7bfab481e423f22d9b42a60ba300fd59f0d44c6574",
+      "formatId": "pov-dusk-core",
+      "ingredients": [
+        {
+          "binding": null,
+          "ingredientId": "master-source-video",
+          "kind": "master_video_library",
+          "options": [],
+          "required": true,
+          "status": "missing"
+        },
+        {
+          "binding": null,
+          "ingredientId": "approved-cut-library",
+          "kind": "approved_derivative_video_library",
+          "options": [],
+          "required": false,
+          "status": "missing"
+        },
+        {
+          "binding": {
+            "clipCrop": {
+              "focusX": {
+                "default": 0.5,
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "type": "range"
+              },
+              "focusY": {
+                "default": 0.5,
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "type": "range"
+              },
+              "zoom": {
+                "default": 1.0,
+                "maximum": 3.0,
+                "minimum": 1.0,
+                "type": "range"
+              }
+            },
+            "clipSpeed": {
+              "default": 1.0,
+              "maximum": 2.0,
+              "minimum": 0.5,
+              "type": "range"
+            },
+            "controls": {
+              "cutDurationMs": {
+                "default": 7000,
+                "max": 9000,
+                "min": 5000,
+                "step": 1000,
+                "type": "range"
+              }
+            },
+            "filters": {
+              "brightness": {
+                "default": 1.0,
+                "label": "Brightness",
+                "maximum": 3.0,
+                "minimum": 0.0,
+                "step": 0.05,
+                "type": "range"
+              },
+              "contrast": {
+                "default": 1.0,
+                "label": "Contrast",
+                "maximum": 3.0,
+                "minimum": 0.0,
+                "step": 0.05,
+                "type": "range"
+              },
+              "fade": {
+                "default": 0.0,
+                "label": "Fade",
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "step": 0.05,
+                "type": "range"
+              },
+              "grain": {
+                "default": 0.0,
+                "label": "Grain",
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "step": 0.05,
+                "type": "range"
+              },
+              "saturation": {
+                "default": 1.0,
+                "label": "Saturation",
+                "maximum": 3.0,
+                "minimum": 0.0,
+                "step": 0.05,
+                "type": "range"
+              },
+              "vignette": {
+                "default": 0.0,
+                "label": "Vignette",
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "step": 0.05,
+                "type": "range"
+              },
+              "warmth": {
+                "default": 0.0,
+                "label": "Warmth",
+                "maximum": 1.0,
+                "minimum": -1.0,
+                "step": 0.05,
+                "type": "range"
+              }
+            },
+            "output": {
+              "aspectRatio": "9:16",
+              "encodePreset": "tiktok_delivery_v1",
+              "height": 1920,
+              "width": 1080
+            },
+            "recutWindow": "deterministic_varied_duration_without_replacement",
+            "reservation": "active_jobs_and_completed_outputs",
+            "scope": "master_source_window"
+          },
+          "ingredientId": "clip-treatment",
+          "kind": "render_treatment",
+          "options": [],
+          "required": true,
+          "status": "bound"
+        },
+        {
+          "binding": null,
+          "ingredientId": "caption-bank",
+          "kind": "caption_bank",
+          "options": [],
+          "required": true,
+          "status": "page_binding_required"
+        },
+        {
+          "binding": null,
+          "ingredientId": "sound-collection",
+          "kind": "sound_collection",
+          "options": [],
+          "required": true,
+          "status": "page_binding_required"
+        }
+      ],
+      "materialSource": "source_library",
+      "productionSelections": [],
+      "recipeId": "pov-dusk-core:master",
+      "review": {
+        "authority": null,
+        "gates": [
+          "byte_exact_provenance",
+          "technical_video",
+          "text_scan",
+          "operator_visual_qa",
+          "duplicate_and_never_reuse"
+        ]
+      }
+    },
+    {
+      "blockers": [
+        "master-source-video:missing"
+      ],
+      "contentEngine": "sourced_video",
+      "contentNiche": "POV \u2014 Night Core",
+      "definitionStatus": "complete",
+      "executionStatus": "commissioned",
+      "executor": {
+        "id": "source-dna-recut",
+        "kind": "source_dna_recut",
+        "maxQuantity": 10,
+        "version": "sha256:2d0dd20fad4302f799272e7d5e1ba7de1ecb8b9a85646f68cf9720ac14569171"
+      },
+      "formatContractVersion": "sha256:00e7ff5b0ffcdf602fde7ccab7f38bdbe3a5cdc05b7c513f015d1f1723749ec6",
+      "formatId": "pov-night-core",
+      "ingredients": [
+        {
+          "binding": null,
+          "ingredientId": "master-source-video",
+          "kind": "master_video_library",
+          "options": [],
+          "required": true,
+          "status": "missing"
+        },
+        {
+          "binding": null,
+          "ingredientId": "approved-cut-library",
+          "kind": "approved_derivative_video_library",
+          "options": [],
+          "required": false,
+          "status": "missing"
+        },
+        {
+          "binding": {
+            "clipCrop": {
+              "focusX": {
+                "default": 0.5,
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "type": "range"
+              },
+              "focusY": {
+                "default": 0.5,
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "type": "range"
+              },
+              "zoom": {
+                "default": 1.0,
+                "maximum": 3.0,
+                "minimum": 1.0,
+                "type": "range"
+              }
+            },
+            "clipSpeed": {
+              "default": 1.0,
+              "maximum": 2.0,
+              "minimum": 0.5,
+              "type": "range"
+            },
+            "controls": {
+              "cutDurationMs": {
+                "default": 7000,
+                "max": 9000,
+                "min": 5000,
+                "step": 1000,
+                "type": "range"
+              }
+            },
+            "filters": {
+              "brightness": {
+                "default": 1.0,
+                "label": "Brightness",
+                "maximum": 3.0,
+                "minimum": 0.0,
+                "step": 0.05,
+                "type": "range"
+              },
+              "contrast": {
+                "default": 1.0,
+                "label": "Contrast",
+                "maximum": 3.0,
+                "minimum": 0.0,
+                "step": 0.05,
+                "type": "range"
+              },
+              "fade": {
+                "default": 0.0,
+                "label": "Fade",
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "step": 0.05,
+                "type": "range"
+              },
+              "grain": {
+                "default": 0.0,
+                "label": "Grain",
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "step": 0.05,
+                "type": "range"
+              },
+              "saturation": {
+                "default": 1.0,
+                "label": "Saturation",
+                "maximum": 3.0,
+                "minimum": 0.0,
+                "step": 0.05,
+                "type": "range"
+              },
+              "vignette": {
+                "default": 0.0,
+                "label": "Vignette",
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "step": 0.05,
+                "type": "range"
+              },
+              "warmth": {
+                "default": 0.0,
+                "label": "Warmth",
+                "maximum": 1.0,
+                "minimum": -1.0,
+                "step": 0.05,
+                "type": "range"
+              }
+            },
+            "output": {
+              "aspectRatio": "9:16",
+              "encodePreset": "tiktok_delivery_v1",
+              "height": 1920,
+              "width": 1080
+            },
+            "recutWindow": "deterministic_varied_duration_without_replacement",
+            "reservation": "active_jobs_and_completed_outputs",
+            "scope": "master_source_window"
+          },
+          "ingredientId": "clip-treatment",
+          "kind": "render_treatment",
+          "options": [],
+          "required": true,
+          "status": "bound"
+        },
+        {
+          "binding": null,
+          "ingredientId": "caption-bank",
+          "kind": "caption_bank",
+          "options": [],
+          "required": true,
+          "status": "page_binding_required"
+        },
+        {
+          "binding": null,
+          "ingredientId": "sound-collection",
+          "kind": "sound_collection",
+          "options": [],
+          "required": true,
+          "status": "page_binding_required"
+        }
+      ],
+      "materialSource": "source_library",
+      "productionSelections": [],
+      "recipeId": "pov-night-core:master",
+      "review": {
+        "authority": "sourceDna.provenance",
+        "gates": [
+          "byte_exact_provenance",
+          "cut_window_lineage",
+          "technical_video",
+          "text_scan",
+          "operator_visual_qa",
+          "duplicate_and_never_reuse"
+        ]
+      }
+    },
+    {
+      "blockers": [
+        "creativeAuthority",
+        "duration",
+        "lighting",
+        "motion",
+        "negativeRules",
+        "prompt-module:missing",
+        "referenceExamples",
+        "reviewAuthority",
+        "setting",
+        "shotGrammar",
+        "subject",
+        "textPolicy",
+        "visual-model:missing"
+      ],
+      "contentEngine": "ai_video",
+      "contentNiche": "Night Core",
+      "definitionStatus": "incomplete",
+      "executionStatus": "uncommissioned",
+      "executor": null,
+      "formatContractVersion": "sha256:318be57f30229f4a028b78b88e4ae59783dc5a08c92259eca78b7b94ae024485",
+      "formatId": "pov-night-core-ai",
+      "ingredients": [
+        {
+          "binding": null,
+          "ingredientId": "visual-model",
+          "kind": "model",
+          "options": [
+            {
+              "controls": {},
+              "defaults": {
+                "aspect_ratio": "9:16",
+                "duration": 7,
+                "image_resolution": "2 MP",
+                "output_format": "jpg",
+                "output_quality": 95,
+                "resolution": "1080p"
+              },
+              "inputContract": {
+                "lastImage": false,
+                "referenceImage": "not_advertised"
+              },
+              "modelId": "black-forest-labs/flux-2-pro",
+              "providerId": "flux-image",
+              "providerLabel": "FLUX.2 Pro Still"
+            },
+            {
+              "controls": {
+                "crop_mode": {
+                  "default": "both",
+                  "label": "Multi-Crop",
+                  "note": "dual=2, triptych=3, both=5 crops from one 16:9",
+                  "options": [
+                    "none",
+                    "dual",
+                    "triptych",
+                    "both"
+                  ],
+                  "type": "select"
+                },
+                "duration": {
+                  "default": 6,
+                  "label": "Duration (seconds)",
+                  "note": "10s only at 768p",
+                  "options": [
+                    6,
+                    10
+                  ],
+                  "type": "select"
+                },
+                "optimize_prompt": {
+                  "default": true,
+                  "label": "Prompt Optimizer",
+                  "type": "toggle"
+                },
+                "resolution": {
+                  "default": "768p",
+                  "label": "Resolution",
+                  "note": "1080p locks duration to 6s",
+                  "options": [
+                    "768p",
+                    "1080p"
+                  ],
+                  "type": "select"
+                }
+              },
+              "defaults": {
+                "duration": 6,
+                "optimize_prompt": false,
+                "resolution": "1080p"
+              },
+              "inputContract": {
+                "lastImage": false,
+                "referenceImage": "not_advertised"
+              },
+              "modelId": "minimax/hailuo-2.3",
+              "providerId": "hailuo",
+              "providerLabel": "Hailuo 2.3"
+            }
+          ],
+          "required": true,
+          "status": "missing"
+        },
+        {
+          "binding": null,
+          "ingredientId": "prompt-module",
+          "kind": "prompt_module",
+          "options": [],
+          "required": true,
+          "status": "missing"
+        },
+        {
+          "binding": null,
+          "ingredientId": "reference-media",
+          "kind": "reference_media",
+          "options": [],
+          "required": false,
+          "status": "optional"
+        },
+        {
+          "binding": {
+            "clipCrop": {
+              "focusX": {
+                "default": 0.5,
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "type": "range"
+              },
+              "focusY": {
+                "default": 0.5,
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "type": "range"
+              },
+              "zoom": {
+                "default": 1.0,
+                "maximum": 3.0,
+                "minimum": 1.0,
+                "type": "range"
+              }
+            },
+            "clipSpeed": {
+              "default": 1.0,
+              "maximum": 2.0,
+              "minimum": 0.5,
+              "type": "range"
+            },
+            "filters": {
+              "brightness": {
+                "default": 1.0,
+                "label": "Brightness",
+                "maximum": 3.0,
+                "minimum": 0.0,
+                "step": 0.05,
+                "type": "range"
+              },
+              "contrast": {
+                "default": 1.0,
+                "label": "Contrast",
+                "maximum": 3.0,
+                "minimum": 0.0,
+                "step": 0.05,
+                "type": "range"
+              },
+              "fade": {
+                "default": 0.0,
+                "label": "Fade",
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "step": 0.05,
+                "type": "range"
+              },
+              "grain": {
+                "default": 0.0,
+                "label": "Grain",
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "step": 0.05,
+                "type": "range"
+              },
+              "saturation": {
+                "default": 1.0,
+                "label": "Saturation",
+                "maximum": 3.0,
+                "minimum": 0.0,
+                "step": 0.05,
+                "type": "range"
+              },
+              "vignette": {
+                "default": 0.0,
+                "label": "Vignette",
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "step": 0.05,
+                "type": "range"
+              },
+              "warmth": {
+                "default": 0.0,
+                "label": "Warmth",
+                "maximum": 1.0,
+                "minimum": -1.0,
+                "step": 0.05,
+                "type": "range"
+              }
+            }
+          },
+          "ingredientId": "clip-treatment",
+          "kind": "render_treatment",
+          "options": [],
+          "required": true,
+          "status": "bound"
+        },
+        {
+          "binding": null,
+          "ingredientId": "caption-bank",
+          "kind": "caption_bank",
+          "options": [],
+          "required": true,
+          "status": "page_binding_required"
+        },
+        {
+          "binding": null,
+          "ingredientId": "sound-collection",
+          "kind": "sound_collection",
+          "options": [],
+          "required": true,
+          "status": "page_binding_required"
+        }
+      ],
+      "materialSource": "generated_video",
+      "productionSelections": [
+        {
+          "catalogVersion": "sha256:9d01d4c5fcf255dfc010b1b0851f63ff9a643fed437dd2d95db67a482420a83d",
+          "modelId": "black-forest-labs/flux-2-pro",
+          "promptModuleId": null,
+          "providerId": "flux-image",
+          "referenceSetId": null,
+          "sourceLibraryId": null
+        },
+        {
+          "catalogVersion": "sha256:8cf71ead2d928e14348891a2fac39eadb6a496c8b8d68c05ff6f96c505cd0a80",
+          "modelId": "minimax/hailuo-2.3",
+          "promptModuleId": null,
+          "providerId": "hailuo",
+          "referenceSetId": null,
+          "sourceLibraryId": null
+        }
+      ],
+      "recipeId": "pov-night-core-ai:master",
+      "review": {
+        "authority": null,
+        "gates": [
+          "technical_video",
+          "ocr_text",
+          "visual_dna",
+          "duplicate_and_never_reuse"
+        ]
+      }
+    },
+    {
+      "blockers": [
+        "master-source-video:missing"
+      ],
+      "contentEngine": "sourced_video",
+      "contentNiche": "POV \u2014 Scenic",
+      "definitionStatus": "complete",
+      "executionStatus": "commissioned",
+      "executor": {
+        "id": "source-dna-recut",
+        "kind": "source_dna_recut",
+        "maxQuantity": 10,
+        "version": "sha256:2d0dd20fad4302f799272e7d5e1ba7de1ecb8b9a85646f68cf9720ac14569171"
+      },
+      "formatContractVersion": "sha256:31cbad392107972949f3977383427a344808f653e9022d6284d08d307bec9772",
+      "formatId": "pov-scenic",
+      "ingredients": [
+        {
+          "binding": null,
+          "ingredientId": "master-source-video",
+          "kind": "master_video_library",
+          "options": [],
+          "required": true,
+          "status": "missing"
+        },
+        {
+          "binding": null,
+          "ingredientId": "approved-cut-library",
+          "kind": "approved_derivative_video_library",
+          "options": [],
+          "required": false,
+          "status": "missing"
+        },
+        {
+          "binding": {
+            "clipCrop": {
+              "focusX": {
+                "default": 0.5,
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "type": "range"
+              },
+              "focusY": {
+                "default": 0.5,
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "type": "range"
+              },
+              "zoom": {
+                "default": 1.0,
+                "maximum": 3.0,
+                "minimum": 1.0,
+                "type": "range"
+              }
+            },
+            "clipSpeed": {
+              "default": 1.0,
+              "maximum": 2.0,
+              "minimum": 0.5,
+              "type": "range"
+            },
+            "controls": {
+              "cutDurationMs": {
+                "default": 7000,
+                "max": 9000,
+                "min": 5000,
+                "step": 1000,
+                "type": "range"
+              }
+            },
+            "filters": {
+              "brightness": {
+                "default": 1.0,
+                "label": "Brightness",
+                "maximum": 3.0,
+                "minimum": 0.0,
+                "step": 0.05,
+                "type": "range"
+              },
+              "contrast": {
+                "default": 1.0,
+                "label": "Contrast",
+                "maximum": 3.0,
+                "minimum": 0.0,
+                "step": 0.05,
+                "type": "range"
+              },
+              "fade": {
+                "default": 0.0,
+                "label": "Fade",
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "step": 0.05,
+                "type": "range"
+              },
+              "grain": {
+                "default": 0.0,
+                "label": "Grain",
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "step": 0.05,
+                "type": "range"
+              },
+              "saturation": {
+                "default": 1.0,
+                "label": "Saturation",
+                "maximum": 3.0,
+                "minimum": 0.0,
+                "step": 0.05,
+                "type": "range"
+              },
+              "vignette": {
+                "default": 0.0,
+                "label": "Vignette",
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "step": 0.05,
+                "type": "range"
+              },
+              "warmth": {
+                "default": 0.0,
+                "label": "Warmth",
+                "maximum": 1.0,
+                "minimum": -1.0,
+                "step": 0.05,
+                "type": "range"
+              }
+            },
+            "output": {
+              "aspectRatio": "9:16",
+              "encodePreset": "tiktok_delivery_v1",
+              "height": 1920,
+              "width": 1080
+            },
+            "recutWindow": "deterministic_varied_duration_without_replacement",
+            "reservation": "active_jobs_and_completed_outputs",
+            "scope": "master_source_window"
+          },
+          "ingredientId": "clip-treatment",
+          "kind": "render_treatment",
+          "options": [],
+          "required": true,
+          "status": "bound"
+        },
+        {
+          "binding": null,
+          "ingredientId": "caption-bank",
+          "kind": "caption_bank",
+          "options": [],
+          "required": true,
+          "status": "page_binding_required"
+        },
+        {
+          "binding": null,
+          "ingredientId": "sound-collection",
+          "kind": "sound_collection",
+          "options": [],
+          "required": true,
+          "status": "page_binding_required"
+        }
+      ],
+      "materialSource": "source_library",
+      "productionSelections": [],
+      "recipeId": "pov-scenic:master",
+      "review": {
+        "authority": "sourceDna.provenance",
+        "gates": [
+          "byte_exact_provenance",
+          "cut_window_lineage",
+          "technical_video",
+          "text_scan",
+          "operator_visual_qa",
+          "duplicate_and_never_reuse"
+        ]
+      }
+    },
+    {
+      "blockers": [],
+      "contentEngine": "ai_video",
+      "contentNiche": "silhouette",
+      "definitionStatus": "complete",
+      "executionStatus": "commissioned",
+      "executor": {
+        "id": "silhouette",
+        "kind": "prompt_family",
+        "maxQuantity": 10,
+        "version": "sha256:2ba10a69a2a25eb0c60ed238b9badb5b7531a994a364e0f06ef4acfcc7bda3a0"
+      },
+      "formatContractVersion": "sha256:95608c1d7c9be8646ad571333e8a19de2c7e6b046d5370a7642e189758eed7d6",
+      "formatId": "silhouette-truck",
+      "ingredients": [
+        {
+          "binding": {
+            "defaults": {
+              "aspect_ratio": "9:16",
+              "duration": 7,
+              "image_resolution": "2 MP",
+              "output_format": "jpg",
+              "output_quality": 95,
+              "resolution": "1080p"
+            },
+            "familyOverrides": {},
+            "inputContract": {
+              "lastImage": false,
+              "referenceImage": "not_advertised"
+            },
+            "modelId": "black-forest-labs/flux-2-pro",
+            "providerId": "flux-image"
+          },
+          "ingredientId": "visual-model",
+          "kind": "model",
+          "options": [
+            {
+              "controls": {},
+              "defaults": {
+                "aspect_ratio": "9:16",
+                "duration": 7,
+                "image_resolution": "2 MP",
+                "output_format": "jpg",
+                "output_quality": 95,
+                "resolution": "1080p"
+              },
+              "inputContract": {
+                "lastImage": false,
+                "referenceImage": "not_advertised"
+              },
+              "modelId": "black-forest-labs/flux-2-pro",
+              "providerId": "flux-image",
+              "providerLabel": "FLUX.2 Pro Still"
+            },
+            {
+              "controls": {
+                "crop_mode": {
+                  "default": "both",
+                  "label": "Multi-Crop",
+                  "note": "dual=2, triptych=3, both=5 crops from one 16:9",
+                  "options": [
+                    "none",
+                    "dual",
+                    "triptych",
+                    "both"
+                  ],
+                  "type": "select"
+                },
+                "duration": {
+                  "default": 6,
+                  "label": "Duration (seconds)",
+                  "note": "10s only at 768p",
+                  "options": [
+                    6,
+                    10
+                  ],
+                  "type": "select"
+                },
+                "optimize_prompt": {
+                  "default": true,
+                  "label": "Prompt Optimizer",
+                  "type": "toggle"
+                },
+                "resolution": {
+                  "default": "768p",
+                  "label": "Resolution",
+                  "note": "1080p locks duration to 6s",
+                  "options": [
+                    "768p",
+                    "1080p"
+                  ],
+                  "type": "select"
+                }
+              },
+              "defaults": {
+                "duration": 6,
+                "optimize_prompt": false,
+                "resolution": "1080p"
+              },
+              "inputContract": {
+                "lastImage": false,
+                "referenceImage": "not_advertised"
+              },
+              "modelId": "minimax/hailuo-2.3",
+              "providerId": "hailuo",
+              "providerLabel": "Hailuo 2.3"
+            }
+          ],
+          "required": true,
+          "status": "bound"
+        },
+        {
+          "binding": {
+            "familyId": "silhouette",
+            "fixedSubject": "two adult lovers shown only as pure black featureless full-body silhouettes, holding each other beside one clean unbadged dark full-size crew-cab pickup truck parked in an open field",
+            "method": "t2i",
+            "motion": null,
+            "qualityGuards": "one photorealistic deep low-exposure dusk photograph, native vertical 9:16 composition, realistic human anatomy and natural embrace, exactly two adults and exactly one complete pickup, both people and the entire truck clearly separated and readable above the field horizon, rich dark sky with controlled highlights, upper 45 percent is uncluttered clean sky reserved for downstream caption text, no visible faces, no clothing detail, no extra people, no extra vehicles, no readable badge, plate, logo, lettering, watermark, border, collage, illustration, CGI sheen, pale pastel wash, blur, duplicated limbs, fused bodies, malformed hands, or distorted vehicle geometry",
+            "template": "A quiet cinematic photograph of {subject}. {setting}. The couple is {pose}. {composition}. The sky is {sky}. Preserve deep blacks and controlled highlights; this is a single still photograph with no implied camera movement. {guards}.",
+            "variationGroups": {
+              "composition": [
+                "Place the couple in the lower-left and the truck to their right, close enough to read as one scene, with a huge clean sky above",
+                "Place the couple in the lower center and the truck immediately behind and to the right, leaving the upper frame empty",
+                "Use a wide environmental composition with the couple and truck together in the lower third beneath an enormous clean sky"
+              ],
+              "pose": [
+                "embracing with their foreheads touching",
+                "embracing with her head resting on his shoulder",
+                "holding each other close while facing the horizon",
+                "embracing naturally in a side-on profile",
+                "standing chest to chest with both arms around each other"
+              ],
+              "setting": [
+                "They stand in an open field of tall grass at dusk",
+                "They stand at the edge of a wheat field at last light",
+                "They stand in a broad meadow bordered by a distant tree line",
+                "They stand on a low grassy country hilltop",
+                "They stand beside a quiet dirt track crossing an open field",
+                "They stand in a dry late-summer field beneath a huge sky"
+              ],
+              "sky": [
+                "a vast deep purple and muted red dusk gradient",
+                "dark plum twilight with a restrained pink horizon",
+                "a deep burnt-orange sunset under heavy streaked clouds",
+                "a dim bronze afterglow fading into navy blue",
+                "near-black violet dusk with one low sun ember",
+                "a dark amber horizon beneath a charcoal clearing sky"
+              ]
+            }
+          },
+          "ingredientId": "prompt-module",
+          "kind": "prompt_module",
+          "options": [],
+          "required": true,
+          "status": "bound"
+        },
+        {
+          "binding": null,
+          "ingredientId": "reference-media",
+          "kind": "reference_media",
+          "options": [],
+          "required": false,
+          "status": "optional"
+        },
+        {
+          "binding": {
+            "clipCrop": {
+              "focusX": {
+                "default": 0.5,
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "type": "range"
+              },
+              "focusY": {
+                "default": 0.5,
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "type": "range"
+              },
+              "zoom": {
+                "default": 1.0,
+                "maximum": 3.0,
+                "minimum": 1.0,
+                "type": "range"
+              }
+            },
+            "clipSpeed": {
+              "default": 1.0,
+              "maximum": 2.0,
+              "minimum": 0.5,
+              "type": "range"
+            },
+            "filters": {
+              "brightness": {
+                "default": 1.0,
+                "label": "Brightness",
+                "maximum": 3.0,
+                "minimum": 0.0,
+                "step": 0.05,
+                "type": "range"
+              },
+              "contrast": {
+                "default": 1.0,
+                "label": "Contrast",
+                "maximum": 3.0,
+                "minimum": 0.0,
+                "step": 0.05,
+                "type": "range"
+              },
+              "fade": {
+                "default": 0.0,
+                "label": "Fade",
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "step": 0.05,
+                "type": "range"
+              },
+              "grain": {
+                "default": 0.0,
+                "label": "Grain",
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "step": 0.05,
+                "type": "range"
+              },
+              "saturation": {
+                "default": 1.0,
+                "label": "Saturation",
+                "maximum": 3.0,
+                "minimum": 0.0,
+                "step": 0.05,
+                "type": "range"
+              },
+              "vignette": {
+                "default": 0.0,
+                "label": "Vignette",
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "step": 0.05,
+                "type": "range"
+              },
+              "warmth": {
+                "default": 0.0,
+                "label": "Warmth",
+                "maximum": 1.0,
+                "minimum": -1.0,
+                "step": 0.05,
+                "type": "range"
+              }
+            }
+          },
+          "ingredientId": "clip-treatment",
+          "kind": "render_treatment",
+          "options": [],
+          "required": true,
+          "status": "bound"
+        },
+        {
+          "binding": null,
+          "ingredientId": "caption-bank",
+          "kind": "caption_bank",
+          "options": [],
+          "required": true,
+          "status": "page_binding_required"
+        },
+        {
+          "binding": null,
+          "ingredientId": "sound-collection",
+          "kind": "sound_collection",
+          "options": [],
+          "required": true,
+          "status": "page_binding_required"
+        }
+      ],
+      "materialSource": "generated_video",
+      "productionSelections": [
+        {
+          "catalogVersion": "sha256:6e0989f0a8841f52364ec8424cbd7495649aa9472eb0ac0f826e9b0a5c358929",
+          "modelId": "black-forest-labs/flux-2-pro",
+          "promptModuleId": "silhouette",
+          "providerId": "flux-image",
+          "referenceSetId": null,
+          "sourceLibraryId": null
+        },
+        {
+          "catalogVersion": "sha256:d42bd2b1a217ff325e9866255e0aa7650fea42811dbd3c5eb190fd985ad74a01",
+          "modelId": "minimax/hailuo-2.3",
+          "promptModuleId": "silhouette",
+          "providerId": "hailuo",
+          "referenceSetId": null,
+          "sourceLibraryId": null
+        }
+      ],
+      "recipeId": "silhouette-truck:master",
+      "review": {
+        "authority": "promptCatalog.families.silhouette.quality_guards",
+        "gates": [
+          "technical_video",
+          "ocr_text",
+          "visual_dna",
+          "geometry",
+          "duplicate_and_never_reuse"
+        ]
+      }
+    },
+    {
+      "blockers": [
+        "image-library:missing",
+        "slideshow-treatment:missing"
+      ],
+      "contentEngine": "sourced_image",
+      "contentNiche": "POV",
+      "definitionStatus": "complete",
+      "executionStatus": "commissioned",
+      "executor": {
+        "id": "syzygy-slideshow",
+        "kind": "slideshow_renderer",
+        "maxQuantity": 1,
+        "version": "sha256:fee820be22a84f50cfa80330c5c0d6006b456a468a0bfa0373f9a652d25d599c"
+      },
+      "formatContractVersion": "sha256:26717c7ce89fa7a89c8286a9ec1fac9184613b514867daf641352f6c97f9a917",
+      "formatId": "single-image-video",
+      "ingredients": [
+        {
+          "binding": null,
+          "ingredientId": "image-library",
+          "kind": "image_library",
+          "options": [],
+          "required": true,
+          "status": "missing"
+        },
+        {
+          "binding": null,
+          "ingredientId": "slideshow-treatment",
+          "kind": "slideshow_treatment",
+          "options": [],
+          "required": true,
+          "status": "missing"
+        },
+        {
+          "binding": null,
+          "ingredientId": "caption-bank",
+          "kind": "caption_bank",
+          "options": [],
+          "required": true,
+          "status": "page_binding_required"
+        },
+        {
+          "binding": null,
+          "ingredientId": "sound-collection",
+          "kind": "sound_collection",
+          "options": [],
+          "required": true,
+          "status": "page_binding_required"
+        }
+      ],
+      "materialSource": "image_library",
+      "productionSelections": [],
+      "recipeId": "single-image-video:master",
+      "review": {
+        "authority": "recipes/executors/syzygy-image-video.v1.json",
+        "gates": [
+          "technical_video",
+          "rights_and_provenance",
+          "text_layout",
+          "duplicate_and_never_reuse"
+        ]
+      }
+    },
+    {
+      "blockers": [],
+      "contentEngine": "ai_video",
+      "contentNiche": "TRUCK",
+      "definitionStatus": "complete",
+      "executionStatus": "commissioned",
+      "executor": {
+        "id": "truck",
+        "kind": "prompt_family",
+        "maxQuantity": 10,
+        "version": "sha256:e7c2a13a818da636bb32ea3027cd3d2be1a88fd8c9c74e87cf67206f3188ceff"
+      },
+      "formatContractVersion": "sha256:89bb6c2718e3720302e8bee167660d8a2528a1dbe15fed43aaacea88e6671851",
+      "formatId": "truck-scenic",
+      "ingredients": [
+        {
+          "binding": {
+            "defaults": {
+              "duration": 6,
+              "optimize_prompt": false,
+              "resolution": "1080p"
+            },
+            "familyOverrides": {
+              "crop_mode": "both",
+              "optimize_prompt": false
+            },
+            "inputContract": {
+              "lastImage": false,
+              "referenceImage": "not_advertised"
+            },
+            "modelId": "minimax/hailuo-2.3",
+            "providerId": "hailuo"
+          },
+          "ingredientId": "visual-model",
+          "kind": "model",
+          "options": [
+            {
+              "controls": {},
+              "defaults": {
+                "aspect_ratio": "9:16",
+                "duration": 7,
+                "image_resolution": "2 MP",
+                "output_format": "jpg",
+                "output_quality": 95,
+                "resolution": "1080p"
+              },
+              "inputContract": {
+                "lastImage": false,
+                "referenceImage": "not_advertised"
+              },
+              "modelId": "black-forest-labs/flux-2-pro",
+              "providerId": "flux-image",
+              "providerLabel": "FLUX.2 Pro Still"
+            },
+            {
+              "controls": {
+                "crop_mode": {
+                  "default": "both",
+                  "label": "Multi-Crop",
+                  "note": "dual=2, triptych=3, both=5 crops from one 16:9",
+                  "options": [
+                    "none",
+                    "dual",
+                    "triptych",
+                    "both"
+                  ],
+                  "type": "select"
+                },
+                "duration": {
+                  "default": 6,
+                  "label": "Duration (seconds)",
+                  "note": "10s only at 768p",
+                  "options": [
+                    6,
+                    10
+                  ],
+                  "type": "select"
+                },
+                "optimize_prompt": {
+                  "default": true,
+                  "label": "Prompt Optimizer",
+                  "type": "toggle"
+                },
+                "resolution": {
+                  "default": "768p",
+                  "label": "Resolution",
+                  "note": "1080p locks duration to 6s",
+                  "options": [
+                    "768p",
+                    "1080p"
+                  ],
+                  "type": "select"
+                }
+              },
+              "defaults": {
+                "duration": 6,
+                "optimize_prompt": false,
+                "resolution": "1080p"
+              },
+              "inputContract": {
+                "lastImage": false,
+                "referenceImage": "not_advertised"
+              },
+              "modelId": "minimax/hailuo-2.3",
+              "providerId": "hailuo",
+              "providerLabel": "Hailuo 2.3"
+            }
+          ],
+          "required": true,
+          "status": "bound"
+        },
+        {
+          "binding": {
+            "familyId": "truck",
+            "fixedSubject": "a clean recognizable dark navy-black full-size crew-cab pickup with natural factory-like proportions, normal panel seams and handles, plain unmarked dark wheels, clear empty windows with no visible occupants, and no readable lettering or license plate",
+            "method": "t2v",
+            "motion": null,
+            "qualityGuards": "low wheel-height front-quarter, rear-quarter, or natural near-side view; the complete truck and meaningful surrounding landscape remain readable throughout; the truck is parked and completely stationary with its wheels and tires not rotating; moody low-exposure phone footage with deep blacks, controlled highlights, natural softness, preserved shadow detail, and muted color; no milky haze, pale high-key daylight, or washed-out grade; plain unmarked vehicle surfaces, no visible occupants, no readable lettering or plates",
+            "template": "Extreme wide low wheel-height {angle} of {subject}, parked {setting}, {light}, {atmosphere}; keep the complete truck and enough landscape visible to establish depth, expose for a dark moody frame with controlled highlights and readable shadow detail, with a static camera or barely perceptible natural drift, photographed like an ordinary understated phone clip rather than a polished product render, {subject_state}",
+            "variationGroups": {
+              "angle": [
+                "front three-quarter near-side view",
+                "rear three-quarter near-side view",
+                "natural near-side profile"
+              ],
+              "atmosphere": [
+                "dark natural muted color with controlled haze and preserved shadow detail",
+                "subtle damp air with restrained reflections and deep blacks",
+                "quiet clear air with controlled highlights and no stylized color cast",
+                "a faint breeze moving grass while the truck remains still in a moody low-exposure frame"
+              ],
+              "light": [
+                "dark soft-overcast light with controlled pale highlights",
+                "low-key blue-gray morning light",
+                "cool moody post-rain light with deep shadows",
+                "subdued late-afternoon light without a hard orange cast",
+                "deep muted blue-gray dusk",
+                "restrained low-exposure golden-hour light under heavy clouds"
+              ],
+              "setting": [
+                "on a gravel shoulder beside a still pond with dormant tan grass on a low hillside",
+                "beside a calm lake edged by muted dry grass under a pale sky",
+                "on a country backroad through subdued wheat fields",
+                "at a quiet field edge with pale winter grass",
+                "at a damp forest pullout among tall pines",
+                "on a mountain pullout with muted pines and gray haze behind",
+                "in a neutral gravel farmyard by a weathered barn",
+                "along a wooden ranch fence in green-brown open pasture",
+                "on a gravel riverbank beside calm water",
+                "at the edge of a broad meadow under low gray clouds"
+              ]
+            }
+          },
+          "ingredientId": "prompt-module",
+          "kind": "prompt_module",
+          "options": [],
+          "required": true,
+          "status": "bound"
+        },
+        {
+          "binding": null,
+          "ingredientId": "reference-media",
+          "kind": "reference_media",
+          "options": [],
+          "required": false,
+          "status": "optional"
+        },
+        {
+          "binding": {
+            "clipCrop": {
+              "focusX": {
+                "default": 0.5,
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "type": "range"
+              },
+              "focusY": {
+                "default": 0.5,
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "type": "range"
+              },
+              "zoom": {
+                "default": 1.0,
+                "maximum": 3.0,
+                "minimum": 1.0,
+                "type": "range"
+              }
+            },
+            "clipSpeed": {
+              "default": 1.0,
+              "maximum": 2.0,
+              "minimum": 0.5,
+              "type": "range"
+            },
+            "filters": {
+              "brightness": {
+                "default": 1.0,
+                "label": "Brightness",
+                "maximum": 3.0,
+                "minimum": 0.0,
+                "step": 0.05,
+                "type": "range"
+              },
+              "contrast": {
+                "default": 1.0,
+                "label": "Contrast",
+                "maximum": 3.0,
+                "minimum": 0.0,
+                "step": 0.05,
+                "type": "range"
+              },
+              "fade": {
+                "default": 0.0,
+                "label": "Fade",
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "step": 0.05,
+                "type": "range"
+              },
+              "grain": {
+                "default": 0.0,
+                "label": "Grain",
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "step": 0.05,
+                "type": "range"
+              },
+              "saturation": {
+                "default": 1.0,
+                "label": "Saturation",
+                "maximum": 3.0,
+                "minimum": 0.0,
+                "step": 0.05,
+                "type": "range"
+              },
+              "vignette": {
+                "default": 0.0,
+                "label": "Vignette",
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "step": 0.05,
+                "type": "range"
+              },
+              "warmth": {
+                "default": 0.0,
+                "label": "Warmth",
+                "maximum": 1.0,
+                "minimum": -1.0,
+                "step": 0.05,
+                "type": "range"
+              }
+            }
+          },
+          "ingredientId": "clip-treatment",
+          "kind": "render_treatment",
+          "options": [],
+          "required": true,
+          "status": "bound"
+        },
+        {
+          "binding": null,
+          "ingredientId": "caption-bank",
+          "kind": "caption_bank",
+          "options": [],
+          "required": true,
+          "status": "page_binding_required"
+        },
+        {
+          "binding": null,
+          "ingredientId": "sound-collection",
+          "kind": "sound_collection",
+          "options": [],
+          "required": true,
+          "status": "page_binding_required"
+        }
+      ],
+      "materialSource": "generated_video",
+      "productionSelections": [
+        {
+          "catalogVersion": "sha256:645515b8b27cf1d489a12021aac22d3ec097786abef6a310fb610861068cfe88",
+          "modelId": "black-forest-labs/flux-2-pro",
+          "promptModuleId": "truck",
+          "providerId": "flux-image",
+          "referenceSetId": null,
+          "sourceLibraryId": null
+        },
+        {
+          "catalogVersion": "sha256:2b853d4639dc71241435790429d1cfd1b8508c311ec447bcfab4254d9275c442",
+          "modelId": "minimax/hailuo-2.3",
+          "promptModuleId": "truck",
+          "providerId": "hailuo",
+          "referenceSetId": null,
+          "sourceLibraryId": null
+        }
+      ],
+      "recipeId": "truck-scenic:master",
+      "review": {
+        "authority": "promptCatalog.families.truck.visual_reference",
+        "gates": [
+          "technical_video",
+          "ocr_text",
+          "visual_dna",
+          "complete_subject_geometry",
+          "duplicate_and_never_reuse"
+        ]
+      }
+    },
+    {
+      "blockers": [],
+      "contentEngine": "ai_video",
+      "contentNiche": "TRUCK",
+      "definitionStatus": "complete",
+      "executionStatus": "uncommissioned",
+      "executor": null,
+      "formatContractVersion": "sha256:18e41f914afada14bbf46f5abe18bf1f3885ad680bd24bda908b417191110aae",
+      "formatId": "truck-ugc",
+      "ingredients": [
+        {
+          "binding": {
+            "defaults": {
+              "duration": 6,
+              "optimize_prompt": false,
+              "resolution": "1080p"
+            },
+            "familyOverrides": {
+              "crop_mode": "dual",
+              "optimize_prompt": false
+            },
+            "inputContract": {
+              "lastImage": false,
+              "referenceImage": "not_advertised"
+            },
+            "modelId": "minimax/hailuo-2.3",
+            "providerId": "hailuo"
+          },
+          "ingredientId": "visual-model",
+          "kind": "model",
+          "options": [
+            {
+              "controls": {},
+              "defaults": {
+                "aspect_ratio": "9:16",
+                "duration": 7,
+                "image_resolution": "2 MP",
+                "output_format": "jpg",
+                "output_quality": 95,
+                "resolution": "1080p"
+              },
+              "inputContract": {
+                "lastImage": false,
+                "referenceImage": "not_advertised"
+              },
+              "modelId": "black-forest-labs/flux-2-pro",
+              "providerId": "flux-image",
+              "providerLabel": "FLUX.2 Pro Still"
+            },
+            {
+              "controls": {
+                "crop_mode": {
+                  "default": "both",
+                  "label": "Multi-Crop",
+                  "note": "dual=2, triptych=3, both=5 crops from one 16:9",
+                  "options": [
+                    "none",
+                    "dual",
+                    "triptych",
+                    "both"
+                  ],
+                  "type": "select"
+                },
+                "duration": {
+                  "default": 6,
+                  "label": "Duration (seconds)",
+                  "note": "10s only at 768p",
+                  "options": [
+                    6,
+                    10
+                  ],
+                  "type": "select"
+                },
+                "optimize_prompt": {
+                  "default": true,
+                  "label": "Prompt Optimizer",
+                  "type": "toggle"
+                },
+                "resolution": {
+                  "default": "768p",
+                  "label": "Resolution",
+                  "note": "1080p locks duration to 6s",
+                  "options": [
+                    "768p",
+                    "1080p"
+                  ],
+                  "type": "select"
+                }
+              },
+              "defaults": {
+                "duration": 6,
+                "optimize_prompt": false,
+                "resolution": "1080p"
+              },
+              "inputContract": {
+                "lastImage": false,
+                "referenceImage": "not_advertised"
+              },
+              "modelId": "minimax/hailuo-2.3",
+              "providerId": "hailuo",
+              "providerLabel": "Hailuo 2.3"
+            }
+          ],
+          "required": true,
+          "status": "bound"
+        },
+        {
+          "binding": {
+            "familyId": "ugc",
+            "fixedSubject": "lifted black Ford F-150 crew cab on 35-inch mud tires, factory grille with clean legible FORD block letters, no other lettering anywhere",
+            "method": "t2v",
+            "motion": null,
+            "qualityGuards": "the truck is completely stationary with its wheels and tires not rotating, no people visible, no on-screen text, vertical 9:16",
+            "template": "Smartphone UGC clip filmed handheld with gentle phone drift: {subject}, parked {angle} on {setting} at {light}, {atmosphere}, truck fills most of the frame, {subject_state}.",
+            "variationGroups": {
+              "angle": [
+                "three-quarter front",
+                "low front three-quarter emphasizing the lift",
+                "side profile",
+                "front-on"
+              ],
+              "atmosphere": [
+                "faint dust in the air",
+                "damp after rain with reflections",
+                "dry and dusty",
+                "crisp and clear"
+              ],
+              "light": [
+                "golden hour with the low sun flaring softly in the lens",
+                "warm late afternoon",
+                "overcast soft daylight",
+                "early-morning golden light"
+              ],
+              "setting": [
+                "a gravel farm drive with a wooden fence and pasture behind",
+                "a muddy backroad at the field's edge",
+                "a gravel lot by a metal gate",
+                "a dirt turnout in front of a treeline",
+                "a ranch driveway with hay bales behind"
+              ]
+            }
+          },
+          "ingredientId": "prompt-module",
+          "kind": "prompt_module",
+          "options": [],
+          "required": true,
+          "status": "bound"
+        },
+        {
+          "binding": null,
+          "ingredientId": "reference-media",
+          "kind": "reference_media",
+          "options": [],
+          "required": false,
+          "status": "optional"
+        },
+        {
+          "binding": {
+            "clipCrop": {
+              "focusX": {
+                "default": 0.5,
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "type": "range"
+              },
+              "focusY": {
+                "default": 0.5,
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "type": "range"
+              },
+              "zoom": {
+                "default": 1.0,
+                "maximum": 3.0,
+                "minimum": 1.0,
+                "type": "range"
+              }
+            },
+            "clipSpeed": {
+              "default": 1.0,
+              "maximum": 2.0,
+              "minimum": 0.5,
+              "type": "range"
+            },
+            "filters": {
+              "brightness": {
+                "default": 1.0,
+                "label": "Brightness",
+                "maximum": 3.0,
+                "minimum": 0.0,
+                "step": 0.05,
+                "type": "range"
+              },
+              "contrast": {
+                "default": 1.0,
+                "label": "Contrast",
+                "maximum": 3.0,
+                "minimum": 0.0,
+                "step": 0.05,
+                "type": "range"
+              },
+              "fade": {
+                "default": 0.0,
+                "label": "Fade",
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "step": 0.05,
+                "type": "range"
+              },
+              "grain": {
+                "default": 0.0,
+                "label": "Grain",
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "step": 0.05,
+                "type": "range"
+              },
+              "saturation": {
+                "default": 1.0,
+                "label": "Saturation",
+                "maximum": 3.0,
+                "minimum": 0.0,
+                "step": 0.05,
+                "type": "range"
+              },
+              "vignette": {
+                "default": 0.0,
+                "label": "Vignette",
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "step": 0.05,
+                "type": "range"
+              },
+              "warmth": {
+                "default": 0.0,
+                "label": "Warmth",
+                "maximum": 1.0,
+                "minimum": -1.0,
+                "step": 0.05,
+                "type": "range"
+              }
+            }
+          },
+          "ingredientId": "clip-treatment",
+          "kind": "render_treatment",
+          "options": [],
+          "required": true,
+          "status": "bound"
+        },
+        {
+          "binding": null,
+          "ingredientId": "caption-bank",
+          "kind": "caption_bank",
+          "options": [],
+          "required": true,
+          "status": "page_binding_required"
+        },
+        {
+          "binding": null,
+          "ingredientId": "sound-collection",
+          "kind": "sound_collection",
+          "options": [],
+          "required": true,
+          "status": "page_binding_required"
+        }
+      ],
+      "materialSource": "generated_video",
+      "productionSelections": [
+        {
+          "catalogVersion": "sha256:66d7395547eee09d2deb1e056a5fb73daf531e6e0db0f07effc23a30a5ff6e6d",
+          "modelId": "black-forest-labs/flux-2-pro",
+          "promptModuleId": "ugc",
+          "providerId": "flux-image",
+          "referenceSetId": null,
+          "sourceLibraryId": null
+        },
+        {
+          "catalogVersion": "sha256:92812704e4885030816ac00d27bda731b9c243bd2aea0f3a14fb151fa8453234",
+          "modelId": "minimax/hailuo-2.3",
+          "promptModuleId": "ugc",
+          "providerId": "hailuo",
+          "referenceSetId": null,
+          "sourceLibraryId": null
+        }
+      ],
+      "recipeId": "truck-ugc:master",
+      "review": {
+        "authority": "promptCatalog.families.ugc.quality_guards",
+        "gates": [
+          "technical_video",
+          "ocr_text",
+          "visual_dna",
+          "geometry",
+          "duplicate_and_never_reuse",
+          "keeper_yield_release_gate"
+        ]
+      }
+    },
+    {
+      "blockers": [],
+      "contentEngine": "sourced_slideshow",
+      "contentNiche": "slideshow",
+      "definitionStatus": "complete",
+      "executionStatus": "commissioned",
+      "executor": {
+        "id": "syzygy-slideshow",
+        "kind": "slideshow_renderer",
+        "maxQuantity": 10,
+        "version": "sha256:1c800420efd659f1f0a38608f6e34d3a38d16da53a43cdf8cc27c67f7cb0440e"
+      },
+      "formatContractVersion": "sha256:9b13a25a76ece570244c08bc7dc316f15818113b6cc8352916c7a0bc1f50b65f",
+      "formatId": "ugc-slideshow",
+      "ingredients": [
+        {
+          "binding": {
+            "lane": "ugc",
+            "libraryId": "syzygy:ugc:french-core",
+            "mediaCount": 3,
+            "mediaKinds": [
+              "photo"
+            ],
+            "minimumLibraryItems": 3,
+            "role": "syzygy_r2_library",
+            "snapshotHash": "sha256:c36e7a06da228ea5c641b1f1772990d09c4228b40de8e9ddf22cb275b7f30ee5",
+            "subject": "french-core"
+          },
+          "ingredientId": "image-library",
+          "kind": "image_library",
+          "options": [
+            {
+              "lane": "ugc",
+              "libraryId": "syzygy:ugc:french-core",
+              "mediaCount": 3,
+              "mediaKinds": [
+                "photo"
+              ],
+              "minimumLibraryItems": 3,
+              "role": "syzygy_r2_library",
+              "snapshotHash": "sha256:c36e7a06da228ea5c641b1f1772990d09c4228b40de8e9ddf22cb275b7f30ee5",
+              "subject": "french-core"
+            }
+          ],
+          "required": true,
+          "status": "bound"
+        },
+        {
+          "binding": {
+            "minimumLibraryItems": 3,
+            "output": {
+              "aspectRatio": "9:16",
+              "audioPolicy": "campaign_sound_bound_downstream",
+              "container": "video/mp4",
+              "encodePreset": "tiktok_delivery_v1",
+              "height": 1920,
+              "width": 1080
+            },
+            "renderer": "syzygy",
+            "rendererContractVersion": "sha256:1c800420efd659f1f0a38608f6e34d3a38d16da53a43cdf8cc27c67f7cb0440e",
+            "reservation": "active_jobs_and_completed_outputs",
+            "selection": "deterministic_variety_without_replacement",
+            "templates": [
+              {
+                "mediaCount": 3,
+                "slug": "clean-slideshow"
+              }
+            ]
+          },
+          "ingredientId": "slideshow-treatment",
+          "kind": "slideshow_treatment",
+          "options": [],
+          "required": true,
+          "status": "bound"
+        },
+        {
+          "binding": null,
+          "ingredientId": "caption-bank",
+          "kind": "caption_bank",
+          "options": [],
+          "required": true,
+          "status": "page_binding_required"
+        },
+        {
+          "binding": null,
+          "ingredientId": "sound-collection",
+          "kind": "sound_collection",
+          "options": [],
+          "required": true,
+          "status": "page_binding_required"
+        }
+      ],
+      "materialSource": "image_library",
+      "productionSelections": [
+        {
+          "catalogVersion": "sha256:c19cf32693e116a9ca3a87ac424e9bd709439ae56001f3f3f97f64465bf48c6a",
+          "modelId": null,
+          "promptModuleId": null,
+          "providerId": null,
+          "referenceSetId": null,
+          "sourceLibraryId": "syzygy:ugc:french-core"
+        }
+      ],
+      "recipeId": "ugc-slideshow:master",
+      "review": {
+        "authority": "syzygy-slideshow.output+artifact.source.media",
+        "gates": [
+          "technical_video",
+          "rights_and_provenance",
+          "text_layout",
+          "duplicate_and_never_reuse"
+        ]
+      }
+    }
+  ],
+  "masterPages": {
+    "accountType": "TRUCK",
+    "archived": false,
+    "automationMode": "Automation",
+    "contentEngine": "sourced_slideshow",
+    "contentNiche": "slideshow",
+    "group": "INTERNAL",
+    "groupLabel": "Internal",
+    "handle": "French.Core",
+    "notionPageId": "notion-acct:culture-ugc-test",
+    "pageId": "acct:culture-ugc-test",
+    "pageType": "TikTok",
+    "pipeline": "Content Lab",
+    "posterName": "PIXEL-1",
+    "project": null,
+    "schema": "master-pages.page-intent.v1",
+    "soundsReference": null,
+    "source": "notion",
+    "status": "Active",
+    "tiktokUrl": "https://www.tiktok.com/@French.Core",
+    "vaultUrl": "https://shipstream.test/vault/french.core"
+  },
+  "masterPagesHash": "sha256:33a8f4f5f313d7748b31a74029ffb49544a0e5309b4ec2f538694c36e8b201c2",
+  "pageId": "acct:culture-ugc-test",
+  "schema": "content-lab.dossier-ingredient-catalog.v1"
+}
