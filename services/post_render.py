@@ -392,7 +392,9 @@ def render_post(source_path: Path, output_directory: Path, request: PostRenderRe
     Unknown or different treatment provenance requires regeneration.
     This function adds only the typed caption, the page frame's letterbox
     (a centred band on plain black, still 1080x1920) and delivery encoding;
-    it never repeats the source's grade, speed or focal crop.
+    it never repeats the source's grade, speed or focal crop. A slot whose
+    treatment says captionDelivery "in_app" gets no caption drawn at all (the
+    phone types it in TikTok); its receipt says caption_delivery "in_app".
     """
     request = PostRenderRequest.model_validate(request.model_dump(by_alias=True))
     if not source_visual_matches(request):
