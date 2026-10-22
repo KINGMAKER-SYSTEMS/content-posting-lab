@@ -17,7 +17,20 @@ from services.source_dna_registry import SourceDnaError, parse_source_dna_manife
 from tests.test_source_recut_variety import _recipe
 from tests.test_control_plane_source_execution import offline_shipstream_manifest  # noqa: F401 (fixture)
 
-BTL = Path(__file__).resolve().parents[1] / "recipes/source-dna/pov-night-core-between-the-lines66-automation-v1.json"
+_BTL_FILE = Path(__file__).resolve().parents[1] / "recipes/source-dna/pov-night-core-between-the-lines66-automation-v1.json"
+
+
+class _PrimaryOnly:
+    """BTL's library as it was before any backup: its primary masters only."""
+
+    @staticmethod
+    def read_bytes() -> bytes:
+        value = json.loads(_BTL_FILE.read_bytes())
+        value["masters"] = [row for row in value["masters"] if row.get("role", "primary") == "primary"]
+        return (json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n").encode()
+
+
+BTL = _PrimaryOnly
 
 
 def _with_backup(raw: bytes, role="backup") -> bytes:
@@ -136,3 +149,12 @@ def test_the_backup_grade_contract_matches_what_the_lab_writes():
     brightness = receipt["visualTreatment"]["filters"]["brightness"]
     assert abs(brightness - 0.65) <= GRADE_BANDS["brightness"], "jitter rides on top of the declared value"
     assert receipt["sourceRecipeTreatment"]["filters"]["brightness"] == 0.5, "the recipe stays the recipe"
+
+
+def test_btl_lists_its_night_backup_without_moving_its_version():
+    library = parse_source_dna_manifest(_BTL_FILE.read_bytes())
+    roles = {master.filename: (master.role, master.grade_override) for master in library.masters}
+    assert roles["IMG_0766.mp4"] == ("backup", {"brightness": 0.65})
+    assert [master.role for master in library.masters].count("primary") == 1
+    assert library.sha256 == "59cd051223535dfd56fba8228dc69f37379154112f6df0f46ad69e72a1b6233c", \
+        "the version the Worker binds BTL's clips to (its primary-only library bytes)"
