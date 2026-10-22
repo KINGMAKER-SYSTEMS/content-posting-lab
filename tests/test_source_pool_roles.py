@@ -98,3 +98,41 @@ def test_a_library_without_backups_plans_exactly_as_before():
     first = plan_source_cuts(recipe, 5, set(), seed="same")
     assert first == plan_source_cuts(recipe, 5, set(), seed="same")
     assert all(cut.master.role == "primary" for cut in first)
+
+
+def _master_row(**extra):
+    value = json.loads(BTL.read_bytes())
+    value["masters"].append({**value["masters"][0], "sourceId": "zz-backup-night-drive", "sha256": "d" * 64,
+                             "storageKey": "source-dna/backup/" + "d" * 64 + ".mp4", **extra})
+    return (json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n").encode()
+
+
+def test_a_backup_may_declare_its_own_brightness_inside_the_bounds_only():
+    library = parse_source_dna_manifest(_master_row(role="backup", gradeOverride={"brightness": 0.65}))
+    assert library.masters[1].grade_override == {"brightness": 0.65}
+    assert library.sha256 == parse_source_dna_manifest(BTL.read_bytes()).sha256
+    for bad in ({"brightness": 0.3}, {"brightness": 1.2}, {"contrast": 1.1}, {}, {"brightness": True}):
+        with pytest.raises(SourceDnaError):
+            parse_source_dna_manifest(_master_row(role="backup", gradeOverride=bad))
+    with pytest.raises(SourceDnaError):
+        parse_source_dna_manifest(_master_row(role="primary", gradeOverride={"brightness": 0.65}))
+
+
+def test_the_backup_grade_contract_matches_what_the_lab_writes():
+    # The same bytes are pinned in the Worker
+    # (control-plane-worker/test/fixtures/content-lab/backup-grade-receipt.v1.json),
+    # whose check must admit them: the Lab output passes the Worker check.
+    from services.clip_variation import GRADE_BANDS, cut_grade
+    from services.source_treatment import source_treatment_receipt
+    doc = json.loads((Path(__file__).parent / "fixtures/backup_grade_receipt.v1.json").read_text())
+    recipe = doc["recipeRenderTreatment"]
+    receipt = doc["sourceTreatment"]
+    filters = cut_grade(doc["pageId"], "d" * 64 + ":120000:8000",
+                        {**recipe["filters"], **doc["masterGradeOverride"]})
+    again = source_treatment_receipt({"jobId": receipt["generationJobId"], "recipeSpecHash": receipt["recipeSpecHash"]},
+                                     recipe, receipt["sourceSha256"], clip_speed=receipt["visualTreatment"]["clipSpeed"],
+                                     clip_crop=receipt["visualTreatment"]["clipCrop"], filters=filters)
+    assert again == receipt
+    brightness = receipt["visualTreatment"]["filters"]["brightness"]
+    assert abs(brightness - 0.65) <= GRADE_BANDS["brightness"], "jitter rides on top of the declared value"
+    assert receipt["sourceRecipeTreatment"]["filters"]["brightness"] == 0.5, "the recipe stays the recipe"

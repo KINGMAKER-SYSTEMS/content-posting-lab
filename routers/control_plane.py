@@ -3676,8 +3676,11 @@ async def _run_dossier_source(job_id: str) -> None:
                                                   clip_speed, clip_crop, previous_variant,
                                                   duration_ms=duration_ms)
                 previous_variant = (cut_speed, cut_crop)
+                # A backup master's declared brightness replaces the recipe's
+                # before the jitter (source_dna_registry.GRADE_OVERRIDE_BOUNDS).
                 cut_filters = cut_grade(job["pageId"], f"{master.sha256}:{start_ms}:{duration_ms}",
-                                        recipe.recipe_spec["renderTreatment"]["filters"])
+                                        {**recipe.recipe_spec["renderTreatment"]["filters"],
+                                         **(master.grade_override or {})})
                 transforms = cut_transforms(job["pageId"], f"{master.sha256}:{start_ms}:{duration_ms}",
                                             previous_transforms)
                 previous_transforms = transforms
