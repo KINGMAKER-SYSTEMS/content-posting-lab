@@ -69,3 +69,38 @@ def test_mirror_reverse_and_motion_each_change_the_picture(tmp_path):
     apply_transforms(pushed, CutTransforms(motion="push_in"), ENCODE)
     # Zooming in moves the left edge's pixel toward the brighter centre by the end.
     assert _pixel(pushed, 5.5, 40) > _pixel(source, 5.5, 40) + 3
+
+
+def _streams(path: Path) -> dict:
+    import json as _json
+    raw = subprocess.run(["ffprobe", "-v", "error", "-show_entries",
+                          "stream=codec_type,start_time,duration,color_primaries,color_transfer,color_space",
+                          "-of", "json", str(path)], check=True, capture_output=True, text=True).stdout
+    return {stream["codec_type"]: stream for stream in _json.loads(raw)["streams"]}
+
+
+def test_reverse_keeps_audio_in_step_with_the_picture(tmp_path):
+    source = tmp_path / "cut.mp4"
+    _clip(source, seconds=6.5)
+    target = tmp_path / "reverse.mp4"
+    shutil.copy(source, target)
+    apply_transforms(target, CutTransforms(reverse=True), ENCODE)
+    streams = _streams(target)
+    video, audio = streams["video"], streams["audio"]
+    assert abs(float(audio["start_time"]) - float(video["start_time"])) <= 0.001
+    assert abs(float(audio["duration"]) - float(video["duration"])) <= 0.034, "within one frame"
+
+
+def test_transforms_keep_the_cut_colour_tags(tmp_path):
+    source = tmp_path / "hdr.mp4"
+    _clip(source)
+    tagged = tmp_path / "tagged.mp4"
+    subprocess.run(["ffmpeg", "-nostdin", "-y", "-v", "error", "-i", str(source), "-c", "copy",
+                    "-bsf:v", "h264_metadata=colour_primaries=9:transfer_characteristics=16:matrix_coefficients=9",
+                    str(tagged)], check=True, capture_output=True)
+    before = _streams(tagged)["video"]
+    assert before["color_primaries"] == "bt2020"
+    apply_transforms(tagged, CutTransforms(mirror=True, reverse=True), ENCODE)
+    after = _streams(tagged)["video"]
+    for key in ("color_primaries", "color_transfer", "color_space"):
+        assert after[key] == before[key], key
