@@ -1880,3 +1880,44 @@ async def test_a_varied_job_whose_history_read_fails_ends_failed_not_running(lab
     job = cp._load_jobs()["jobs"][response.json()["jobId"]]
     assert job["status"] == "failed"
     assert "job store unreadable" in job["error"]
+
+
+@pytest.mark.asyncio
+async def test_unlisted_page_keeps_source_bytes_and_skips_every_effect(lab, monkeypatch):
+    client, tmp_path, _ = lab
+    assert not cp.varies_clips(PAGE_ID)
+    response = client.post(
+        "/api/control-plane/v1/jobs", json=job_body(1),
+        headers=headers("source-job-effects-off"),
+    )
+    source = tmp_path / "master.mp4"
+    source.write_bytes(b"master")
+    rendered = b"unchanged cut bytes"
+
+    async def cached_source(*_):
+        return source
+
+    async def render(_src, dst, correction, **kwargs):
+        assert correction == {}
+        assert kwargs["playback_speed"] == 1.0
+        assert kwargs["clip_crop"] == {"zoom": 1.0, "focusX": 0.5, "focusY": 0.5}
+        Path(dst).write_bytes(rendered)
+
+    def unexpected(*_args, **_kwargs):
+        raise AssertionError("an unlisted page must skip every effect and trial")
+
+    monkeypatch.setattr(cp, "_cached_source_master", cached_source)
+    monkeypatch.setattr(cp, "run_color_correct", render)
+    for name in ("cut_variant", "cut_grade", "cut_transforms", "apply_transforms", "_similarity_trial"):
+        monkeypatch.setattr(cp, name, unexpected)
+    await cp._run_dossier_source(response.json()["jobId"])
+    job = cp._load_jobs()["jobs"][response.json()["jobId"]]
+    assert job["status"] == "completed", job.get("error")
+    clip = job["clips"][0]
+    assert (Path(job["artifactRoot"]) / clip["path"]).read_bytes() == rendered
+    assert clip["sha256"] == hashlib.sha256(rendered).hexdigest()
+    assert "clipTransforms" not in clip and "similarity" not in clip
+    assert clip["sourceTreatment"]["visualTreatment"]["filters"] == {
+        "brightness": 1.0, "contrast": 1.0, "saturation": 1.0, "warmth": 0.0,
+        "fade": 0.0, "grain": 0.0, "vignette": 0.0,
+    }
