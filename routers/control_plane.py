@@ -149,6 +149,7 @@ from services.master_pages_contract import SCHEMA as MASTER_PAGES_SCHEMA, canoni
 from services.page_frame import VERTICAL_FRAME, resolved_frame
 from services import generation_budget, moderation_retry
 from services.roster_public import require_roster_auth
+from services import clip_similarity
 from services.clip_transforms import apply_transforms, cut_transforms, transforms_from_manifest
 from services.clip_variation import cut_grade, cut_variant, varies_clips
 from services.source_treatment import (
@@ -3536,6 +3537,23 @@ def _latest_page_cut_look(page_id: str, job_id: str) -> tuple[float, dict[str, f
         return None
 
 
+async def _similarity_trial(job, destination, duration_s, transforms, recent, siblings) -> dict:
+    """Fingerprint one varied cut and log how close it is to the page's recent cuts.
+
+    TRIAL mode (services/clip_similarity.py): the record rides on the manifest
+    and the log; a failure is recorded, never raised, so it cannot stop a cut.
+    """
+    try:
+        candidate = await asyncio.to_thread(clip_similarity.fingerprint, destination, duration_s)
+        record = clip_similarity.judge(candidate, recent + [entry for entry in siblings if entry[1]])
+    except Exception as error:  # noqa: BLE001 - trial instrumentation must never fail a cut
+        return {"mode": clip_similarity.MODE, "error": type(error).__name__}
+    log.info("similarity_trial page=%s job=%s transforms=%s nearest=%.4f nearest_clip=%s would_recut=%s",
+             job["pageId"], job["jobId"], json.dumps(transforms.manifest(), sort_keys=True),
+             record["nearestDistance"], record["nearestClip"], record["wouldRecut"])
+    return record
+
+
 def _latest_page_cut_transforms(page_id: str, job_id: str):
     """The transforms of this page's most recent delivered source cut."""
     latest = None
@@ -3619,6 +3637,9 @@ async def _run_dossier_source(job_id: str) -> None:
     # holds across jobs, not only inside this one.
     previous_variant = _latest_page_cut_look(job["pageId"], job_id) if vary else None
     previous_transforms = _latest_page_cut_transforms(job["pageId"], job_id) if vary else None
+    # Similarity gate, TRIAL mode: compared and logged, never blocking.
+    recent_cuts = (clip_similarity.recent_fingerprints(_load_jobs()["jobs"], job["pageId"], job_id,
+                                                        clip_similarity.now_utc()) if vary else [])
     try:
         masters = {master.sha256: master for master in recipe.masters}
         for index, source_cut in enumerate(source_cuts):
@@ -3685,6 +3706,10 @@ async def _run_dossier_source(job_id: str) -> None:
             manifest["clipCrop"] = cut_crop
             if vary:
                 manifest["clipTransforms"] = transforms.manifest()
+                manifest["similarity"] = await _similarity_trial(
+                    job, destination, measured_duration, transforms, recent_cuts,
+                    [(f"{job_id}/{done}", (clip.get("similarity") or {}).get("fingerprint"))
+                     for done, clip in enumerate(manifests)])
             if frame_cut:
                 manifest["frameCut"] = {"frame": frame_cut["page_frame"], "frameFit": frame_cut["frame_fit"]}
             manifest["sourceTreatment"] = source_treatment_receipt(
