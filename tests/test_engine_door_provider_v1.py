@@ -168,7 +168,19 @@ def _ugc_publication(monkeypatch, library, recipe_version=UGC_RECIPE_VERSION):
         "renderTreatment": {
             "stylePreset": None,
             "filters": {},
-            "captionStyle": {},
+            # Complete caption style, taken from the existing Lab lyric-video
+            # fixture tests/test_lyric_timing_registration_control.py:42 — a
+            # production recipe always carries the full style, and the serving
+            # Worker's captionStyle validator (captionStyle.js:157-164) refuses
+            # an empty object.
+            "captionStyle": {
+                "font": "TikTokSans16pt-SemiBold.ttf",
+                "size_pt": 12,
+                "color": "#ffffff",
+                "position": "middle",
+                "align": "center",
+                "line_balance": 30,
+            },
             "clipSpeed": 1.0,
             "clipCrop": {"zoom": 1.0, "focusX": 0.5, "focusY": 0.5},
         },
@@ -634,6 +646,16 @@ async def test_jobs_artifacts_ugc_slideshow(door, monkeypatch):
     assert source["contentNiche"] == UGC_NICHE
     assert source["contentEngine"] == UGC_ENGINE
     assert source["vaultUrl"]
+    # F4: the caption style is complete so the serving Worker's captionStyle
+    # validator (captionStyle.js:157-164) accepts sourceRecipeTreatment.
+    assert artifact["sourceTreatment"]["sourceRecipeTreatment"]["captionStyle"] == {
+        "font": "TikTokSans16pt-SemiBold.ttf",
+        "size_pt": 12,
+        "color": "#ffffff",
+        "position": "middle",
+        "align": "center",
+        "line_balance": 30,
+    }
     _write_fixture("jobs", "artifacts-ugc-slideshow", body)
 
 

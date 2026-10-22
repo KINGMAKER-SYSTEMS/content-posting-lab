@@ -42,10 +42,17 @@
       },
       "sourceTreatment": {
         "generationJobId": "cpl-0000000000000001",
-        "recipeSpecHash": "sha256:0b4e967775c211cc99e02a19fe7dcfc7e1de69f87f2f41d247dd098d05d64c9b",
+        "recipeSpecHash": "sha256:aaf9a1acac72b0fda73b8d6e8e644b9e296fd20391b049c00711a5be0252c249",
         "schema": "content-lab.source-treatment.v1",
         "sourceRecipeTreatment": {
-          "captionStyle": {},
+          "captionStyle": {
+            "align": "center",
+            "color": "#ffffff",
+            "font": "TikTokSans16pt-SemiBold.ttf",
+            "line_balance": 30,
+            "position": "middle",
+            "size_pt": 12
+          },
           "clipCrop": {
             "focusX": 0.5,
             "focusY": 0.5,
