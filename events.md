@@ -1737,3 +1737,12 @@ ________________________________________________________________________________
 Managed lyric completion now retains the registered timing manifest's original UTF-8 bytes as artifact.lyricTiming.manifestJson. The existing immutable timing SHA, closed seven-phrase authority and page/sound/Notion/program scope remain authoritative; artifact readback compares the complete recomputed producer capsule. The ingredient catalog remains scalar metadata and does not duplicate the raw manifest. No operator backfill or v1 renderer change.
 
 Focused producer/readback/authority tests: 29 passed. Isolated source mutations that omit the producer field or reserialize the manifest both fail their behavioral regressions; restored source passes. The normal runner fixture executes managed completion with mocked remote transport/media and synthetic durable authority/store, not a paid render. The preceding 41eb9f4 relevant gate passed 699 tests; this successor requires its own gate. Full-suite, built-image and visual quality qualifications remain separate; no deployment.
+
+_________________________________________________________________________________
+time: [11:20] [21-10-26]
+agent: [claude] [opus 5.5]
+worktree: claude/northstar-external-pages-20261021
+type: [feature-request]
+area: [backend]
+
+Added PUT/DELETE /api/control-plane/v1/external-pages/{pageId} (routers/control_plane_external_pages.py) so the control plane can register a North Star page (source "northstar", notionPageId null) as a non-Notion roster row through set_page; source imports, clip jobs and capabilities then resolve it through the unchanged exact-id intent resolver. Machine auth (CONTROL_PLANE_TOKEN bearer plus content-bucket-control-plane lane); acct: ids, ids or handles another row holds, and intents that do not round-trip are refused; DELETE removes only external-source rows. 24 new tests against the real roster pass, and six source mutations each turn a test red. Full suite: 5453 passed; the branch's remaining failures are two that fail identically on origin/main cd394ec (font validator, offline guard) and visual-admission cases caused by the parent checkout's .env leaking through load_dotenv, which pass when the same commit is checked out elsewhere. AGENTS.md ownership/verification and docs/external-pages.md updated. Reported, not changed: ShipStream source registration and Content Lab's manifest parser both still require a non-blank Notion page id, and artist footage needs a new format contract. PR only; no deploy, Railway or Notion change.
