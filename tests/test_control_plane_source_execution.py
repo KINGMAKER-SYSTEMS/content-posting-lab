@@ -1833,6 +1833,9 @@ async def test_a_clip_varying_page_cuts_each_window_at_its_own_speed_and_records
         output = Path(job["artifactRoot"]) / clip["path"]
         assert _probe_duration(output) == pytest.approx(cut["durationMs"] / 1000 / clip["clipSpeed"], abs=0.2)
         looks.append((visual["clipSpeed"], tuple(sorted(visual["clipCrop"].items()))))
+        # The transforms ride on the manifest, never in the receipt.
+        assert set(clip["clipTransforms"]) == {"mirror", "motion", "reverse"}
+        assert "clipTransforms" not in clip["sourceTreatment"]
         # The grade moved inside its bands, recorded in the receipt.
         for name, band in GRADE_BANDS.items():
             assert abs(visual["filters"][name] - (1.0 if name != "warmth" else 0.0)) <= band

@@ -78,3 +78,22 @@ def test_the_receipt_records_the_grade_actually_applied():
     assert receipt["visualTreatment"]["filters"]["brightness"] == 1.12
     assert receipt["visualTreatment"]["filters"]["warmth"] == -0.02
     assert receipt["sourceRecipeTreatment"]["filters"] == {"brightness": 1.1}, "the recipe stays the recipe"
+
+
+def test_transforms_are_drawn_at_their_shares_and_never_repeat_the_previous_combination():
+    from services.clip_transforms import CutTransforms, cut_transforms
+    previous = None
+    counts = {"mirror": 0, "motion": 0, "reverse": 0}
+    for start in range(0, 1_200_000, 2_000):
+        drawn = cut_transforms(BTL, f"{MASTER}:{start}:8000", previous)
+        assert drawn == cut_transforms(BTL, f"{MASTER}:{start}:8000", previous)
+        assert drawn != previous
+        counts["mirror"] += drawn.mirror
+        counts["motion"] += drawn.motion is not None
+        counts["reverse"] += drawn.reverse
+        previous = drawn
+    assert 0.25 < counts["mirror"] / 600 < 0.42
+    assert 0.25 < counts["motion"] / 600 < 0.42
+    assert 0.17 < counts["reverse"] / 600 < 0.33
+    same = CutTransforms(mirror=True)
+    assert cut_transforms(BTL, "x", same) != same

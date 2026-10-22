@@ -143,12 +143,13 @@ from services.content_engine_registry import (
 from services.content_format_contracts import CONTRACTS_PATH, load_format_contracts
 from services.ffmpeg import (
     FrameGeometryUnavailable, delivery_encode_args, probe_display_size, run_color_correct,
-    _probe_input_duration_seconds as probe_source_output_duration_seconds,
+    _COLOR_CORRECT_GATE, _probe_input_duration_seconds as probe_source_output_duration_seconds,
 )
 from services.master_pages_contract import SCHEMA as MASTER_PAGES_SCHEMA, canonical_intent, exact_intent, intent_hash
 from services.page_frame import VERTICAL_FRAME, resolved_frame
 from services import generation_budget, moderation_retry
 from services.roster_public import require_roster_auth
+from services.clip_transforms import apply_transforms, cut_transforms, transforms_from_manifest
 from services.clip_variation import cut_grade, cut_variant, varies_clips
 from services.source_treatment import (
     derived_source_treatment,
@@ -3535,6 +3536,18 @@ def _latest_page_cut_look(page_id: str, job_id: str) -> tuple[float, dict[str, f
         return None
 
 
+def _latest_page_cut_transforms(page_id: str, job_id: str):
+    """The transforms of this page's most recent delivered source cut."""
+    latest = None
+    for other_id, other in _load_jobs()["jobs"].items():
+        if (other_id == job_id or other.get("pageId") != page_id or other.get("status") != "completed"
+                or other.get("sourceKind") != "dossier_source_dna" or not other.get("clips")):
+            continue
+        if latest is None or str(other.get("completedAt") or "") > str(latest.get("completedAt") or ""):
+            latest = other
+    return transforms_from_manifest(latest["clips"][-1].get("clipTransforms")) if latest else None
+
+
 async def _run_dossier_source(job_id: str) -> None:
     """Cut unique windows from one page's immutable source DNA."""
     job = _get_job_or_404(job_id)
@@ -3605,6 +3618,7 @@ async def _run_dossier_source(job_id: str) -> None:
     # The page's latest cut seeds the "never the same look twice" rule, so it
     # holds across jobs, not only inside this one.
     previous_variant = _latest_page_cut_look(job["pageId"], job_id) if vary else None
+    previous_transforms = _latest_page_cut_transforms(job["pageId"], job_id) if vary else None
     try:
         masters = {master.sha256: master for master in recipe.masters}
         for index, source_cut in enumerate(source_cuts):
@@ -3638,6 +3652,9 @@ async def _run_dossier_source(job_id: str) -> None:
                 previous_variant = (cut_speed, cut_crop)
                 cut_filters = cut_grade(job["pageId"], f"{master.sha256}:{start_ms}:{duration_ms}",
                                         recipe.recipe_spec["renderTreatment"]["filters"])
+                transforms = cut_transforms(job["pageId"], f"{master.sha256}:{start_ms}:{duration_ms}",
+                                            previous_transforms)
+                previous_transforms = transforms
                 cut_cc = filters_to_color_correction(cut_filters)
             await run_color_correct(
                 str(source), str(destination), cut_cc, scale=None,
@@ -3649,6 +3666,12 @@ async def _run_dossier_source(job_id: str) -> None:
                 clip_duration_ms=duration_ms,
                 **frame_cut,
             )
+            if vary and transforms.any():
+                # Mirror, camera move and reverse work on the finished short
+                # clip (services/clip_transforms.py), one encode at a time.
+                async with _COLOR_CORRECT_GATE:
+                    await asyncio.to_thread(apply_transforms, destination, transforms,
+                                            delivery_encode_args(recipe.encode_preset))
             if recipe.format_slug == "pov-club" or vary:
                 measured_duration = await asyncio.to_thread(
                     probe_source_output_duration_seconds, str(destination),
@@ -3660,6 +3683,8 @@ async def _run_dossier_source(job_id: str) -> None:
             manifest = _generated_manifest(job_root, destination)
             manifest["clipSpeed"] = cut_speed
             manifest["clipCrop"] = cut_crop
+            if vary:
+                manifest["clipTransforms"] = transforms.manifest()
             if frame_cut:
                 manifest["frameCut"] = {"frame": frame_cut["page_frame"], "frameFit": frame_cut["frame_fit"]}
             manifest["sourceTreatment"] = source_treatment_receipt(
