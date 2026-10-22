@@ -3635,6 +3635,7 @@ async def _run_dossier_source(job_id: str) -> None:
     vary = varies_clips(job["pageId"])
     previous_variant = previous_transforms = None
     recent_cuts: list = []
+    skipped_backup_cuts: list = []
     try:
         if vary:
             # One read of the job store, inside the try that terminalizes the
@@ -3663,7 +3664,18 @@ async def _run_dossier_source(job_id: str) -> None:
                 )
             ):
                 raise RuntimeError("source_recipe_cut_invalid")
-            source = await _cached_source_master(job["pageId"], master, job_id)
+            try:
+                source = await _cached_source_master(job["pageId"], master, job_id)
+            except RuntimeError as error:
+                # A backup master whose file is not in the store yet costs only
+                # its own cut; the job delivers the rest (primaries are never
+                # skipped: their failure still fails the job, as before).
+                if master.role != "backup" or not str(error).startswith("source_dna_master"):
+                    raise
+                log.warning("source_cut_skipped_backup_unavailable page=%s job=%s master=%s error=%s",
+                            job["pageId"], job_id, master.sha256, error)
+                skipped_backup_cuts.append(source_cut.get("slotId"))
+                continue
             destination = treated_root / f"source-{index:04d}.mp4"
             frame_cut = await _page_frame_cut_kwargs(
                 recipe.recipe_spec["renderTreatment"], source,
@@ -3762,6 +3774,8 @@ async def _run_dossier_source(job_id: str) -> None:
                 job_id,
                 progress=int(((index + 1) / len(source_cuts)) * 100),
             )
+        if skipped_backup_cuts and not manifests:
+            raise RuntimeError("source_dna_master_unavailable")
     except asyncio.CancelledError:
         shutil.rmtree(job_root, ignore_errors=True)
         await asyncio.to_thread(_update_job,

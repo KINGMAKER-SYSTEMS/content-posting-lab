@@ -149,6 +149,10 @@ def test_the_backup_grade_contract_matches_what_the_lab_writes():
     brightness = receipt["visualTreatment"]["filters"]["brightness"]
     assert abs(brightness - 0.65) <= GRADE_BANDS["brightness"], "jitter rides on top of the declared value"
     assert receipt["sourceRecipeTreatment"]["filters"]["brightness"] == 0.5, "the recipe stays the recipe"
+    # The declaring master is a real BTL backup in the registry.
+    declared = {master.sha256: master.grade_override
+                for master in parse_source_dna_manifest(_BTL_FILE.read_bytes()).masters if master.role == "backup"}
+    assert declared[doc["backupMasterSha256"]] == doc["masterGradeOverride"]
 
 
 def test_btl_lists_its_night_backup_without_moving_its_version():
@@ -158,3 +162,50 @@ def test_btl_lists_its_night_backup_without_moving_its_version():
     assert [master.role for master in library.masters].count("primary") == 1
     assert library.sha256 == "59cd051223535dfd56fba8228dc69f37379154112f6df0f46ad69e72a1b6233c", \
         "the version the Worker binds BTL's clips to (its primary-only library bytes)"
+
+
+def _btl_catalog_version(monkeypatch, manifest_dir):
+    import services.dossier_ingredients as ingredients
+    from services.master_pages_contract import intent_hash
+    from services.shipstream_source_manifest import ShipStreamSourceMissing
+    from tests.master_pages_fixtures import master_pages
+
+    def missing(*_args, **_kwargs):
+        raise ShipStreamSourceMissing("no vault manifest in this test")
+
+    monkeypatch.setattr(ingredients, "SOURCE_DNA_MANIFEST_DIR", manifest_dir)
+    monkeypatch.setattr(ingredients, "load_shipstream_source_projection", missing)
+    page = "acct:between-the-lines66"
+    intent, _ = master_pages(page, handle="between.the.lines66", content_niche="POV — Night Core",
+                             content_engine="sourced_video", vault_url="https://shipstream.test/vault/between.the.lines66")
+    revision = intent_hash(intent)
+    catalog = ingredients.build_dossier_ingredient_catalog(page, intent, revision)
+    fmt = next(entry for entry in catalog["formats"] if entry["formatId"] == "pov-night-core")
+    selection = next(entry for entry in fmt["productionSelections"]
+                     if entry["sourceLibraryId"] == "pov-night-core-between-the-lines66-automation-v1")
+    resolved = ingredients.selected_dossier_catalog_version(page, intent, revision, "pov-night-core",
+                                                            dict(selection), load_shipstream=False)
+    assert resolved == selection["catalogVersion"]
+    return resolved
+
+
+def test_btl_catalog_version_is_the_same_with_and_without_its_backups(monkeypatch, tmp_path):
+    # The catalog version is what a page's recipe publication binds; a moved
+    # version makes every BTL job "executor unavailable" and every clip stale.
+    with_backups = _btl_catalog_version(monkeypatch, _BTL_FILE.parent)
+    for path in _BTL_FILE.parent.glob("*.json"):
+        value = json.loads(path.read_bytes())
+        value["masters"] = [row for row in value["masters"] if row.get("role", "primary") == "primary"]
+        (tmp_path / path.name).write_bytes((json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n").encode())
+    without = _btl_catalog_version(monkeypatch, tmp_path)
+    assert with_backups == without == "sha256:0efa8ed16c45167513c2852af8b7752bb21e93376b84046a0228bbeaf3b27dcd"
+
+
+def test_a_declared_backup_grade_is_refused_on_a_page_that_does_not_vary():
+    value = json.loads(_master_row(role="backup", gradeOverride={"brightness": 0.65}))
+    value["pageId"] = "acct:not-varied"
+    raw = (json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n").encode()
+    with pytest.raises(SourceDnaError, match="clip-varying"):
+        parse_source_dna_manifest(raw)
+    value["masters"][1].pop("gradeOverride")
+    parse_source_dna_manifest((json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n").encode())
