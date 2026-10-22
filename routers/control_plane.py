@@ -3521,16 +3521,21 @@ async def _video_geometry_for_delivery(path: Path) -> tuple[int, int]:
     return width, height
 
 
-def _latest_page_cut_look(page_id: str, job_id: str) -> tuple[float, dict[str, float]] | None:
-    """The speed and crop of this page's most recent delivered source cut."""
+def _latest_page_cut(page_id: str, job_id: str, jobs: dict | None = None) -> dict | None:
+    """This page's most recent delivered source cut (its manifest), or None."""
     latest = None
-    for other_id, other in _load_jobs()["jobs"].items():
+    for other_id, other in (jobs if jobs is not None else _load_jobs()["jobs"]).items():
         if (other_id == job_id or other.get("pageId") != page_id or other.get("status") != "completed"
                 or other.get("sourceKind") != "dossier_source_dna" or not other.get("clips")):
             continue
         if latest is None or str(other.get("completedAt") or "") > str(latest.get("completedAt") or ""):
             latest = other
-    clip = latest["clips"][-1] if latest else None
+    return latest["clips"][-1] if latest else None
+
+
+def _latest_page_cut_look(page_id: str, job_id: str, jobs: dict | None = None) -> tuple[float, dict[str, float]] | None:
+    """The speed and crop of this page's most recent delivered source cut."""
+    clip = _latest_page_cut(page_id, job_id, jobs)
     try:
         return (float(clip["clipSpeed"]), {name: float(clip["clipCrop"][name]) for name in ("zoom", "focusX", "focusY")})
     except (TypeError, KeyError, ValueError):
@@ -3554,16 +3559,10 @@ async def _similarity_trial(job, destination, duration_s, transforms, recent, si
     return record
 
 
-def _latest_page_cut_transforms(page_id: str, job_id: str):
+def _latest_page_cut_transforms(page_id: str, job_id: str, jobs: dict | None = None):
     """The transforms of this page's most recent delivered source cut."""
-    latest = None
-    for other_id, other in _load_jobs()["jobs"].items():
-        if (other_id == job_id or other.get("pageId") != page_id or other.get("status") != "completed"
-                or other.get("sourceKind") != "dossier_source_dna" or not other.get("clips")):
-            continue
-        if latest is None or str(other.get("completedAt") or "") > str(latest.get("completedAt") or ""):
-            latest = other
-    return transforms_from_manifest(latest["clips"][-1].get("clipTransforms")) if latest else None
+    clip = _latest_page_cut(page_id, job_id, jobs)
+    return transforms_from_manifest(clip.get("clipTransforms")) if clip else None
 
 
 async def _run_dossier_source(job_id: str) -> None:
@@ -3633,14 +3632,19 @@ async def _run_dossier_source(job_id: str) -> None:
     # A page listed in services/clip_variation.py cuts every clip at its own
     # speed and framing; every other page keeps the recipe's one look.
     vary = varies_clips(job["pageId"])
-    # The page's latest cut seeds the "never the same look twice" rule, so it
-    # holds across jobs, not only inside this one.
-    previous_variant = _latest_page_cut_look(job["pageId"], job_id) if vary else None
-    previous_transforms = _latest_page_cut_transforms(job["pageId"], job_id) if vary else None
-    # Similarity gate, TRIAL mode: compared and logged, never blocking.
-    recent_cuts = (clip_similarity.recent_fingerprints(_load_jobs()["jobs"], job["pageId"], job_id,
-                                                        clip_similarity.now_utc()) if vary else [])
+    previous_variant = previous_transforms = None
+    recent_cuts: list = []
     try:
+        if vary:
+            # One read of the job store, inside the try that terminalizes the
+            # job: the page's latest cut seeds the "never the same look twice"
+            # rule across jobs, and the TRIAL similarity gate compares against
+            # the page's recent cuts (logged, never blocking).
+            page_jobs = (await asyncio.to_thread(_load_jobs))["jobs"]
+            previous_variant = _latest_page_cut_look(job["pageId"], job_id, page_jobs)
+            previous_transforms = _latest_page_cut_transforms(job["pageId"], job_id, page_jobs)
+            recent_cuts = clip_similarity.recent_fingerprints(page_jobs, job["pageId"], job_id,
+                                                              clip_similarity.now_utc())
         masters = {master.sha256: master for master in recipe.masters}
         for index, source_cut in enumerate(source_cuts):
             if not _job_matches_current_master_pages(job):
@@ -3689,7 +3693,10 @@ async def _run_dossier_source(job_id: str) -> None:
             )
             if vary and transforms.any():
                 # Mirror, camera move and reverse work on the finished short
-                # clip (services/clip_transforms.py), one encode at a time.
+                # clip (services/clip_transforms.py). They are full 1080x1920
+                # x264 encodes (~0.9 GB each, measured), so they take the same
+                # process-wide one-encode gate as run_color_correct: without it
+                # a transform could overlap another job's cut encode.
                 async with _COLOR_CORRECT_GATE:
                     await asyncio.to_thread(apply_transforms, destination, transforms,
                                             delivery_encode_args(recipe.encode_preset))
