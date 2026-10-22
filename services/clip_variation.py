@@ -8,7 +8,7 @@ on top of the planner's new window and new length (control_plane_sources.py
 plan_source_cuts). The applied values go into the clip's treatment receipt,
 so the final render takes the clip as it is and the Worker posts it at exactly
 those values (control-plane-worker src/domain/clipVariation.js, which holds the
-same page list). Grade, caption and sound are never touched here.
+same page list). Caption text and caption delivery are never touched here.
 
 Each cut also gets a small grade jitter around the recipe's own values
 (brightness, contrast, saturation, warmth; the recipe values stay the centre,
