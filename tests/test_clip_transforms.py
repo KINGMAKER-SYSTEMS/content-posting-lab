@@ -110,6 +110,7 @@ def test_disabled_transforms_keep_exact_bytes_without_probing_or_encoding(tmp_pa
     source = tmp_path / "cut.mp4"
     _clip(source, seconds=0.5)
     before = source.read_bytes()
+    entries = set(tmp_path.iterdir())
 
     def unexpected(*_args, **_kwargs):
         raise AssertionError("disabled effects must not run a subprocess")
@@ -117,4 +118,4 @@ def test_disabled_transforms_keep_exact_bytes_without_probing_or_encoding(tmp_pa
     monkeypatch.setattr(subprocess, "run", unexpected)
     apply_transforms(source, CutTransforms(), ENCODE)
     assert source.read_bytes() == before
-    assert list(tmp_path.iterdir()) == [source]
+    assert set(tmp_path.iterdir()) == entries
