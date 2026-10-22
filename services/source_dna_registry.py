@@ -27,6 +27,12 @@ MASTER_FIELDS = {
     "durationMs", "sourceOffsetMs", "provenance",
 }
 PROVENANCE_FIELDS = {"sourceUrl", "acquiredAt", "authority"}
+# A master's place in its page's pool (Eric 2026-10-22). Absent means primary:
+# the page's main footage, cut as much as possible. A backup is cut only when
+# the primaries have no fresh window, or as an occasional variety cut
+# (services/control_plane_sources.py plan_source_cuts). A backup is added only
+# by a reviewed commit to this registry; nothing automatic writes it.
+MASTER_ROLES = ("primary", "backup")
 MIME_TYPES = {"video/mp4", "video/quicktime"}
 MAX_MANIFEST_BYTES = 1_048_576
 MAX_MASTERS = 500
@@ -49,6 +55,7 @@ class MasterSource:
     duration_ms: int
     source_offset_ms: int
     provenance: dict[str, str | None]
+    role: str = "primary"
 
 
 @dataclass(frozen=True)
@@ -108,8 +115,11 @@ def parse_source_dna_manifest(raw: bytes, expected_library_id: str | None = None
     hashes: set[str] = set()
     storage_keys: set[str] = set()
     for index, row in enumerate(rows):
-        if not isinstance(row, dict) or set(row) != MASTER_FIELDS:
+        if not isinstance(row, dict) or set(row) - {"role"} != MASTER_FIELDS:
             raise SourceDnaError(f"source DNA masters[{index}] fields are invalid")
+        role = row.get("role", "primary")
+        if role not in MASTER_ROLES:
+            raise SourceDnaError(f"source DNA masters[{index}].role is invalid")
         source_id = row.get("sourceId")
         sha256 = row.get("sha256")
         byte_count = row.get("bytes")
@@ -149,17 +159,41 @@ def parse_source_dna_manifest(raw: bytes, expected_library_id: str | None = None
         storage_keys.add(storage_key)
         masters.append(MasterSource(
             source_id, sha256, byte_count, filename, mime_type, storage_key,
-            duration_ms, source_offset_ms, dict(provenance),
+            duration_ms, source_offset_ms, dict(provenance), role,
         ))
     if [item.source_id for item in masters] != sorted(source_ids):
         raise SourceDnaError("source DNA masters must be sorted by sourceId")
+    if not any(item.role == "primary" for item in masters):
+        raise SourceDnaError("source DNA library needs at least one primary master")
     return SourceDnaLibrary(
         library_id=library_id,
         format_slug=format_slug,
         page_id=page_id,
         masters=tuple(masters),
-        sha256=hashlib.sha256(raw).hexdigest(),
+        sha256=_primary_version(value, raw),
     )
+
+
+def _primary_version(value: dict, raw: bytes) -> str:
+    """The library version, pinned to its primary masters only.
+
+    Adding or removing a backup must not move the version: the Worker binds a
+    page's clips and planned posts to it (pageSourceLockstep), so a moved
+    version would read every current clip as an old source. A library with no
+    backup hashes its exact bytes, as before; one with backups hashes the same
+    canonical form (sorted keys, compact, trailing newline: the registry's own
+    format) with the backups and every role key left out.
+    """
+    rows = value["masters"]
+    if all(row.get("role", "primary") == "primary" and "role" not in row for row in rows):
+        return hashlib.sha256(raw).hexdigest()
+    primary = {**value, "masters": [
+        {key: item for key, item in row.items() if key != "role"}
+        for row in rows if row.get("role", "primary") == "primary"
+    ]}
+    return hashlib.sha256(
+        (json.dumps(primary, sort_keys=True, separators=(",", ":"), ensure_ascii=False) + "\n").encode()
+    ).hexdigest()
 
 
 def load_source_dna_library(library_id: str) -> SourceDnaLibrary:

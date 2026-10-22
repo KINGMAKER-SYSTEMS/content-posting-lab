@@ -811,11 +811,25 @@ def plan_source_cuts(
         f"{seed}\0{recipe.source_library_hash}".encode("utf-8"),
     ).digest())
     Row = tuple[float, tuple[float, int], float, int, int, int]
-    scanned: dict[int, list[Row]] = {}
-    sample_indexes: dict[int, tuple[list[tuple[int, int, int, int, int]], list[int]]] = {}
+    # PRIMARY FIRST (Eric 2026-10-22; source_dna_registry.MASTER_ROLES): the
+    # page's primary masters are cut as long as they hold a fresh window. A
+    # backup is cut only when they do not, or as a variety cut: at most one in
+    # BACKUP_VARIETY_EVERY, drawn at BACKUP_VARIETY_SHARE, never while one of
+    # the page's last BACKUP_VARIETY_EVERY - 1 cuts was already a backup. A
+    # library without backups plans exactly as before.
+    pools = {
+        "primary": tuple(index for index, lane in enumerate(lanes) if lane.master.role != "backup"),
+        "backup": tuple(index for index, lane in enumerate(lanes) if lane.master.role == "backup"),
+    }
+    recent_roles = _recent_cut_roles(recipe, history or {}) if pools["backup"] else []
+    variety_rng = random.Random(hashlib.sha256(f"{seed}\0backup-variety".encode("utf-8")).digest())
+    pool = pools["primary"]
+    scanned: dict[tuple[int, tuple[int, ...]], list[Row]] = {}
+    sample_indexes: dict[tuple[int, tuple[int, ...]], tuple[list[tuple[int, int, int, int, int]], list[int]]] = {}
 
     def candidates(level: int):
-        for index, lane in enumerate(lanes):
+        for index in pool:
+            lane = lanes[index]
             for duration_ms, runs in lane.levels[level]:
                 for run_first, step, count in runs:
                     for start_ms in range(run_first, run_first + step * count, step):
@@ -857,15 +871,16 @@ def plan_source_cuts(
         return best
 
     def best_sampled(level: int, total: int) -> Row | None:
-        if level not in sample_indexes:
+        if (level, pool) not in sample_indexes:
             index_rows, offset = [], 0
-            for index, lane in enumerate(lanes):
+            for index in pool:
+                lane = lanes[index]
                 for duration_ms, runs in lane.levels[level]:
                     for run_first, step, count in runs:
                         index_rows.append((offset, index, duration_ms, run_first, step))
                         offset += count
-            sample_indexes[level] = (index_rows, [row[0] for row in index_rows])
-        index_rows, offsets = sample_indexes[level]
+            sample_indexes[(level, pool)] = (index_rows, [row[0] for row in index_rows])
+        index_rows, offsets = sample_indexes[(level, pool)]
         best = None
         for attempt in range(SAMPLE_ROUNDS * SAMPLED_CANDIDATES_PER_CUT):
             if best is not None and attempt % SAMPLED_CANDIDATES_PER_CUT == 0:
@@ -892,14 +907,14 @@ def plan_source_cuts(
         return best
 
     def best_new(level: int) -> Row | None:
-        total = sum(lane.counts[level] for lane in lanes)
+        total = sum(lanes[index].counts[level] for index in pool)
         if not total:
             return None
         if total > FULL_SCAN_CANDIDATES:
             return best_sampled(level, total)
-        if level not in scanned:
-            scanned[level] = scan(level)
-        return best_scanned(scanned[level])
+        if (level, pool) not in scanned:
+            scanned[(level, pool)] = scan(level)
+        return best_scanned(scanned[(level, pool)])
 
     def has_uncut(level: int) -> bool:
         return any(
@@ -911,15 +926,17 @@ def plan_source_cuts(
         lane = lanes[row[3]]
         return bool(lane.recent) and row[5] == lane.recent[0][1]
 
-    chosen: list[SourceCut] = []
-    for _ in range(quantity):
+    def pick_from_pool() -> tuple[Row | None, bool]:
         # Whole-second starts first; a finer start only once every window at
         # the coarser level is cut. A coarser window that is uncut but does
         # not fit beside this plan's other cuts ends the plan; the next plan
         # cuts it. The one exception: a window repeating the master's last
         # length is taken only when no finer level offers another length,
         # and only as a plan's first cut.
+        # The flag says the pool still holds a fresh window that only this
+        # plan's own cuts block: the pool is not out of footage.
         pick = fallback = None
+        blocked = False
         for level in range(len(START_OFFSET_LEVELS_MS)):
             candidate = best_new(level)
             if candidate is not None and not repeats_last_length(candidate):
@@ -927,15 +944,45 @@ def plan_source_cuts(
                 break
             fallback = fallback or candidate
             if candidate is None and has_uncut(level):
+                blocked = True
                 break
-        pick = pick or (fallback if not chosen else None)
+        return pick or (fallback if not chosen else None), blocked
+
+    chosen: list[SourceCut] = []
+    for _ in range(quantity):
+        order = ("primary", "backup")
+        if (pools["backup"] and "backup" not in recent_roles[-(BACKUP_VARIETY_EVERY - 1):]
+                and variety_rng.random() < BACKUP_VARIETY_SHARE):
+            order = ("backup", "primary")
+        pick = None
+        for name in order:
+            if not pools[name]:
+                continue
+            pool = pools[name]
+            pick, blocked = pick_from_pool()
+            # A primary that still has fresh footage is never passed over
+            # for a backup: the plan ends and the next plan cuts it.
+            if pick is not None or (name == "primary" and blocked):
+                break
         if pick is None:
             break
         *_, index, start_ms, duration_ms = pick
         lane = lanes[index]
         lane.record(start_ms, duration_ms)
         chosen.append(SourceCut(lane.master, start_ms, duration_ms, True))
+        recent_roles.append(lane.master.role)
     return chosen
+
+
+BACKUP_VARIETY_SHARE = 0.2
+BACKUP_VARIETY_EVERY = 5
+
+
+def _recent_cut_roles(recipe: SourceRecipe, history: dict[str, CutUse]) -> list[str]:
+    """The pool role of the page's cuts in history, oldest first."""
+    roles = {master.sha256: master.role for master in recipe.masters}
+    ordered = sorted(history.items(), key=lambda item: (item[1].at, item[1].order))
+    return [roles.get(key.split(":", 1)[0], "primary") for key, _ in ordered]
 
 
 def explain_empty_source_plan(
