@@ -143,3 +143,21 @@ def test_ordinary_and_dual_burned_identity_cannot_duplicate_each_other(tmp_path,
         worker.run_one()
         assert worker.status(job["id"])["state"] == ("succeeded" if index == 0 else "failed")
     assert worker.status(job["id"])["error_code"] == "duplicate_output"
+
+
+def test_restart_recovers_shared_clean_pair_without_rerender_after_finish_crash(tmp_path, monkeypatch):
+    from tests.test_post_render_jobs import Crash
+    worker = service(tmp_path, renderer=dual_render)
+    first = worker.enqueue(payload("slot:first", "first"), "request:first")
+    assert worker.run_one()
+    second = worker.enqueue(payload("slot:second", "second"), "request:second")
+    monkeypatch.setattr(worker, "_finish", lambda *_: (_ for _ in ()).throw(Crash()))
+    with pytest.raises(Crash):
+        worker.run_one()
+    def no_render(*_args, **_kwargs):
+        raise AssertionError("complete retained pair must recover without another encode")
+    resumed = service(tmp_path, renderer=no_render)
+    assert resumed.run_one()
+    assert resumed.status(second["id"])["state"] == "succeeded"
+    assert resumed.status(first["id"])["final_sha256"] == resumed.status(second["id"])["final_sha256"]
+    assert resumed._row(second["id"])["final_sha256"] is None
