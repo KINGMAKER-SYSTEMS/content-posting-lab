@@ -1,0 +1,295 @@
+diff --git a/tools/photo-library/README.md b/tools/photo-library/README.md
+index 73423d11e0..def1cf1df4 100644
+--- a/tools/photo-library/README.md
++++ b/tools/photo-library/README.md
+@@ -33,6 +33,28 @@ Python 3.9+ standard library and existing rclone are sufficient. Run on Seeno.
+    wins over a model pass; it cannot approve a failed photo. Batch cache binds IDs, full image SHA256s,
+    model, and exact prompt. One worker is the default; 429s back off 20/40
+    seconds, at most three attempts with a 180-second request timeout.
++   Publisher reconciliation selects reviews by current candidate ID and full
++   SHA256, never by batch number or modification time. Leftover reviews of other
++   bytes/removed IDs cannot supply a verdict; absent current reviews stay
++   quarantined. Equivalent current verdicts are coalesced, but any different
++   current verdict (including a rejection) aborts assembly before manifests are
++   written. No operator veto is removed. Invalid bindings/prompts, duplicate IDs
++   within a batch, and malformed records still refuse; reconciliation does not
++   repair corrupt evidence or call vision.
++
++   Every successful manifest includes `review_batches` with each scanned filename,
++   immutable byte hash and current/stale verdict counts. Each accepted photo keeps
++   the selected `review_sha256` and all `equivalent_review_sha256s`. Selection is
++   the first sorted filename only after equivalence is established; no conflicting
++   verdict is chosen by filename. Original review files are read once and never
++   rewritten/deleted. Preserve them with the manifest for audit. Additional audit
++   fields change content-addressed manifest keys; older snapshots remain valid.
++
++   The scan reads at most 1,024 batches, 1 MiB per batch and 32 MiB total (plus one byte to detect oversize), with at
++   most eight inputs/verdicts per batch. Exceeding any limit safely refuses rather
++   than silently omitting records. This bounds review-file reads/parse work, not
++   the filesystem's directory enumeration cost or photo-byte verification. No
++   network, model, or storage-service operation is added by reconciliation.
+ 3. Inspect `storage-plan.json`, manifests and rejected/unreviewed counts. Publish
+    only under task authorization:
+ 
+diff --git a/tools/photo-library/publish.py b/tools/photo-library/publish.py
+index 230a36f072..5cee6b9788 100644
+--- a/tools/photo-library/publish.py
++++ b/tools/photo-library/publish.py
+@@ -1,25 +1,69 @@
+ """Append-only R2 pool export with full byte readback. No DB/index writes.
+ Only --write-r2 uploads; staging is the default. T9 transport is separate.
+ """
+-import argparse,collections,hashlib,json,os,pathlib,subprocess,time,tempfile
++import argparse,collections,hashlib,itertools,json,os,pathlib,subprocess,time,tempfile
+ from pool import admit,admissible,PAGES,digest
+ from vision import PROMPT
+ ROOT=pathlib.Path(__file__).resolve().parents[2];E=ROOT/"photo-library-evidence"
+-def assemble():
+-    exclusion_file=E/"operator-visual-review.json"
+-    exclusions=json.loads(exclusion_file.read_text()).get("exclusions",{}) if exclusion_file.exists() else {}
+-    candidates=json.load(open(E/"candidates.json"));verdicts={};reviews={};bindings={}
+-    for f in sorted((E/"vision").glob("batch-*.json")):
+-        batch_bytes=f.read_bytes();batch=json.loads(batch_bytes);review_sha=hashlib.sha256(batch_bytes).hexdigest()
++# Refuse oversized archives without deleting or rewriting their audit records.
++MAX_REVIEW_BATCHES=1024
++MAX_REVIEW_BATCH_BYTES=1024*1024
++MAX_REVIEW_TOTAL_BYTES=32*1024*1024
++
++def select_reviews(candidates):
++    """Reconcile by candidate ID + bytes, never by filename recency or mtime.
++
++    Equivalent current verdicts may share a selection; conflicting current
++    verdicts refuse. Old-byte verdicts cannot supply a missing current review.
++    All parsed records retain their byte hashes in the manifest audit inventory.
++    """
++    current={}
++    for row in candidates:
++        label=row["page"]+":"+row["provider_id"]
++        if label in current and current[label]!=row["sha256"]:
++            raise ValueError("conflicting candidate bytes")
++        current[label]=row["sha256"]
++    paths=list(itertools.islice((E/"vision").glob("batch-*.json"),MAX_REVIEW_BATCHES+1))
++    if len(paths)>MAX_REVIEW_BATCHES:raise ValueError("review scan limit: batch count")
++    verdicts={};reviews={};bindings={};equivalents={};inventory=[];total=0
++    for f in sorted(paths):
++        # Bound reads even if a record grows after discovery.
++        read_limit=min(MAX_REVIEW_BATCH_BYTES,MAX_REVIEW_TOTAL_BYTES-total)
++        with f.open("rb") as stream:batch_bytes=stream.read(read_limit+1)
++        total+=len(batch_bytes)
++        if len(batch_bytes)>MAX_REVIEW_BATCH_BYTES or total>MAX_REVIEW_TOTAL_BYTES:
++            raise ValueError("review scan limit: bytes")
++        batch=json.loads(batch_bytes);review_sha=hashlib.sha256(batch_bytes).hexdigest()
+         signature=hashlib.sha256(json.dumps({"inputs":batch.get("inputs",[]),"model":"glm-4.6v","prompt":PROMPT},sort_keys=True).encode()).hexdigest()
+         if batch.get("input_signature")!=signature or batch.get("prompt")!=PROMPT:raise ValueError("stale vision prompt or inputs")
+         if batch.get("model")!="glm-4.6v" or not batch.get("input_signature"):raise ValueError("unbound vision batch")
+-        bound={x["id"]:x["sha256"] for x in batch.get("inputs",[])}
+-        for v in batch.get("photos",[]):
+-            if v["id"] not in bound:raise ValueError("unbound vision photo")
+-            bindings[v["id"]]=bound[v["id"]]
+-            if v["id"] in verdicts:raise ValueError("duplicate verdict")
+-            verdicts[v["id"]]=v;reviews[v["id"]]=review_sha
++        inputs=batch.get("inputs",[]);photos=batch.get("photos",[])
++        if len(inputs)>8 or len(photos)>8:raise ValueError("invalid vision batch size")
++        bound={x["id"]:x["sha256"] for x in inputs}
++        if len(bound)!=len(inputs):raise ValueError("duplicate vision input")
++        seen=set();record={"file":f.name,"sha256":review_sha,"current_verdicts":0,"stale_verdicts":0}
++        for v in photos:
++            label=v["id"]
++            if label not in bound:raise ValueError("unbound vision photo")
++            if label in seen:raise ValueError("duplicate verdict within batch")
++            seen.add(label)
++            if label not in current or current[label]!=bound[label]:
++                record["stale_verdicts"]+=1;continue
++            record["current_verdicts"]+=1
++            if label in verdicts:
++                if digest(verdicts[label])!=digest(v):raise ValueError("conflicting current verdict: "+label)
++                equivalents[label].add(review_sha);continue
++            bindings[label]=bound[label]
++            verdicts[label]=v;reviews[v["id"]]=review_sha
++            equivalents[label]={review_sha}
++        inventory.append(record)
++    return verdicts,reviews,bindings,equivalents,inventory
++
++def assemble():
++    exclusion_file=E/"operator-visual-review.json"
++    exclusions=json.loads(exclusion_file.read_text()).get("exclusions",{}) if exclusion_file.exists() else {}
++    candidates=json.loads((E/"candidates.json").read_bytes())
++    verdicts,reviews,bindings,equivalents,inventory=select_reviews(candidates)
+     output={p:[] for p in PAGES};rejected=collections.Counter();seen=set();files={}
+     for r in candidates:
+         label=r["page"]+":"+r["provider_id"];v=verdicts.get(label)
+@@ -32,10 +76,10 @@ def assemble():
+         b=path.read_bytes()
+         if len(b)!=r["bytes"] or hashlib.sha256(b).hexdigest()!=r["sha256"]:raise ValueError("quarantine changed after review")
+         if r["sha256"] in seen:continue
+-        photo=admit(r,v,reviews[label]);seen.add(r["sha256"]);output[r["page"]].append(photo);files[photo["key"]]=b
++        photo=admit(r,v,reviews[label]);photo["vision"]["equivalent_review_sha256s"]=sorted(equivalents[label]);seen.add(r["sha256"]);output[r["page"]].append(photo);files[photo["key"]]=b
+     manifests={}
+     for page,objects in output.items():
+-        manifest={"schema":"rt.photo-pool.v1","executor_object_shape":"content-lab.syzygy-image-video-executor.v1 objects with additive provenance/feel fields","page":page,"bucket":"syzygy-content","prefix":PAGES[page]+"/photos/","status":"stored-review-pool-not-runtime-indexed","created_at":"2026-10-23","objects":objects,"rejected_or_unreviewed":rejected[page],"clusters":dict(collections.Counter(p["cluster_id"] for p in objects))}
++        manifest={"schema":"rt.photo-pool.v1","executor_object_shape":"content-lab.syzygy-image-video-executor.v1 objects with additive provenance/feel fields","page":page,"bucket":"syzygy-content","prefix":PAGES[page]+"/photos/","status":"stored-review-pool-not-runtime-indexed","created_at":"2026-10-23","objects":objects,"review_batches":inventory,"rejected_or_unreviewed":rejected[page],"clusters":dict(collections.Counter(p["cluster_id"] for p in objects))}
+         key=PAGES[page]+"/pool-manifests/cx1022-t64c-"+digest(manifest)+".json"
+         path=E/(page+"-manifest.json");payload=(json.dumps(manifest,indent=2)+"\n").encode();path.write_bytes(payload);files[key]=payload;manifests[page]={"key":key,"count":len(objects),"clusters":manifest["clusters"],"kittens":sum(p["feel"]["age"]=="kitten" for p in objects)}
+     return files,manifests
+diff --git a/tools/photo-library/stale_batch_proof.py b/tools/photo-library/stale_batch_proof.py
+new file mode 100644
+index 0000000000..5d79ef7a5c
+--- /dev/null
++++ b/tools/photo-library/stale_batch_proof.py
+@@ -0,0 +1,40 @@
++"""Offline baseline-red/candidate-green caller proof and bounded scan timings."""
++import contextlib, io, json, linecache, pathlib, statistics, subprocess, tempfile, time, types, unittest
++from unittest.mock import patch
++import publish, test_reconcile, test_publish
++
++BASELINE = '87099ac1e75450f6652b2790ca589d5f0087413f'
++ROOT = pathlib.Path(__file__).resolve().parents[2]
++
++def main():
++    source = subprocess.check_output(['git', '-C', str(ROOT), 'show', BASELINE + ':tools/photo-library/publish.py'], text=True)
++    baseline = types.ModuleType('baseline_publish'); baseline.__file__ = publish.__file__
++    filename = '<baseline:' + BASELINE + ':publish.py>'
++    linecache.cache[filename] = (len(source), None, source.splitlines(True), filename)
++    exec(compile(source, filename, 'exec'), baseline.__dict__)
++    results = {}
++    for label, module in [('original', baseline), ('candidate', publish)]:
++        stream = io.StringIO()
++        with patch.object(test_reconcile, 'publish', module), contextlib.redirect_stdout(stream), contextlib.redirect_stderr(stream):
++            suite = unittest.defaultTestLoader.loadTestsFromName('test_bound_duplicate_recovers_without_deleting_audit', test_reconcile.ReconcileTests)
++            result = unittest.TextTestRunner(stream=stream).run(suite)
++        assert result.testsRun == 1 and not result.errors, stream.getvalue()
++        assert len(result.failures) == (1 if label == 'original' else 0), stream.getvalue()
++        results[label] = {'tests': result.testsRun, 'failures': len(result.failures), 'errors': len(result.errors), 'output': stream.getvalue()}
++    costs = []
++    for size in (1, 29, 1024):
++        with tempfile.TemporaryDirectory(dir=ROOT/'evidence', prefix='synthetic-scan-') as tmp:
++            root = pathlib.Path(tmp); e, row, batch = test_publish.PublishTests().fixture(root)
++            raw = json.dumps(batch).encode()
++            for i in range(1, size): (e/'vision'/f'batch-{i:04}.json').write_bytes(raw)
++            samples = []
++            with patch.object(publish, 'E', e):
++                for _ in range(10):
++                    start = time.perf_counter()
++                    verdicts, reviews, bindings, equivalents, records = publish.select_reviews([row])
++                    samples.append(time.perf_counter() - start)
++                    assert len(records) == size and len(verdicts) == 1
++            costs.append({'batches': size, 'file_bytes': len(raw)*size, 'runs': len(samples), 'seconds_median': statistics.median(samples), 'seconds_max': max(samples)})
++    print(json.dumps({'baseline': BASELINE, 'caller_proof': results, 'scan_cost': costs, 'bounds': {'batches': publish.MAX_REVIEW_BATCHES, 'per_batch_bytes': publish.MAX_REVIEW_BATCH_BYTES, 'total_bytes': publish.MAX_REVIEW_TOTAL_BYTES}, 'external_calls': 0}, indent=2))
++
++if __name__ == '__main__': main()
+diff --git a/tools/photo-library/test_reconcile.py b/tools/photo-library/test_reconcile.py
+new file mode 100644
+index 0000000000..bba7bf1c74
+--- /dev/null
++++ b/tools/photo-library/test_reconcile.py
+@@ -0,0 +1,110 @@
++import copy, hashlib, json, pathlib, tempfile, unittest
++from unittest.mock import patch
++import publish
++import test_publish
++from vision import PROMPT
++
++class ReconcileTests(unittest.TestCase):
++    def setUp(self):
++        self.tmp = tempfile.TemporaryDirectory()
++        self.addCleanup(self.tmp.cleanup)
++        self.root = pathlib.Path(self.tmp.name)
++        self.e, self.row, self.batch = test_publish.PublishTests().fixture(self.root)
++        for name, value in [('ROOT', self.root), ('E', self.e)]:
++            p = patch.object(publish, name, value); p.start(); self.addCleanup(p.stop)
++
++    def put(self, name, batch):
++        path = self.e / 'vision' / name
++        path.write_text(json.dumps(batch))
++        return path
++
++    def old(self):
++        batch = copy.deepcopy(self.batch)
++        batch['inputs'][0]['sha256'] = '0' * 64
++        batch['input_signature'] = hashlib.sha256(json.dumps({'inputs': batch['inputs'], 'model': 'glm-4.6v', 'prompt': PROMPT}, sort_keys=True).encode()).hexdigest()
++        return batch
++
++    def assembled(self):
++        files, counts = publish.assemble()
++        manifest = json.loads(next(b for k, b in files.items() if k.startswith('animals/') and k.endswith('.json')))
++        return counts['pen-pal3']['count'], manifest
++
++    def test_bound_duplicate_recovers_without_deleting_audit(self):
++        self.put('batch-999.json', self.batch)
++        before = {p.name: p.read_bytes() for p in (self.e / 'vision').iterdir()}
++        try: count, manifest = self.assembled()
++        except ValueError as exc: self.fail("valid bound duplicate must recover: " + str(exc))
++        self.assertEqual(count, 1)
++        self.assertEqual(before, {p.name: p.read_bytes() for p in (self.e / 'vision').iterdir()})
++        self.assertEqual(manifest['objects'][0]['vision']['review_sha256'], hashlib.sha256(before['batch-000.json']).hexdigest())
++        self.assertEqual({r['file']: r['sha256'] for r in manifest['review_batches']}, {n: hashlib.sha256(b).hexdigest() for n, b in before.items()})
++
++    def test_single_current_review_still_accepts(self):
++        count, manifest = self.assembled()
++        self.assertEqual(count, 1)
++        self.assertEqual(manifest['review_batches'][0]['current_verdicts'], 1)
++        self.assertEqual(manifest['review_batches'][0]['stale_verdicts'], 0)
++
++    def test_reordered_shrunken_batch_keeps_matching_photo_only(self):
++        batch = copy.deepcopy(self.batch)
++        removed = {'id': 'pen-pal3:removed', 'sha256': 'f' * 64}
++        removed_verdict = copy.deepcopy(batch['photos'][0]); removed_verdict['id'] = removed['id']
++        batch['inputs'].insert(0, removed); batch['photos'].append(removed_verdict)
++        batch['input_signature'] = hashlib.sha256(json.dumps({'inputs': batch['inputs'], 'model': 'glm-4.6v', 'prompt': PROMPT}, sort_keys=True).encode()).hexdigest()
++        self.put('batch-999.json', batch)
++        count, manifest = self.assembled()
++        self.assertEqual(count, 1)
++        self.assertEqual(manifest['review_batches'][1]['current_verdicts'], 1)
++        self.assertEqual(manifest['review_batches'][1]['stale_verdicts'], 1)
++        self.assertEqual(len(manifest['objects'][0]['vision']['equivalent_review_sha256s']), 2)
++
++    def test_old_bytes_do_not_override_current_review(self):
++        old = self.old(); old['photos'][0]['fit_score'] = 1
++        self.put('batch-999.json', old)
++        self.assertEqual(self.assembled()[0], 1)
++
++    def test_conflicting_current_reviews_refuse_in_both_orders(self):
++        other = copy.deepcopy(self.batch); other['photos'][0]['fit_score'] = 1
++        for first, second in [(self.batch, other), (other, self.batch)]:
++            self.put('batch-000.json', first); self.put('batch-999.json', second)
++            with self.assertRaisesRegex(ValueError, 'conflicting current verdict'):
++                publish.assemble()
++            self.assertFalse((self.e / 'pen-pal3-manifest.json').exists())
++
++    def test_current_rejection_not_overridden_by_stale_pass(self):
++        current = copy.deepcopy(self.batch); current['photos'][0]['fit_score'] = 1
++        self.put('batch-000.json', current); self.put('batch-999.json', self.old())
++        self.assertEqual(self.assembled()[0], 0)
++
++    def test_only_stale_review_quarantines_candidate(self):
++        self.put('batch-000.json', self.old())
++        self.assertEqual(self.assembled()[0], 0)
++
++    def test_equivalent_verdict_different_record_keeps_all_provenance(self):
++        equivalent = copy.deepcopy(self.batch); equivalent['elapsed_seconds'] = 3
++        self.put('batch-999.json', equivalent)
++        count, manifest = self.assembled()
++        self.assertEqual(count, 1)
++        self.assertEqual(len(manifest['review_batches']), 2)
++        self.assertEqual(len(manifest['objects'][0]['vision']['equivalent_review_sha256s']), 2)
++
++    def test_recovery_does_not_override_operator_veto(self):
++        self.put('batch-999.json', self.batch)
++        (self.e / 'operator-visual-review.json').write_text(json.dumps({'exclusions': {'pen-pal3:1': 'veto'}}))
++        self.assertEqual(self.assembled()[0], 0)
++
++    def test_duplicate_inputs_and_in_batch_verdicts_refuse(self):
++        for field in ['inputs', 'photos']:
++            batch = copy.deepcopy(self.batch); batch[field] *= 2
++            batch['input_signature'] = hashlib.sha256(json.dumps({'inputs': batch['inputs'], 'model': 'glm-4.6v', 'prompt': PROMPT}, sort_keys=True).encode()).hexdigest()
++            self.put('batch-000.json', batch)
++            with self.assertRaises(ValueError): publish.assemble()
++
++    def test_scan_limits_refuse_without_evidence_changes(self):
++        original = (self.e / 'vision/batch-000.json').read_bytes()
++        for name, value in [('MAX_REVIEW_BATCHES', 0), ('MAX_REVIEW_BATCH_BYTES', 10), ('MAX_REVIEW_TOTAL_BYTES', 10)]:
++            with patch.object(publish, name, value):
++                with self.assertRaisesRegex(ValueError, 'review scan limit'): publish.assemble()
++            self.assertEqual((self.e / 'vision/batch-000.json').read_bytes(), original)
++
++if __name__ == '__main__': unittest.main()

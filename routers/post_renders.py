@@ -210,5 +210,5 @@ def artifact(job_id: str, kind: str, authorization: str | None = Header(default=
     except RenderJobError as error:
         _http_error(error)
     media_type = {"final": "video/mp4", "qa": "image/jpeg", "receipt": "application/json",
-                  "source": "video/mp4"}[kind]
+                  "source": "video/mp4", "burned_final": "video/mp4", "burned_qa": "image/jpeg"}[kind]
     return FileResponse(path, media_type=media_type, headers={"Cache-Control": "no-store"})

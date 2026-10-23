@@ -224,3 +224,16 @@ def test_missing_actual_overlay_is_rejected_by_decoded_cue_evidence(actual_sourc
         rt.render_timed_post(actual_source, tmp_path / "missing-overlay", request_value, clock_ms=lambda: NOW)
     assert error.value.code == "phrase_frame_evidence_invalid"
     assert not (tmp_path / "missing-overlay").exists()
+
+
+def test_in_app_timed_render_is_refused_before_the_resolver(tmp_path, monkeypatch):
+    calls = _patch_resolver(monkeypatch, TIMING)
+    treatment = {**TREATMENT, "captionDelivery": "in_app"}
+    raw = json.dumps(treatment, sort_keys=True, separators=(",", ":"))
+    req = request(render_treatment_json=raw, treatment_sha256=v1.sha256(raw.encode()))
+    output = tmp_path / "render"
+    with pytest.raises(rt.PostRenderError) as error:
+        rt.render_timed_post(tmp_path / "missing", output, req, clock_ms=lambda: NOW)
+    assert error.value.code == "in_app_timed_unsupported"
+    assert not calls
+    assert not output.exists()

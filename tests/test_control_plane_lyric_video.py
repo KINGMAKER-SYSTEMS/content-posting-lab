@@ -138,4 +138,5 @@ def test_all_preexisting_profiles_contracts_and_static_renderer_retain_baseline_
         current.pop("single-image-video")
         current.pop("meme")
         assert hashlib.sha256(json.dumps(current,sort_keys=True,separators=(",",":"),ensure_ascii=False).encode()).hexdigest()==expected
-    assert hashlib.sha256((root/"services/post_render.py").read_bytes()).hexdigest()=="d297b8231cb27c0b81c07bd75ea2762d8a0c7bd9040ed9805758e1c093ab7d97"
+    # Identity evidence: maj:~/rt-work/cx1022-t73L2/t73L2-evidence/identity-comparison.txt (15 legacy profiles/contracts; 30 byte-identical non-in_app renders).
+    assert hashlib.sha256((root/"services/post_render.py").read_bytes()).hexdigest()=="97562a9bc1fe7aff0f2e3be4566eaf889460a37e47cbf46fb68a253d29ad66b3"

@@ -31,6 +31,7 @@ from services.caption_render import CaptionRenderRequest, CaptionStyle, render_c
 from services.ffmpeg import delivery_encode_args
 from services.page_frame import frame_band_height
 from services.post_render import (
+    CAPTION_DELIVERY_IN_APP,
     MAX_FINAL_BYTES,
     MAX_OVERLAY_BYTES,
     MAX_QA_BYTES,
@@ -41,6 +42,7 @@ from services.post_render import (
     PostRenderRequest,
     RenderTools,
     RenderedPost,
+    _caption_delivery,
     _file_hash,
     _frame_band_height,
     _probe,
@@ -287,6 +289,8 @@ def render_timed_post(source_path: Path, output_directory: Path, request: TimedP
         raise PostRenderError("regeneration_required", "source treatment provenance is unknown or differs from the requested treatment")
     if request.created_at_ms > clock_ms():
         raise PostRenderError("request_future_dated", "render request is future-dated")
+    if _caption_delivery(request) == CAPTION_DELIVERY_IN_APP:
+        raise PostRenderError("in_app_timed_unsupported", "in_app caption delivery is not supported for timed lyric rendering")
     timing, phrases = _resolve_timing(request)
     if normalized_visual_treatment(_slot_treatment(request)) != normalized_visual_treatment({"filters": {"brightness": 0.85}}):
         raise PostRenderError("lyric_source_treatment_mismatch", "timed lyric source must retain the approved once-graded 20-second program")
