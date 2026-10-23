@@ -1923,7 +1923,7 @@ def _photo_jobs_paused(store: dict[str, Any], recipe: Any, page_id: str) -> bool
     minutes after the latest failure. No durable breaker state or schema is
     added. Cancelled/active/nonphoto/foreign-page jobs do not count.
     """
-    if recipe.format_slug not in IMAGE_VIDEO_FORMATS:
+    if getattr(recipe, "format_slug", None) not in IMAGE_VIDEO_FORMATS:
         return False
     terminals = []
     for job in store.get("jobs", {}).values():
