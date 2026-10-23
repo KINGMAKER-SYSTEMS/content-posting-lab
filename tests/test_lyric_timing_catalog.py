@@ -38,6 +38,16 @@ def _copy_burnt_bytes(tmp: Path) -> Path:
     return path
 
 
+def _tampered_shipped(tmp: Path) -> Path:
+    """A structurally-valid edit of the shipped file (same filename, new bytes)."""
+    value = json.loads(timing._TIMING_PATH.read_bytes())
+    value["phrases"][0]["text"] = "Hate me now, all the way down"
+    value["canonicalCaption"] = "\n".join(p["text"] for p in value["phrases"])
+    path = tmp / "burnt-heavy-foot-chorus.v1.json"
+    path.write_text(json.dumps(value))
+    return path
+
+
 @pytest.fixture
 def mixed_dir(tmp_path, monkeypatch):
     """A tmp timing directory: Burnt's exact bytes plus one synthetic page."""
@@ -82,6 +92,27 @@ def test_page_without_timing_file_still_refused(tmp_path, monkeypatch):
             expected_sha256="0" * 64,
         )
     assert error.value.code == "lyric_timing_unknown"
+
+
+def test_shipped_file_edit_fails_loudly_via_manifest_pin(tmp_path, monkeypatch):
+    _tampered_shipped(tmp_path)
+    monkeypatch.setattr(timing, "_TIMING_DIR", tmp_path)
+    timing._reset_catalog()
+    with pytest.raises(timing.LyricTimingError) as error:
+        timing.lyric_timing_catalog(page_id="acct:burnt-mill-rd", account="burnt.mill.rd")
+    assert error.value.code == "lyric_timing_hash_mismatch"
+
+
+def test_catalog_observes_new_timing_file_without_reset(tmp_path, monkeypatch):
+    monkeypatch.setattr(timing, "_TIMING_DIR", tmp_path)
+    timing._reset_catalog()
+    assert timing.lyric_timing_catalog(page_id="acct:second-page", account="second.page") == []
+    (tmp_path / "second-page-chorus.v1.json").write_text(
+        json.dumps(_synthetic(_base(), set_id="second-page-chorus-v1", page_id="acct:second-page", account="second.page"))
+    )
+    options = timing.lyric_timing_catalog(page_id="acct:second-page", account="second.page")
+    assert len(options) == 1
+    assert options[0]["id"] == "second-page-chorus-v1"
 
 
 def test_duplicate_set_id_rejected_at_load(tmp_path, monkeypatch):
