@@ -863,8 +863,8 @@ def test_watermark_reserves_derived_peak_for_all_workers(monkeypatch, tmp_path, 
         + jobs.MAX_OVERLAY_BYTES
         + 4 * ((jobs.MAX_OVERLAY_BYTES + 2) // 3)
         + jobs.MAX_RENDER_METADATA_BYTES
-        + jobs.MAX_FINAL_BYTES + 1
-        + jobs.MAX_QA_BYTES + 1
+        + 2 * (jobs.MAX_FINAL_BYTES + 1)
+        + 2 * (jobs.MAX_QA_BYTES + 1)
         + jobs.MAX_RENDER_METADATA_BYTES
     )
     assert jobs.PEAK_RENDER_WORKSPACE_BYTES == expected_peak
@@ -1129,3 +1129,56 @@ def test_frame_fit_is_bound_by_the_slot_and_request_hash_but_needs_no_new_source
     with pytest.raises(jobs.RenderJobError) as error:
         jobs_service.enqueue(fill, "fit-slot-key")
     assert error.value.code == "idempotency_conflict"
+
+
+def fake_dual_render(source, output, request, *, clock_ms):
+    _write_fake_render(output, request, clock_ms=clock_ms, final=b"clean")
+    _write_fake_render(output / "burned", request, clock_ms=clock_ms, final=b"burned")
+    burned = json.loads((output / "burned/receipt.json").read_text())
+    receipt = json.loads((output / "receipt.json").read_text())
+    receipt["caption_delivery"] = "in_app"
+    receipt["burned_fallback"] = {key: burned[key] for key in (
+        "final_sha256", "final_byte_length", "final_object_key", "qa_frame_sha256")}
+    receipt["burned_fallback"]["final_object_key"] = f"posting/dual-final/{burned['final_sha256']}.mp4"
+    (output / "receipt.json").write_text(json.dumps(receipt))
+    decode = json.loads((output / "burned/decode.json").read_text())
+    decode["final_probe"].update(width=1080, height=1920, video_codec="h264", pixel_format="yuv420p")
+    (output / "burned/decode.json").write_text(json.dumps(decode))
+
+
+def test_in_app_requires_both_assets_and_rechecks_fallback_bytes(tmp_path):
+    instance = service(tmp_path, renderer=fake_dual_render)
+    queued = instance.enqueue(submission(caption_delivery="in_app"), "dual-render")
+    instance.run_one()
+    status = instance.status(queued["id"])
+    assert status["state"] == "succeeded"
+    assert {"burned_final", "burned_qa"} <= status["artifacts"].keys()
+    fallback = instance.artifact(queued["id"], "burned_final")
+    assert fallback.read_bytes() == b"burned"
+    fallback.write_bytes(b"corrupted")
+    with pytest.raises(jobs.RenderJobError):
+        instance.artifact(queued["id"], "final")
+
+
+def test_clean_only_in_app_renderer_never_succeeds(tmp_path):
+    instance = service(tmp_path)
+    queued = instance.enqueue(submission(caption_delivery="in_app"), "missing-dual")
+    instance.run_one()
+    assert instance.status(queued["id"])["state"] != "succeeded"
+
+
+def test_dual_render_syncs_burned_media_and_directory_before_success(tmp_path, monkeypatch):
+    import os
+    synced = set()
+    original = jobs.os.fsync
+    def fsync(fd):
+        synced.add(os.fstat(fd).st_ino)
+        original(fd)
+    monkeypatch.setattr(jobs.os, "fsync", fsync)
+    instance = service(tmp_path, renderer=fake_dual_render)
+    queued = instance.enqueue(submission(caption_delivery="in_app"), "dual-fsync")
+    assert instance.run_one()
+    assert instance.status(queued["id"])["state"] == "succeeded"
+    fallback = instance.artifact(queued["id"], "burned_final")
+    assert {fallback.stat().st_ino, fallback.parent.stat().st_ino,
+            (fallback.parent / "qa.jpg").stat().st_ino} <= synced
