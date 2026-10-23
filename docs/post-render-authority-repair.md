@@ -1,6 +1,6 @@
 # Retained authority repair: bounded offline disposition
 
-F2 is repaired. F1 remains open; this package must not ship as a complete
+F2 root decoding and the reproduced nested type failures are contained. F1 remains open; this package must not ship as a complete
 integrity repair. Source baseline: 73520496993b7cf3f5115fe03b5fef1efd6a2d44.
 
 ## F2: controlled refusal
@@ -20,6 +20,20 @@ error containment, not automatic repair of lost evidence. Tests cover SQL NULL,
 malformed JSON, JSON null/list/number/string for both primary-owner and shared
 jobs, direct status/replay, authenticated HTTP status/replay, row preservation,
 media retention and a healthy second job.
+
+The nested follow-up starts at `5dfdbcfdb8c5764a40df883a3f94a97f53fc400b`.
+Explicit type guards now precede completion-time/duration/frame-count numeric
+operations and clean/burned decode/probe member access. Wrong types raise the
+existing `artifact_binding_mismatch`, `decode_evidence_missing` or
+`burned_fallback_decode_missing` errors, translated to HTTP 409 for primary and
+shared rows. The four T154 cases and three sibling-field type failures have
+original-red/candidate-green HTTP regressions. Full-app tests exercise both its
+API-key middleware and the route's bearer/page boundary without starting workers.
+Refusals retain every jobs/attempts/idempotency row and attempt-file hash; the
+next distinct valid job still renders a captioned fallback. No automatic paid
+rerender or replacement of corrupt evidence occurs. This does not promise
+comprehensive malformed-storage normalization, receipt authenticity or repair of
+lost evidence. Healthy baseline legacy history keeps its existing lifecycle.
 
 ## F1: conditional storage-corruption case remains open
 

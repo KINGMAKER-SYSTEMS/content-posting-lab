@@ -887,12 +887,19 @@ class PostRenderJobs:
                 or receipt.get("qa_frame_sha256") != qa_sha or final_sha == request.source_sha256
                 or receipt.get("final_object_key") != f"posting/final/{final_sha}.mp4"
                 or receipt.get("mime_type") != "video/mp4" or receipt.get("width") != 1080 or receipt.get("height") != 1920
-                or not request.created_at_ms <= receipt.get("completed_at_ms", -1) <= self.clock_ms()):
+                or type(receipt.get("completed_at_ms")) not in (int, float)
+                or not request.created_at_ms <= receipt["completed_at_ms"] <= self.clock_ms()):
             raise RenderJobError("artifact_binding_mismatch")
+        # Retained JSON can be well formed while nested evidence has wrong types.
+        # Refuse before comparisons/member access; never repair paid evidence in place.
+        probe = evidence.get("final_probe")
         if (evidence.get("final_sha256") != final_sha or evidence.get("qa_frame_sha256") != qa_sha
-                or evidence.get("decoded_video_frames", 0) <= 0
-                or evidence.get("final_probe", {}).get("duration_ms") != receipt.get("duration_ms")
-                or receipt.get("duration_ms", 0) <= 0):
+                or type(evidence.get("decoded_video_frames")) not in (int, float)
+                or evidence["decoded_video_frames"] <= 0
+                or not isinstance(probe, dict)
+                or probe.get("duration_ms") != receipt.get("duration_ms")
+                or type(receipt.get("duration_ms")) not in (int, float)
+                or receipt["duration_ms"] <= 0):
             raise RenderJobError("decode_evidence_missing")
         if _caption_delivery(request) == "in_app" and not self._legacy_clean_output(row, authority):
             fallback = receipt.get("burned_fallback")
@@ -907,11 +914,15 @@ class PostRenderJobs:
                     or fallback["final_sha256"] in {final_sha, request.source_sha256}
                     or fallback["final_object_key"] != f"posting/dual-final/{fallback['final_sha256']}.mp4"):
                 raise RenderJobError("burned_fallback_invalid")
-            decode = burned.get("decode", {})
-            probe = decode.get("final_probe", {})
+            decode = burned.get("decode")
+            if not isinstance(decode, dict):
+                raise RenderJobError("burned_fallback_decode_missing")
+            probe = decode.get("final_probe")
             if (decode.get("final_sha256") != fallback["final_sha256"]
                     or decode.get("qa_frame_sha256") != fallback["qa_frame_sha256"]
-                    or decode.get("decoded_video_frames", 0) <= 0
+                    or type(decode.get("decoded_video_frames")) not in (int, float)
+                    or decode["decoded_video_frames"] <= 0
+                    or not isinstance(probe, dict)
                     or probe.get("duration_ms") != receipt.get("duration_ms")
                     or (probe.get("width"), probe.get("height"), probe.get("video_codec"), probe.get("pixel_format"))
                        != (1080, 1920, "h264", "yuv420p")):

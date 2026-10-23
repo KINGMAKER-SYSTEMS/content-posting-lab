@@ -99,9 +99,12 @@ unfinished job cannot use this exception; any fallback key, including a null
 or malformed promise, requires the complete verified pair. Unverifiable jobs
 keep their media and fail closed through the existing verification errors.
 
-Succeeded status and idempotent replay refuse missing or malformed retained
-authority through the existing HTTP 409 error contract, preserving the row and
-media. This does not authenticate retained receipt contents against the exact
+Succeeded status and idempotent replay refuse missing retained authority,
+invalid JSON/non-object roots, and wrong numeric/object types at the retained
+completion-time, duration, decoded-frame-count and clean/burned decode-probe
+checks through the existing HTTP 409 error contract. These refusals preserve
+rows and media and never schedule a replacement render. This is bounded type
+validation of retained authority, not comprehensive storage-corruption recovery. This does not authenticate retained receipt contents against the exact
 receipt-byte pin. Conditional private-storage edits that remove both fallback
 members after retirement can still misclassify a pair as legacy and lose its
 burned dedup identity. See [the bounded repair disposition](post-render-authority-repair.md).
