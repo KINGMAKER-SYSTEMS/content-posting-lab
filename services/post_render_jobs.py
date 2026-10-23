@@ -77,14 +77,11 @@ FAILED_MEDIA_RETENTION_MS = 24 * 60 * 60 * 1000
 # (including request, receipt/final/QA hashes and counters) and every
 # idempotency row are no-repeat authority and are never deleted by this GC.
 AUXILIARY_HISTORY_RETENTION_MS = 30 * 24 * 60 * 60 * 1000
-# Delivered-media age-out. The Worker does not call /acknowledge, so without
-# this sweep every succeeded render's media stayed on the volume forever. A
-# succeeded, unretired job is retired once (a) its window has passed since it
-# succeeded and since its planned slot time (so the slot's 1 h admission-retry
-# window is over) and (b) the Control Plane confirms that exact final is
-# admitted: its /prepared-video door answers 206 only for a `ready` post
-# artifact with that final_object_key whose R2 object exists. An unconfirmed
-# job is never deleted; it is re-checked later.
+# Delivered-media age-out. Ordinary renders can retire when their window has
+# passed and Control Plane confirms their exact primary final is admitted.
+# Dual jobs require their own acknowledgement: another caption may share the
+# same clean bytes, so primary presence cannot prove this pair was admitted.
+# Unacknowledged pairs retain both variants and are rechecked later.
 #
 # The sweep acts on volume pressure by itself instead of waiting for a person:
 #   normal  free >= 25% of the volume        delivered window 72 h, every 5 min

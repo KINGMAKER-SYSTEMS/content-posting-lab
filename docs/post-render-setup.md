@@ -81,7 +81,7 @@ does not repeat source grade, speed or crop. The existing receipt adds
 `caption_delivery: "in_app"` and `burned_fallback`, containing `final_sha256`,
 `final_byte_length`, `final_object_key` and `qa_frame_sha256`. The fallback uses
 the separate `posting/dual-final/<sha>.mp4` content-addressed object key;
-Worker fallback QA storage uses `posting/dual-qa/<sha>.jpg`. These namespaces
+Worker fallback QA storage uses `posting/dual-qa/<sha>`. These namespaces
 avoid existing primary-only retention deleting a live fallback when its bytes
 match a historical primary. Fallback objects accumulate until a separate
 migration-backed retention lifecycle is implemented; storage estimates below
@@ -104,3 +104,28 @@ M × 8.39 MiB retained storage in this synthetic sample; actual content, host
 load and bitrate change these measurements. Both final variants retain their
 individual 22 MiB caps and both QA images their 2 MiB caps. No paid provider
 call is added. Claims carry asset metadata rather than media bytes.
+
+
+Dual jobs deduplicate the captioned fallback hash, so the same clean source can
+produce distinct captions without `duplicate_output`. Ordinary burned jobs and
+identical burned fallbacks still share one no-repeat identity. The reservation
+check and result write run under one SQLite `BEGIN IMMEDIATE` writer transaction.
+No schema change is needed: the first owner retains the UNIQUE primary hash
+column; later verified pairs sharing that clean hash use the existing nullable
+column convention and retain their actual clean hash in full output authority.
+Status reads that verified authority for shared jobs, including after restart
+and media retirement; no column is repurposed to hold a different file's hash.
+
+Shared clean bytes also change retention proof. A dual job is retired only after
+its own `/acknowledge` records that both variants were admitted, followed by the
+existing safety window. A primary-only presence check cannot retire another
+caption's unacknowledged fallback. The Worker must acknowledge each admitted
+pair; otherwise its Lab media remains retained. Ordinary rendered jobs keep the
+existing primary-final confirmation sweep.
+
+The no-schema burned-identity lookup scans retained local job authority. On maj,
+with 2,547-byte authority fixtures, ten samples at 10,000 historical jobs measured
+26.55 ms median / 29.24 ms maximum per writer reservation; 20,000 jobs measured
+54.17 ms median / 56.04 ms maximum. This cost grows with retained history; it is
+not a constant-time index claim. The first four opted-in pages add this local
+cost only when output authority is saved, not on a phone drive or paid call.

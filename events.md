@@ -1748,3 +1748,13 @@ Disk reservation includes both bounded final and QA artifacts. No deployment,
 installation, migration or production write; downstream activation remains
 subject to Worker/rail authority gates. Synthetic maj costs and the exact
 artifact contract are recorded in docs/post-render-setup.md.
+
+
+Dual-render jobs now reserve the captioned fallback identity under a SQLite
+writer transaction. Distinct captions may share clean video bytes while status,
+receipts and retirement retain each job's actual clean hash. Identical captioned
+outputs still refuse across dual and ordinary jobs. Paired media requires its
+own admission acknowledgement before automatic retirement; another caption's
+shared clean object is insufficient proof. Focused jobs tests cover real render
+pairs, concurrent duplicate claims, restart, retirement and cross-mode repeats;
+local-history reservation costs are recorded in docs/post-render-setup.md.
