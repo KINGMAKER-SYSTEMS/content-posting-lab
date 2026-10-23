@@ -1142,6 +1142,12 @@ class PostRenderJobs:
             db.execute("INSERT OR IGNORE INTO idempotency(key,job_id,request_hash) VALUES(?,?,?)",
                        (key, row["id"], identity))
         else:
+            # A retained in-app burned identity also fences ordinary outputs,
+            # even when its historical JSON was damaged after reservation.
+            reserved = db.execute("SELECT job_id FROM idempotency WHERE key=?",
+                                  (self._identity_key(identity),)).fetchone()
+            if reserved and reserved["job_id"] != row["id"]:
+                raise RenderJobError("duplicate_output")
             # Preserve ordinary writes and duplicate semantics; isolate bad JSON.
             duplicate = db.execute(
                 "SELECT id FROM jobs WHERE id<>? AND (final_sha256=? OR "

@@ -166,3 +166,27 @@ def test_direct_reservation_rejects_stripped_retained_identity(tmp_path):
         db.execute("BEGIN IMMEDIATE")
         with pytest.raises(jobs.RenderJobError):
             worker._reserve_output_identity(db, row, authority)
+
+
+@pytest.mark.parametrize("shared", [False, True])
+@pytest.mark.parametrize("restart", [False, True])
+def test_ordinary_repeat_cannot_bypass_corrupt_inapp_reservation(tmp_path, shared, restart):
+    worker = service(tmp_path, renderer=dual_render)
+    if shared:
+        finished(worker, "owner", "other")
+    jid = finished(worker)
+    authority = json.loads(worker._row(jid)["output_authority_json"])
+    del authority["burned_fallback"]
+    del authority["receipt"]["burned_fallback"]
+    with worker._db() as db:
+        db.execute("UPDATE jobs SET output_authority_json=? WHERE id=?", (json.dumps(authority), jid))
+    if restart:
+        worker = service(tmp_path, renderer=dual_render)
+    from tests.test_post_render_jobs import _write_fake_render
+    worker.renderer = lambda source, output, request, clock_ms: _write_fake_render(
+        output, request, clock_ms=clock_ms, final=b"burned:same")
+    again = worker.enqueue(submission(slot_id="slot:ordinary-repeat"), "request:ordinary-repeat")
+    assert worker.run_one()
+    result = worker.status(again["id"])
+    assert result["state"] == "failed"
+    assert result["error_code"] == "duplicate_output"

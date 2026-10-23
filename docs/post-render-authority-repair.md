@@ -49,14 +49,16 @@ the retained-authority corruption model.
 
 Ordinary valid render outputs, persisted authority bytes, final-hash dedup,
 tables and write transactions stay as in ee33b9051. Ordinary history never gets
-new reservation rows. Its historical duplicate query still scans history; it
+new reservation rows. Ordinary admission reads permanent in-app reservations so
+corrupt in-app JSON cannot release its burned identity to an ordinary job. Its historical duplicate query still scans history; it
 now guards malformed JSON before extraction. Invalid old ordinary status omits
 unavailable hashes as in the PR 254 LOW repair.
 
 The candidate includes the LOW docs/test naming and malformed-history isolation,
-and scopes the permanent index to in-app jobs. It does not fully contain PR 254’s
-all-mode indexed reservations, so PR 254 is not superseded. In particular do not
-copy its all-mode lookup or storage cost claims onto this candidate.
+and scopes permanent reservation writes to in-app jobs. This composite supersedes
+PR 254 for the planned release; its all-mode reservation writes were not adopted
+because ordinary database writes must stay identical to the base. Do not copy
+PR 254’s all-mode lookup or storage cost claims onto this candidate.
 
 ## Cost and verification
 
