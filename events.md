@@ -1758,3 +1758,12 @@ own admission acknowledgement before automatic retirement; another caption's
 shared clean object is insufficient proof. Focused jobs tests cover real render
 pairs, concurrent duplicate claims, restart, retirement and cross-mode repeats;
 local-history reservation costs are recorded in docs/post-render-setup.md.
+
+## 2026-10-23 — T161 blocked photo repair handoff
+
+Extracted only the T160 publisher repair patch into docs/photo-stale-repair.
+Current Lab main plus pinned PR 248 has no photo-library publisher, so the patch
+cannot apply. No executable publisher or inherited substrate was imported.
+The Oct 24 11:40 ET runner is prepared but not started; it requires future
+exact-head integration checks and only observes Railway after a pinned merge.
+Real media/storage and renderer/admission QA remain blocked. No release action.
