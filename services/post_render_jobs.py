@@ -465,6 +465,38 @@ class PostRenderJobs:
                 if planned is not None:
                     db.execute("UPDATE jobs SET planned_at_ms=? WHERE id=?", (planned, row["id"]))
 
+        # Rebuild on every service start, including after a rollback to older code.
+        # The old runtime must be stopped before starting this version on this DB.
+        with self._db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            self._backfill_output_identities(db)
+
+    @staticmethod
+    def _identity_key(identity: str) -> str:
+        # Slash is outside the public idempotency-key alphabet. These permanent
+        # internal reservations cannot collide with a client's request key.
+        return "/output-identity/v1/" + identity
+
+    @classmethod
+    def _backfill_output_identities(cls, db) -> None:
+        """One streaming history pass at startup; never scan history on finish."""
+        for candidate in db.execute(
+                "SELECT id, output_authority_json FROM jobs WHERE output_authority_json IS NOT NULL"):
+            try:
+                authority = json.loads(candidate["output_authority_json"])
+                fallback = authority.get("burned_fallback")
+                identity = (fallback["artifact"]["final_sha256"] if fallback
+                            else authority["final_sha256"])
+                if not isinstance(identity, str) or not re.fullmatch(r"[0-9a-f]{64}", identity):
+                    raise ValueError("invalid output identity")
+            except (ValueError, TypeError, AttributeError, KeyError):
+                # Keep any earlier reservation. A corrupt row cannot erase a
+                # known identity or stop unrelated jobs from completing.
+                log.warning("post render identity backfill skipped invalid authority job=%s", candidate["id"])
+                continue
+            db.execute("INSERT OR IGNORE INTO idempotency(key,job_id,request_hash) VALUES(?,?,?)",
+                       (cls._identity_key(identity), candidate["id"], identity))
+
     @contextlib.contextmanager
     def _db(self):
         db = sqlite3.connect(self.root / "jobs.sqlite", timeout=5)
@@ -559,10 +591,17 @@ class PostRenderJobs:
             result["receipt_sha256"] = row["receipt_sha256"]
             # Shared clean bytes may have one UNIQUE column owner. Every job
             # retains its actual primary hash in verified output authority.
-            authority = (self._validate_output_authority(row, json.loads(row["output_authority_json"]))
-                         if row["final_sha256"] is None else row)
-            result["final_sha256"] = authority["final_sha256"]
-            result["qa_frame_sha256"] = authority["qa_frame_sha256"]
+            authority = row if row["final_sha256"] is not None else None
+            if authority is None and row["output_authority_json"]:
+                try:
+                    authority = self._validate_output_authority(row, json.loads(row["output_authority_json"]))
+                except (TypeError, ValueError, AttributeError, KeyError):
+                    # Legacy/shared tombstones previously omitted unavailable hashes.
+                    # Status is observational; artifact access still verifies authority.
+                    log.warning("post render status omitted invalid authority job=%s", row["id"])
+            if authority is not None:
+                result["final_sha256"] = authority["final_sha256"]
+                result["qa_frame_sha256"] = authority["qa_frame_sha256"]
             result["artifacts"] = {kind: f"/api/control-plane/v1/post-renders/{job_id}/artifacts/{kind}" for kind in (("final", "qa", "receipt", "burned_final", "burned_qa")
                     if _caption_delivery(RenderJobSubmission.model_validate_json(row["submission_json"]).request) == "in_app"
                     else ("final", "qa", "receipt"))}
@@ -983,13 +1022,17 @@ class PostRenderJobs:
         fallback = authority.get("burned_fallback")
         identity = fallback["artifact"]["final_sha256"] if fallback else primary
         duplicate = db.execute(
-            "SELECT id FROM jobs WHERE id<>? AND (final_sha256=? OR "
-            "COALESCE(json_extract(output_authority_json,'$.burned_fallback.artifact.final_sha256'),"
-            "json_extract(output_authority_json,'$.final_sha256'))=?) LIMIT 1",
-            (row["id"], identity, identity),
+            "SELECT id FROM jobs WHERE id<>? AND final_sha256=? LIMIT 1",
+            (row["id"], identity),
         ).fetchone()
         if duplicate:
             raise RenderJobError("duplicate_output")
+        key = PostRenderJobs._identity_key(identity)
+        reserved = db.execute("SELECT job_id FROM idempotency WHERE key=?", (key,)).fetchone()
+        if reserved and reserved["job_id"] != row["id"]:
+            raise RenderJobError("duplicate_output")
+        db.execute("INSERT OR IGNORE INTO idempotency(key,job_id,request_hash) VALUES(?,?,?)",
+                   (key, row["id"], identity))
         owner = db.execute("SELECT id FROM jobs WHERE final_sha256=? AND id<>?",
                            (primary, row["id"])).fetchone()
         if owner and not fallback:

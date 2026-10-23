@@ -1160,14 +1160,14 @@ def test_in_app_requires_both_assets_and_rechecks_fallback_bytes(tmp_path):
         instance.artifact(queued["id"], "final")
 
 
-def test_clean_only_in_app_renderer_never_succeeds(tmp_path):
+def test_clean_only_in_app_fixture_does_not_succeed(tmp_path):
     instance = service(tmp_path)
     queued = instance.enqueue(submission(caption_delivery="in_app"), "missing-dual")
     instance.run_one()
     assert instance.status(queued["id"])["state"] != "succeeded"
 
 
-def test_dual_render_syncs_burned_media_and_directory_before_success(tmp_path, monkeypatch):
+def test_dual_render_syncs_burned_media_and_directory(tmp_path, monkeypatch):
     import os
     synced = set()
     original = jobs.os.fsync

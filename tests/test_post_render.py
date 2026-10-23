@@ -546,7 +546,7 @@ def test_frame_fit_without_a_frame_or_unknown_is_rejected_at_the_request_boundar
 _BASE_TREATMENT_SHA = "22eeef40060ec7f79b03a4dd4acea7fcdb2c567735bd03346317f3039d526c93"
 
 
-def test_absent_caption_delivery_keeps_the_exact_base_treatment_hash():
+def test_fixture_treatment_hash_is_pinned_and_absent_caption_delivery_defaults_to_burned():
     # The treatment JSON without captionDelivery is byte-identical to BASE;
     # adding the optional key must not change its serialization or hash.
     raw = json.dumps(TREATMENT, sort_keys=True, separators=(",", ":"))
@@ -584,7 +584,7 @@ def test_in_app_with_inverted_is_refused_before_any_io(tmp_path):
     assert not output.exists()
 
 
-def test_in_app_renders_a_clean_clip_with_no_caption_pixels(actual_source, tmp_path):
+def test_in_app_render_omits_overlay_and_matches_source_crop_within_tolerance(actual_source, tmp_path):
     sha = render.sha256(actual_source.read_bytes())
     burned = render.render_post(actual_source, tmp_path / "burned", request(sha), clock_ms=lambda: NOW)
     in_app = render.render_post(actual_source, tmp_path / "in_app",

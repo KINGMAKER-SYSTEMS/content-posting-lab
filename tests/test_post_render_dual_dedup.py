@@ -69,7 +69,7 @@ def test_repeated_burned_fallback_is_rejected_even_after_shared_clean_retirement
 
 
 @pytest.mark.parametrize("same_caption", [False, True])
-def test_concurrent_workers_serialize_dual_identity_admission(tmp_path, same_caption):
+def test_barrier_assisted_concurrent_dual_identity_admission(tmp_path, same_caption):
     rendezvous = threading.Barrier(2)
     def renderer(*args, **kwargs):
         dual_render(*args, **kwargs)

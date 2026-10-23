@@ -13,7 +13,7 @@ Configure these values only as part of an authorized service release:
 | `CONTENT_LAB_POST_RENDER_SOURCE_ORIGIN` | `https://content-buckets.risingtidesviral.com`, the machine ingress for `/api/control-plane/v1/service/posting/v1/artifacts/.../source`. Required; no browser-origin fallback. |
 | `CONTENT_LAB_POST_RENDER_WORKERS` | Concurrent render workers (threads and lock permits). Optional; default `2`, clamped to `1..4`. An unset, blank, non-integer, or out-of-range value falls back to `2` with a logged warning. Each worker can run a concurrent `ffmpeg` process, so raise this only after confirming the target Railway instance has the CPU headroom for that many concurrent encodes. |
 | `CONTENT_LAB_POST_RENDER_RETIRE_AFTER_MS` | Safety window before acknowledged successful media is retired. Optional; default 24 hours. The verified receipt/final/QA hash authority remains in SQLite. |
-| `CONTENT_LAB_POST_RENDER_MIN_FREE_BYTES` | Free bytes that must remain after reserved render workspace. Optional; default 1 GiB. Admission additionally reserves 1,140,151,642 bytes per configured worker; unreadable filesystem capacity fails closed with `post_render_free_space_unavailable`. |
+| `CONTENT_LAB_POST_RENDER_MIN_FREE_BYTES` | Free bytes that must remain after reserved render workspace. Optional; default 1 GiB. Admission additionally reserves 1,165,317,468 bytes per configured worker; unreadable filesystem capacity fails closed with `post_render_free_space_unavailable`. |
 | `CONTROL_PLANE_SERVICE_ID` | Existing Worker service identity, currently `gutenberg-shipstream`; it must retain the relevant scheduler lane and page grants. |
 | `CONTROL_PLANE_SERVICE_SECRET` | The same machine credential held by the Worker. Provision it through the service secret store; never put its value in source, examples or logs. |
 | `CONTROL_PLANE_TOKEN` | Existing inbound Lab bearer, matching Worker's `CONTENT_LAB_TOKEN`. Every render endpoint also requires the exact `X-RT-Page-Id`. |
@@ -38,7 +38,7 @@ permanent. Failed or interrupted attempt media is diagnostic and is removed
 after 24 hours. Non-authoritative `attempts` and `provenance_updates` history is
 removed after 30 days, after which the service checkpoints the SQLite WAL.
 
-The per-worker 1,140,151,642-byte peak reserve is derived from two simultaneous
+The per-worker 1,165,317,468-byte peak reserve is derived from two simultaneous
 512 MiB source files (the authenticated download and renderer verification
 copy), a bounded 16 MiB overlay, its base64-bearing caption JSON, two 22 MiB
 finals, two 2 MiB QA frames (the worst-case in-app attempt), and bounded request/receipt/decode metadata. A retry
@@ -131,3 +131,34 @@ with 2,547-byte authority fixtures, ten samples at 10,000 historical jobs measur
 not a constant-time index claim. The lookup runs when output authority is saved in either mode, because ordinary
 outputs must also avoid an already-bound burned fallback. It adds no phone-drive
 work or paid call.
+
+
+Output identity lookup uses the existing `idempotency` primary-key index. Internal
+keys start with `/output-identity/v1/`, outside the public key alphabet, and hold
+one permanent captioned-output reservation per distinct hash. This does not
+change the meaning of `jobs.final_sha256`, the request keys, or the schema.
+Finish, ACK and retire use indexed probes under the same writer transaction as
+the authority write. They never parse the whole job history.
+
+Before serving work, each service start streams the retained authority history
+once under a writer lock to recover old ordinary and dual reservations, including
+retired shared-clean rows. Invalid JSON or an unavailable identity is logged with
+the job ID and skipped; known column hashes and prior reservations remain in
+force. This isolates corruption; it does not recover an unknown lost hash.
+Status omits unavailable legacy/shared hashes. Artifact reads still validate
+output authority and do not serve corrupt bytes.
+
+Stop the old runtime before opening this version on the same SQLite database.
+Concurrent instances of this version are safe; mixing 248 writers with these
+writers is unsupported because 248 does not maintain the private reservations.
+A rollback reads the unchanged columns and authority. Starting this version again
+always repeats the history pass to pick up writes made during the rollback.
+If backfill fails for a database/I/O reason, startup refuses work; restore the
+prior release and retain the database for repair. It must not silently run with
+an incomplete identity index. Private reservations are retained with request
+keys and tombstones, including when media or auxiliary attempts are pruned.
+
+The shared disk admission floor is 1,165,317,468 bytes per worker for all jobs;
+that includes the dual workspace reserve even for ordinary jobs. This follow-up
+changes status recovery and identity lookup, and the renderer docstring, while
+leaving rendering instructions and artifact contents unchanged.
