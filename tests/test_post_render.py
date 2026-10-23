@@ -595,7 +595,16 @@ def test_in_app_renders_a_clean_clip_with_no_caption_pixels(actual_source, tmp_p
     assert in_app_receipt["caption_delivery"] == "in_app"
     assert "caption_delivery" not in burned_receipt
     assert in_app_receipt["caption_sha256"] == burned_receipt["caption_sha256"] == render.sha256(b"already treated")
-    # No caption-render evidence is produced for in_app.
+    fallback = in_app_receipt["burned_fallback"]
+    fallback_dir = tmp_path / "in_app" / "burned"
+    assert fallback["final_sha256"] == render.sha256((fallback_dir / "final.mp4").read_bytes())
+    assert fallback["qa_frame_sha256"] == render.sha256((fallback_dir / "qa.jpg").read_bytes())
+    assert fallback["final_byte_length"] == (fallback_dir / "final.mp4").stat().st_size
+    assert fallback["final_sha256"] == burned_receipt["final_sha256"]
+    assert fallback["qa_frame_sha256"] == burned_receipt["qa_frame_sha256"]
+    assert json.loads((fallback_dir / "receipt.json").read_text())["treatment_sha256"] == in_app_receipt["treatment_sha256"]
+    # The primary clean directory has no overlay; the fallback has the exact caption.
+
     assert not (tmp_path / "in_app" / "caption-render.json").exists()
     assert not (tmp_path / "in_app" / "overlay.png").exists()
     assert (tmp_path / "burned" / "caption-render.json").exists()
@@ -629,3 +638,16 @@ def test_in_app_renders_a_clean_clip_with_no_caption_pixels(actual_source, tmp_p
         burned_delta = max(ImageStat.Stat(ImageChops.difference(source_region, burned_region)).mean)
     assert in_app_delta < 12
     assert burned_delta > 15
+
+
+def test_dual_render_fallback_failure_removes_clean_artifact(actual_source, tmp_path, monkeypatch):
+    original = render._render_post_single
+    def fail_fallback(*args, **kwargs):
+        if kwargs.get("burned_fallback"):
+            raise render.PostRenderError("process_timeout", "fallback timed out")
+        return original(*args, **kwargs)
+    monkeypatch.setattr(render, "_render_post_single", fail_fallback)
+    with pytest.raises(render.PostRenderError, match="fallback timed out"):
+        render.render_post(actual_source, tmp_path / "dual", request(
+            render.sha256(actual_source.read_bytes()), caption_delivery="in_app"), clock_ms=lambda: NOW)
+    assert not (tmp_path / "dual").exists()

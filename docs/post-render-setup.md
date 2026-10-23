@@ -40,8 +40,8 @@ removed after 30 days, after which the service checkpoints the SQLite WAL.
 
 The per-worker 1,140,151,642-byte peak reserve is derived from two simultaneous
 512 MiB source files (the authenticated download and renderer verification
-copy), a bounded 16 MiB overlay, its base64-bearing caption JSON, one 22 MiB
-final, one 2 MiB QA frame, and bounded request/receipt/decode metadata. A retry
+copy), a bounded 16 MiB overlay, its base64-bearing caption JSON, two 22 MiB
+finals, two 2 MiB QA frames (the worst-case in-app attempt), and bounded request/receipt/decode metadata. A retry
 removes its first final before writing another. The claim gate reserves that
 peak for every configured worker in addition to the retained free-space floor;
 it does not start work when filesystem free space cannot be measured.
@@ -71,3 +71,31 @@ Offline verification:
 ```sh
 python3 -m pytest -q tests/test_post_render_jobs.py tests/test_post_render.py tests/test_source_treatment.py tests/test_control_plane_dossier_execution.py tests/test_control_plane_source_execution.py
 ```
+
+## In-app dual assets (candidate; activation remains gated)
+
+A prepared v1 request with `captionDelivery: "in_app"` produces a clean primary
+`final`/`qa` and a captioned `burned_final`/`burned_qa` before success. Both use
+the identical source, caption and requested treatment binding; the fallback
+does not repeat source grade, speed or crop. The existing receipt adds
+`caption_delivery: "in_app"` and `burned_fallback`, containing `final_sha256`,
+`final_byte_length`, `final_object_key` and `qa_frame_sha256`. The fallback uses
+the normal `posting/final/<sha>.mp4` content-addressed object key. Artifact
+downloads retain the existing bearer and exact page boundary.
+
+The whole attempt fails if either render fails. Existing bounded job retries
+handle transient process failures before readiness. Durable verification checks
+both variants against their media hashes and decode evidence; partial or
+changed fallback bytes cannot be downloaded as a ready artifact. Timed lyrics
+continue to refuse in-app delivery. Downstream admission, per-page breaker and
+rail selection are separate consumers; this candidate does not authorize an
+activation or a database-authority bypass.
+
+Measured on maj/Python 3.11 with one seven-second synthetic 1080x1920/30fps
+source: normal burned render 3.426 seconds and 8,504,503 retained bytes; dual
+render 6.596 seconds and 17,297,211 bytes. Receipt size grows from 1,000 to
+1,347 bytes. Thus M opted-in slots add about M × 3.17 CPU-wall seconds and
+M × 8.39 MiB retained storage in this synthetic sample; actual content, host
+load and bitrate change these measurements. Both final variants retain their
+individual 22 MiB caps and both QA images their 2 MiB caps. No paid provider
+call is added. Claims carry asset metadata rather than media bytes.

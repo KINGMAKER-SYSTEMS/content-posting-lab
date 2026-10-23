@@ -1737,3 +1737,14 @@ ________________________________________________________________________________
 Managed lyric completion now retains the registered timing manifest's original UTF-8 bytes as artifact.lyricTiming.manifestJson. The existing immutable timing SHA, closed seven-phrase authority and page/sound/Notion/program scope remain authoritative; artifact readback compares the complete recomputed producer capsule. The ingredient catalog remains scalar metadata and does not duplicate the raw manifest. No operator backfill or v1 renderer change.
 
 Focused producer/readback/authority tests: 29 passed. Isolated source mutations that omit the producer field or reserialize the manifest both fail their behavioral regressions; restored source passes. The normal runner fixture executes managed completion with mocked remote transport/media and synthetic durable authority/store, not a paid render. The preceding 41eb9f4 relevant gate passed 699 tests; this successor requires its own gate. Full-suite, built-image and visual quality qualifications remain separate; no deployment.
+
+### 2026-10-23 — t73 in-app dual-render candidate
+
+Prepared v1 in-app slots now render clean and normal captioned variants up
+front under one source/caption/treatment binding. Receipt fallback hashes and
+authenticated fallback downloads support downstream admission without a
+delivery-only successor. Both variants must validate before a job succeeds.
+Disk reservation includes both bounded final and QA artifacts. No deployment,
+installation, migration or production write; downstream activation remains
+subject to Worker/rail authority gates. Synthetic maj costs and the exact
+artifact contract are recorded in docs/post-render-setup.md.

@@ -382,9 +382,10 @@ def source_visual_matches(request: PostRenderRequest) -> bool:
     return actual == desired
 
 
-def render_post(source_path: Path, output_directory: Path, request: PostRenderRequest, *,
+def _render_post_single(source_path: Path, output_directory: Path, request: PostRenderRequest, *,
                 font_dir: Path | None = None, tools: RenderTools = RenderTools(),
-                clock_ms: Callable[[], int] = lambda: time.time_ns() // 1_000_000) -> RenderedPost:
+                clock_ms: Callable[[], int] = lambda: time.time_ns() // 1_000_000,
+                burned_fallback: bool = False) -> RenderedPost:
     """Render one prepared artifact; create a new output directory or leave none on failure.
 
     The source must already be upright vertical video with the exact requested
@@ -401,7 +402,7 @@ def render_post(source_path: Path, output_directory: Path, request: PostRenderRe
         raise PostRenderError("regeneration_required", "source treatment provenance is unknown or differs from the requested treatment")
     if request.created_at_ms > clock_ms():
         raise PostRenderError("request_future_dated", "render request is future-dated")
-    in_app = _caption_delivery(request) == CAPTION_DELIVERY_IN_APP
+    in_app = _caption_delivery(request) == CAPTION_DELIVERY_IN_APP and not burned_fallback
     if in_app and _caption_request(request).style.inverted:
         raise PostRenderError("in_app_inverted_unsupported", "in_app caption delivery cannot be inverted")
     source_path, output_directory = Path(source_path).absolute(), Path(output_directory).absolute()
@@ -496,6 +497,37 @@ def render_post(source_path: Path, output_directory: Path, request: PostRenderRe
         source.unlink()
         return RenderedPost(final_path, qa_path, receipt_path, receipt_json, sha256(receipt_json),
                             source_probe, final_probe, frames[-1], qa_at_ms)
+    except BaseException:
+        shutil.rmtree(output_directory)
+        raise
+
+
+def render_post(source_path: Path, output_directory: Path, request: PostRenderRequest, *,
+                font_dir: Path | None = None, tools: RenderTools = RenderTools(),
+                clock_ms: Callable[[], int] = lambda: time.time_ns() // 1_000_000) -> RenderedPost:
+    """Publish both clean and captioned assets atomically for an in-app slot.
+
+    Both variants use the identical source, caption and requested treatment.
+    A failed fallback invalidates the entire attempt; the durable job retry
+    handles transient errors before either asset can become ready.
+    """
+    result = _render_post_single(source_path, output_directory, request,
+                                 font_dir=font_dir, tools=tools, clock_ms=clock_ms)
+    if _caption_delivery(request) != CAPTION_DELIVERY_IN_APP:
+        return result
+    try:
+        fallback = _render_post_single(source_path, Path(output_directory) / "burned", request,
+                                      font_dir=font_dir, tools=tools, clock_ms=clock_ms,
+                                      burned_fallback=True)
+        receipt = json.loads(result.receipt_json)
+        burned_receipt = json.loads(fallback.receipt_json)
+        receipt["burned_fallback"] = {key: burned_receipt[key] for key in (
+            "final_sha256", "final_byte_length", "final_object_key", "qa_frame_sha256")}
+        encoded = json.dumps(receipt, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+        result.receipt_path.write_bytes(encoded)
+        return RenderedPost(result.final_path, result.qa_frame_path, result.receipt_path,
+                            encoded, sha256(encoded), result.source_probe, result.final_probe,
+                            result.decoded_video_frames, result.qa_at_ms)
     except BaseException:
         shutil.rmtree(output_directory)
         raise
