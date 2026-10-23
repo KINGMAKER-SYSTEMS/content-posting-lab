@@ -98,14 +98,15 @@ def test_catalog_advertises_actual_page_photo_count(image_lab):
 
 
 @pytest.mark.asyncio
-async def test_beat_experiment_runs_through_registered_jobs_and_receipts(image_lab, monkeypatch):
+@pytest.mark.parametrize("canary_percent", [0, 100])
+async def test_beat_experiment_runs_through_registered_jobs_and_receipts(image_lab, monkeypatch, canary_percent):
     from tests.test_beat_slideshow import config
     client,library,payload,photo=image_lab
     if photo['pageId']!='acct:pen-pal3':
         pytest.skip('single-image page keeps its existing path')
     payload=dict(payload)
     payload['recipeVersion']='image-beat-experiment-v1'
-    spec=json.loads(payload['recipeSpecCanonical']);spec['beatSlideshow']=config()
+    spec=json.loads(payload['recipeSpecCanonical']);spec['beatSlideshow']=config(canary_percent)
     canonical=json.dumps(spec,sort_keys=True,separators=(',',':'))
     payload.update(recipeSpecCanonical=canonical,recipeSpecHash='sha256:'+hashlib.sha256(canonical.encode()).hexdigest())
     registered=client.post('/api/control-plane/v1/recipes',json=payload,headers=base.headers('beat-register-0001'))
@@ -126,6 +127,7 @@ async def test_beat_experiment_runs_through_registered_jobs_and_receipts(image_l
     for clip,wire in zip(job['clips'],captured):
         receipt=clip['source']['photoPlan']['beatSlideshow']
         assert receipt['config']['soundId']=='song-1' and receipt['audioStart']==0
+        assert receipt['cohort']==('canary' if canary_percent else 'holdout')
         assert wire['body']['spec']['hook']['text']==receipt['caption']
     again=client.post('/api/control-plane/v1/jobs',json=base.job_body(1,payload),headers=base.headers('beat-run-0002'))
     assert again.status_code==200,again.json()
