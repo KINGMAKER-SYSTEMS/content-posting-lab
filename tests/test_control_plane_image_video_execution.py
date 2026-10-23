@@ -36,14 +36,14 @@ def image_lab(request,monkeypatch,tmp_path):
     return client,library,payload,photo
 
 @pytest.mark.asyncio
-async def test_managed_photo_admission_wire_grade_provenance_and_exhaustion(image_lab,monkeypatch):
+async def test_managed_photo_admission_wire_grade_provenance_and_refill(image_lab,monkeypatch):
     client,library,payload,photo=image_lab
     response=client.post('/api/control-plane/v1/jobs',json=base.job_body(1,payload),headers=base.headers('image-run-1'))
     assert response.status_code==200,response.json();job_id=response.json()['jobId'];captured=[];grades=[]
     base._fake_syzygy_boundary(monkeypatch,library)
     async def observe(_lib,keys):return [{'objectKey':x['key'],'bytes':x['bytes'],'sha256':x['sha256'],'etag':'"pinned"'} for x in photo['media'] if x['key'] in keys]
     async def request(method,endpoint,**kwargs):captured.append((method,endpoint,kwargs));return {'job_id':'real-boundary-fixture','quality':'draft'}
-    async def grade(src,dst,correction,**kwargs):grades.append(correction);Path(dst).write_bytes(b'fixture-managed-photo-output')
+    async def grade(src,dst,correction,**kwargs):grades.append(correction);Path(dst).write_bytes(json.dumps(captured[-1][2]['body']['spec'],sort_keys=True).encode())
     monkeypatch.setattr(cp,'observe_library_media',observe);monkeypatch.setattr(cp,'submit_syzygy_render',ss.submit_syzygy_render);monkeypatch.setattr(ss,'_request_json',request);monkeypatch.setattr(cp,'run_color_correct',grade)
     await cp._run_syzygy_slideshow(job_id);job=cp._load_jobs()['jobs'][job_id];assert job['status']=='completed',job.get('error')
     assert len(captured)==1 and len(grades)==1
@@ -55,7 +55,21 @@ async def test_managed_photo_admission_wire_grade_provenance_and_exhaustion(imag
     assert clip['sourceTreatment']['visualTreatment']['filters']['brightness']==.85
     assert clip['sourceTreatment']['sourceSha256']==clip['sha256']
     again=client.post('/api/control-plane/v1/jobs',json=base.job_body(1,payload),headers=base.headers('image-run-2'))
-    assert again.status_code==409 and again.json()['detail']=='slideshow_inventory_exhausted'
+    assert again.status_code==200, again.json()
+    second_id = again.json()['jobId']
+    second = cp._load_jobs()['jobs'][second_id]['slideshowPlan'][0]['photoPlan']
+    assert second['signature'] != photo['signature']
+    assert iv.build_image_video_spec(second) != spec
+    assert [x['key'] for x in second['media']] == [x['key'] for x in photo['media']]
+    await cp._run_syzygy_slideshow(second_id)
+    assert cp._load_jobs()['jobs'][second_id]['status'] == 'completed'
+    assert len(captured) == 2
+    assert captured[0][2]['idempotency_key'] != captured[1][2]['idempotency_key']
+    assert captured[1][2]['body']['spec'] == iv.build_image_video_spec(second)
+    replay = client.post('/api/control-plane/v1/jobs',json=base.job_body(1,payload),headers=base.headers('image-run-2'))
+    assert replay.status_code == 200 and replay.json()['jobId'] == second_id
+    cap = client.get('/api/control-plane/v1/capabilities',headers=base.headers('after-completed'))
+    assert next(x for x in cap.json()['capabilities'] if x['recipeId']==base.RECIPE_ID)['maxQuantity'] == 1
 
 @pytest.mark.asyncio
 async def test_wrong_pinned_source_refuses_before_provider(image_lab,monkeypatch):
@@ -95,3 +109,126 @@ def test_catalog_advertises_actual_page_photo_count(image_lab):
     assert bindings["image-library"]["minimumLibraryItems"]==count
     assert bindings["slideshow-treatment"]["minimumLibraryItems"]==count
     assert bindings["slideshow-treatment"]["templates"]==[{"slug":"page-photo-hold","mediaCount":count}]
+
+
+def test_many_fresh_treatments_keep_tiny_catalog_available(image_lab):
+    _, library, payload, original = image_lab
+    recipe = ss.resolve_slideshow_recipe(payload)
+    reserved = {original['signature']}
+    for index in range(200):
+        plans = ss.plan_slideshows(recipe, library, 1, reserved, f'fresh-{index}')
+        assert len(plans) == 1
+        photo = plans[0]['photoPlan']
+        assert photo['signature'] not in reserved
+        assert iv.image_video_plan_signature(photo) == photo['signature']
+        assert iv.build_image_video_spec(photo) != iv.build_image_video_spec(original)
+        reserved.add(photo['signature'])
+    assert len(reserved) == 201
+
+
+def test_original_equivalent_variant_does_not_duplicate_batch(image_lab, monkeypatch):
+    _, library, payload, original = image_lab
+    if original['pageId'] != 'acct:pen-pal3':
+        return
+    recipe = ss.resolve_slideshow_recipe(payload)
+    class ForcedHash:
+        def hexdigest(self):
+            return f'{74450:016x}' + '0' * 48
+    # Only the planner's run seed is forced; signatures remain real hashes.
+    real_hash = ss.hashlib.sha256
+    def forced(value):
+        return ForcedHash() if value == b'collision-seed' else real_hash(value)
+    monkeypatch.setattr(ss.hashlib, 'sha256', forced)
+    plans = ss.plan_slideshows(recipe, library, 2, set(), 'collision-seed')
+    assert len(plans) == 2
+    assert len({plan['signature'] for plan in plans}) == 2
+
+
+def test_variant_validation_retains_source_authority():
+    from copy import deepcopy
+    for page in ['acct:pen-pal3','acct:twin47996']:
+        assert iv.image_video_plan(page, True) is None
+        assert iv.image_video_plan(page, iv.PHOTO_TREATMENT_COUNT+1) is None
+        variant = iv.image_video_plan(page, 15)
+        for field, value in [('duration',99),('sha256','0'*64),('focalX',.99)]:
+            forged = deepcopy(variant)
+            forged['media'][0][field] = value
+            forged['signature'] = iv.image_video_plan_signature(forged)
+            with pytest.raises(iv.ImageVideoError):
+                iv.build_image_video_spec(forged)
+
+
+@pytest.mark.asyncio
+async def test_two_failed_photo_jobs_pause_then_success_or_cooldown_reopens(image_lab, monkeypatch, caplog):
+    from datetime import datetime, timedelta, timezone
+    client, library, payload, photo = image_lab
+    async def bad_source(_lib, keys):
+        return [{'objectKey': x['key'], 'bytes': x['bytes'], 'sha256': '0'*64, 'etag': None}
+                for x in photo['media'] if x['key'] in keys]
+    monkeypatch.setattr(cp, 'observe_library_media', bad_source)
+    ids = []
+    def create(key):
+        return client.post('/api/control-plane/v1/jobs', json=base.job_body(1, payload),
+                           headers=base.headers(key))
+    admitted = create('already-admitted-before-pause')
+    assert admitted.status_code == 200
+    admitted_id = admitted.json()['jobId']
+    for index in range(2):
+        response = create(f'photo-failure-{index}')
+        assert response.status_code == 200, response.json()
+        ids.append(response.json()['jobId'])
+        await cp._run_syzygy_slideshow(ids[-1])
+        assert cp._load_jobs()['jobs'][ids[-1]]['status'] == 'failed'
+        if index == 0:
+            cap = client.get('/api/control-plane/v1/capabilities', headers=base.headers('cap-one'))
+            assert next(x for x in cap.json()['capabilities'] if x['recipeId'] == base.RECIPE_ID)['maxQuantity'] == 1
+    before = cp._load_jobs()
+    refused = create('third-photo-failure')
+    assert refused.status_code == 409 and refused.json()['detail'] == 'photo_jobs_cooldown'
+    assert cp._load_jobs() == before
+    assert 'photo_jobs_paused page=' + photo['pageId'] in caplog.text
+    cap = client.get('/api/control-plane/v1/capabilities', headers=base.headers('cap-paused'))
+    assert next(x for x in cap.json()['capabilities'] if x['recipeId'] == base.RECIPE_ID)['maxQuantity'] == 0
+    replay = create('photo-failure-1')
+    assert replay.status_code == 200 and replay.json()['jobId'] == ids[-1]
+    # A success from an already admitted job automatically clears the pause.
+    cp._update_job(admitted_id, status='completed', completedAt=datetime.now(timezone.utc).isoformat())
+    assert create('after-success').status_code == 200
+    # Restore the terminal failure and advance the wall clock beyond cooldown.
+    cp._update_job(admitted_id, status='failed', completedAt=datetime.now(timezone.utc).isoformat())
+    assert create('still-paused').status_code == 409
+    future = datetime.now(timezone.utc) + timedelta(seconds=cp.PHOTO_FAILURE_COOLDOWN_SECONDS)
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return future.astimezone(tz)
+    monkeypatch.setattr(cp, 'datetime', Clock)
+    cap = client.get('/api/control-plane/v1/capabilities', headers=base.headers('cap-expired'))
+    assert next(x for x in cap.json()['capabilities'] if x['recipeId'] == base.RECIPE_ID)['maxQuantity'] == 1
+    assert create('after-cooldown').status_code == 200
+
+
+def test_photo_pause_is_page_scoped_terminal_and_photo_only(image_lab):
+    from datetime import datetime, timedelta, timezone
+    from copy import deepcopy
+    _, _, payload, photo = image_lab
+    recipe = ss.resolve_slideshow_recipe(payload)
+    now = datetime.now(timezone.utc)
+    def row(status, age, **overrides):
+        return dict(pageId=photo['pageId'], sourceKind='syzygy_slideshow',
+                    status=status, completedAt=(now-timedelta(seconds=age)).isoformat(),
+                    slideshowPlan=[{'photoPlan': photo}], **overrides)
+    failed = row('failed', 2)
+    store = {'jobs': {'a': failed, 'b': row('failed', 1)}}
+    assert cp._photo_jobs_paused(store, recipe, photo['pageId'])
+    for field, value in [('pageId', 'acct:foreign'), ('sourceKind', 'other'),
+                         ('slideshowPlan', []), ('slideshowPlan', None),
+                         ('slideshowPlan', [{'mediaKeys': ['lyric.jpg']}]), ('status', 'cancelled')]:
+        altered = deepcopy(store)
+        altered['jobs']['a'][field] = value
+        assert not cp._photo_jobs_paused(altered, recipe, photo['pageId'])
+    # Insertion order is not terminal order; the latest success clears failures.
+    store['jobs'] = {'success': row('completed', 0), **store['jobs']}
+    assert not cp._photo_jobs_paused(store, recipe, photo['pageId'])
+    from types import SimpleNamespace
+    assert not cp._photo_jobs_paused(store, SimpleNamespace(format_slug='lyric-video'), photo['pageId'])
