@@ -899,8 +899,11 @@ class PostRenderJobs:
                ("receipt_sha256", "final_sha256", "qa_frame_sha256", "final_byte_length")):
             return False
         try:
-            return {k: v for k, v in json.loads(row["output_authority_json"]).items() if k != "receipt_bytes_b64"} == {k: v for k, v in authority.items() if k != "receipt_bytes_b64"}
-        except (TypeError, ValueError):
+            retained = json.loads(row["output_authority_json"])
+            if not isinstance(retained, dict):
+                return False
+            return {k: v for k, v in retained.items() if k != "receipt_bytes_b64"} == {k: v for k, v in authority.items() if k != "receipt_bytes_b64"}
+        except (TypeError, ValueError, RecursionError):
             return False
 
     def _authenticate_receipt(self, row, authority: dict) -> None:

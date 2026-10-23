@@ -190,3 +190,19 @@ def test_ordinary_repeat_cannot_bypass_corrupt_inapp_reservation(tmp_path, share
     result = worker.status(again["id"])
     assert result["state"] == "failed"
     assert result["error_code"] == "duplicate_output"
+
+
+@pytest.mark.parametrize("stored", ["[]", "null", "123", '"x"', "[" * 1500 + "0" + "]" * 1500], ids=["list", "null", "number", "string", "deep"])
+def test_live_legacy_nondict_authority_refuses_without_aborting_gc(tmp_path, stored):
+    worker, jid = legacy(tmp_path)
+    with worker._db() as db:
+        db.execute("UPDATE jobs SET output_authority_json=? WHERE id=?", (stored, jid))
+    original = dict(worker._row(jid))
+    with pytest.raises(jobs.RenderJobError):
+        worker.artifact(jid, "final")
+    with pytest.raises(jobs.RenderJobError):
+        worker.acknowledge(jid)
+    result = worker._age_out_delivered()
+    assert result["retired"] == 0
+    assert worker._output(original).is_dir()
+    assert dict(worker._row(jid)) == original
