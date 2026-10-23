@@ -1164,3 +1164,20 @@ def test_clean_only_in_app_renderer_never_succeeds(tmp_path):
     queued = instance.enqueue(submission(caption_delivery="in_app"), "missing-dual")
     instance.run_one()
     assert instance.status(queued["id"])["state"] != "succeeded"
+
+
+def test_dual_render_syncs_burned_media_and_directory_before_success(tmp_path, monkeypatch):
+    import os
+    synced = set()
+    original = jobs.os.fsync
+    def fsync(fd):
+        synced.add(os.fstat(fd).st_ino)
+        original(fd)
+    monkeypatch.setattr(jobs.os, "fsync", fsync)
+    instance = service(tmp_path, renderer=fake_dual_render)
+    queued = instance.enqueue(submission(caption_delivery="in_app"), "dual-fsync")
+    assert instance.run_one()
+    assert instance.status(queued["id"])["state"] == "succeeded"
+    fallback = instance.artifact(queued["id"], "burned_final")
+    assert {fallback.stat().st_ino, fallback.parent.stat().st_ino,
+            (fallback.parent / "qa.jpg").stat().st_ino} <= synced

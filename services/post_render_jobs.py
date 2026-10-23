@@ -1366,11 +1366,15 @@ class PostRenderJobs:
 
     def _finish(self, row, authority: dict):
         output = self._output(row)
-        for path in output.iterdir():
-            if path.is_file():
-                with path.open("rb") as file:
-                    os.fsync(file.fileno())
-        for directory in (output, output.parent, output.parent.parent, self.root / "attempts", self.root):
+        artifact_directories = [output]
+        if "burned_fallback" in authority:
+            artifact_directories.insert(0, output / "burned")
+        for directory in artifact_directories:
+            for path in directory.iterdir():
+                if path.is_file():
+                    with path.open("rb") as file:
+                        os.fsync(file.fileno())
+        for directory in (*artifact_directories, output.parent, output.parent.parent, self.root / "attempts", self.root):
             descriptor = os.open(directory, os.O_RDONLY)
             try:
                 os.fsync(descriptor)
