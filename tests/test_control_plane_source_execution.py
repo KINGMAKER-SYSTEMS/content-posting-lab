@@ -9,6 +9,7 @@ import shutil
 import subprocess
 
 import pytest
+from services.clip_variation import GRADE_BANDS
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -1832,7 +1833,17 @@ async def test_a_clip_varying_page_cuts_each_window_at_its_own_speed_and_records
         output = Path(job["artifactRoot"]) / clip["path"]
         assert _probe_duration(output) == pytest.approx(cut["durationMs"] / 1000 / clip["clipSpeed"], abs=0.2)
         looks.append((visual["clipSpeed"], tuple(sorted(visual["clipCrop"].items()))))
+        # The transforms ride on the manifest, never in the receipt.
+        assert set(clip["clipTransforms"]) == {"mirror", "motion", "reverse"}
+        assert "clipTransforms" not in clip["sourceTreatment"]
+        # The trial similarity record never blocks; the second cut is compared with the first.
+        assert clip["similarity"]["mode"] == "trial"
+        assert len(clip["similarity"]["fingerprint"]) == 8
+        # The grade moved inside its bands, recorded in the receipt.
+        for name, band in GRADE_BANDS.items():
+            assert abs(visual["filters"][name] - (1.0 if name != "warmth" else 0.0)) <= band
     assert looks[0] != looks[1]
+    assert job["clips"][1]["similarity"]["nearestClip"] == f"{response.json()['jobId']}/0"
 
 
 def test_the_latest_page_cut_seeds_the_next_jobs_look(monkeypatch):
@@ -1850,3 +1861,63 @@ def test_the_latest_page_cut_seeds_the_next_jobs_look(monkeypatch):
     monkeypatch.setattr(cp, "_load_jobs", lambda: {"jobs": jobs})
     assert cp._latest_page_cut_look(PAGE_ID, "running") == (0.9, {"zoom": 1.6, "focusX": 0.48, "focusY": 0.52})
     assert cp._latest_page_cut_look("acct:none", "running") is None
+
+
+@pytest.mark.asyncio
+async def test_a_varied_job_whose_history_read_fails_ends_failed_not_running(lab, monkeypatch):
+    client, tmp_path, _ = lab
+    monkeypatch.setattr(cp, "varies_clips", lambda page_id: page_id == PAGE_ID)
+    response = client.post(
+        "/api/control-plane/v1/jobs", json=job_body(1),
+        headers=headers("source-job-varied-history-fails"),
+    )
+
+    def broken(*_args, **_kwargs):
+        raise OSError("job store unreadable")
+
+    monkeypatch.setattr(cp.clip_similarity, "recent_fingerprints", broken)
+    await cp._run_dossier_source(response.json()["jobId"])
+    job = cp._load_jobs()["jobs"][response.json()["jobId"]]
+    assert job["status"] == "failed"
+    assert "job store unreadable" in job["error"]
+
+
+@pytest.mark.asyncio
+async def test_unlisted_page_keeps_source_bytes_and_skips_every_effect(lab, monkeypatch):
+    client, tmp_path, _ = lab
+    assert not cp.varies_clips(PAGE_ID)
+    response = client.post(
+        "/api/control-plane/v1/jobs", json=job_body(1),
+        headers=headers("source-job-effects-off"),
+    )
+    source = tmp_path / "master.mp4"
+    source.write_bytes(b"master")
+    rendered = b"unchanged cut bytes"
+
+    async def cached_source(*_):
+        return source
+
+    async def render(_src, dst, correction, **kwargs):
+        assert correction == {}
+        assert kwargs["playback_speed"] == 1.0
+        assert kwargs["clip_crop"] == {"zoom": 1.0, "focusX": 0.5, "focusY": 0.5}
+        Path(dst).write_bytes(rendered)
+
+    def unexpected(*_args, **_kwargs):
+        raise AssertionError("an unlisted page must skip every effect and trial")
+
+    monkeypatch.setattr(cp, "_cached_source_master", cached_source)
+    monkeypatch.setattr(cp, "run_color_correct", render)
+    for name in ("cut_variant", "cut_grade", "cut_transforms", "apply_transforms", "_similarity_trial"):
+        monkeypatch.setattr(cp, name, unexpected)
+    await cp._run_dossier_source(response.json()["jobId"])
+    job = cp._load_jobs()["jobs"][response.json()["jobId"]]
+    assert job["status"] == "completed", job.get("error")
+    clip = job["clips"][0]
+    assert (Path(job["artifactRoot"]) / clip["path"]).read_bytes() == rendered
+    assert clip["sha256"] == hashlib.sha256(rendered).hexdigest()
+    assert "clipTransforms" not in clip and "similarity" not in clip
+    assert clip["sourceTreatment"]["visualTreatment"]["filters"] == {
+        "brightness": 1.0, "contrast": 1.0, "saturation": 1.0, "warmth": 0.0,
+        "fade": 0.0, "grain": 0.0, "vignette": 0.0,
+    }
