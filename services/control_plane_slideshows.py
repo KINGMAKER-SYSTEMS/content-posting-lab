@@ -757,11 +757,26 @@ def plan_slideshows(
     ):
         return []
     if recipe.format_slug in IMAGE_VIDEO_FORMATS:
-        from services.control_plane_image_video import recipe_image_video_plan
-        plan = recipe_image_video_plan(recipe, library)
-        if plan is None or plan["signature"] in unavailable_signatures:
+        from services.control_plane_image_video import recipe_image_video_plan, PHOTO_TREATMENT_COUNT
+        original = recipe_image_video_plan(recipe, library)
+        if original is None:
             return []
-        return [plan]
+        planned = []
+        seen = set(unavailable_signatures)
+        if original["signature"] not in unavailable_signatures:
+            planned.append(original)
+            seen.add(original["signature"])
+        start = int(hashlib.sha256(run_id.encode()).hexdigest()[:16], 16) % PHOTO_TREATMENT_COUNT
+        # At most the number of reservations plus requested outputs can collide.
+        # Job creation runs this under the existing jobs-store transaction lock.
+        for offset in range(min(PHOTO_TREATMENT_COUNT, len(seen) + count)):
+            if len(planned) >= count:
+                break
+            plan = recipe_image_video_plan(recipe, library, 1 + (start + offset) % PHOTO_TREATMENT_COUNT)
+            if plan is not None and plan["signature"] not in seen:
+                planned.append(plan)
+                seen.add(plan["signature"])
+        return planned
     # The UGC format is a curated page library. A page with a curatedVideoPlan
     # renders that one ordered montage exactly once (never permuted); a generic
     # page renders the first mediaCount photo objects in ordinal order. No

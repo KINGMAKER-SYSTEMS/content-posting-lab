@@ -3836,7 +3836,7 @@ async def _run_syzygy_slideshow(job_id: str) -> None:
                 raise RuntimeError("slideshow_plan_invalid")
             if image_video:
                 from services.control_plane_image_video import recipe_image_video_plan
-                canonical = recipe_image_video_plan(recipe, library)
+                canonical = recipe_image_video_plan(recipe, library, plan.get("photoPlan", {}).get("variantIndex", 0))
                 if canonical is None or {key: value for key, value in plan.items() if key != "media"} != canonical:
                     raise RuntimeError("slideshow_plan_invalid")
                 pinned_by_key = {row["key"]: (row["sha256"], row["bytes"]) for row in plan["photoPlan"]["media"]}

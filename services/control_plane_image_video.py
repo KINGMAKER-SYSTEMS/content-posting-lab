@@ -8,9 +8,9 @@ no render receipt here may claim that gain has been applied.
 
 The executor file is a closed page -> ordered photo plan. Every configured
 object carries its exact original source key plus its runtime canonical
-dedicated key, SHA-256 and byte count. Planning is deterministic, never
-permuted, and each page has at most one plan; reserving that plan truthfully
-exhausts the page. This module is a pure helper consumable by the existing
+dedicated key, SHA-256 and byte count. The original ordered plan remains valid for existing jobs. Fresh refills can
+select a deterministic treatment of those same pinned photos; reservations
+exclude treatments, rather than consuming the photographs. This module is a pure helper consumable by the existing
 SlideshowRecipe dispatch, which remains owned elsewhere.
 """
 
@@ -260,12 +260,17 @@ def image_video_plan_signature(plan: dict[str, Any]) -> str:
     return hashlib.sha256(canonical.encode()).hexdigest()
 
 
-def image_video_plan(page_id: str) -> dict[str, Any] | None:
-    """The single closed ordered photo plan for one page, or None if unknown.
+PHOTO_TREATMENT_COUNT = 61 * 61 * 2 * 21
 
-    Never permuted; a page has exactly one plan. ``brightnessGainFromOriginals``
+
+def image_video_plan(page_id: str, variant_index: int = 0) -> dict[str, Any] | None:
+    """Reconstruct an approved treatment, retaining index zero for legacy jobs.
+
+    Variants keep source bytes, ordering, grade and audio policy. ``brightnessGainFromOriginals``
     is provenance for the later source-treatment boundary, not an applied grade.
     """
+    if type(variant_index) is not int or not 0 <= variant_index <= PHOTO_TREATMENT_COUNT:
+        return None
     cfg = _plan_config(page_id)
     if cfg is None:
         return None
@@ -293,6 +298,24 @@ def image_video_plan(page_id: str) -> dict[str, Any] | None:
         "brightnessGainFromOriginals": cfg["brightnessGainFromOriginals"],
         "media": media,
     }
+    if variant_index:
+        # Each index changes actual render fields. No nonce-only signatures:
+        # duration (one-frame steps), zoom, direction and focal point define
+        # the treatment sent to Syzygy. Preserve the original media order.
+        value = variant_index - 1
+        duration_step = value % 61
+        value //= 61
+        zoom_step = value % 61
+        value //= 61
+        direction = "in" if value % 2 == 0 else "out"
+        focal_step = value // 2
+        total = float(cfg["totalDurationSeconds"]) + (duration_step - 30) / 30
+        for item in media:
+            item["duration"] = total / len(media)
+            item["kenBurns"] = {"dir": direction, "zoom": .025 + zoom_step * .002}
+            item["focalY"] = .48 + focal_step * .002
+        plan["totalDurationSeconds"] = total
+        plan["variantIndex"] = variant_index
     plan["signature"] = image_video_plan_signature(plan)
     return plan
 
@@ -373,7 +396,7 @@ def build_image_video_spec(plan: dict[str, Any]) -> dict[str, Any]:
     uses to size the output. Brightness is deliberately absent: the later
     source-treatment boundary applies the gain once.
     """
-    if not isinstance(plan, dict) or image_video_plan(plan.get("pageId")) != plan:
+    if not isinstance(plan, dict) or image_video_plan(plan.get("pageId"), plan.get("variantIndex", 0)) != plan:
         raise ImageVideoError("image-video plan differs from current page authority")
     media = []
     for obj in plan["media"]:
@@ -487,12 +510,15 @@ def image_video_plan_for_format(format_slug, master_pages):
     return plan
 
 
-def recipe_image_video_plan(recipe, library):
+def recipe_image_video_plan(recipe, library, variant_index=0):
     """Adapt a closed photo plan to the existing reserved-slideshow envelope."""
     if recipe.format_slug not in IMAGE_VIDEO_FORMATS:
         return None
     photo = image_video_plan_for_format(recipe.format_slug, recipe.recipe_spec.get("masterPages"))
     if photo is None or recipe.library_id != photo["libraryId"] or library.library_id != photo["libraryId"]:
+        return None
+    photo = image_video_plan(photo["pageId"], variant_index)
+    if photo is None:
         return None
     by_key = {obj.key: obj for obj in library.objects}
     if len(by_key) != len(library.objects) or any(item["key"] not in by_key or by_key[item["key"]].bytes != item["bytes"] for item in photo["media"]):
