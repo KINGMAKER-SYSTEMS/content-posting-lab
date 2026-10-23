@@ -170,6 +170,9 @@ async def test_two_failed_photo_jobs_pause_then_success_or_cooldown_reopens(imag
     def create(key):
         return client.post('/api/control-plane/v1/jobs', json=base.job_body(1, payload),
                            headers=base.headers(key))
+    admitted = create('already-admitted-before-pause')
+    assert admitted.status_code == 200
+    admitted_id = admitted.json()['jobId']
     for index in range(2):
         response = create(f'photo-failure-{index}')
         assert response.status_code == 200, response.json()
@@ -189,10 +192,10 @@ async def test_two_failed_photo_jobs_pause_then_success_or_cooldown_reopens(imag
     replay = create('photo-failure-1')
     assert replay.status_code == 200 and replay.json()['jobId'] == ids[-1]
     # A success from an already admitted job automatically clears the pause.
-    cp._update_job(ids[-1], status='completed', completedAt=datetime.now(timezone.utc).isoformat())
+    cp._update_job(admitted_id, status='completed', completedAt=datetime.now(timezone.utc).isoformat())
     assert create('after-success').status_code == 200
     # Restore the terminal failure and advance the wall clock beyond cooldown.
-    cp._update_job(ids[-1], status='failed', completedAt=datetime.now(timezone.utc).isoformat())
+    cp._update_job(admitted_id, status='failed', completedAt=datetime.now(timezone.utc).isoformat())
     assert create('still-paused').status_code == 409
     future = datetime.now(timezone.utc) + timedelta(seconds=cp.PHOTO_FAILURE_COOLDOWN_SECONDS)
     class Clock(datetime):
