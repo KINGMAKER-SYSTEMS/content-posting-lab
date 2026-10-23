@@ -26,10 +26,20 @@ _TIMING_ID = "burnt-heavy-foot-chorus-v1"
 _TIMING_PATH = _TIMING_DIR / "burnt-heavy-foot-chorus.v1.json"
 _TIMING_SHA256 = "134be148cc3c522fa8ff48e7bcdd8aebc5ff0c6f1a8073ee5b4010558c3f3e9f"
 
-# Loaded catalog cache, keyed by the resolved timing directory so a test that
-# swaps ``_TIMING_DIR`` observes a fresh load without an explicit reset.
+# Shipped timing files are immutable relative to code: every filename recorded
+# here must load with exactly these bytes. A file not listed here is a data-only
+# addition and keeps its self-derived sha256 (its authority is the bytes on
+# disk); a listed file that has been edited without its pin fails loudly.
+_TIMING_MANIFEST = {
+    "burnt-heavy-foot-chorus.v1.json": _TIMING_SHA256,
+}
+
+# Loaded catalog cache, keyed by the resolved timing directory plus a content
+# fingerprint (file mtimes+sizes) so a runtime data edit is observed without a
+# process restart. A test that swaps ``_TIMING_DIR`` observes a fresh load.
 _catalog: dict[str, Any] | None = None
 _catalog_dir: str | None = None
+_catalog_fp: tuple[tuple[str, int, int], ...] | None = None
 
 
 class LyricTimingError(ValueError):
@@ -40,9 +50,25 @@ class LyricTimingError(ValueError):
 
 def _reset_catalog() -> None:
     """Clear the loaded catalog (test hook)."""
-    global _catalog, _catalog_dir
+    global _catalog, _catalog_dir, _catalog_fp
     _catalog = None
     _catalog_dir = None
+    _catalog_fp = None
+
+
+def _catalog_fingerprint() -> tuple[tuple[str, int, int], ...]:
+    """Return a content key over the timing directory (filename, mtime, size)."""
+    entries: list[tuple[str, int, int]] = []
+    try:
+        for path in _TIMING_DIR.glob("*.v1.json"):
+            try:
+                stat = path.stat()
+            except OSError:
+                continue
+            entries.append((path.name, stat.st_mtime_ns, stat.st_size))
+    except OSError:
+        return ()
+    return tuple(sorted(entries))
 
 
 def _load_file(path: Path) -> dict[str, Any]:
@@ -50,6 +76,10 @@ def _load_file(path: Path) -> dict[str, Any]:
         raw = path.read_bytes()
     except OSError as exc:
         raise LyricTimingError("lyric_timing_unavailable", "timing manifest is unavailable") from exc
+    digest = hashlib.sha256(raw).hexdigest()
+    pin = _TIMING_MANIFEST.get(path.name)
+    if pin is not None and digest != pin:
+        raise LyricTimingError("lyric_timing_hash_mismatch", "timing selection revision is stale or invalid")
     try:
         value = json.loads(raw)
     except (ValueError, UnicodeDecodeError) as exc:
@@ -89,13 +119,14 @@ def _load_file(path: Path) -> dict[str, Any]:
     if previous_end != value["durationMs"] or value["canonicalCaption"] != canonical or len(canonical) > 4_000:
         raise LyricTimingError("lyric_timing_invalid", "timing caption or final boundary is invalid")
     # Retain the exact registered UTF-8 bytes; reserialization changes authority.
-    return {**value, "sha256": hashlib.sha256(raw).hexdigest(), "manifestJson": raw.decode("utf-8")}
+    return {**value, "sha256": digest, "manifestJson": raw.decode("utf-8")}
 
 
 def _load_catalog() -> dict[str, Any]:
-    global _catalog, _catalog_dir
+    global _catalog, _catalog_dir, _catalog_fp
     resolved = str(_TIMING_DIR.resolve())
-    if _catalog is not None and _catalog_dir == resolved:
+    fingerprint = _catalog_fingerprint()
+    if _catalog is not None and _catalog_dir == resolved and _catalog_fp == fingerprint:
         return _catalog
     by_id: dict[str, dict[str, Any]] = {}
     by_page_id: dict[str, dict[str, Any]] = {}
@@ -117,6 +148,7 @@ def _load_catalog() -> dict[str, Any]:
         by_page.setdefault((page_id, value["account"]), []).append(value)
     _catalog = {"by_id": by_id, "by_page_id": by_page_id, "by_page": by_page}
     _catalog_dir = resolved
+    _catalog_fp = fingerprint
     return _catalog
 
 
