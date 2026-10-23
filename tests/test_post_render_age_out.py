@@ -129,6 +129,10 @@ def test_shared_final_is_retired_without_taking_the_owners_hash_authority(tmp_pa
     with worker._db() as db:
         db.execute("UPDATE jobs SET final_sha256=NULL,qa_frame_sha256=NULL,final_byte_length=NULL,"
                    "output_authority_json=NULL WHERE id=?", (legacy["id"],))
+        # This fixture predates private output reservations too. Erase only
+        # that synthetic history; real corruption must keep known reservations.
+        db.execute("DELETE FROM idempotency WHERE job_id=? AND key LIKE ?",
+                   (legacy["id"], "/output-identity/%"))
     owner = worker.enqueue(submission(slot_id="slot:owner"), "owner-key")
     assert worker.run_one()
     shared = sha256(b"identical final bytes")
