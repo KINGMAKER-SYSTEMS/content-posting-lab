@@ -8,9 +8,9 @@ no render receipt here may claim that gain has been applied.
 
 The executor file is a closed page -> ordered photo plan. Every configured
 object carries its exact original source key plus its runtime canonical
-dedicated key, SHA-256 and byte count. Planning is deterministic, never
-permuted, and each page has at most one plan; reserving that plan truthfully
-exhausts the page. This module is a pure helper consumable by the existing
+dedicated key, SHA-256 and byte count. Legacy planning is deterministic and never permuted. An explicit
+beatSlideshow recipe opts the cat page into caption/arrangement/timing variants.
+The neutral single-image page retains its one-plan exhaustion behavior. This module is a pure helper consumable by the existing
 SlideshowRecipe dispatch, which remains owned elsewhere.
 """
 
@@ -256,6 +256,8 @@ def image_video_plan_signature(plan: dict[str, Any]) -> str:
             for item in plan["media"]
         ],
     }
+    if "beatSlideshow" in plan:
+        identity["beatSlideshow"] = plan["beatSlideshow"]
     canonical = json.dumps(identity, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode()).hexdigest()
 
@@ -373,7 +375,12 @@ def build_image_video_spec(plan: dict[str, Any]) -> dict[str, Any]:
     uses to size the output. Brightness is deliberately absent: the later
     source-treatment boundary applies the gain once.
     """
-    if not isinstance(plan, dict) or image_video_plan(plan.get("pageId")) != plan:
+    canonical = image_video_plan(plan.get("pageId")) if isinstance(plan, dict) else None
+    if canonical is not None and "beatSlideshow" in plan:
+        from services.beat_slideshow import make_plan
+        receipt = plan["beatSlideshow"]
+        canonical = make_plan(canonical, receipt["config"], receipt["variant"])
+    if canonical != plan or canonical is None:
         raise ImageVideoError("image-video plan differs from current page authority")
     media = []
     for obj in plan["media"]:
@@ -394,7 +401,7 @@ def build_image_video_spec(plan: dict[str, Any]) -> dict[str, Any]:
         "format": "photo",
         "aspect": "9:16",
         "transition": 0,
-        "hook": {"text": "", "position": "none"},
+        "hook": {"text": plan["beatSlideshow"]["caption"], "position": "top"} if "beatSlideshow" in plan else {"text": "", "position": "none"},
         "lyrics": [],
         "captions": {"position": "none"},
         "textCards": [],
@@ -440,7 +447,7 @@ async def submit_image_video_render(
         raise ImageVideoError("image-video submission identity is invalid")
     if format_slug is not None:
         target = IMAGE_VIDEO_TARGETS.get(format_slug)
-        if target is None or page_id != target[0] or len(plan.get("media", [])) != target[5]:
+        if target is None or page_id != target[0] or ("beatSlideshow" not in plan and len(plan.get("media", [])) != target[5]):
             raise ImageVideoError("image-video submission format differs from exact page")
     spec = build_image_video_spec(plan)
     key = image_video_idempotency_key(
@@ -487,7 +494,7 @@ def image_video_plan_for_format(format_slug, master_pages):
     return plan
 
 
-def recipe_image_video_plan(recipe, library):
+def recipe_image_video_plan(recipe, library, variant=None):
     """Adapt a closed photo plan to the existing reserved-slideshow envelope."""
     if recipe.format_slug not in IMAGE_VIDEO_FORMATS:
         return None
@@ -497,7 +504,13 @@ def recipe_image_video_plan(recipe, library):
     by_key = {obj.key: obj for obj in library.objects}
     if len(by_key) != len(library.objects) or any(item["key"] not in by_key or by_key[item["key"]].bytes != item["bytes"] for item in photo["media"]):
         return None
-    return {"templateSlug": PLAN_SLUG, "mediaKeys": [item["key"] for item in photo["media"]],
+    experiment = recipe.recipe_spec.get("beatSlideshow")
+    if experiment is not None:
+        if recipe.format_slug != FORMAT_SLUG:
+            raise ImageVideoError("beat slideshow is only for cat slideshows")
+        from services.beat_slideshow import make_plan
+        photo = make_plan(photo, experiment, 0 if variant is None else variant)
+    return {"templateSlug": PLAN_SLUG, "mediaKeys": list(dict.fromkeys(item["key"] for item in photo["media"])),
             "photoPlan": photo, "signature": photo["signature"], "librarySnapshotHash": library.snapshot_hash}
 
 def required_image_video_treatment(spec, page_id):
