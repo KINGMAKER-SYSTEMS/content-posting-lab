@@ -560,9 +560,12 @@ class PostRenderJobs:
             result["source_regeneration"] = envelope
         if row["state"] == "succeeded":
             result["receipt_sha256"] = row["receipt_sha256"]
-            if row["final_sha256"] is not None:
-                result["final_sha256"] = row["final_sha256"]
-                result["qa_frame_sha256"] = row["qa_frame_sha256"]
+            # Shared clean bytes may have one UNIQUE column owner. Every job
+            # retains its actual primary hash in verified output authority.
+            authority = (self._validate_output_authority(row, json.loads(row["output_authority_json"]))
+                         if row["final_sha256"] is None else row)
+            result["final_sha256"] = authority["final_sha256"]
+            result["qa_frame_sha256"] = authority["qa_frame_sha256"]
             result["artifacts"] = {kind: f"/api/control-plane/v1/post-renders/{job_id}/artifacts/{kind}" for kind in (("final", "qa", "receipt", "burned_final", "burned_qa")
                     if _caption_delivery(RenderJobSubmission.model_validate_json(row["submission_json"]).request) == "in_app"
                     else ("final", "qa", "receipt"))}
@@ -971,20 +974,41 @@ class PostRenderJobs:
             json.dumps(authority, sort_keys=True, separators=(",", ":")),
         )
 
+    @staticmethod
+    def _reserve_output_identity(db, row, authority: dict) -> str | None:
+        """Reserve the captioned output inside the caller's writer transaction.
+
+        Clean bytes alone omit the caption and are reusable only with a distinct
+        verified burned fallback. Keep the existing UNIQUE primary column and
+        use its existing NULL/shared-authority convention for later clean owners.
+        """
+        primary = authority["final_sha256"]
+        fallback = authority.get("burned_fallback")
+        identity = fallback["artifact"]["final_sha256"] if fallback else primary
+        duplicate = db.execute(
+            "SELECT id FROM jobs WHERE id<>? AND (final_sha256=? OR "
+            "COALESCE(json_extract(output_authority_json,'$.burned_fallback.artifact.final_sha256'),"
+            "json_extract(output_authority_json,'$.final_sha256'))=?) LIMIT 1",
+            (row["id"], identity, identity),
+        ).fetchone()
+        if duplicate:
+            raise RenderJobError("duplicate_output")
+        owner = db.execute("SELECT id FROM jobs WHERE final_sha256=? AND id<>?",
+                           (primary, row["id"])).fetchone()
+        if owner and not fallback:
+            raise RenderJobError("duplicate_output")
+        return None if owner else primary
+
     def _persist_output_authority(self, row, authority: dict) -> None:
         values = self._authority_values(authority)
         try:
             with self._db() as db:
-                duplicate = db.execute(
-                    "SELECT id FROM jobs WHERE final_sha256=? AND id<>?",
-                    (authority["final_sha256"], row["id"]),
-                ).fetchone()
-                if duplicate:
-                    raise RenderJobError("duplicate_output")
+                db.execute("BEGIN IMMEDIATE")
+                stored_primary = self._reserve_output_identity(db, row, authority)
                 db.execute(
                     "UPDATE jobs SET receipt_sha256=?,final_sha256=?,qa_frame_sha256=?,"
                     "final_byte_length=?,output_authority_json=? WHERE id=?",
-                    (*values, row["id"]),
+                    (values[0], stored_primary, *values[2:], row["id"]),
                 )
         except sqlite3.IntegrityError as error:
             raise RenderJobError("duplicate_output") from error
@@ -1250,7 +1274,10 @@ class PostRenderJobs:
                 break
             try:
                 authority = self._verify_output(row)
-                confirmed = self.confirm_final(authority["final_sha256"], authority["final_byte_length"])
+                # Another caption may share these clean bytes. Only this job's
+                # acknowledgement proves both members of its pair were admitted.
+                confirmed = (row["acknowledged_at_ms"] is not None if "burned_fallback" in authority
+                             else self.confirm_final(authority["final_sha256"], authority["final_byte_length"]))
                 if confirmed is not True:
                     summary["unconfirmed"] += 1
                     with self._db() as db:
@@ -1384,17 +1411,13 @@ class PostRenderJobs:
         values = self._authority_values(authority)
         try:
             with self._db() as db:
-                duplicate = db.execute(
-                    "SELECT id FROM jobs WHERE final_sha256=? AND id<>?",
-                    (authority["final_sha256"], row["id"]),
-                ).fetchone()
-                if duplicate:
-                    raise RenderJobError("duplicate_output")
+                db.execute("BEGIN IMMEDIATE")
+                stored_primary = self._reserve_output_identity(db, row, authority)
                 changed = db.execute(
                     "UPDATE jobs SET state='succeeded',receipt_sha256=?,final_sha256=?,"
                     "qa_frame_sha256=?,final_byte_length=?,output_authority_json=?,updated_at_ms=?,"
                     "error_code=NULL WHERE id=? AND attempt_id=? AND state='running'",
-                    (*values, now, row["id"], row["attempt_id"]),
+                    (values[0], stored_primary, *values[2:], now, row["id"], row["attempt_id"]),
                 ).rowcount
                 if changed != 1:
                     raise RenderJobError("attempt_fenced")
