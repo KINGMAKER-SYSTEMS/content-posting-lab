@@ -127,5 +127,6 @@ The no-schema burned-identity lookup scans retained local job authority. On maj,
 with 2,547-byte authority fixtures, ten samples at 10,000 historical jobs measured
 26.55 ms median / 29.24 ms maximum per writer reservation; 20,000 jobs measured
 54.17 ms median / 56.04 ms maximum. This cost grows with retained history; it is
-not a constant-time index claim. The first four opted-in pages add this local
-cost only when output authority is saved, not on a phone drive or paid call.
+not a constant-time index claim. The lookup runs when output authority is saved in either mode, because ordinary
+outputs must also avoid an already-bound burned fallback. It adds no phone-drive
+work or paid call.
