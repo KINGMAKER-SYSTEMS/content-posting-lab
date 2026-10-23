@@ -1,6 +1,8 @@
 """Durable pre-lease render jobs. No phone, schedule mutation, or caller-selected URL."""
 from __future__ import annotations
 
+import base64
+import binascii
 import contextlib
 import fcntl
 import hashlib
@@ -25,7 +27,8 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from services.post_render import (
     Hash, Identity, MAX_SOURCE_BYTES, MAX_FINAL_BYTES, MAX_OVERLAY_BYTES, MAX_QA_BYTES,
-    PostRenderError, PostRenderRequest, RenderedPost, render_post, sha256, source_visual_matches,
+    PostRenderError, PostRenderRequest, RenderedPost, render_post, sha256, source_visual_matches, _caption_delivery,
+    _unique_object, _reject_nonfinite,
 )
 
 from services.post_render_timed import (
@@ -57,7 +60,7 @@ DEFAULT_RETIRE_AFTER_MS = 24 * 60 * 60 * 1000
 DEFAULT_MIN_FREE_BYTES = 1 * 1024 * 1024 * 1024
 # One attempt holds the fetched source and render_post's verified copy at once.
 # At peak it also holds the bounded overlay, a JSON copy with base64 expansion,
-# one final, one QA frame, and bounded request/receipt/decode metadata. Encoding
+# two finals and two QA frames for in-app slots, and bounded metadata. Encoding
 # retries unlink the first final before writing the second, so only one final is
 # counted. This is a disk reservation, not an estimate of typical output size.
 MAX_RENDER_METADATA_BYTES = 1 * 1024 * 1024
@@ -66,8 +69,8 @@ PEAK_RENDER_WORKSPACE_BYTES = (
     2 * MAX_SOURCE_BYTES
     + MAX_OVERLAY_BYTES
     + MAX_CAPTION_RENDER_JSON_BYTES
-    + MAX_FINAL_BYTES + 1
-    + MAX_QA_BYTES + 1
+    + 2 * (MAX_FINAL_BYTES + 1)
+    + 2 * (MAX_QA_BYTES + 1)
     + MAX_RENDER_METADATA_BYTES
 )
 # Failed/interrupted attempt bytes are diagnostic only; bound them separately
@@ -77,14 +80,11 @@ FAILED_MEDIA_RETENTION_MS = 24 * 60 * 60 * 1000
 # (including request, receipt/final/QA hashes and counters) and every
 # idempotency row are no-repeat authority and are never deleted by this GC.
 AUXILIARY_HISTORY_RETENTION_MS = 30 * 24 * 60 * 60 * 1000
-# Delivered-media age-out. The Worker does not call /acknowledge, so without
-# this sweep every succeeded render's media stayed on the volume forever. A
-# succeeded, unretired job is retired once (a) its window has passed since it
-# succeeded and since its planned slot time (so the slot's 1 h admission-retry
-# window is over) and (b) the Control Plane confirms that exact final is
-# admitted: its /prepared-video door answers 206 only for a `ready` post
-# artifact with that final_object_key whose R2 object exists. An unconfirmed
-# job is never deleted; it is re-checked later.
+# Delivered-media age-out. Ordinary renders can retire when their window has
+# passed and Control Plane confirms their exact primary final is admitted.
+# Dual jobs require their own acknowledgement: another caption may share the
+# same clean bytes, so primary presence cannot prove this pair was admitted.
+# Unacknowledged pairs retain both variants and are rechecked later.
 #
 # The sweep acts on volume pressure by itself instead of waiting for a person:
 #   normal  free >= 25% of the volume        delivered window 72 h, every 5 min
@@ -468,6 +468,103 @@ class PostRenderJobs:
                 if planned is not None:
                     db.execute("UPDATE jobs SET planned_at_ms=? WHERE id=?", (planned, row["id"]))
 
+        # Rebuild on every service start, including after a rollback to older code.
+        # The old runtime must be stopped before starting this version on this DB.
+        with self._db() as db:
+            if self._needs_identity_backfill(db):
+                db.execute("BEGIN IMMEDIATE")
+                self._backfill_output_identities(db)
+
+    @staticmethod
+    def _identity_key(identity: str) -> str:
+        # Slash is outside the public idempotency-key alphabet. These permanent
+        # internal reservations cannot collide with a client's request key.
+        return "/output-identity/v1/" + identity
+
+    @staticmethod
+    def _ordinary_history(submission_json: str) -> bool:
+        """Recognize burned history without applying today's submission schema.
+
+        Both saved treatment copies must agree, have no opt-in field, and
+        match the saved treatment hash.
+        Unreadable or conflicting history remains uncertain, never ordinary.
+        This classification grants no artifact or request validity.
+        """
+        try:
+            saved = json.loads(submission_json, object_pairs_hook=_unique_object, parse_constant=_reject_nonfinite)
+            raw = saved["request"]["render_treatment_json"]
+            treatment = json.loads(raw, object_pairs_hook=_unique_object, parse_constant=_reject_nonfinite)
+            slot = json.loads(saved["slot_payload_json"], object_pairs_hook=_unique_object, parse_constant=_reject_nonfinite)
+            return (isinstance(treatment, dict) and isinstance(slot["render_treatment"], dict)
+                    and sha256(raw.encode()) == saved["request"]["treatment_sha256"]
+                    and treatment == slot["render_treatment"]
+                    and "captionDelivery" not in treatment
+                    and "captionDelivery" not in slot["render_treatment"])
+        except (ValueError, TypeError, KeyError, RecursionError):
+            return False
+
+    @staticmethod
+    def _needs_identity_backfill(db) -> bool:
+        """Ordinary-only startup writes only to remove a stale uncertainty marker."""
+        # Heal markers left by the older startup code, even if no in-app row
+        # exists to trigger the write pass. Never clear unclassifiable history.
+        for row in db.execute("SELECT jobs.submission_json FROM idempotency JOIN jobs ON jobs.id=idempotency.job_id "
+                              "WHERE key >= '/output-uncertain/v1/' AND key < '/output-uncertain/v10'"):
+            if PostRenderJobs._ordinary_history(row["submission_json"]):
+                return True
+        needed = False
+        for row in db.execute("SELECT * FROM jobs WHERE state='succeeded' OR receipt_sha256 IS NOT NULL"):
+            try:
+                request = RenderJobSubmission.model_validate_json(row["submission_json"]).request
+                if _caption_delivery(request) == "in_app":
+                    needed = True
+                elif row["output_authority_json"]:
+                    json.loads(row["output_authority_json"])
+            except (ValueError, TypeError, RecursionError):
+                log.warning("post render identity backfill skipped invalid authority job=%s", row["id"])
+                # Old ordinary submissions may fail today's stricter schema.
+                if not PostRenderJobs._ordinary_history(row["submission_json"]):
+                    needed = True
+        return needed
+
+    def _backfill_output_identities(self, db) -> None:
+        """Recover in-app identities; quarantine unverifiable in-app history."""
+        for marked in db.execute("SELECT jobs.* FROM idempotency JOIN jobs ON jobs.id=idempotency.job_id "
+                                 "WHERE key >= '/output-uncertain/v1/' AND key < '/output-uncertain/v10'").fetchall():
+            if self._ordinary_history(marked["submission_json"]):
+                self._clear_ordinary_uncertainty(db, marked)
+        for candidate in db.execute("SELECT * FROM jobs WHERE state='succeeded' OR receipt_sha256 IS NOT NULL"):
+            try:
+                request = RenderJobSubmission.model_validate_json(candidate["submission_json"]).request
+                if _caption_delivery(request) != "in_app":
+                    try:
+                        if candidate["output_authority_json"]:
+                            json.loads(candidate["output_authority_json"])
+                    except (ValueError, TypeError, RecursionError):
+                        log.warning("post render identity backfill skipped invalid authority job=%s", candidate["id"])
+                    continue
+                authority = self._validate_output_authority(candidate, self._load_output_authority(candidate))
+                fallback = authority.get("burned_fallback")
+                identity = fallback["artifact"]["final_sha256"] if fallback else authority["final_sha256"]
+            except (ValueError, TypeError, AttributeError, KeyError, RecursionError):
+                if self._ordinary_history(candidate["submission_json"]):
+                    log.warning("post render identity backfill skipped invalid ordinary submission job=%s", candidate["id"])
+                    continue
+                log.warning("post render identity backfill quarantined authority job=%s", candidate["id"])
+                db.execute("INSERT OR IGNORE INTO idempotency(key,job_id,request_hash) VALUES(?,?,?)",
+                           ("/output-uncertain/v1/" + candidate["id"], candidate["id"], candidate["request_hash"]))
+                continue
+            db.execute("DELETE FROM idempotency WHERE key=?", ("/output-uncertain/v1/" + candidate["id"],))
+            db.execute("INSERT OR IGNORE INTO idempotency(key,job_id,request_hash) VALUES(?,?,?)",
+                       (self._identity_key(identity), candidate["id"], identity))
+
+    @staticmethod
+    def _clear_ordinary_uncertainty(db, row) -> None:
+        key = "/output-uncertain/v1/" + row["id"]
+        if db.execute("SELECT 1 FROM idempotency WHERE key=?", (key,)).fetchone():
+            db.execute("DELETE FROM idempotency WHERE key=?", (key,))
+            log.warning("post render identity backfill cleared stale ordinary uncertainty job=%s", row["id"])
+
     @contextlib.contextmanager
     def _db(self):
         db = sqlite3.connect(self.root / "jobs.sqlite", timeout=5)
@@ -560,10 +657,25 @@ class PostRenderJobs:
             result["source_regeneration"] = envelope
         if row["state"] == "succeeded":
             result["receipt_sha256"] = row["receipt_sha256"]
-            if row["final_sha256"] is not None:
-                result["final_sha256"] = row["final_sha256"]
-                result["qa_frame_sha256"] = row["qa_frame_sha256"]
-            result["artifacts"] = {kind: f"/api/control-plane/v1/post-renders/{job_id}/artifacts/{kind}" for kind in ("final", "qa", "receipt")}
+            # Shared clean bytes may have one UNIQUE column owner. Every job
+            # retains its actual primary hash in verified output authority.
+            request = RenderJobSubmission.model_validate_json(row["submission_json"]).request
+            if _caption_delivery(request) == "in_app":
+                authority = self._validate_output_authority(row, self._load_output_authority(row))
+            else:
+                authority = row if row["final_sha256"] is not None else None
+                if authority is None and row["output_authority_json"]:
+                    try:
+                        authority = self._validate_output_authority(row, self._load_output_authority(row))
+                    except (ValueError, TypeError, AttributeError, KeyError, RecursionError):
+                        log.warning("post render status omitted invalid authority job=%s", row["id"])
+            if authority is not None:
+                result["final_sha256"] = authority["final_sha256"]
+                result["qa_frame_sha256"] = authority["qa_frame_sha256"]
+            result["artifacts"] = {kind: f"/api/control-plane/v1/post-renders/{job_id}/artifacts/{kind}" for kind in (("final", "qa", "receipt", "burned_final", "burned_qa")
+                    if authority is not None and not self._legacy_clean_output(row, authority)
+                    and _caption_delivery(RenderJobSubmission.model_validate_json(row["submission_json"]).request) == "in_app"
+                    else ("final", "qa", "receipt"))}
         return result
 
     def retry(self, job_id: str) -> dict:
@@ -809,6 +921,59 @@ class PostRenderJobs:
     def _output(self, row) -> Path:
         return self.root / "attempts" / row["id"] / row["attempt_id"] / "render"
 
+    @staticmethod
+    def _legacy_clean_output(row, authority: dict) -> bool:
+        """Recognize already-committed clean-only success, never a new attempt.
+
+        The retained authority must agree exactly with the candidate facts and
+        all four durable byte pins. Absence of media alone is not a legacy
+        signal: any promised fallback (even null/malformed) still requires the
+        pair. No request, receipt, or authority is rewritten for compatibility.
+        """
+        if row["state"] != "succeeded" or not isinstance(authority, dict):
+            return False
+        receipt = authority.get("receipt")
+        if (not isinstance(receipt, dict) or receipt.get("caption_delivery") != "in_app"
+                or "burned_fallback" in receipt or "burned_fallback" in authority):
+            return False
+        if any(not row[key] or row[key] != authority.get(key) for key in
+               ("receipt_sha256", "final_sha256", "qa_frame_sha256", "final_byte_length")):
+            return False
+        try:
+            retained = json.loads(row["output_authority_json"])
+            if not isinstance(retained, dict):
+                return False
+            return {k: v for k, v in retained.items() if k != "receipt_bytes_b64"} == {k: v for k, v in authority.items() if k != "receipt_bytes_b64"}
+        except (TypeError, ValueError, RecursionError):
+            return False
+
+    def _authenticate_receipt(self, row, authority: dict) -> None:
+        """Match decoded receipt contents AND exact bytes to the immutable pin.
+
+        Old canonical receipts can be reconstructed and checked, never guessed.
+        Other old encodings require their still-present original file. A retired
+        receipt whose bytes cannot be recovered refuses without paid rerender.
+        """
+        receipt = authority["receipt"]
+        encoded = authority.get("receipt_bytes_b64")
+        try:
+            if encoded is not None:
+                if not isinstance(encoded, str) or len(encoded) > 87384:
+                    raise ValueError("receipt encoding")
+                raw = base64.b64decode(encoded, validate=True)
+            else:
+                raw = json.dumps(receipt, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+                if sha256(raw) != authority["receipt_sha256"]:
+                    with (self._output(row) / "receipt.json").open("rb") as file:
+                        raw = file.read(65537)
+            if (len(raw) > 65536 or sha256(raw) != authority["receipt_sha256"]
+                    or json.loads(raw) != receipt
+                    or row["state"] == "succeeded" and not row["receipt_sha256"]):
+                raise ValueError("receipt binding")
+        except (OSError, ValueError, TypeError, RecursionError, binascii.Error) as error:
+            log.warning("post render receipt authentication refused job=%s", row["id"])
+            raise RenderJobError("output_authority_changed") from error
+
     def _validate_output_authority(self, row, authority: dict) -> dict:
         """Validate durable output facts against the immutable request and job row."""
         if authority.get("schema") != OUTPUT_AUTHORITY_SCHEMA:
@@ -862,13 +1027,48 @@ class PostRenderJobs:
                 or receipt.get("qa_frame_sha256") != qa_sha or final_sha == request.source_sha256
                 or receipt.get("final_object_key") != f"posting/final/{final_sha}.mp4"
                 or receipt.get("mime_type") != "video/mp4" or receipt.get("width") != 1080 or receipt.get("height") != 1920
-                or not request.created_at_ms <= receipt.get("completed_at_ms", -1) <= self.clock_ms()):
+                or type(receipt.get("completed_at_ms")) not in (int, float)
+                or not request.created_at_ms <= receipt["completed_at_ms"] <= self.clock_ms()):
             raise RenderJobError("artifact_binding_mismatch")
+        # Retained JSON can be well formed while nested evidence has wrong types.
+        # Refuse before comparisons/member access; never repair paid evidence in place.
+        probe = evidence.get("final_probe")
         if (evidence.get("final_sha256") != final_sha or evidence.get("qa_frame_sha256") != qa_sha
-                or evidence.get("decoded_video_frames", 0) <= 0
-                or evidence.get("final_probe", {}).get("duration_ms") != receipt.get("duration_ms")
-                or receipt.get("duration_ms", 0) <= 0):
+                or type(evidence.get("decoded_video_frames")) not in (int, float)
+                or evidence["decoded_video_frames"] <= 0
+                or not isinstance(probe, dict)
+                or probe.get("duration_ms") != receipt.get("duration_ms")
+                or type(receipt.get("duration_ms")) not in (int, float)
+                or receipt["duration_ms"] <= 0):
             raise RenderJobError("decode_evidence_missing")
+        if _caption_delivery(request) == "in_app" and not self._legacy_clean_output(row, authority):
+            fallback = receipt.get("burned_fallback")
+            burned = authority.get("burned_fallback")
+            if (receipt.get("caption_delivery") != "in_app" or not isinstance(fallback, dict)
+                    or not isinstance(burned, dict) or fallback != burned.get("artifact")
+                    or set(fallback) != {"final_sha256", "final_byte_length", "final_object_key", "qa_frame_sha256"}
+                    or any(not re.fullmatch(r"[0-9a-f]{64}", str(fallback.get(key, "")))
+                           for key in ("final_sha256", "qa_frame_sha256"))
+                    or type(fallback.get("final_byte_length")) is not int
+                    or not 0 < fallback["final_byte_length"] <= MAX_FINAL_BYTES
+                    or fallback["final_sha256"] in {final_sha, request.source_sha256}
+                    or fallback["final_object_key"] != f"posting/dual-final/{fallback['final_sha256']}.mp4"):
+                raise RenderJobError("burned_fallback_invalid")
+            decode = burned.get("decode")
+            if not isinstance(decode, dict):
+                raise RenderJobError("burned_fallback_decode_missing")
+            probe = decode.get("final_probe")
+            if (decode.get("final_sha256") != fallback["final_sha256"]
+                    or decode.get("qa_frame_sha256") != fallback["qa_frame_sha256"]
+                    or type(decode.get("decoded_video_frames")) not in (int, float)
+                    or decode["decoded_video_frames"] <= 0
+                    or not isinstance(probe, dict)
+                    or probe.get("duration_ms") != receipt.get("duration_ms")
+                    or (probe.get("width"), probe.get("height"), probe.get("video_codec"), probe.get("pixel_format"))
+                       != (1080, 1920, "h264", "yuv420p")):
+                raise RenderJobError("burned_fallback_decode_missing")
+        elif _caption_delivery(request) != "in_app" and ("burned_fallback" in receipt or "caption_delivery" in receipt):
+            raise RenderJobError("burned_fallback_invalid")
         receipt_sha = authority.get("receipt_sha256")
         if (not isinstance(receipt_sha, str) or not re.fullmatch(r"[0-9a-f]{64}", receipt_sha)
                 or row["receipt_sha256"] and row["receipt_sha256"] != receipt_sha
@@ -876,6 +1076,26 @@ class PostRenderJobs:
                 or row["qa_frame_sha256"] and row["qa_frame_sha256"] != qa_sha
                 or row["final_byte_length"] and row["final_byte_length"] != final_length):
             raise RenderJobError("output_authority_changed")
+        if _caption_delivery(request) == "in_app":
+            self._authenticate_receipt(row, authority)
+        return authority
+
+    @staticmethod
+    def _load_output_authority(row) -> dict:
+        """Decode retained evidence through the existing typed refusal contract.
+
+        Missing or corrupt authority is retained unchanged. Status/replay must
+        not invent authority from primary pins or start another render.
+        """
+        encoded = row["output_authority_json"]
+        if not encoded:
+            raise RenderJobError("output_authority_missing")
+        try:
+            authority = json.loads(encoded)
+        except (TypeError, ValueError, RecursionError) as error:
+            raise RenderJobError("output_authority_invalid") from error
+        if not isinstance(authority, dict):
+            raise RenderJobError("output_authority_invalid")
         return authority
 
     def _verify_output(self, row) -> dict:
@@ -884,16 +1104,7 @@ class PostRenderJobs:
         output = self._output(row)
         required = tuple(output / name for name in ("receipt.json", "final.mp4", "qa.jpg", "decode.json"))
         if not output.is_dir() or not all(path.is_file() for path in required):
-            encoded = row["output_authority_json"]
-            if not encoded:
-                raise RenderJobError("output_authority_missing")
-            try:
-                authority = json.loads(encoded)
-            except (TypeError, ValueError) as error:
-                raise RenderJobError("output_authority_invalid") from error
-            if not isinstance(authority, dict):
-                raise RenderJobError("output_authority_invalid")
-            return self._validate_output_authority(row, authority)
+            return self._validate_output_authority(row, self._load_output_authority(row))
         with (output / "receipt.json").open("rb") as file:
             receipt_bytes = file.read(64 * 1024 + 1)
         if len(receipt_bytes) > 64 * 1024:
@@ -920,6 +1131,21 @@ class PostRenderJobs:
             "receipt": receipt,
             "decode": evidence,
         }
+        if _caption_delivery(request) == "in_app":
+            authority["receipt_bytes_b64"] = base64.b64encode(receipt_bytes).decode("ascii")
+        if _caption_delivery(request) == "in_app" and not self._legacy_clean_output(row, authority):
+            try:
+                burned_sha, burned_length = _file_hash(output / "burned/final.mp4", MAX_FINAL_BYTES)
+                burned_qa, _ = _file_hash(output / "burned/qa.jpg", MAX_QA_BYTES)
+                decode_bytes = (output / "burned/decode.json").read_bytes()
+                if len(decode_bytes) > 64 * 1024:
+                    raise ValueError("oversized decode")
+                authority["burned_fallback"] = {"artifact": {
+                    "final_sha256": burned_sha, "final_byte_length": burned_length,
+                    "final_object_key": f"posting/dual-final/{burned_sha}.mp4", "qa_frame_sha256": burned_qa},
+                    "decode": json.loads(decode_bytes)}
+            except (OSError, ValueError) as error:
+                raise RenderJobError("burned_fallback_invalid") from error
         return self._validate_output_authority(row, authority)
 
     @staticmethod
@@ -932,20 +1158,64 @@ class PostRenderJobs:
             json.dumps(authority, sort_keys=True, separators=(",", ":")),
         )
 
+    def _reserve_output_identity(self, db, row, authority: dict) -> str | None:
+        """Reserve the captioned output inside the caller's writer transaction.
+
+        Clean bytes alone omit the caption and are reusable only with a distinct
+        verified burned fallback. Keep the existing UNIQUE primary column and
+        use its existing NULL/shared-authority convention for later clean owners.
+        """
+        primary = authority["final_sha256"]
+        fallback = authority.get("burned_fallback")
+        identity = fallback["artifact"]["final_sha256"] if fallback else primary
+        request = RenderJobSubmission.model_validate_json(row["submission_json"]).request
+        if _caption_delivery(request) == "in_app":
+            self._validate_output_authority(row, authority)
+            duplicate = db.execute("SELECT id FROM jobs WHERE id<>? AND final_sha256=? LIMIT 1",
+                                   (row["id"], identity)).fetchone()
+            if duplicate:
+                raise RenderJobError("duplicate_output")
+            key = self._identity_key(identity)
+            reserved = db.execute("SELECT job_id FROM idempotency WHERE key=?", (key,)).fetchone()
+            if reserved and reserved["job_id"] != row["id"]:
+                raise RenderJobError("duplicate_output")
+            uncertain = db.execute("SELECT job_id FROM idempotency WHERE key>=? AND key<? LIMIT 1",
+                                   ("/output-uncertain/v1/", "/output-uncertain/v10")).fetchone()
+            if uncertain:
+                raise RenderJobError("output_authority_uncertain")
+            db.execute("INSERT OR IGNORE INTO idempotency(key,job_id,request_hash) VALUES(?,?,?)",
+                       (key, row["id"], identity))
+        else:
+            # A retained in-app burned identity also fences ordinary outputs,
+            # even when its historical JSON was damaged after reservation.
+            reserved = db.execute("SELECT job_id FROM idempotency WHERE key=?",
+                                  (self._identity_key(identity),)).fetchone()
+            if reserved and reserved["job_id"] != row["id"]:
+                raise RenderJobError("duplicate_output")
+            # Preserve ordinary writes and duplicate semantics; isolate bad JSON.
+            duplicate = db.execute(
+                "SELECT id FROM jobs WHERE id<>? AND (final_sha256=? OR "
+                "COALESCE(json_extract(CASE WHEN json_valid(output_authority_json) THEN output_authority_json END,'$.burned_fallback.artifact.final_sha256'),"
+                "json_extract(CASE WHEN json_valid(output_authority_json) THEN output_authority_json END,'$.final_sha256'))=?) LIMIT 1",
+                (row["id"], identity, identity)).fetchone()
+            if duplicate:
+                raise RenderJobError("duplicate_output")
+        owner = db.execute("SELECT id FROM jobs WHERE final_sha256=? AND id<>?",
+                           (primary, row["id"])).fetchone()
+        if owner and not fallback:
+            raise RenderJobError("duplicate_output")
+        return None if owner else primary
+
     def _persist_output_authority(self, row, authority: dict) -> None:
         values = self._authority_values(authority)
         try:
             with self._db() as db:
-                duplicate = db.execute(
-                    "SELECT id FROM jobs WHERE final_sha256=? AND id<>?",
-                    (authority["final_sha256"], row["id"]),
-                ).fetchone()
-                if duplicate:
-                    raise RenderJobError("duplicate_output")
+                db.execute("BEGIN IMMEDIATE")
+                stored_primary = self._reserve_output_identity(db, row, authority)
                 db.execute(
                     "UPDATE jobs SET receipt_sha256=?,final_sha256=?,qa_frame_sha256=?,"
                     "final_byte_length=?,output_authority_json=? WHERE id=?",
-                    (*values, row["id"]),
+                    (values[0], stored_primary, *values[2:], row["id"]),
                 )
         except sqlite3.IntegrityError as error:
             raise RenderJobError("duplicate_output") from error
@@ -967,7 +1237,8 @@ class PostRenderJobs:
                 )
             except slot_source.SourceRegenerationError as error:
                 raise RenderJobError("artifact_not_ready") from error
-        names = {"final": "final.mp4", "qa": "qa.jpg", "receipt": "receipt.json"}
+        names = {"final": "final.mp4", "qa": "qa.jpg", "receipt": "receipt.json",
+                 "burned_final": "burned/final.mp4", "burned_qa": "burned/qa.jpg"}
         if kind not in names:
             raise RenderJobError("artifact_not_found")
         row = self._row(job_id)
@@ -977,7 +1248,10 @@ class PostRenderJobs:
         if not all((output / name).is_file() for name in ("receipt.json", "final.mp4", "qa.jpg", "decode.json")):
             raise RenderJobError("artifact_not_ready")
         self._verify_output(row)
-        return self._output(row) / names[kind]
+        path = self._output(row) / names[kind]
+        if not path.is_file():
+            raise RenderJobError("artifact_not_found")
+        return path
 
     def acknowledge(self, job_id: str, source_ack=None) -> dict:
         """Record downstream admission.
@@ -1207,7 +1481,10 @@ class PostRenderJobs:
                 break
             try:
                 authority = self._verify_output(row)
-                confirmed = self.confirm_final(authority["final_sha256"], authority["final_byte_length"])
+                # Another caption may share these clean bytes. Only this job's
+                # acknowledgement proves both members of its pair were admitted.
+                confirmed = (row["acknowledged_at_ms"] is not None if "burned_fallback" in authority
+                             else self.confirm_final(authority["final_sha256"], authority["final_byte_length"]))
                 if confirmed is not True:
                     summary["unconfirmed"] += 1
                     with self._db() as db:
@@ -1323,11 +1600,15 @@ class PostRenderJobs:
 
     def _finish(self, row, authority: dict):
         output = self._output(row)
-        for path in output.iterdir():
-            if path.is_file():
-                with path.open("rb") as file:
-                    os.fsync(file.fileno())
-        for directory in (output, output.parent, output.parent.parent, self.root / "attempts", self.root):
+        artifact_directories = [output]
+        if "burned_fallback" in authority:
+            artifact_directories.insert(0, output / "burned")
+        for directory in artifact_directories:
+            for path in directory.iterdir():
+                if path.is_file():
+                    with path.open("rb") as file:
+                        os.fsync(file.fileno())
+        for directory in (*artifact_directories, output.parent, output.parent.parent, self.root / "attempts", self.root):
             descriptor = os.open(directory, os.O_RDONLY)
             try:
                 os.fsync(descriptor)
@@ -1337,17 +1618,13 @@ class PostRenderJobs:
         values = self._authority_values(authority)
         try:
             with self._db() as db:
-                duplicate = db.execute(
-                    "SELECT id FROM jobs WHERE final_sha256=? AND id<>?",
-                    (authority["final_sha256"], row["id"]),
-                ).fetchone()
-                if duplicate:
-                    raise RenderJobError("duplicate_output")
+                db.execute("BEGIN IMMEDIATE")
+                stored_primary = self._reserve_output_identity(db, row, authority)
                 changed = db.execute(
                     "UPDATE jobs SET state='succeeded',receipt_sha256=?,final_sha256=?,"
                     "qa_frame_sha256=?,final_byte_length=?,output_authority_json=?,updated_at_ms=?,"
                     "error_code=NULL WHERE id=? AND attempt_id=? AND state='running'",
-                    (*values, now, row["id"], row["attempt_id"]),
+                    (values[0], stored_primary, *values[2:], now, row["id"], row["attempt_id"]),
                 ).rowcount
                 if changed != 1:
                     raise RenderJobError("attempt_fenced")
