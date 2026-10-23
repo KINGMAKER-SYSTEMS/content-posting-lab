@@ -1,7 +1,7 @@
 """Closed contracts for page-owned photo-to-MP4 preparation.
 
 Covers: exact page-bound plan identity/signature, deterministic no-permutation
-order, honest single-plan exhaustion, strict config parsing, library
+order, legacy media authority, strict config parsing, library
 identity/bytes/hash validation, and the blank-text/no-audio photo spec with an
 idempotency-scoped render receipt that never claims an applied brightness gain.
 """
@@ -21,7 +21,6 @@ from services.control_plane_image_video import (
     image_video_plan,
     image_video_plan_signature,
     parse_plan_config,
-    plan_image_video,
     submit_image_video_render,
     validate_image_video_library,
 )
@@ -74,7 +73,7 @@ def _good_plan_config(page_id=PENPAL):
     return deepcopy(executor["plans"][page_id])
 
 
-def test_executor_contract_is_closed_and_hashes():
+def test_legacy_media_contract_is_closed_and_hashes():
     executor, digest = image_video_executor_contract()
     assert executor["executorId"] == "syzygy-slideshow"
     assert executor["source"] == "syzygy_r2_library"
@@ -125,7 +124,6 @@ def test_unknown_or_foreign_page_has_no_plan():
     assert image_video_plan(UNKNOWN) is None
     assert image_video_plan("") is None
     assert image_video_plan("acct:pen-pal3-extra") is None
-    assert plan_image_video(UNKNOWN, set()) == []
 
 
 def test_plan_is_deterministic_single_no_permutation():
@@ -133,14 +131,6 @@ def test_plan_is_deterministic_single_no_permutation():
     second = image_video_plan(PENPAL)
     assert first == second
     assert first["signature"] == second["signature"]
-
-
-def test_exhaustion_once_reserved():
-    plan = image_video_plan(PENPAL)
-    assert plan is not None
-    assert plan_image_video(PENPAL, set()) == [plan]
-    # Once reserved, the single ordered plan is truthfully exhausted.
-    assert plan_image_video(PENPAL, {plan["signature"]}) == []
 
 
 def test_library_validation_accepts_exact_observations():
@@ -374,14 +364,6 @@ def test_runtime_dedicated_keys_share_original_filename():
     )
 
 
-def test_plan_image_video_rejects_invalid_reservation_set():
-    plan = image_video_plan(PENPAL)
-    assert plan_image_video(PENPAL, {"not-a-sha"}) == []
-    assert plan_image_video(PENPAL, {True}) == []
-    assert plan_image_video(PENPAL, "not-a-set") == []
-    assert plan_image_video("", set()) == []
-
-
 @pytest.mark.asyncio
 async def test_submit_refuses_foreign_or_forged_plan_before_transport():
     calls = []
@@ -398,3 +380,9 @@ async def test_submit_refuses_foreign_or_forged_plan_before_transport():
     with pytest.raises(iv.ImageVideoError):
         await submit_image_video_render(forged, page_id=PENPAL, recipe_version="v1", request_json=request)
     assert calls == []
+
+
+def test_runtime_selection_describes_multi_treatment_planner():
+    adapter, digest = iv.slideshow_executor_adapter()
+    assert adapter["selection"] == "deterministic_variety_without_replacement"
+    assert digest == hashlib.sha256(EXECUTOR_PATH.read_bytes()).hexdigest()

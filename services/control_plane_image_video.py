@@ -195,6 +195,7 @@ def image_video_executor_contract() -> tuple[dict[str, Any], str]:
         or value.get("schema") != EXECUTOR_SCHEMA
         or value.get("executorId") != EXECUTOR_ID
         or value.get("source") != "syzygy_r2_library"
+        # Legacy serialized tag; runtime selection is supplied by the adapter.
         or value.get("selection") != "deterministic_single_plan_without_replacement"
         or value.get("reservation") != "active_jobs_and_completed_outputs"
         or not isinstance(value.get("plans"), dict)
@@ -299,9 +300,10 @@ def image_video_plan(page_id: str, variant_index: int = 0) -> dict[str, Any] | N
         "media": media,
     }
     if variant_index:
-        # Each index changes actual render fields. No nonce-only signatures:
-        # duration (one-frame steps), zoom, direction and focal point define
-        # the treatment sent to Syzygy. Preserve the original media order.
+        # Indices encode render fields, not a nonce: total duration in 1/30s
+        # steps, split equally across photos, plus zoom, direction and focal Y.
+        # One Pen Pal index equals legacy index zero; plan_slideshows skips
+        # repeated signatures. Preserve the original media order.
         value = variant_index - 1
         duration_step = value % 61
         value //= 61
@@ -318,27 +320,6 @@ def image_video_plan(page_id: str, variant_index: int = 0) -> dict[str, Any] | N
         plan["variantIndex"] = variant_index
     plan["signature"] = image_video_plan_signature(plan)
     return plan
-
-
-def plan_image_video(
-    page_id: str, unavailable_signatures: set[str],
-) -> list[dict[str, Any]]:
-    """Plan one page's image-video, or [] once its signature is reserved.
-
-    Unknown pages and invalid reservation sets also return [] so a dispatch
-    loop can treat "no plan" uniformly without probing a foreign page.
-    """
-    if (
-        not isinstance(page_id, str)
-        or not page_id.strip()
-        or not isinstance(unavailable_signatures, set)
-        or any(not isinstance(item, str) or not SHA256.fullmatch(item) for item in unavailable_signatures)
-    ):
-        return []
-    plan = image_video_plan(page_id)
-    if plan is None or plan["signature"] in unavailable_signatures:
-        return []
-    return [plan]
 
 
 def validate_image_video_library(
@@ -541,12 +522,17 @@ def required_image_video_treatment(spec, page_id):
     return actual == expected
 
 def slideshow_executor_adapter(format_slug=FORMAT_SLUG):
-    """Existing executor vocabulary; original legacy JSON stays byte-identical."""
+    """Adapt legacy media authority to the current multi-treatment planner.
+
+    The JSON selection tag is retained only for its pinned compatibility hash;
+    the runtime selection below describes plan_slideshows. Changing that file
+    would invalidate executor versions on already queued jobs.
+    """
     if format_slug not in IMAGE_VIDEO_FORMATS:
         raise ImageVideoError("image-video format is unknown")
     config, digest = image_video_executor_contract()
     lane = "interiors" if format_slug == SINGLE_IMAGE_FORMAT_SLUG else "animals"
     return {"formats": {format_slug: {"lane": lane, "minimumLibraryItems": 1,
                 "templates": [{"slug": PLAN_SLUG, "mediaCount": 1}]}},
-            "selection": config["selection"], "reservation": config["reservation"],
+            "selection": "deterministic_variety_without_replacement", "reservation": config["reservation"],
             "output": {**config["output"], "audioPolicy": "campaign_sound_bound_downstream"}}, digest

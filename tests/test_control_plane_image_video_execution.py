@@ -156,3 +156,75 @@ def test_variant_validation_retains_source_authority():
             forged['signature'] = iv.image_video_plan_signature(forged)
             with pytest.raises(iv.ImageVideoError):
                 iv.build_image_video_spec(forged)
+
+
+@pytest.mark.asyncio
+async def test_two_failed_photo_jobs_pause_then_success_or_cooldown_reopens(image_lab, monkeypatch, caplog):
+    from datetime import datetime, timedelta, timezone
+    client, library, payload, photo = image_lab
+    async def bad_source(_lib, keys):
+        return [{'objectKey': x['key'], 'bytes': x['bytes'], 'sha256': '0'*64, 'etag': None}
+                for x in photo['media'] if x['key'] in keys]
+    monkeypatch.setattr(cp, 'observe_library_media', bad_source)
+    ids = []
+    def create(key):
+        return client.post('/api/control-plane/v1/jobs', json=base.job_body(1, payload),
+                           headers=base.headers(key))
+    for index in range(2):
+        response = create(f'photo-failure-{index}')
+        assert response.status_code == 200, response.json()
+        ids.append(response.json()['jobId'])
+        await cp._run_syzygy_slideshow(ids[-1])
+        assert cp._load_jobs()['jobs'][ids[-1]]['status'] == 'failed'
+        if index == 0:
+            cap = client.get('/api/control-plane/v1/capabilities', headers=base.headers('cap-one'))
+            assert next(x for x in cap.json()['capabilities'] if x['recipeId'] == base.RECIPE_ID)['maxQuantity'] == 1
+    before = cp._load_jobs()
+    refused = create('third-photo-failure')
+    assert refused.status_code == 409 and refused.json()['detail'] == 'photo_jobs_cooldown'
+    assert cp._load_jobs() == before
+    assert 'photo_jobs_paused page=' + photo['pageId'] in caplog.text
+    cap = client.get('/api/control-plane/v1/capabilities', headers=base.headers('cap-paused'))
+    assert next(x for x in cap.json()['capabilities'] if x['recipeId'] == base.RECIPE_ID)['maxQuantity'] == 0
+    replay = create('photo-failure-1')
+    assert replay.status_code == 200 and replay.json()['jobId'] == ids[-1]
+    # A success from an already admitted job automatically clears the pause.
+    cp._update_job(ids[-1], status='completed', completedAt=datetime.now(timezone.utc).isoformat())
+    assert create('after-success').status_code == 200
+    # Restore the terminal failure and advance the wall clock beyond cooldown.
+    cp._update_job(ids[-1], status='failed', completedAt=datetime.now(timezone.utc).isoformat())
+    assert create('still-paused').status_code == 409
+    future = datetime.now(timezone.utc) + timedelta(seconds=cp.PHOTO_FAILURE_COOLDOWN_SECONDS)
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return future.astimezone(tz)
+    monkeypatch.setattr(cp, 'datetime', Clock)
+    cap = client.get('/api/control-plane/v1/capabilities', headers=base.headers('cap-expired'))
+    assert next(x for x in cap.json()['capabilities'] if x['recipeId'] == base.RECIPE_ID)['maxQuantity'] == 1
+    assert create('after-cooldown').status_code == 200
+
+
+def test_photo_pause_is_page_scoped_terminal_and_photo_only(image_lab):
+    from datetime import datetime, timedelta, timezone
+    from copy import deepcopy
+    _, _, payload, photo = image_lab
+    recipe = ss.resolve_slideshow_recipe(payload)
+    now = datetime.now(timezone.utc)
+    def row(status, age, **overrides):
+        return dict(pageId=photo['pageId'], sourceKind='syzygy_slideshow',
+                    status=status, completedAt=(now-timedelta(seconds=age)).isoformat(),
+                    slideshowPlan=[{'photoPlan': photo}], **overrides)
+    failed = row('failed', 2)
+    store = {'jobs': {'a': failed, 'b': row('failed', 1)}}
+    assert cp._photo_jobs_paused(store, recipe, photo['pageId'])
+    for field, value in [('pageId', 'acct:foreign'), ('sourceKind', 'other'),
+                         ('slideshowPlan', []), ('status', 'cancelled')]:
+        altered = deepcopy(store)
+        altered['jobs']['a'][field] = value
+        assert not cp._photo_jobs_paused(altered, recipe, photo['pageId'])
+    # Insertion order is not terminal order; the latest success clears failures.
+    store['jobs'] = {'success': row('completed', 0), **store['jobs']}
+    assert not cp._photo_jobs_paused(store, recipe, photo['pageId'])
+    from types import SimpleNamespace
+    assert not cp._photo_jobs_paused(store, SimpleNamespace(format_slug='lyric-video'), photo['pageId'])
