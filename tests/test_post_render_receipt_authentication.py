@@ -74,7 +74,10 @@ def test_old_canonical_receipt_reconstructs_exact_bytes_without_raw(tmp_path):
     def renderer(source, output, request, *, clock_ms):
         dual_render(source, output, request, clock_ms=clock_ms)
         receipt = json.loads((output / "receipt.json").read_bytes())
-        (output / "receipt.json").write_bytes(json.dumps(receipt, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode())
+        receipt["retained_note"] = "café"
+        raw = json.dumps(receipt, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+        assert "café".encode() in raw
+        (output / "receipt.json").write_bytes(raw)
     worker = service(tmp_path, renderer=renderer)
     jid = finished(worker, caption="café")
     authority = json.loads(worker._row(jid)["output_authority_json"])
