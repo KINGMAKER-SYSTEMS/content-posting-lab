@@ -913,7 +913,10 @@ export function DistributionPage() {
           uploadStealth,
         })),
       });
-      if (!resp.ok) { const text = await resp.text(); throw new Error(text || 'Submit failed'); }
+      if (!resp.ok) {
+        const body = await resp.json().catch(() => null) as { detail?: string } | null;
+        throw new Error(body?.detail || 'Upload unavailable');
+      }
       const data = await resp.json();
       addUploadJob(data.job as UploadJob);
       addNotification('success', `Upload queued for ${uploadTarget.name}`);

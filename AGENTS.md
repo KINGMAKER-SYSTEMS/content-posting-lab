@@ -229,7 +229,10 @@
   `_patch_page` refuses non-canonical ids before any request. Alias-collision 409s never echo the alias.
 - `burn_server.py` exposes the same typed caption-render route on the posting
   Mac's canonical port-8002 Burn runtime for Rail consumption.
-- `events.md` is the repository's append-only chronological ledger.
+- `events/` is the repository's append-only chronological event log. Add one
+  `YYYY-MM-DD-HHMM-<branch-slug>.md` file per meaningful change, committed on
+  the work branch with its `worktree:` ref. Existing root `events.md` is frozen
+  history; read it before `events/` entries and never append to or edit it.
 - `SCHEMA.md` describes the current Editor Bay timeline, edit-command, ABN import,
   and render-cache contracts; `services/editor_timeline.py` and `routers/agenticnews.py` own the implementation.
 
@@ -257,6 +260,46 @@
 - `routers/upload.py` passes the legacy cookie-login account to its static
   Python subprocess runner as an argv value. Request values must never be
   interpolated into executable source; the exact account argument is preserved.
+- TikTok upload and cookie-login admission refuse Railway before queue writes
+  or login subprocess creation:
+  a mounted JSON file alone cannot coordinate worker claims or reconcile an
+  ambiguous browser Post after a crash. Enabling hosted uploads requires a
+  durable original-attempt receipt/reconciliation and single-writer claim
+  contract, plus the provider runtime and volume-backed queue migration.
+  Local installs retain the checkout-relative queue and must have an importable
+  callable uploader; upload submission also requires a job store whose existing
+  records have the queue-readable shape and unique job IDs. New records must
+  pass the same shape check before persistence; invalid submissions return 400.
+  Corrupt records are preserved and
+  never replaced with an empty queue. Missing prerequisites or failed
+  writes return 503; the job store itself must be explicitly provisioned as
+  an empty `[]` file for first use. If it is missing later, admission, queue
+  processing, listing and polling fail closed until the original history is
+  restored or an operator rules out prior attempts before provisioning anew.
+  Admission never proves a TikTok publication. A queued,
+  uploading, held, failed, or unproved completed job for the same real video path and cookie account
+  blocks another submission with 409 until the original attempt is reconciled;
+  a stable local file lock serializes queue writes and the queued-to-uploading
+  claim/cancel decision across worker processes. An unresolved uploading or held
+  claim also bars another provider call for that account, even for a different
+  queued job or process. A quarantined row with a readable account but invalid
+  status likewise blocks that account until reconciled. A quarantined prior
+  attempt with no readable account blocks any new submission or queued claim
+  for its real video path across accounts; if its video path is also unreadable,
+  all new upload claims wait for operator reconciliation. Preserve the original
+  row and allow unrelated known video paths to proceed. A bare provider
+  `Completed` or error return becomes a durable held result with its original
+  claim and return retained; it cannot
+  establish posting success or authorize a repeat. A completed row permits
+  explicit resubmission only with a matching canonical TikTok URL/video ID;
+  cancelled history retains its existing resubmission behavior. A conflict
+  creates no job or provider action.
+  Repeated saved copies of one upload ID, even identical rows, are all held for reconciliation;
+  no copy may execute or authorize a retry, even if one claims a terminal state.
+  Listing and polling expose the held status without making it executable.
+  The Uploads tab shows held records in their own section with the reconciliation
+  reason and no cancel/retry actions; held records suppress the empty-queue invitation.
+  Other valid jobs remain processable while those source rows are retained.
 - `POST /api/telegram/send` delivers only a media file whose real path is under
   `projects/<project>/<videos|clips|burned|recreate|slideshow-images>/` or the
   legacy `output`/`burn_output` dirs. The volume root beside those dirs holds
@@ -641,6 +684,14 @@
   is ambiguous and must never be submitted again. The existing one-time PA
   interruption retry remains bounded across restarts. Processing deadlines do
   not reset; an already-completed prediction may still be read after downtime.
+- `POST /api/control-plane/v1/job-receipts/by-idempotency-key` is a side-effect-free
+  lost-ack read. It requires the app API key and Control Plane bearer, scoped
+  page/lane/idempotency headers, and the exact original job-create JSON body.
+  It returns only the job ID and status when the durable key and canonical
+  request hash match and the saved status is queued, running, completed, or
+  failed. Missing, foreign, archived, mismatched, or legacy-unhashed jobs
+  require reconciliation; malformed saved statuses fail as unavailable. The
+  lookup must not start or resume work.
 - Application shutdown pauses checkpointed generation instead of deleting its
   paid artifacts. Authenticated, exact-page status/idempotency reads resume the
   same active job after replacement. A kernel-held per-job lock prevents two
@@ -735,9 +786,10 @@
   HDR encode cases need only ffmpeg/ffprobe; real-master cases additionally
   use the optional `HDR_FIXTURES_DIR` fixture directory.
 
-- Run `pytest -q tests/test_upload_login_account_data.py tests/test_upload_api.py tests/test_upload_cookies.py`
+- Run `pytest -q tests/test_upload_login_account_data.py tests/test_upload_api.py tests/test_upload_locking.py tests/test_upload_cookies.py`
   for literal account transport, injected expressions, login failure responses
-  and existing upload/cookie behavior without launching a browser.
+  and existing upload/cookie behavior without launching a browser. Spawned-process
+  races cover competing claims and cancellation before the winning claim is saved.
 
 - Run `pytest -q tests/test_visual_admission.py` for observed boat-frame OCR
   noise, short readable text, rotated single-frame text, complete coverage,
