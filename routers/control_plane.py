@@ -3836,7 +3836,7 @@ async def _run_syzygy_slideshow(job_id: str) -> None:
                 raise RuntimeError("slideshow_plan_invalid")
             if image_video:
                 from services.control_plane_image_video import recipe_image_video_plan
-                canonical = recipe_image_video_plan(recipe, library)
+                canonical = recipe_image_video_plan(recipe, library, plan.get("photoPlan", {}).get("beatSlideshow", {}).get("variant"))
                 if canonical is None or {key: value for key, value in plan.items() if key != "media"} != canonical:
                     raise RuntimeError("slideshow_plan_invalid")
                 pinned_by_key = {row["key"]: (row["sha256"], row["bytes"]) for row in plan["photoPlan"]["media"]}
@@ -4215,6 +4215,23 @@ def _start_syzygy_slideshow(job_id: str) -> None:
     task.add_done_callback(
         lambda _: _syzygy_slideshow_tasks.pop(job_id, None),
     )
+
+
+@router.post("/v1/slideshow-beats")
+async def slideshow_beats(
+    authorization: str | None = Header(default=None),
+    body: dict[str, Any] = Body(default=None),
+) -> dict[str, Any]:
+    """Resolve tempo for a staged sound; no render, posting or audio-start mutation."""
+    require_control_plane_bearer(authorization)
+    if not isinstance(body, dict) or set(body) - {"soundUrl", "metadata"} or not isinstance(body.get("soundUrl"), str):
+        raise HTTPException(status_code=400, detail="soundUrl and optional metadata are required")
+    from services.beat_slideshow import resolve_sound_beats
+    try:
+        return await resolve_sound_beats(body["soundUrl"], body.get("metadata"))
+    except (ValueError, RuntimeError, OSError, asyncio.TimeoutError):
+        logging.getLogger(__name__).warning("slideshow_beat_analysis_unavailable")
+        raise HTTPException(status_code=422, detail="beat_analysis_unavailable_keep_fixed_slideshow")
 
 
 @router.post("/v1/source-imports")

@@ -170,10 +170,18 @@ def _validate_spec(
         "dossier.recipe-spec.v3": SPEC_FIELDS_V3,
         "dossier.recipe-spec.v4": SPEC_FIELDS_V4,
     }.get(schema)
-    if not isinstance(spec, dict) or set(spec) != expected_fields or schema not in {
+    if not isinstance(spec, dict) or set(spec) - {"beatSlideshow"} != expected_fields or schema not in {
         "dossier.recipe-spec.v2", "dossier.recipe-spec.v3", "dossier.recipe-spec.v4",
     }:
         raise HTTPException(400, "recipe spec schema mismatch")
+    if "beatSlideshow" in spec:
+        from services.beat_slideshow import validate_config
+        try:
+            validate_config(spec["beatSlideshow"])
+        except ValueError as error:
+            raise HTTPException(400, "beat slideshow config is invalid") from error
+        if spec.get("masterPages", {}).get("pageId") != "acct:pen-pal3":
+            raise HTTPException(400, "beat slideshow requires its cat page")
     master_pages = exact_intent(
         spec.get("masterPages"), spec.get("masterPagesHash"),
         expected_page_id=str(spec.get("masterPages", {}).get("pageId") or ""),

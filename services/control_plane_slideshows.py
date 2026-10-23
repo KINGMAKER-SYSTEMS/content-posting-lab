@@ -754,9 +754,24 @@ def plan_slideshows(
     if recipe.format_slug in IMAGE_VIDEO_FORMATS:
         from services.control_plane_image_video import recipe_image_video_plan
         plan = recipe_image_video_plan(recipe, library)
-        if plan is None or plan["signature"] in unavailable_signatures:
+        if plan is None:
             return []
-        return [plan]
+        if recipe.recipe_spec.get("beatSlideshow") is not None:
+            from services.beat_slideshow import variant_count
+            from services.control_plane_image_video import image_video_plan
+            total = variant_count(image_video_plan(plan["photoPlan"]["pageId"]), recipe.recipe_spec["beatSlideshow"])
+            offset = int(hashlib.sha256(run_id.encode()).hexdigest()[:8], 16) % total
+            selected = []
+            seen = set(unavailable_signatures)
+            for index in range(total):
+                candidate = recipe_image_video_plan(recipe, library, (offset + index) % total)
+                if candidate["signature"] not in seen:
+                    selected.append(candidate)
+                    seen.add(candidate["signature"])
+                    if len(selected) >= min(count, recipe.max_quantity):
+                        break
+            return selected
+        return [] if plan["signature"] in unavailable_signatures else [plan]
     # The UGC format is a curated page library. A page with a curatedVideoPlan
     # renders that one ordered montage exactly once (never permuted); a generic
     # page renders the first mediaCount photo objects in ordinal order. No

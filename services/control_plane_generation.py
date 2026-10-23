@@ -297,6 +297,12 @@ def _typed_recipe_spec(publication: dict[str, Any]) -> dict[str, Any] | None:
             validate_caption_discipline(spec.get("captionDiscipline"))
         except ValueError:
             return None
+    if "beatSlideshow" in spec:
+        try:
+            from services.beat_slideshow import validate_config
+            validate_config(spec["beatSlideshow"])
+        except (ValueError, TypeError):
+            return None
     return spec
 
 

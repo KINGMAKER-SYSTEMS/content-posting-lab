@@ -95,3 +95,39 @@ def test_catalog_advertises_actual_page_photo_count(image_lab):
     assert bindings["image-library"]["minimumLibraryItems"]==count
     assert bindings["slideshow-treatment"]["minimumLibraryItems"]==count
     assert bindings["slideshow-treatment"]["templates"]==[{"slug":"page-photo-hold","mediaCount":count}]
+
+
+@pytest.mark.asyncio
+async def test_beat_experiment_runs_through_registered_jobs_and_receipts(image_lab, monkeypatch):
+    from tests.test_beat_slideshow import config
+    client,library,payload,photo=image_lab
+    if photo['pageId']!='acct:pen-pal3':
+        pytest.skip('single-image page keeps its existing path')
+    payload=dict(payload)
+    payload['recipeVersion']='image-beat-experiment-v1'
+    spec=json.loads(payload['recipeSpecCanonical']);spec['beatSlideshow']=config()
+    canonical=json.dumps(spec,sort_keys=True,separators=(',',':'))
+    payload.update(recipeSpecCanonical=canonical,recipeSpecHash='sha256:'+hashlib.sha256(canonical.encode()).hexdigest())
+    registered=client.post('/api/control-plane/v1/recipes',json=payload,headers=base.headers('beat-register-0001'))
+    assert registered.status_code==200,registered.json()
+    response=client.post('/api/control-plane/v1/jobs',json=base.job_body(1,payload),headers=base.headers('beat-run-0001'))
+    assert response.status_code==200,response.json()
+    base._fake_syzygy_boundary(monkeypatch,library);captured=[]
+    async def observe(_lib,keys):return [{'objectKey':x['key'],'bytes':x['bytes'],'sha256':x['sha256'],'etag':'"pinned"'} for x in photo['media'] if x['key'] in keys]
+    async def request(method,endpoint,**kwargs):
+        captured.append(kwargs);return {'job_id':'beat-'+str(len(captured)),'quality':'draft'}
+    async def grade(src,dst,correction,**kwargs):Path(dst).write_bytes(('beat-output-'+str(len(captured))).encode())
+    monkeypatch.setattr(cp,'observe_library_media',observe);monkeypatch.setattr(cp,'submit_syzygy_render',ss.submit_syzygy_render)
+    monkeypatch.setattr(ss,'_request_json',request);monkeypatch.setattr(cp,'run_color_correct',grade)
+    await cp._run_syzygy_slideshow(response.json()['jobId'])
+    job=cp._load_jobs()['jobs'][response.json()['jobId']]
+    assert job['status']=='completed',job.get('error')
+    assert len(captured)==len(job['clips'])==1
+    for clip,wire in zip(job['clips'],captured):
+        receipt=clip['source']['photoPlan']['beatSlideshow']
+        assert receipt['config']['soundId']=='song-1' and receipt['audioStart']==0
+        assert wire['body']['spec']['hook']['text']==receipt['caption']
+    again=client.post('/api/control-plane/v1/jobs',json=base.job_body(1,payload),headers=base.headers('beat-run-0002'))
+    assert again.status_code==200,again.json()
+    second=cp._load_jobs()['jobs'][again.json()['jobId']]
+    assert second['slideshowPlan'][0]['signature']!=job['slideshowPlan'][0]['signature']
