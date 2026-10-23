@@ -99,6 +99,14 @@ unfinished job cannot use this exception; any fallback key, including a null
 or malformed promise, requires the complete verified pair. Unverifiable jobs
 keep their media and fail closed through the existing verification errors.
 
+Succeeded status and idempotent replay refuse missing or malformed retained
+authority through the existing HTTP 409 error contract, preserving the row and
+media. This does not authenticate retained receipt contents against the exact
+receipt-byte pin. Conditional private-storage edits that remove both fallback
+members after retirement can still misclassify a pair as legacy and lose its
+burned dedup identity. See [the bounded repair disposition](post-render-authority-repair.md).
+This case remains open; the four pins must not be described as detecting it.
+
 The whole attempt fails if either render fails. Existing bounded job retries
 handle transient process failures before readiness. Durable verification checks
 both variants against their media hashes and decode evidence; partial or

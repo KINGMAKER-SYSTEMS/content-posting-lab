@@ -559,12 +559,11 @@ class PostRenderJobs:
             result["receipt_sha256"] = row["receipt_sha256"]
             # Shared clean bytes may have one UNIQUE column owner. Every job
             # retains its actual primary hash in verified output authority.
-            authority = (self._validate_output_authority(row, json.loads(row["output_authority_json"]))
-                         if row["final_sha256"] is None else row)
+            authority = self._validate_output_authority(row, self._load_output_authority(row))
             result["final_sha256"] = authority["final_sha256"]
             result["qa_frame_sha256"] = authority["qa_frame_sha256"]
             result["artifacts"] = {kind: f"/api/control-plane/v1/post-renders/{job_id}/artifacts/{kind}" for kind in (("final", "qa", "receipt", "burned_final", "burned_qa")
-                    if not self._legacy_clean_output(row, json.loads(row["output_authority_json"]))
+                    if not self._legacy_clean_output(row, authority)
                     and _caption_delivery(RenderJobSubmission.model_validate_json(row["submission_json"]).request) == "in_app"
                     else ("final", "qa", "receipt"))}
         return result
@@ -928,22 +927,31 @@ class PostRenderJobs:
             raise RenderJobError("output_authority_changed")
         return authority
 
+    @staticmethod
+    def _load_output_authority(row) -> dict:
+        """Decode retained evidence through the existing typed refusal contract.
+
+        Missing or corrupt authority is retained unchanged. Status/replay must
+        not invent authority from primary pins or start another render.
+        """
+        encoded = row["output_authority_json"]
+        if not encoded:
+            raise RenderJobError("output_authority_missing")
+        try:
+            authority = json.loads(encoded)
+        except (TypeError, ValueError) as error:
+            raise RenderJobError("output_authority_invalid") from error
+        if not isinstance(authority, dict):
+            raise RenderJobError("output_authority_invalid")
+        return authority
+
     def _verify_output(self, row) -> dict:
         """Return verified output facts from media, or its durable tombstone once removed."""
         from services.post_render import _file_hash
         output = self._output(row)
         required = tuple(output / name for name in ("receipt.json", "final.mp4", "qa.jpg", "decode.json"))
         if not output.is_dir() or not all(path.is_file() for path in required):
-            encoded = row["output_authority_json"]
-            if not encoded:
-                raise RenderJobError("output_authority_missing")
-            try:
-                authority = json.loads(encoded)
-            except (TypeError, ValueError) as error:
-                raise RenderJobError("output_authority_invalid") from error
-            if not isinstance(authority, dict):
-                raise RenderJobError("output_authority_invalid")
-            return self._validate_output_authority(row, authority)
+            return self._validate_output_authority(row, self._load_output_authority(row))
         with (output / "receipt.json").open("rb") as file:
             receipt_bytes = file.read(64 * 1024 + 1)
         if len(receipt_bytes) > 64 * 1024:
