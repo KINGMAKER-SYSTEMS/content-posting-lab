@@ -153,3 +153,34 @@ with 2,547-byte authority fixtures, ten samples at 10,000 historical jobs measur
 not a constant-time index claim. The lookup runs when output authority is saved in either mode, because ordinary
 outputs must also avoid an already-bound burned fallback. It adds no phone-drive
 work or paid call.
+
+
+Output identity lookup uses the existing `idempotency` primary-key index. Internal
+keys start with `/output-identity/v1/`, outside the public key alphabet, and hold
+one permanent captioned-output reservation per distinct hash. This does not
+change the meaning of `jobs.final_sha256`, the request keys, or the schema.
+Finish, ACK and retire use indexed probes under the same writer transaction as
+the authority write. They never parse the whole job history.
+
+Before serving work, each service start streams the retained authority history
+once under a writer lock to recover old ordinary and dual reservations, including
+retired shared-clean rows. Invalid JSON or an unavailable identity is logged with
+the job ID and skipped; known column hashes and prior reservations remain in
+force. This isolates corruption; it does not recover an unknown lost hash.
+Status omits unavailable legacy/shared hashes. Artifact reads still validate
+output authority and do not serve corrupt bytes.
+
+Stop the old runtime before opening this version on the same SQLite database.
+Concurrent instances of this version are safe; mixing 248 writers with these
+writers is unsupported because 248 does not maintain the private reservations.
+A rollback reads the unchanged columns and authority. Starting this version again
+always repeats the history pass to pick up writes made during the rollback.
+If backfill fails for a database/I/O reason, startup refuses work; restore the
+prior release and retain the database for repair. It must not silently run with
+an incomplete identity index. Private reservations are retained with request
+keys and tombstones, including when media or auxiliary attempts are pruned.
+
+The shared disk admission floor is 1,165,317,468 bytes per worker for all jobs;
+that includes the dual workspace reserve even for ordinary jobs. This follow-up
+changes status recovery and identity lookup, and the renderer docstring, while
+leaving rendering instructions and artifact contents unchanged.

@@ -505,7 +505,7 @@ def _render_post_single(source_path: Path, output_directory: Path, request: Post
 def render_post(source_path: Path, output_directory: Path, request: PostRenderRequest, *,
                 font_dir: Path | None = None, tools: RenderTools = RenderTools(),
                 clock_ms: Callable[[], int] = lambda: time.time_ns() // 1_000_000) -> RenderedPost:
-    """Publish both clean and captioned assets atomically for an in-app slot.
+    """Publish both clean and captioned assets with job-level verification for an in-app slot.
 
     Both variants use the identical source, caption and requested treatment.
     A failed fallback invalidates the entire attempt; the durable job retry

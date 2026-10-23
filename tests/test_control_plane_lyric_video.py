@@ -126,7 +126,7 @@ def test_real_editor_catalog_advertises_only_closed_scalar_timing_selection(monk
     assert next(e for e in foreign['formats'] if e['formatId']=='lyric-video')['productionSelections']==[]
 
 
-def test_all_preexisting_profiles_contracts_and_static_renderer_retain_baseline_identity():
+def test_legacy_maps_retain_baseline_hashes_and_static_renderer_matches_reviewed_pin():
     root=Path(__file__).resolve().parents[1]
     for path,key,expected in [
         ("content-engine-registry.v1.json","profiles","70baee7058a9805fb9865de57e37262ddc055d0a89f6ff50853c65c7415ec7a2"),
@@ -139,4 +139,4 @@ def test_all_preexisting_profiles_contracts_and_static_renderer_retain_baseline_
         current.pop("meme")
         assert hashlib.sha256(json.dumps(current,sort_keys=True,separators=(",",":"),ensure_ascii=False).encode()).hexdigest()==expected
     # Identity evidence: maj:~/rt-work/cx1022-t73L2/t73L2-evidence/identity-comparison.txt (15 legacy profiles/contracts; 30 byte-identical non-in_app renders).
-    assert hashlib.sha256((root/"services/post_render.py").read_bytes()).hexdigest()=="97562a9bc1fe7aff0f2e3be4566eaf889460a37e47cbf46fb68a253d29ad66b3"
+    assert hashlib.sha256((root/"services/post_render.py").read_bytes()).hexdigest()=="8b57a9791be0a6fc45d5808866f3392816a8f6223ddecf6e85554225c1603484"
