@@ -489,7 +489,7 @@ class PostRenderJobs:
                             else authority["final_sha256"])
                 if not isinstance(identity, str) or not re.fullmatch(r"[0-9a-f]{64}", identity):
                     raise ValueError("invalid output identity")
-            except (ValueError, TypeError, AttributeError, KeyError):
+            except (ValueError, TypeError, AttributeError, KeyError, RecursionError):
                 # Keep any earlier reservation. A corrupt row cannot erase a
                 # known identity or stop unrelated jobs from completing.
                 log.warning("post render identity backfill skipped invalid authority job=%s", candidate["id"])
@@ -595,7 +595,7 @@ class PostRenderJobs:
             if authority is None and row["output_authority_json"]:
                 try:
                     authority = self._validate_output_authority(row, json.loads(row["output_authority_json"]))
-                except (TypeError, ValueError, AttributeError, KeyError):
+                except (TypeError, ValueError, AttributeError, KeyError, RecursionError):
                     # Legacy/shared tombstones previously omitted unavailable hashes.
                     # Status is observational; artifact access still verifies authority.
                     log.warning("post render status omitted invalid authority job=%s", row["id"])
