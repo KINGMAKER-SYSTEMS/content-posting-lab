@@ -159,7 +159,15 @@ in public request keys. Startup validates completed in-app history and rebuilds
 these permanent reservations in one writer transaction. Unknown authority gets
 /output-uncertain/v1/<job> markers. New in-app reservations refuse until the
 original evidence is restored and the service restarts; known duplicate keys
-remain reserved. Ordinary-only startup adds no new write transaction.
+remain reserved. Old ordinary submissions that fail today's validation are
+logged and skipped when both saved treatments agree, have no `captionDelivery`
+field, and match the saved treatment hash. This grants no validity to that row;
+its bytes and artifacts stay untouched. Startup also removes only those rows'
+stale uncertainty markers left by older code. Ordinary-only startup adds no new
+write transaction unless such a marker needs removal. Conflicting, unreadable,
+or hash-damaged treatment history remains uncertain and keeps the in-app block;
+restore its original evidence and restart. The marker check is an indexed range
+read; invalid ordinary classification parses the two saved JSON treatment copies.
 
 This candidate does not fully contain PR 254: that draft indexes ordinary jobs
 too. Its all-mode timing and reservation storage measurements do not apply here.

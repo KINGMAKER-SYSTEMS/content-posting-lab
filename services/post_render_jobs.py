@@ -28,6 +28,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from services.post_render import (
     Hash, Identity, MAX_SOURCE_BYTES, MAX_FINAL_BYTES, MAX_OVERLAY_BYTES, MAX_QA_BYTES,
     PostRenderError, PostRenderRequest, RenderedPost, render_post, sha256, source_visual_matches, _caption_delivery,
+    _unique_object, _reject_nonfinite,
 )
 
 from services.post_render_timed import (
@@ -481,8 +482,36 @@ class PostRenderJobs:
         return "/output-identity/v1/" + identity
 
     @staticmethod
+    def _ordinary_history(submission_json: str) -> bool:
+        """Recognize burned history without applying today's submission schema.
+
+        Both saved treatment copies must agree, have no opt-in field, and
+        match the saved treatment hash.
+        Unreadable or conflicting history remains uncertain, never ordinary.
+        This classification grants no artifact or request validity.
+        """
+        try:
+            saved = json.loads(submission_json, object_pairs_hook=_unique_object, parse_constant=_reject_nonfinite)
+            raw = saved["request"]["render_treatment_json"]
+            treatment = json.loads(raw, object_pairs_hook=_unique_object, parse_constant=_reject_nonfinite)
+            slot = json.loads(saved["slot_payload_json"], object_pairs_hook=_unique_object, parse_constant=_reject_nonfinite)
+            return (isinstance(treatment, dict) and isinstance(slot["render_treatment"], dict)
+                    and sha256(raw.encode()) == saved["request"]["treatment_sha256"]
+                    and treatment == slot["render_treatment"]
+                    and "captionDelivery" not in treatment
+                    and "captionDelivery" not in slot["render_treatment"])
+        except (ValueError, TypeError, KeyError, RecursionError):
+            return False
+
+    @staticmethod
     def _needs_identity_backfill(db) -> bool:
-        """Ordinary-only startup adds no transaction or persistent reservation."""
+        """Ordinary-only startup writes only to remove a stale uncertainty marker."""
+        # Heal markers left by the older startup code, even if no in-app row
+        # exists to trigger the write pass. Never clear unclassifiable history.
+        for row in db.execute("SELECT jobs.submission_json FROM idempotency JOIN jobs ON jobs.id=idempotency.job_id "
+                              "WHERE key >= '/output-uncertain/v1/' AND key < '/output-uncertain/v10'"):
+            if PostRenderJobs._ordinary_history(row["submission_json"]):
+                return True
         needed = False
         for row in db.execute("SELECT * FROM jobs WHERE state='succeeded' OR receipt_sha256 IS NOT NULL"):
             try:
@@ -493,15 +522,17 @@ class PostRenderJobs:
                     json.loads(row["output_authority_json"])
             except (ValueError, TypeError, RecursionError):
                 log.warning("post render identity backfill skipped invalid authority job=%s", row["id"])
-                # A corrupt immutable request cannot establish ordinary mode.
-                try:
-                    RenderJobSubmission.model_validate_json(row["submission_json"])
-                except ValueError:
+                # Old ordinary submissions may fail today's stricter schema.
+                if not PostRenderJobs._ordinary_history(row["submission_json"]):
                     needed = True
         return needed
 
     def _backfill_output_identities(self, db) -> None:
         """Recover in-app identities; quarantine unverifiable in-app history."""
+        for marked in db.execute("SELECT jobs.* FROM idempotency JOIN jobs ON jobs.id=idempotency.job_id "
+                                 "WHERE key >= '/output-uncertain/v1/' AND key < '/output-uncertain/v10'").fetchall():
+            if self._ordinary_history(marked["submission_json"]):
+                self._clear_ordinary_uncertainty(db, marked)
         for candidate in db.execute("SELECT * FROM jobs WHERE state='succeeded' OR receipt_sha256 IS NOT NULL"):
             try:
                 request = RenderJobSubmission.model_validate_json(candidate["submission_json"]).request
@@ -516,6 +547,9 @@ class PostRenderJobs:
                 fallback = authority.get("burned_fallback")
                 identity = fallback["artifact"]["final_sha256"] if fallback else authority["final_sha256"]
             except (ValueError, TypeError, AttributeError, KeyError, RecursionError):
+                if self._ordinary_history(candidate["submission_json"]):
+                    log.warning("post render identity backfill skipped invalid ordinary submission job=%s", candidate["id"])
+                    continue
                 log.warning("post render identity backfill quarantined authority job=%s", candidate["id"])
                 db.execute("INSERT OR IGNORE INTO idempotency(key,job_id,request_hash) VALUES(?,?,?)",
                            ("/output-uncertain/v1/" + candidate["id"], candidate["id"], candidate["request_hash"]))
@@ -523,6 +557,13 @@ class PostRenderJobs:
             db.execute("DELETE FROM idempotency WHERE key=?", ("/output-uncertain/v1/" + candidate["id"],))
             db.execute("INSERT OR IGNORE INTO idempotency(key,job_id,request_hash) VALUES(?,?,?)",
                        (self._identity_key(identity), candidate["id"], identity))
+
+    @staticmethod
+    def _clear_ordinary_uncertainty(db, row) -> None:
+        key = "/output-uncertain/v1/" + row["id"]
+        if db.execute("SELECT 1 FROM idempotency WHERE key=?", (key,)).fetchone():
+            db.execute("DELETE FROM idempotency WHERE key=?", (key,))
+            log.warning("post render identity backfill cleared stale ordinary uncertainty job=%s", row["id"])
 
     @contextlib.contextmanager
     def _db(self):
