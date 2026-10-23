@@ -489,7 +489,7 @@ class PostRenderJobs:
                             else authority["final_sha256"])
                 if not isinstance(identity, str) or not re.fullmatch(r"[0-9a-f]{64}", identity):
                     raise ValueError("invalid output identity")
-            except (ValueError, TypeError, AttributeError, KeyError):
+            except (ValueError, TypeError, AttributeError, KeyError, RecursionError):
                 # Keep any earlier reservation. A corrupt row cannot erase a
                 # known identity or stop unrelated jobs from completing.
                 log.warning("post render identity backfill skipped invalid authority job=%s", candidate["id"])

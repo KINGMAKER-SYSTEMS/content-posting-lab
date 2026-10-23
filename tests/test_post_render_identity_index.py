@@ -77,3 +77,16 @@ def test_renderer_describes_pair_verification_without_filesystem_atomicity_claim
     from services.post_render import render_post
     assert 'atomically' not in render_post.__doc__
     assert 'verif' in render_post.__doc__
+
+
+def test_deeply_nested_corrupt_authority_does_not_stop_startup(tmp_path, caplog):
+    worker = service(tmp_path)
+    bad = worker.enqueue(submission(slot_id='slot:deep'), 'request:deep')
+    with worker._db() as db:
+        db.execute('UPDATE jobs SET output_authority_json=?,state=? WHERE id=?',
+                   ('[' * 2000 + '0' + ']' * 2000, 'succeeded', bad['id']))
+    worker = service(tmp_path)
+    good = worker.enqueue(submission(slot_id='slot:afterdeep'), 'request:afterdeep')
+    assert worker.run_one()
+    assert worker.status(good['id'])['state'] == 'succeeded'
+    assert bad['id'] in caplog.text
