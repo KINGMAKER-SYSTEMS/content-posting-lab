@@ -116,10 +116,11 @@ column convention and retain their actual clean hash in full output authority.
 Status reads that verified authority for shared jobs, including after restart
 and media retirement; no column is repurposed to hold a different file's hash.
 
-Shared clean bytes also change retention proof. A dual job is retired only after
-its own `/acknowledge` records that both variants were admitted, followed by the
-existing safety window. A primary-only presence check cannot retire another
-caption's unacknowledged fallback. The Worker must acknowledge each admitted
+Shared clean bytes also change automatic retention proof. A dual job is
+automatically retired only when its own `/acknowledge` records that both variants were admitted and the applicable
+existing age/planned-slot window has passed. That window need not start after
+acknowledgement. A primary-only presence check cannot retire another caption's
+unacknowledged fallback. The Worker must acknowledge each admitted
 pair; otherwise its Lab media remains retained. Ordinary rendered jobs keep the
 existing primary-final confirmation sweep.
 
