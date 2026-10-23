@@ -564,7 +564,8 @@ class PostRenderJobs:
             result["final_sha256"] = authority["final_sha256"]
             result["qa_frame_sha256"] = authority["qa_frame_sha256"]
             result["artifacts"] = {kind: f"/api/control-plane/v1/post-renders/{job_id}/artifacts/{kind}" for kind in (("final", "qa", "receipt", "burned_final", "burned_qa")
-                    if _caption_delivery(RenderJobSubmission.model_validate_json(row["submission_json"]).request) == "in_app"
+                    if not self._legacy_clean_output(row, json.loads(row["output_authority_json"]))
+                    and _caption_delivery(RenderJobSubmission.model_validate_json(row["submission_json"]).request) == "in_app"
                     else ("final", "qa", "receipt"))}
         return result
 
@@ -811,6 +812,29 @@ class PostRenderJobs:
     def _output(self, row) -> Path:
         return self.root / "attempts" / row["id"] / row["attempt_id"] / "render"
 
+    @staticmethod
+    def _legacy_clean_output(row, authority: dict) -> bool:
+        """Recognize already-committed clean-only success, never a new attempt.
+
+        The retained authority must agree exactly with the candidate facts and
+        all four durable byte pins. Absence of media alone is not a legacy
+        signal: any promised fallback (even null/malformed) still requires the
+        pair. No request, receipt, or authority is rewritten for compatibility.
+        """
+        if row["state"] != "succeeded" or not isinstance(authority, dict):
+            return False
+        receipt = authority.get("receipt")
+        if (not isinstance(receipt, dict) or receipt.get("caption_delivery") != "in_app"
+                or "burned_fallback" in receipt or "burned_fallback" in authority):
+            return False
+        if any(not row[key] or row[key] != authority.get(key) for key in
+               ("receipt_sha256", "final_sha256", "qa_frame_sha256", "final_byte_length")):
+            return False
+        try:
+            return json.loads(row["output_authority_json"]) == authority
+        except (TypeError, ValueError):
+            return False
+
     def _validate_output_authority(self, row, authority: dict) -> dict:
         """Validate durable output facts against the immutable request and job row."""
         if authority.get("schema") != OUTPUT_AUTHORITY_SCHEMA:
@@ -871,7 +895,7 @@ class PostRenderJobs:
                 or evidence.get("final_probe", {}).get("duration_ms") != receipt.get("duration_ms")
                 or receipt.get("duration_ms", 0) <= 0):
             raise RenderJobError("decode_evidence_missing")
-        if _caption_delivery(request) == "in_app":
+        if _caption_delivery(request) == "in_app" and not self._legacy_clean_output(row, authority):
             fallback = receipt.get("burned_fallback")
             burned = authority.get("burned_fallback")
             if (receipt.get("caption_delivery") != "in_app" or not isinstance(fallback, dict)
@@ -893,7 +917,7 @@ class PostRenderJobs:
                     or (probe.get("width"), probe.get("height"), probe.get("video_codec"), probe.get("pixel_format"))
                        != (1080, 1920, "h264", "yuv420p")):
                 raise RenderJobError("burned_fallback_decode_missing")
-        elif "burned_fallback" in receipt or "caption_delivery" in receipt:
+        elif _caption_delivery(request) != "in_app" and ("burned_fallback" in receipt or "caption_delivery" in receipt):
             raise RenderJobError("burned_fallback_invalid")
         receipt_sha = authority.get("receipt_sha256")
         if (not isinstance(receipt_sha, str) or not re.fullmatch(r"[0-9a-f]{64}", receipt_sha)
@@ -946,7 +970,7 @@ class PostRenderJobs:
             "receipt": receipt,
             "decode": evidence,
         }
-        if _caption_delivery(request) == "in_app":
+        if _caption_delivery(request) == "in_app" and not self._legacy_clean_output(row, authority):
             try:
                 burned_sha, burned_length = _file_hash(output / "burned/final.mp4", MAX_FINAL_BYTES)
                 burned_qa, _ = _file_hash(output / "burned/qa.jpg", MAX_QA_BYTES)
