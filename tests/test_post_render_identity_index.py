@@ -11,8 +11,8 @@ from tests.test_post_render_dual_dedup import dual_render, payload
 
 
 def test_finish_identity_probe_does_not_read_history_json(tmp_path):
-    worker = service(tmp_path)
-    job = worker.enqueue(submission(), 'request:probe')
+    worker = service(tmp_path, renderer=dual_render)
+    job = worker.enqueue(payload("slot:probe", "probe"), 'request:probe')
     assert worker.run_one()
     row = worker._row(job['id'])
     authority = json.loads(row['output_authority_json'])

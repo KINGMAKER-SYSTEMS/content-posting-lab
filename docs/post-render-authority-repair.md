@@ -1,105 +1,74 @@
-# Retained authority repair: bounded offline disposition
+# Retained receipt authority
 
-F2 root decoding and the reproduced nested type failures are contained. F1 remains open; this package must not ship as a complete
-integrity repair. Source baseline: 73520496993b7cf3f5115fe03b5fef1efd6a2d44.
+The in-app candidate authenticates retained receipt contents against the exact
+original receipt SHA-256 already pinned in the job row. New in-app authority keeps
+the original receipt bytes as base64 in the existing output_authority_json.
+No table, column, public request or renderer receipt changes.
 
-## F2: controlled refusal
+For old authority without those bytes, the checker reconstructs the production
+renderer’s canonical sorted compact UTF-8 encoding and checks its hash. A match
+authenticates those exact bytes. If that fails, only the still-present original
+receipt file can establish the encoding. Decoded contents must also equal the
+retained receipt. A noncanonical retired receipt without recoverable bytes is
+unverifiable and refuses. This deliberately changes the earlier compatibility
+policy; it does not pretend to recover lost whitespace or key order.
 
-Succeeded status now decodes retained output authority through the same typed
-loader as tombstone verification, then validates the authority for both unique
-primary owners and shared-clean jobs. Missing authority raises
-`output_authority_missing`; invalid JSON or a non-object raises
-`output_authority_invalid`. Existing authenticated status and idempotent submit
-routes translate these to HTTP 409. Queued/failed status is unchanged.
+A pair with both burned_fallback members removed cannot become clean-only
+legacy: its changed receipt cannot match the original hash. Nested malformed
+completion/duration/frame-count and decode/probe types retain typed refusals.
 
-Detection automatically replaces the unhandled parser exception with the
-existing refusal envelope. The safe fallback is to retain the original row,
-request, pins, idempotency binding and media for inspection. It neither restores
-invented authority nor rerenders, refetches or overwrites paid output. This is
-error containment, not automatic repair of lost evidence. Tests cover SQL NULL,
-malformed JSON, JSON null/list/number/string for both primary-owner and shared
-jobs, direct status/replay, authenticated HTTP status/replay, row preservation,
-media retention and a healthy second job.
+## Recovery and fallback
 
-The nested follow-up starts at `5dfdbcfdb8c5764a40df883a3f94a97f53fc400b`.
-Explicit type guards now precede completion-time/duration/frame-count numeric
-operations and clean/burned decode/probe member access. Wrong types raise the
-existing `artifact_binding_mismatch`, `decode_evidence_missing` or
-`burned_fallback_decode_missing` errors, translated to HTTP 409 for primary and
-shared rows. The four T154 cases and three sibling-field type failures have
-original-red/candidate-green HTTP regressions. Full-app tests exercise both its
-API-key middleware and the route's bearer/page boundary without starting workers.
-Refusals retain every jobs/attempts/idempotency row and attempt-file hash; the
-next distinct valid job still renders a captioned fallback. No automatic paid
-rerender or replacement of corrupt evidence occurs. This does not promise
-comprehensive malformed-storage normalization, receipt authenticity or repair of
-lost evidence. Healthy baseline legacy history keeps its existing lifecycle.
+On startup, one transaction validates completed/pinned in-app history and
+backfills permanent burned identities into private /output-identity/v1/ keys in
+the existing idempotency table. Missing, corrupt or unverifiable in-app authority
+records a private /output-uncertain/v1/ job marker. Known identity reservations
+survive corruption. New in-app reservations refuse while any uncertainty marker
+exists; ordinary jobs stay available. Status and artifact verification refuse
+invalid in-app evidence without enqueueing paid work.
 
-## F1: conditional storage-corruption case remains open
+Restoring independently verified original authority and restarting automatically
+clears the corresponding uncertainty marker and rebuilds its identity. No code
+guesses evidence, refetches media, rerenders, deletes paid output, or rewrites the
+immutable job pins. Live legacy noncanonical receipts can acquire exact-byte
+retention on normal ACK/retirement before media is removed. Preexisting
+unverifiable tombstones require operator evidence recovery, not another render.
 
-After successful pair ACK and retirement, editing private SQLite to remove both
-`burned_fallback` members (authority and nested receipt) leaves the four persisted
-pins unchanged. Existing verification accepts the altered object as legacy;
-identity reservation can then admit a repeat burned creative. No public request
-producer, actual post or downstream admission bypass is demonstrated.
+The startup uncertainty policy can prevent ACK/retirement that needs a new
+in-app reservation, even for another healthy job. Already acknowledged status
+replays remain observational. This availability cost is intentional containment.
 
-The receipt pin hashes exact bytes. `_authority_values` recursively sorts keys
-when retaining the decoded receipt, losing its original order and whitespace.
-Both the actual baseline and current production renderer serialize canonically
-(sorted keys, compact separators, UTF-8 without ASCII escaping). For those
-receipts recomputing that serialization and comparing its digest to the retained
-immutable pin is possible and detects nested receipt alteration. The accepted
-baseline fixture, however, came from actual baseline job persistence with a
-mock renderer using noncanonical JSON. Its original 1,049-byte receipt hashes to
-b846dfcd1ac6b7f633ef450940d2cd996faf137c5bdec68b526dcb016d3756a2;
-the canonical 1,006-byte projection hashes to
-431df45201bd9104188c3946163d0e14fc8e7c17b35ec13c22329e26e5e35986.
-Its retired clean-only authority remains valid under the existing contract.
+Stop the old runtime before the new one uses the same database. Mixed old/new
+writers are unsupported. Restart always backfills, including after rollback.
+A running runtime does not continuously police arbitrary private database edits:
+existing permanent identities remain authoritative, and verification detects
+receipt tampering on access. Compromise of all pins/request/indexes is outside
+the retained-authority corruption model.
 
-Thus a canonical-only check would reject a required valid baseline lifecycle.
-Treating a mismatch as legacy would retain F1. Guessing a finite list of historic
-serializations cannot establish all previously accepted receipt bytes, and a
-fixture-specific key-order exception would be a test-specific production rule.
-No such exception or silent trust-contract change is included. This is a bound
-on this migration-free repair, not a claim that every possible design is
-impossible. The code still trusts this retained JSON; its pins do not currently
-authenticate the retained receipt contents after retirement.
+## Ordinary traffic and PR 254
 
-## Bounded design requiring a separate approved contract
+Ordinary valid render outputs, persisted authority bytes, final-hash dedup,
+tables and write transactions stay as in ee33b9051. Ordinary history never gets
+new reservation rows. Its historical duplicate query still scans history; it
+now guards malformed JSON before extraction. Invalid old ordinary status omits
+unavailable hashes as in the PR 254 LOW repair.
 
-1. Specify whether historical compatibility includes every accepted receipt
-   encoding or only proven production canonical producers. Preserve uncertain
-   existing rows; do not relabel or synthesize authority from primary pins.
-2. For receipts with available original bytes, compare their exact hash to the
-   existing receipt pin, decode them, and require exact equality with retained
-   receipt facts before using legacy classification or burned identity. Do not
-   infer identity from clean bytes alone.
-3. Retain original authenticated receipt bytes before deleting media in a future
-   approved persistence revision. Define versioning and a bounded maximum using
-   the existing 64 KiB receipt limit before implementation. No schema or field
-   layout is proposed as already authorized. Hash verification supplies
-   integrity against unchanged pins, not authenticity against a writer able to
-   rewrite the pins too.
-4. For already-retired canonical receipts, authenticate the canonical projection
-   against the existing pin. For noncanonical tombstones with no original bytes,
-   use an explicitly approved quarantine/refusal policy, or obtain independent
-   immutable original receipt evidence. Automatic reconstruction is not safe.
-5. Apply the check at status/verification AND inside the same writer transaction
-   that reads historical identities for reservation. Fixing only verification
-   leaves the dedup path vulnerable. Never skip an uncertain history entry and
-   admit a new creative; refuse the reservation with a named integrity error.
-   This conservative fallback can block new admissions across jobs until evidence
-   is restored; that availability tradeoff needs explicit acceptance.
-6. Red tests must include double removal with unchanged pins for primary and
-   shared owners, normal and canonical encodings, after restart/retirement,
-   status/replay/ACK, duplicate same and different clean bytes, an unaffected
-   distinct-caption pair, and simultaneous admission. Prove every bypass mutant
-   fails behaviorally. Benchmark parsing/hashing and writer-lock duration at
-   1k/10k/20k retained rows before approval; no indexed constant-cost claim.
+The candidate includes the LOW docs/test naming and malformed-history isolation,
+and scopes the permanent index to in-app jobs. It does not fully contain PR 254’s
+all-mode indexed reservations, so PR 254 is not superseded. In particular do not
+copy its all-mode lookup or storage cost claims onto this candidate.
 
-No migration, repair of existing storage, invented credential, schema change or
-production action is included. Current F1 has no detection or automatic remedy;
-the red correctness probes are retained as delivery evidence, separate from the
-normal regression suite. They must stay visibly red until the contract is
-resolved. Request genuine independent-family review of the immutable final head
-and this bounded disposition. Codex's checks are supplementary only.
+## Cost and verification
+
+New in-app status verifies a bounded receipt of at most 64 KiB; base64 storage is
+at most 87,384 bytes per receipt. No additional provider calls or media renders.
+Startup remains linear in history, and permanent reservation storage grows with
+history. In-app indexed probes execute inside the output writer transaction.
+Ordinary-only startup adds read-only scans but no write transaction.
+
+Regression tests cover primary/shared pairs, double stripping with/without
+restart, raw/projection tampering, Unicode canonical reconstruction, null/malformed
+historical authority, fail-closed new in-app admission, ordinary availability,
+restoration/restart recovery, and direct reservation. The noncanonical baseline
+fixture now explicitly expects refusal only after original bytes have already
+been lost; its live lifecycle remains covered.

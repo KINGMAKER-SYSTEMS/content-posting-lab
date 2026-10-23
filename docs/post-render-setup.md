@@ -93,22 +93,22 @@ upgrade. Compatibility requires an already-succeeded row, all four persisted
 receipt/final/QA/length pins, and exact agreement with its retained clean-only
 authority. Status advertises only final, QA and receipt; download and ACK still
 verify their immutable bindings. Ordinary exact-final admission confirmation
-allows age-out, and retained authority remains usable after retirement. No
+allows age-out. Retired authority remains usable only when exact receipt bytes can be authenticated. No
 burned fallback is invented or promised for these historical bytes. A new or
 unfinished job cannot use this exception; any fallback key, including a null
 or malformed promise, requires the complete verified pair. Unverifiable jobs
 keep their media and fail closed through the existing verification errors.
 
-Succeeded status and idempotent replay refuse missing retained authority,
-invalid JSON/non-object roots, and wrong numeric/object types at the retained
-completion-time, duration, decoded-frame-count and clean/burned decode-probe
-checks through the existing HTTP 409 error contract. These refusals preserve
-rows and media and never schedule a replacement render. This is bounded type
-validation of retained authority, not comprehensive storage-corruption recovery. This does not authenticate retained receipt contents against the exact
-receipt-byte pin. Conditional private-storage edits that remove both fallback
-members after retirement can still misclassify a pair as legacy and lose its
-burned dedup identity. See [the bounded repair disposition](post-render-authority-repair.md).
-This case remains open; the four pins must not be described as detecting it.
+In-app succeeded status and idempotent replay refuse malformed retained
+authority through existing HTTP 409 errors. Exact original receipt bytes are
+kept in private authority JSON and checked against the existing receipt pin.
+Old canonical receipts can be reconstructed only when the exact hash matches;
+other old encodings need the original file. Unverifiable retired receipts refuse.
+Both-fallback stripping cannot downgrade a pair to legacy. Startup quarantines
+uncertain in-app history and blocks new in-app reservations until original
+evidence is restored and the service restarts; ordinary jobs remain available.
+See [authority recovery and compatibility](post-render-authority-repair.md).
+No paid refetch/rerender or fabricated evidence is an automatic remedy.
 
 The whole attempt fails if either render fails. Existing bounded job retries
 handle transient process failures before readiness. Durable verification checks
@@ -146,41 +146,29 @@ unacknowledged fallback. The Worker must acknowledge each admitted
 pair; otherwise its Lab media remains retained. Ordinary rendered jobs keep the
 existing primary-final confirmation sweep.
 
-The no-schema burned-identity lookup scans retained local job authority. On maj,
-with 2,547-byte authority fixtures, ten samples at 10,000 historical jobs measured
-26.55 ms median / 29.24 ms maximum per writer reservation; 20,000 jobs measured
-54.17 ms median / 56.04 ms maximum. This cost grows with retained history; it is
-not a constant-time index claim. The lookup runs when output authority is saved in either mode, because ordinary
-outputs must also avoid an already-bound burned fallback. It adds no phone-drive
-work or paid call.
+Ordinary output identity lookup retains the ee33b9051 historical scan and
+database writes. It isolates malformed JSON before extraction. The prior scan
+measurements (10,000 jobs: 26.55 ms median; 20,000: 54.17 ms) describe that
+history-dependent work, not a constant-time guarantee.
 
+### In-app identity recovery
 
-Output identity lookup uses the existing `idempotency` primary-key index. Internal
-keys start with `/output-identity/v1/`, outside the public key alphabet, and hold
-one permanent captioned-output reservation per distinct hash. This does not
-change the meaning of `jobs.final_sha256`, the request keys, or the schema.
-Finish, ACK and retire use indexed probes under the same writer transaction as
-the authority write. They never parse the whole job history.
+In-app lookup uses the existing idempotency primary-key index. Private
+/output-identity/v1/<sha> keys reserve each burned creative; slash cannot occur
+in public request keys. Startup validates completed in-app history and rebuilds
+these permanent reservations in one writer transaction. Unknown authority gets
+/output-uncertain/v1/<job> markers. New in-app reservations refuse until the
+original evidence is restored and the service restarts; known duplicate keys
+remain reserved. Ordinary-only startup adds no new write transaction.
 
-Before serving work, each service start streams the retained authority history
-once under a writer lock to recover old ordinary and dual reservations, including
-retired shared-clean rows. Invalid JSON or an unavailable identity is logged with
-the job ID and skipped; known column hashes and prior reservations remain in
-force. This isolates corruption; it does not recover an unknown lost hash.
-Status omits unavailable legacy/shared hashes. Artifact reads still validate
-output authority and do not serve corrupt bytes.
+This candidate does not fully contain PR 254: that draft indexes ordinary jobs
+too. Its all-mode timing and reservation storage measurements do not apply here.
+No new table, column, schema migration, paid call or media render is introduced.
+Storage and startup time still grow with history.
 
-Stop the old runtime before opening this version on the same SQLite database.
-Concurrent instances of this version are safe; mixing 248 writers with these
-writers is unsupported because 248 does not maintain the private reservations.
-A rollback reads the unchanged columns and authority. Starting this version again
-always repeats the history pass to pick up writes made during the rollback.
-If backfill fails for a database/I/O reason, startup refuses work; restore the
-prior release and retain the database for repair. It must not silently run with
-an incomplete identity index. Private reservations are retained with request
-keys and tombstones, including when media or auxiliary attempts are pruned.
-
-The shared disk admission floor is 1,165,317,468 bytes per worker for all jobs;
-that includes the dual workspace reserve even for ordinary jobs. This follow-up
-changes status recovery and identity lookup, and the renderer docstring, while
-leaving rendering instructions and artifact contents unchanged.
+Stop the old runtime before starting this version on the same database; mixed
+writers are unsupported. Restart backfills after rollback too. A database or I/O
+failure during recovery refuses startup rather than serving an incomplete index.
+Keep private reservations with their job/request history. Unverifiable receipt
+bytes are not reconstructed by guessing. See post-render-authority-repair.md
+for exact-byte compatibility and the availability cost of uncertain history.

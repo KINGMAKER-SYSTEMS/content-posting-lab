@@ -42,7 +42,7 @@ def legacy(root, *, confirm=True):
     return worker, row["id"]
 
 
-@pytest.mark.parametrize("operation", ["artifact", "ack_retire", "age_out", "tombstone"])
+@pytest.mark.parametrize("operation", ["artifact", "ack_retire", "age_out"])
 def test_persisted_baseline_upgrade_lifecycle(tmp_path, operation):
     worker, job_id = legacy(tmp_path)
     original = dict(worker._row(job_id))
@@ -66,7 +66,9 @@ def test_persisted_baseline_upgrade_lifecycle(tmp_path, operation):
     restarted = service(tmp_path)
     row = dict(restarted._row(job_id))
     assert row["submission_json"] == original["submission_json"]
-    assert row["output_authority_json"] == original["output_authority_json"]
+    retained = json.loads(row["output_authority_json"])
+    retained.pop("receipt_bytes_b64", None)
+    assert retained == json.loads(original["output_authority_json"])
     submission = jobs.RenderJobSubmission.model_validate_json(row["submission_json"])
     assert restarted.enqueue(submission, "request:legacy")["id"] == job_id
     assert not restarted.run_one()
