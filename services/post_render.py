@@ -523,6 +523,7 @@ def render_post(source_path: Path, output_directory: Path, request: PostRenderRe
         burned_receipt = json.loads(fallback.receipt_json)
         receipt["burned_fallback"] = {key: burned_receipt[key] for key in (
             "final_sha256", "final_byte_length", "final_object_key", "qa_frame_sha256")}
+        receipt["burned_fallback"]["final_object_key"] = f"posting/dual-final/{burned_receipt['final_sha256']}.mp4"
         encoded = json.dumps(receipt, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
         result.receipt_path.write_bytes(encoded)
         return RenderedPost(result.final_path, result.qa_frame_path, result.receipt_path,

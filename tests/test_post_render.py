@@ -599,6 +599,7 @@ def test_in_app_renders_a_clean_clip_with_no_caption_pixels(actual_source, tmp_p
     fallback_dir = tmp_path / "in_app" / "burned"
     assert fallback["final_sha256"] == render.sha256((fallback_dir / "final.mp4").read_bytes())
     assert fallback["qa_frame_sha256"] == render.sha256((fallback_dir / "qa.jpg").read_bytes())
+    assert fallback["final_object_key"] == f"posting/dual-final/{fallback['final_sha256']}.mp4"
     assert fallback["final_byte_length"] == (fallback_dir / "final.mp4").stat().st_size
     assert fallback["final_sha256"] == burned_receipt["final_sha256"]
     assert fallback["qa_frame_sha256"] == burned_receipt["qa_frame_sha256"]

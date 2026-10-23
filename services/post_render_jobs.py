@@ -882,7 +882,7 @@ class PostRenderJobs:
                     or type(fallback.get("final_byte_length")) is not int
                     or not 0 < fallback["final_byte_length"] <= MAX_FINAL_BYTES
                     or fallback["final_sha256"] in {final_sha, request.source_sha256}
-                    or fallback["final_object_key"] != f"posting/final/{fallback['final_sha256']}.mp4"):
+                    or fallback["final_object_key"] != f"posting/dual-final/{fallback['final_sha256']}.mp4"):
                 raise RenderJobError("burned_fallback_invalid")
             decode = burned.get("decode", {})
             probe = decode.get("final_probe", {})
@@ -955,7 +955,7 @@ class PostRenderJobs:
                     raise ValueError("oversized decode")
                 authority["burned_fallback"] = {"artifact": {
                     "final_sha256": burned_sha, "final_byte_length": burned_length,
-                    "final_object_key": f"posting/final/{burned_sha}.mp4", "qa_frame_sha256": burned_qa},
+                    "final_object_key": f"posting/dual-final/{burned_sha}.mp4", "qa_frame_sha256": burned_qa},
                     "decode": json.loads(decode_bytes)}
             except (OSError, ValueError) as error:
                 raise RenderJobError("burned_fallback_invalid") from error

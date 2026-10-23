@@ -80,7 +80,12 @@ the identical source, caption and requested treatment binding; the fallback
 does not repeat source grade, speed or crop. The existing receipt adds
 `caption_delivery: "in_app"` and `burned_fallback`, containing `final_sha256`,
 `final_byte_length`, `final_object_key` and `qa_frame_sha256`. The fallback uses
-the normal `posting/final/<sha>.mp4` content-addressed object key. Artifact
+the separate `posting/dual-final/<sha>.mp4` content-addressed object key;
+Worker fallback QA storage uses `posting/dual-qa/<sha>.jpg`. These namespaces
+avoid existing primary-only retention deleting a live fallback when its bytes
+match a historical primary. Fallback objects accumulate until a separate
+migration-backed retention lifecycle is implemented; storage estimates below
+are per slot, not a bounded steady-state total. Artifact
 downloads retain the existing bearer and exact page boundary.
 
 The whole attempt fails if either render fails. Existing bounded job retries

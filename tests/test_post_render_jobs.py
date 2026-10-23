@@ -1139,6 +1139,7 @@ def fake_dual_render(source, output, request, *, clock_ms):
     receipt["caption_delivery"] = "in_app"
     receipt["burned_fallback"] = {key: burned[key] for key in (
         "final_sha256", "final_byte_length", "final_object_key", "qa_frame_sha256")}
+    receipt["burned_fallback"]["final_object_key"] = f"posting/dual-final/{burned['final_sha256']}.mp4"
     (output / "receipt.json").write_text(json.dumps(receipt))
     decode = json.loads((output / "burned/decode.json").read_text())
     decode["final_probe"].update(width=1080, height=1920, video_codec="h264", pixel_format="yuv420p")
