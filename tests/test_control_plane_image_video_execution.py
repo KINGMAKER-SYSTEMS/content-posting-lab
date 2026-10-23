@@ -222,7 +222,8 @@ def test_photo_pause_is_page_scoped_terminal_and_photo_only(image_lab):
     store = {'jobs': {'a': failed, 'b': row('failed', 1)}}
     assert cp._photo_jobs_paused(store, recipe, photo['pageId'])
     for field, value in [('pageId', 'acct:foreign'), ('sourceKind', 'other'),
-                         ('slideshowPlan', []), ('status', 'cancelled')]:
+                         ('slideshowPlan', []), ('slideshowPlan', None),
+                         ('slideshowPlan', [{'mediaKeys': ['lyric.jpg']}]), ('status', 'cancelled')]:
         altered = deepcopy(store)
         altered['jobs']['a'][field] = value
         assert not cp._photo_jobs_paused(altered, recipe, photo['pageId'])

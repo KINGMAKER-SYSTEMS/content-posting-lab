@@ -1931,6 +1931,7 @@ def _photo_jobs_paused(store: dict[str, Any], recipe: Any, page_id: str) -> bool
                 or job.get("pageId") != page_id
                 or job.get("sourceKind") != "syzygy_slideshow"
                 or job.get("status") not in {"failed", "completed"}
+                or not isinstance(job.get("slideshowPlan"), list)
                 or not any(isinstance(plan, dict) and isinstance(plan.get("photoPlan"), dict)
                            for plan in job.get("slideshowPlan", []))):
             continue
