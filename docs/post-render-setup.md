@@ -97,9 +97,9 @@ rail selection are separate consumers; this candidate does not authorize an
 activation or a database-authority bypass.
 
 Measured on maj/Python 3.11 with one seven-second synthetic 1080x1920/30fps
-source: normal burned render 3.426 seconds and 8,504,503 retained bytes; dual
-render 6.596 seconds and 17,297,211 bytes. Receipt size grows from 1,000 to
-1,347 bytes. Thus M opted-in slots add about M × 3.17 CPU-wall seconds and
+source: normal burned render 3.634 seconds and 8,504,503 retained bytes; dual
+render 7.195 seconds and 17,297,216 bytes. Receipt size grows from 1,000 to
+1,352 bytes. Thus M opted-in slots add about M × 3.561 elapsed render seconds and
 M × 8.39 MiB retained storage in this synthetic sample; actual content, host
 load and bitrate change these measurements. Both final variants retain their
 individual 22 MiB caps and both QA images their 2 MiB caps. No paid provider
