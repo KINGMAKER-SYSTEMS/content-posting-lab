@@ -485,8 +485,9 @@ class PostRenderJobs:
     def _ordinary_history(submission_json: str) -> bool:
         """Recognize burned history without applying today's submission schema.
 
-        Both saved treatment copies must agree, have no opt-in field, and
-        match the saved treatment hash.
+        Both saved treatment copies must agree on the treatment body, carry no
+        in-app delivery opt-in in either copy, and the request copy must match
+        its saved hash.
         Unreadable or conflicting history remains uncertain, never ordinary.
         This classification grants no artifact or request validity.
         """
@@ -495,19 +496,45 @@ class PostRenderJobs:
             raw = saved["request"]["render_treatment_json"]
             treatment = json.loads(raw, object_pairs_hook=_unique_object, parse_constant=_reject_nonfinite)
             slot = json.loads(saved["slot_payload_json"], object_pairs_hook=_unique_object, parse_constant=_reject_nonfinite)
-            return (isinstance(treatment, dict) and isinstance(slot["render_treatment"], dict)
-                    and sha256(raw.encode()) == saved["request"]["treatment_sha256"]
-                    and treatment == slot["render_treatment"]
-                    and "captionDelivery" not in treatment
-                    and "captionDelivery" not in slot["render_treatment"])
+            slot_treatment = slot["render_treatment"]
+            if not (isinstance(treatment, dict) and isinstance(slot_treatment, dict)):
+                return False
+            if sha256(raw.encode()) != saved["request"]["treatment_sha256"]:
+                return False
+            # captionDelivery is a delivery hint, not part of the burned
+            # treatment body. Compare the body and each copy's opt-in
+            # separately so a conflicting copy fails closed through its own
+            # guard instead of the shared hash/equality checks.
+            core_equal = {k: v for k, v in treatment.items() if k != "captionDelivery"} == \
+                         {k: v for k, v in slot_treatment.items() if k != "captionDelivery"}
+            request_burned = "captionDelivery" not in treatment
+            slot_burned = "captionDelivery" not in slot_treatment
+            return core_equal and request_burned and slot_burned
         except (ValueError, TypeError, KeyError, RecursionError):
             return False
+
+    @staticmethod
+    def _mismatched_uncertain_markers(db) -> list:
+        """Uncertainty markers whose key does not embed their own job_id.
+
+        The only valid uncertainty key is '/output-uncertain/v1/<job_id>'. A
+        hand-made marker with a different suffix is never cleared by the normal
+        per-job path (which rebuilds the key from the job id) and would keep
+        forcing a startup write pass on every boot.
+        """
+        return db.execute(
+            "SELECT key, job_id FROM idempotency "
+            "WHERE key >= '/output-uncertain/v1/' AND key < '/output-uncertain/v10' "
+            "AND key != '/output-uncertain/v1/' || job_id"
+        ).fetchall()
 
     @staticmethod
     def _needs_identity_backfill(db) -> bool:
         """Ordinary-only startup writes only to remove a stale uncertainty marker."""
         # Heal markers left by the older startup code, even if no in-app row
         # exists to trigger the write pass. Never clear unclassifiable history.
+        if PostRenderJobs._mismatched_uncertain_markers(db):
+            return True
         for row in db.execute("SELECT jobs.submission_json FROM idempotency JOIN jobs ON jobs.id=idempotency.job_id "
                               "WHERE key >= '/output-uncertain/v1/' AND key < '/output-uncertain/v10'"):
             if PostRenderJobs._ordinary_history(row["submission_json"]):
@@ -529,6 +556,10 @@ class PostRenderJobs:
 
     def _backfill_output_identities(self, db) -> None:
         """Recover in-app identities; quarantine unverifiable in-app history."""
+        for mismatched in PostRenderJobs._mismatched_uncertain_markers(db):
+            db.execute("DELETE FROM idempotency WHERE key=?", (mismatched["key"],))
+            log.warning("post render identity backfill deleted mismatched uncertainty marker key=%s job=%s",
+                        mismatched["key"], mismatched["job_id"])
         for marked in db.execute("SELECT jobs.* FROM idempotency JOIN jobs ON jobs.id=idempotency.job_id "
                                  "WHERE key >= '/output-uncertain/v1/' AND key < '/output-uncertain/v10'").fetchall():
             if self._ordinary_history(marked["submission_json"]):
