@@ -340,7 +340,8 @@ def _registered_recipes() -> list[dict[str, Any]]:
 # means this holds even if the bypass logic is ever refactored to be less
 # strict for some other binding kind later.
 #
-# Audited and found NOT a factor: no time/wall-clock read (datetime.now(),
+# Photo failure cooldown reads the clock only for slideshow bindings, which
+# bypass this cache. For cacheable generated/source bindings, no wall-clock read (datetime.now(),
 # a lease or expiry window) feeds any reservation or planning function
 # capabilities() calls (_generated_unavailable_prompts,
 # _truck_master_candidates, _slideshow_unavailable_signatures,
@@ -721,6 +722,8 @@ def capabilities(
                 unavailable,
                 f"capability:{page_id}:{slideshow_recipe.executor_version}",
             ))
+            if _photo_jobs_paused(page_jobs_view, slideshow_recipe, page_id):
+                max_quantity = 0
         elif source_recipe is not None:
             unavailable_slots, cut_history = _source_dna_cut_ledger(
                 dossier_source_dna_view, source_recipe, publication["recipeVersion"],
@@ -1909,6 +1912,42 @@ def _source_dna_cut_ledger(
                 order if type(order) is int else 0,
             ))
     return slots, history
+
+
+PHOTO_FAILURE_COOLDOWN_SECONDS = 30 * 60
+
+
+def _photo_jobs_paused(store: dict[str, Any], recipe: Any, page_id: str) -> bool:
+    """Infer a temporary page pause from existing terminal photo-job markers.
+
+    Two consecutive failures pause admissions until a later success or thirty
+    minutes after the latest failure. No durable breaker state or schema is
+    added. Cancelled/active/nonphoto/foreign-page jobs do not count.
+    """
+    if getattr(recipe, "format_slug", None) not in IMAGE_VIDEO_FORMATS:
+        return False
+    terminals = []
+    for job in store.get("jobs", {}).values():
+        if (not isinstance(job, dict)
+                or job.get("pageId") != page_id
+                or job.get("sourceKind") != "syzygy_slideshow"
+                or job.get("status") not in {"failed", "completed"}
+                or not isinstance(job.get("slideshowPlan"), list)
+                or not any(isinstance(plan, dict) and isinstance(plan.get("photoPlan"), dict)
+                           for plan in job.get("slideshowPlan", []))):
+            continue
+        stamped = compaction.terminal_timestamp(job)
+        if stamped is not None:
+            terminals.append((stamped.timestamp(), job.get("status")))
+    terminals.sort(key=lambda row: row[0], reverse=True)
+    paused = (len(terminals) >= 2
+              and all(status == "failed" for _, status in terminals[:2])
+              and datetime.now(timezone.utc).timestamp() - terminals[0][0]
+                  < PHOTO_FAILURE_COOLDOWN_SECONDS)
+    if paused:
+        log.warning("photo_jobs_paused page=%s cooldown_seconds=%s last_failure=%s",
+                    page_id, PHOTO_FAILURE_COOLDOWN_SECONDS, terminals[0][0])
+    return paused
 
 
 def _slideshow_unavailable_signatures(
@@ -3837,7 +3876,7 @@ async def _run_syzygy_slideshow(job_id: str) -> None:
                 raise RuntimeError("slideshow_plan_invalid")
             if image_video:
                 from services.control_plane_image_video import recipe_image_video_plan
-                canonical = recipe_image_video_plan(recipe, library)
+                canonical = recipe_image_video_plan(recipe, library, plan.get("photoPlan", {}).get("variantIndex", 0))
                 if canonical is None or {key: value for key, value in plan.items() if key != "media"} != canonical:
                     raise RuntimeError("slideshow_plan_invalid")
                 pinned_by_key = {row["key"]: (row["sha256"], row["bytes"]) for row in plan["photoPlan"]["media"]}
@@ -4815,6 +4854,8 @@ async def create_job(
             }
             start_source = True
         elif slideshow_recipe is not None:
+            if _photo_jobs_paused(store, slideshow_recipe, page_id):
+                raise HTTPException(status_code=409, detail="photo_jobs_cooldown")
             unavailable_signatures = _slideshow_unavailable_signatures(
                 store, slideshow_recipe, page_id,
             )
