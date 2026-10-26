@@ -77,3 +77,61 @@ def test_unadvertised_lyric_timing_control_is_refused_by_current_catalog(registr
     response = client.post("/api/control-plane/v1/recipes", json=request(spec), headers=headers())
     assert response.status_code == 409
     assert response.json()["detail"] == "production selection uses a stale Content Lab catalog"
+
+
+def test_capabilities_advertise_a_point_seventy_five_lyric_publication(registration, monkeypatch):
+    client, spec = registration
+    monkeypatch.setenv("CONTENT_LAB_GENERATION_MODE", "ready")
+    monkeypatch.setenv("SYZYGY_API_KEY", "syz_fixture_key")
+    spec["renderTreatment"]["filters"]["brightness"] = 0.75
+    registered = client.post("/api/control-plane/v1/recipes", json=request(spec), headers=headers())
+    assert registered.status_code == 200, registered.json()
+    capabilities = client.get(
+        "/api/control-plane/v1/capabilities", headers=headers(),
+    ).json()["capabilities"]
+    row = next(item for item in capabilities if item["recipeId"] == "lyric-video:master")
+    assert row["engine"] == "lyrics_slideshows"
+    assert row["maxQuantity"] > 0
+
+
+def test_reserved_canonical_plan_still_advertises_and_admits_a_point_seventy_five_job(
+        registration, monkeypatch, tmp_path):
+    # Before variants, one completed render reserved burnt's only plan forever
+    # and capabilities advertised maxQuantity 0. Now the next variant is offered.
+    from tests.test_curated_variants import BURNT_CANONICAL
+    client, spec = registration
+    monkeypatch.setenv("CONTENT_LAB_GENERATION_MODE", "ready")
+    monkeypatch.setenv("SYZYGY_API_KEY", "syz_fixture_key")
+    monkeypatch.setattr(cp, "_jobs_path", lambda: tmp_path / "jobs.json")
+    monkeypatch.setattr(cp, "_generation_root", lambda: tmp_path / "generated")
+    started = []
+    monkeypatch.setattr(cp, "_start_syzygy_slideshow", started.append)
+    spec["renderTreatment"]["filters"]["brightness"] = 0.75
+    body = request(spec)
+    registered = client.post("/api/control-plane/v1/recipes", json=body, headers=headers())
+    assert registered.status_code == 200, registered.json()
+
+    def max_quantity():
+        rows = client.get("/api/control-plane/v1/capabilities", headers=headers()).json()["capabilities"]
+        return next(item for item in rows if item["recipeId"] == "lyric-video:master")["maxQuantity"]
+
+    def create(key):
+        job = {"pageId": PAGE, "lane": recipes.LANE, "engine": "lyrics_slideshows",
+               "lockedRecipeId": "lyric-video:master", "recipeVersion": body["recipeVersion"],
+               "quantity": 1, "constraints": {}, "sourceIsolation": {"partitionKey": f"page:{PAGE}"},
+               "policyHash": "sha256:policy", "masterPages": spec["masterPages"],
+               "masterPagesHash": spec["masterPagesHash"]}
+        return client.post("/api/control-plane/v1/jobs", json=job, headers={**headers(), "Idempotency-Key": key})
+
+    assert max_quantity() >= 1
+    first = create("curated-variant-job-0001")
+    assert first.status_code == 200, first.json()
+    first_plan = cp._load_jobs()["jobs"][first.json()["jobId"]]["slideshowPlan"][0]
+    assert first_plan["signature"] == BURNT_CANONICAL and "variant" not in first_plan
+    cp._update_job(first.json()["jobId"], status="completed")
+    assert max_quantity() >= 1
+    second = create("curated-variant-job-0002")
+    assert second.status_code == 200, second.json()
+    second_plan = cp._load_jobs()["jobs"][second.json()["jobId"]]["slideshowPlan"][0]
+    assert second_plan["variant"] == 1 and second_plan["signature"] != BURNT_CANONICAL
+    assert len(started) == 2

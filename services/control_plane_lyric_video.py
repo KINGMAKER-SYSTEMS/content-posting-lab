@@ -15,6 +15,36 @@ from services.lyric_timing import (
 
 EXECUTOR_PATH = Path(__file__).resolve().parents[1] / "recipes/executors/syzygy-slideshow-lyric-video.v1.json"
 
+# The Dossier editor and the strict treatment decoder both bound filters.brightness
+# to [0, 3] (services/control_plane_generation.py FILTER_RANGES and
+# services/source_treatment.py normalized_visual_treatment). Only that one scalar
+# may vary from the approved once-graded treatment; every other treatment key must
+# stay exactly neutral as before.
+LYRIC_BRIGHTNESS_RANGE = (0.0, 3.0)
+
+
+def lyric_treatment_matches(treatment: dict) -> bool:
+    """True when only filters.brightness varies inside the allowed Dossier range.
+
+    A dialed brightness is required: absent, non-numeric, non-finite or
+    out-of-range values refuse. Contrast, saturation, warmth, fade, grain,
+    vignette, clipSpeed and clipCrop must still equal the neutral base.
+    """
+    from services.source_treatment import normalized_visual_treatment
+    if not isinstance(treatment, dict) or not isinstance(treatment.get("filters"), dict):
+        return False
+    raw = treatment["filters"].get("brightness")
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        return False
+    try:
+        actual = normalized_visual_treatment(treatment)
+    except (TypeError, ValueError):
+        return False
+    if not LYRIC_BRIGHTNESS_RANGE[0] <= actual["filters"]["brightness"] <= LYRIC_BRIGHTNESS_RANGE[1]:
+        return False
+    expected = normalized_visual_treatment({"filters": {"brightness": actual["filters"]["brightness"]}})
+    return actual == expected
+
 
 def lyric_ingredient(*, page_id: str, master_pages: dict | None) -> dict:
     account = master_pages.get("handle") if isinstance(master_pages, dict) else None
@@ -44,9 +74,7 @@ def validate_lyric_recipe(spec: dict) -> dict:
             or master.get("automationMode") != "Automation" or master.get("archived") is not False
             or not isinstance(controls, dict) or set(controls) != {"lyricTimingSetId"}):
         raise ValueError("lyric video requires exactly its advertised timing selector")
-    from services.source_treatment import normalized_visual_treatment
-    expected_visual = normalized_visual_treatment({"filters": {"brightness": 0.85}})
-    if normalized_visual_treatment(spec.get("renderTreatment")) != expected_visual:
+    if not lyric_treatment_matches(spec.get("renderTreatment")):
         raise ValueError("lyric video requires its approved once-graded 20-second source treatment")
     options = lyric_timing_catalog(page_id=master.get("pageId"), account=master.get("handle"))
     if (len(options) != 1
@@ -63,7 +91,9 @@ def validate_lyric_recipe(spec: dict) -> dict:
 def validate_lyric_wire_plan(plan: dict, page_id: str) -> None:
     """Refuse a foreign or altered video program even at the render-wire boundary."""
     import json
-    from services.control_plane_slideshows import _parse_curated_video_plan, curated_plan_signature
+    from services.control_plane_slideshows import (
+        _parse_curated_video_plan, curated_plan_signature, curated_variant_number, curated_variant_plan,
+    )
     timing_set = _timing_set_for_page(page_id)
     if timing_set is None:
         raise ValueError("lyric video page is not registered")
@@ -73,19 +103,12 @@ def validate_lyric_wire_plan(plan: dict, page_id: str) -> None:
     if hashlib.sha256(raw).hexdigest() != timing["sourceProgramSha256"]:
         raise ValueError("lyric source program is stale")
     curated = _parse_curated_video_plan(json.loads(raw)["pageTreatments"][page_id]["curatedVideoPlan"])
-    sources = {source["file"]: source for source in curated["sources"]}
-    windows = []
-    keys = []
-    for window in curated["windows"]:
-        source = sources[window["source"]]
-        key = f'{curated["lane"]}/{curated["subject"]}/clips/{window["source"]}'
-        if key not in keys:
-            keys.append(key)
-        windows.append({"key": key, **{k: window[k] for k in ("sourceStart", "sourceEnd", "outputStart", "outputEnd", "focalX")},
-                        "sourceSha256": source["sha256"], "sourceBytes": source["bytes"], "sourceDuration": source["duration"]})
-    expected = {"templateSlug": "curated-video-montage", "mediaKeys": keys, "windows": windows,
-                **{k: curated[k] for k in ("muted", "speed", "cropMode", "audioSectionEnd")}}
-    if (not isinstance(plan, dict) or any(plan.get(k) != v for k, v in expected.items())
+    # The approved program (variant 0) or one of its re-chop variants: every
+    # variant keeps each window's output timing, so the lyric timing still fits.
+    variant = curated_variant_number(plan)
+    expected = curated_variant_plan(curated, variant) if variant is not None else None
+    if (expected is None or not isinstance(plan, dict)
+            or any(plan.get(k) != v for k, v in expected.items())
             or plan.get("signature") != curated_plan_signature(expected)):
         raise ValueError("lyric video plan differs from the registered source program")
 

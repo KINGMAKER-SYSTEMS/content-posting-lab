@@ -112,6 +112,7 @@ from services.control_plane_slideshows import (
     CLEAN_VIDEO_FORMATS,
     curated_plan_for_recipe,
     curated_plan_signature,
+    curated_variant_number,
     requires_curated_video_plan,
     download_syzygy_artifact,
     load_recipe_library,
@@ -3844,7 +3845,13 @@ async def _run_syzygy_slideshow(job_id: str) -> None:
                         or planned_media != [{"objectKey": key, "bytes": pinned_by_key[key][1]} for key in media_keys]):
                     raise RuntimeError("slideshow_plan_invalid")
             elif curated:
-                canonical = curated_plan_for_recipe(recipe, library)
+                # The approved montage (variant 0) or one re-chop variant,
+                # re-derived from the pinned executor and the live library.
+                variant = curated_variant_number(plan)
+                canonical = (
+                    curated_plan_for_recipe(recipe, library, variant)
+                    if variant is not None else None
+                )
                 if canonical is None:
                     raise RuntimeError("slideshow_plan_invalid")
                 if (

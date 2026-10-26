@@ -10,7 +10,9 @@ boundary while Syzygy remains the renderer.
 from __future__ import annotations
 
 import asyncio
+import copy
 from dataclasses import dataclass
+import functools
 import hashlib
 import json
 import math
@@ -280,8 +282,164 @@ def curated_plan_signature(plan: dict[str, Any]) -> str:
             for window in plan["windows"]
         ],
     }
+    # Variant 0 (the approved montage) carries no variant field, so its
+    # identity, and every reservation already recorded against it, is byte for
+    # byte what it was before variants existed. Variants 1..N sign their number.
+    variant = plan.get("variant", 0)
+    if variant != 0:
+        identity["variant"] = variant
     canonical = json.dumps(identity, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode()).hexdigest()
+
+
+# Curated variants. A curated page's approved montage is variant 0. Variants
+# 1..N are deterministic re-chops of the same pinned sources:
+#   * every output window keeps its exact outputStart/outputEnd, and the plan
+#     keeps audioSectionEnd, muted, speed and cropMode, so cut rhythm and lyric
+#     sync never move;
+#   * the clip that fills each window rotates among the plan's own sources;
+#   * the source moment shifts inside that clip (same window length, never past
+#     the clip's pinned duration);
+#   * the horizontal crop focus nudges a little.
+# Only the plan's pinned sources are used. Extra library clips carry no pinned
+# SHA-256 or duration, so a window inside them could not be proven in bounds or
+# checked before the paid render. There is no mirror: the render wire has no
+# flip field. Every variant is re-validated by _parse_curated_video_plan and has
+# its own signature, reserved once like any other slideshow plan.
+CURATED_VARIANT_LIMIT = 200
+_VARIANT_FOCAL_OFFSETS = (0.0, -0.06, 0.06, -0.12, 0.12)
+_VARIANT_TAIL_MARGIN = 0.75  # Tides HIGH-1: stay clear of end-of-clip fades (ytal-v-0016 fades to black from 3.80 s)
+_VARIANT_STEP = 0.6180339887498949
+_VARIANT_WINDOW_STEP = 0.4142135623730951
+
+
+def _curated_variant_windows(
+    curated: dict[str, Any], variant: int,
+) -> list[dict[str, Any]] | None:
+    """Source-file windows for one variant, or None if a window cannot fit."""
+    if variant == 0:
+        return [dict(window) for window in curated["windows"]]
+    by_file = {source["file"]: source for source in curated["sources"]}
+    order: list[str] = []
+    first_focal: dict[str, float] = {}
+    for window in curated["windows"]:
+        if window["source"] not in first_focal:
+            order.append(window["source"])
+            first_focal[window["source"]] = window["focalX"]
+    turn = variant % len(order)
+    rotate = {name: order[(index + turn) % len(order)] for index, name in enumerate(order)}
+    windows = []
+    for index, window in enumerate(curated["windows"]):
+        source = rotate[window["source"]]
+        length = window["outputEnd"] - window["outputStart"]
+        span = by_file[source]["duration"] - length
+        if span < 0:
+            return None
+        span -= min(_VARIANT_TAIL_MARGIN, span)
+        fraction = math.modf(variant * _VARIANT_STEP + index * _VARIANT_WINDOW_STEP)[0]
+        start = math.floor(fraction * span * 1000) / 1000
+        base_focal = window["focalX"] if source == window["source"] else first_focal[source]
+        offset = _VARIANT_FOCAL_OFFSETS[(variant + index) % len(_VARIANT_FOCAL_OFFSETS)]
+        windows.append({
+            "source": source,
+            "sourceStart": start,
+            "sourceEnd": start + length,
+            "outputStart": window["outputStart"],
+            "outputEnd": window["outputEnd"],
+            "focalX": round(min(1.0, max(0.0, base_focal + offset)), 3),
+        })
+    return windows
+
+
+@functools.lru_cache(maxsize=16)
+def _curated_variant_table(curated_json: str) -> tuple[dict[str, Any] | None, ...]:
+    curated = json.loads(curated_json)
+    prefix = f'{curated["lane"]}/{curated["subject"]}/clips/'
+    # mediaKeys stay the approved plan's unique ordered source keys for every
+    # variant: rotation only re-assigns the same pinned sources to windows.
+    media_keys: list[str] = []
+    for window in curated["windows"]:
+        if prefix + window["source"] not in media_keys:
+            media_keys.append(prefix + window["source"])
+    table: list[dict[str, Any] | None] = []
+    seen: set[str] = set()
+    for variant in range(CURATED_VARIANT_LIMIT):
+        windows = _curated_variant_windows(curated, variant)
+        plan = None
+        if windows is not None:
+            try:
+                checked = _parse_curated_video_plan({**curated, "windows": windows})
+            except ValueError:
+                checked = None
+            fingerprint = json.dumps(windows, sort_keys=True, separators=(",", ":"))
+            if checked is not None and fingerprint not in seen:
+                seen.add(fingerprint)
+                by_file = {source["file"]: source for source in checked["sources"]}
+                plan = {
+                    "templateSlug": CURATED_VIDEO_PLAN_SLUG,
+                    "mediaKeys": list(media_keys),
+                    "muted": checked["muted"],
+                    "speed": checked["speed"],
+                    "cropMode": checked["cropMode"],
+                    "audioSectionEnd": checked["audioSectionEnd"],
+                    "windows": [
+                        {
+                            "key": prefix + window["source"],
+                            "sourceStart": window["sourceStart"],
+                            "sourceEnd": window["sourceEnd"],
+                            "outputStart": window["outputStart"],
+                            "outputEnd": window["outputEnd"],
+                            "focalX": window["focalX"],
+                            "sourceSha256": by_file[window["source"]]["sha256"],
+                            "sourceBytes": by_file[window["source"]]["bytes"],
+                            "sourceDuration": by_file[window["source"]]["duration"],
+                        }
+                        for window in checked["windows"]
+                    ],
+                }
+                if variant:
+                    plan["variant"] = variant
+                plan["signature"] = curated_plan_signature(plan)
+        table.append(plan)
+    return tuple(table)
+
+
+def curated_variant_plans(curated: dict[str, Any]) -> list[dict[str, Any] | None]:
+    """Every variant plan of one parsed curated plan, indexed by variant number.
+
+    A None entry is a variant that cannot fit its sources or would repeat an
+    earlier variant's windows; it is never offered. Plans carry their
+    signature but no library snapshot.
+    """
+    table = _curated_variant_table(json.dumps(curated, sort_keys=True))
+    return [copy.deepcopy(plan) for plan in table]
+
+
+def curated_variant_plan(curated: dict[str, Any], variant: int) -> dict[str, Any] | None:
+    """One variant plan (with signature), or None when it is not offered."""
+    if isinstance(variant, bool) or not isinstance(variant, int):
+        return None
+    table = _curated_variant_table(json.dumps(curated, sort_keys=True))
+    if not 0 <= variant < len(table) or table[variant] is None:
+        return None
+    return copy.deepcopy(table[variant])
+
+
+def curated_variant_number(plan: Any) -> int | None:
+    """The variant a stored/wire plan claims: 0 when absent, None if malformed.
+
+    The approved plan is only ever spelled without a variant field, so an
+    explicit ``"variant": 0`` is refused rather than given a second spelling.
+    """
+    if not isinstance(plan, dict):
+        return None
+    if "variant" not in plan:
+        return 0
+    variant = plan["variant"]
+    if (isinstance(variant, bool) or not isinstance(variant, int)
+            or not 1 <= variant < CURATED_VARIANT_LIMIT):
+        return None
+    return variant
 
 
 def _executor_contract(format_slug: str | None = None) -> tuple[dict[str, Any], str]:
@@ -651,66 +809,45 @@ def resolve_slideshow_recipe(
     )
 
 
-def _build_curated_plan(
+def _curated_library_ready(
     recipe: SlideshowRecipe, library: SyzygyLibrary, curated: dict[str, Any],
-) -> dict[str, Any] | None:
-    """Build the single closed curated video plan for one page.
+) -> bool:
+    """The recipe, live library and plan agree, and every source holds its pinned bytes.
 
-    ``mediaKeys`` are the unique ordered source keys (one per source file) for
-    source observation and the Worker receipt; ``windows`` is the full ordered
-    ordered-window expansion that drives the render wire and is bound into the plan
-    signature. Every required key must exist in the live library, and extras are
-    never selected.
+    Every variant uses exactly the approved plan's sources, so this one check
+    covers them all. Extras in the library are never selected.
     """
     if (recipe.lane != curated["lane"] or recipe.subject != curated["subject"]
             or library.lane != recipe.lane or library.subject != recipe.subject
             or library.library_id != recipe.library_id):
-        return None
-    by_file = {source["file"]: source for source in curated["sources"]}
-    key_by_file: dict[str, str] = {}
-    ordered_files: list[str] = []
-    for window in curated["windows"]:
-        filename = window["source"]
-        if filename not in key_by_file:
-            key_by_file[filename] = (
-                f"{recipe.lane}/{recipe.subject}/clips/{filename}"
-            )
-            ordered_files.append(filename)
+        return False
     library_bytes = {item.key: item.bytes for item in library.objects}
-    if any(library_bytes.get(key_by_file[filename]) != by_file[filename]["bytes"]
-           for filename in ordered_files):
+    return all(
+        library_bytes.get(f"{recipe.lane}/{recipe.subject}/clips/{source['file']}")
+        == source["bytes"]
+        for source in curated["sources"]
+        if any(window["source"] == source["file"] for window in curated["windows"])
+    )
+
+
+def _build_curated_plan(
+    recipe: SlideshowRecipe, library: SyzygyLibrary, curated: dict[str, Any],
+    variant: int = 0,
+) -> dict[str, Any] | None:
+    """Build one closed curated video plan (variant 0 = the approved montage).
+
+    ``mediaKeys`` are the unique ordered source keys (one per source file) for
+    source observation and the Worker receipt; ``windows`` is the full ordered
+    window expansion that drives the render wire and is bound into the plan
+    signature. Every required key must exist in the live library with its
+    pinned bytes.
+    """
+    if not _curated_library_ready(recipe, library, curated):
         return None
-    media_keys = [key_by_file[filename] for filename in ordered_files]
-    windows = []
-    for window in curated["windows"]:
-        filename = window["source"]
-        source = by_file[filename]
-        windows.append({
-            "key": key_by_file[filename],
-            "sourceStart": window["sourceStart"],
-            "sourceEnd": window["sourceEnd"],
-            "outputStart": window["outputStart"],
-            "outputEnd": window["outputEnd"],
-            "focalX": window["focalX"],
-            "sourceSha256": source["sha256"],
-            "sourceBytes": source["bytes"],
-            "sourceDuration": source["duration"],
-        })
-    plan = {
-        "templateSlug": CURATED_VIDEO_PLAN_SLUG,
-        "mediaKeys": media_keys,
-        "muted": curated["muted"],
-        "speed": curated["speed"],
-        "cropMode": curated["cropMode"],
-        "audioSectionEnd": curated["audioSectionEnd"],
-        "windows": windows,
-    }
-    signature = curated_plan_signature(plan)
-    return {
-        **plan,
-        "signature": signature,
-        "librarySnapshotHash": library.snapshot_hash,
-    }
+    plan = curated_variant_plan(curated, variant)
+    if plan is None:
+        return None
+    return {**plan, "librarySnapshotHash": library.snapshot_hash}
 
 
 def requires_curated_video_plan(recipe: SlideshowRecipe) -> bool:
@@ -722,21 +859,46 @@ def requires_curated_video_plan(recipe: SlideshowRecipe) -> bool:
     return isinstance(treatment, dict) and "curatedVideoPlan" in treatment
 
 
+def _recipe_curated_plan(recipe: SlideshowRecipe) -> dict[str, Any] | None:
+    page_id = recipe.recipe_spec.get("masterPages", {}).get("pageId")
+    treatment = ugc_page_treatment(page_id, recipe.format_slug) if isinstance(page_id, str) else None
+    curated = treatment.get("curatedVideoPlan") if isinstance(treatment, dict) else None
+    return curated if isinstance(curated, dict) else None
+
+
 def curated_plan_for_recipe(
-    recipe: SlideshowRecipe, library: SyzygyLibrary,
+    recipe: SlideshowRecipe, library: SyzygyLibrary, variant: int = 0,
 ) -> dict[str, Any] | None:
-    """The canonical curated video plan for a recipe, or None if not curated.
+    """One curated video plan variant for a recipe, or None if not curated/offered.
 
     Re-derived from the pinned executor config for the recipe's page; the recipe
     executor_version already binds the executor bytes, so this is stable across
     a job's lifecycle unless the job itself was tampered with.
     """
-    page_id = recipe.recipe_spec.get("masterPages", {}).get("pageId")
-    treatment = ugc_page_treatment(page_id, recipe.format_slug) if isinstance(page_id, str) else None
-    curated = treatment.get("curatedVideoPlan") if isinstance(treatment, dict) else None
-    if not isinstance(curated, dict):
+    curated = _recipe_curated_plan(recipe)
+    if curated is None:
         return None
-    return _build_curated_plan(recipe, library, curated)
+    return _build_curated_plan(recipe, library, curated, variant)
+
+
+def curated_plans_for_recipe(
+    recipe: SlideshowRecipe, library: SyzygyLibrary,
+) -> list[dict[str, Any]] | None:
+    """Every offered curated variant for a recipe in variant order.
+
+    None when the page is not curated; [] when its live library does not hold
+    the pinned sources.
+    """
+    curated = _recipe_curated_plan(recipe)
+    if curated is None:
+        return None
+    if not _curated_library_ready(recipe, library, curated):
+        return []
+    return [
+        {**plan, "librarySnapshotHash": library.snapshot_hash}
+        for plan in curated_variant_plans(curated)
+        if plan is not None
+    ]
 
 
 def plan_slideshows(
@@ -763,21 +925,22 @@ def plan_slideshows(
             return []
         return [plan]
     # The UGC format is a curated page library. A page with a curatedVideoPlan
-    # renders that one ordered montage exactly once (never permuted); a generic
-    # page renders the first mediaCount photo objects in ordinal order. No
-    # offset/stride permutation is legal for either, so there is never
-    # "variety" to synthesize — an exhausted ordered set stays exhausted.
+    # renders its approved montage (variant 0) and then its deterministic
+    # re-chop variants 1..N, each exactly once, in variant order; a generic
+    # page renders the first mediaCount photo objects in ordinal order (no
+    # offset/stride permutation), so an exhausted generic set stays exhausted.
     if recipe.format_slug in CLEAN_VIDEO_FORMATS:
         has_curated_plan = requires_curated_video_plan(recipe)
-        canonical = curated_plan_for_recipe(recipe, library)
-        if has_curated_plan and canonical is None:
+        variants = curated_plans_for_recipe(recipe, library)
+        if has_curated_plan and not variants:
             return []
-        if canonical is not None:
-            # The curated page's one ordered montage plan; exhausted once
-            # reserved, never permuted. Extras in the library are ignored.
-            if canonical["signature"] in unavailable_signatures:
-                return []
-            return [canonical]
+        if variants:
+            # Each variant is reserved once through its own signature.
+            # Extras in the library are ignored.
+            return [
+                plan for plan in variants
+                if plan["signature"] not in unavailable_signatures
+            ][:count]
         template = recipe.templates[0]
         objects_in_order = list(library.objects)
         if template.media_count > len(objects_in_order):
