@@ -77,3 +77,18 @@ def test_unadvertised_lyric_timing_control_is_refused_by_current_catalog(registr
     response = client.post("/api/control-plane/v1/recipes", json=request(spec), headers=headers())
     assert response.status_code == 409
     assert response.json()["detail"] == "production selection uses a stale Content Lab catalog"
+
+
+def test_capabilities_advertise_a_point_seventy_five_lyric_publication(registration, monkeypatch):
+    client, spec = registration
+    monkeypatch.setenv("CONTENT_LAB_GENERATION_MODE", "ready")
+    monkeypatch.setenv("SYZYGY_API_KEY", "syz_fixture_key")
+    spec["renderTreatment"]["filters"]["brightness"] = 0.75
+    registered = client.post("/api/control-plane/v1/recipes", json=request(spec), headers=headers())
+    assert registered.status_code == 200, registered.json()
+    capabilities = client.get(
+        "/api/control-plane/v1/capabilities", headers=headers(),
+    ).json()["capabilities"]
+    row = next(item for item in capabilities if item["recipeId"] == "lyric-video:master")
+    assert row["engine"] == "lyrics_slideshows"
+    assert row["maxQuantity"] > 0

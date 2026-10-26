@@ -52,9 +52,39 @@ def test_unadvertised_or_foreign_recipe_refused(mutation):
     if mutation=='cue': value['production']['controls']['phrases']='arbitrary lyric'
     if mutation=='hash': value['production']['controls']['lyricTimingSha256']='f'*64
     if mutation=='speed': value['renderTreatment']['clipSpeed']=1.5
-    if mutation=='grade': value['renderTreatment']['filters']['brightness']=.85*.85
+    if mutation=='grade': value['renderTreatment']['filters']['contrast']=1.1
     if mutation=='crop': value['renderTreatment']['clipCrop']={'zoom':2,'focusX':.5,'focusY':.5}
     with pytest.raises(ValueError): validate_lyric_recipe(value)
+
+
+def test_owner_brightness_is_accepted_only_inside_the_dossier_range():
+    for brightness in (0.0, 0.75, 0.85, 1.0, 3.0):
+        value = spec()
+        value['renderTreatment']['filters']['brightness'] = brightness
+        assert validate_lyric_recipe(value)['id'] == 'burnt-heavy-foot-chorus-v1'
+
+
+@pytest.mark.parametrize('brightness', [-0.1, 3.1, '0.75', None, True])
+def test_out_of_range_or_non_numeric_brightness_is_refused(brightness):
+    value = spec()
+    value['renderTreatment']['filters']['brightness'] = brightness
+    with pytest.raises(ValueError):
+        validate_lyric_recipe(value)
+
+
+@pytest.mark.parametrize('mutation', ['contrast', 'saturation', 'speed', 'crop'])
+def test_any_other_treatment_key_drift_is_refused(mutation):
+    value = spec()
+    if mutation == 'contrast':
+        value['renderTreatment']['filters']['contrast'] = 1.1
+    if mutation == 'saturation':
+        value['renderTreatment']['filters']['saturation'] = 1.1
+    if mutation == 'speed':
+        value['renderTreatment']['clipSpeed'] = 1.1
+    if mutation == 'crop':
+        value['renderTreatment']['clipCrop'] = {'zoom': 1.1, 'focusX': 0.5, 'focusY': 0.5}
+    with pytest.raises(ValueError):
+        validate_lyric_recipe(value)
 
 
 def test_exact_27_window_plan_is_single_use_not_photo_permutation():

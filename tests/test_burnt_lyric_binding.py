@@ -26,6 +26,17 @@ def test_producer_binding_contains_full_immutable_authority_and_actual_source_ha
     assert len(binding['timingSha256'])==len(binding['sourceProgramSha256'])==64
 
 
+def test_point_seventy_five_managed_job_is_not_refused():
+    value, publication, job = fixture()
+    value['renderTreatment']['filters']['brightness'] = 0.75
+    raw = json.dumps(value, separators=(',', ':'))
+    publication['recipeSpecCanonical'] = raw
+    publication['recipeSpecHash'] = hashlib.sha256(raw.encode()).hexdigest()
+    job['recipeSpecHash'] = publication['recipeSpecHash']
+    timing = validate_managed_lyric_job(job, publication, value)
+    assert timing['id'] == 'burnt-heavy-foot-chorus-v1'
+
+
 @pytest.mark.parametrize('mutation',['operator','page','specHash','specBytes','version','program','notion'])
 def test_foreign_stale_or_operator_authority_is_refused(mutation):
     value,publication,job=fixture()

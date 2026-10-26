@@ -50,7 +50,6 @@ from services.post_render import (
     _slot_treatment,
     sha256,
     source_visual_matches,
-    normalized_visual_treatment,
 )
 
 REQUEST_SCHEMA_V2 = "content-lab.post-render-request.v2"
@@ -292,7 +291,8 @@ def render_timed_post(source_path: Path, output_directory: Path, request: TimedP
     if _caption_delivery(request) == CAPTION_DELIVERY_IN_APP:
         raise PostRenderError("in_app_timed_unsupported", "in_app caption delivery is not supported for timed lyric rendering")
     timing, phrases = _resolve_timing(request)
-    if normalized_visual_treatment(_slot_treatment(request)) != normalized_visual_treatment({"filters": {"brightness": 0.85}}):
+    from services.control_plane_lyric_video import lyric_treatment_matches
+    if not lyric_treatment_matches(_slot_treatment(request)):
         raise PostRenderError("lyric_source_treatment_mismatch", "timed lyric source must retain the approved once-graded 20-second program")
 
     source_path, output_directory = Path(source_path).absolute(), Path(output_directory).absolute()
