@@ -33,11 +33,11 @@ PROVENANCE_FIELDS = {"sourceUrl", "acquiredAt", "authority"}
 # (services/control_plane_sources.py plan_source_cuts). A backup is added only
 # by a reviewed commit to this registry; nothing automatic writes it.
 MASTER_ROLES = ("primary", "backup")
-# A backup master may declare its own brightness (Eric 2026-10-22: backups
-# render at 0.65 where the page recipe says otherwise). Brightness only, inside
-# GRADE_OVERRIDE_BOUNDS; applied at cut time on clip-varying pages (refused at
-# parse time on any other page) and written
-# into the clip's receipt. The master file itself is never re-encoded.
+# A backup master may declare its own brightness (Eric 2026-10-22). Brightness
+# only, inside GRADE_OVERRIDE_BOUNDS; applied at cut time on clip-varying pages
+# (refused at parse time on any other page) and written into the clip's
+# receipt. Lead 2026-10-26: BTL backups render at the page look, so they
+# declare none. The master file itself is never re-encoded.
 GRADE_OVERRIDE_BOUNDS = {"brightness": (0.4, 1.0)}
 MIME_TYPES = {"video/mp4", "video/quicktime"}
 MAX_MANIFEST_BYTES = 1_048_576

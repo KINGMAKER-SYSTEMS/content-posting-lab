@@ -1,8 +1,6 @@
 {
   "backupMasterSha256": "ddbf980600f44e250dc3a076b0f9f3afa1f334520a2c9abb0221ba3d24ae6a63",
-  "masterGradeOverride": {
-    "brightness": 0.65
-  },
+  "masterGradeOverride": {},
   "pageId": "acct:between-the-lines66",
   "recipeRenderTreatment": {
     "captionStyle": {
@@ -58,7 +56,7 @@
       },
       "clipSpeed": 0.88,
       "filters": {
-        "brightness": 0.662,
+        "brightness": 0.512,
         "contrast": 1.082,
         "fade": 0.0,
         "grain": 0.0,

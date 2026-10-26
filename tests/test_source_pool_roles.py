@@ -147,18 +147,42 @@ def test_the_backup_grade_contract_matches_what_the_lab_writes():
                                      clip_crop=receipt["visualTreatment"]["clipCrop"], filters=filters)
     assert again == receipt
     brightness = receipt["visualTreatment"]["filters"]["brightness"]
-    assert abs(brightness - 0.65) <= GRADE_BANDS["brightness"], "jitter rides on top of the declared value"
+    assert abs(brightness - 0.5) <= GRADE_BANDS["brightness"], "jitter rides on the page look, never a backup override"
+    assert 0.46 <= brightness <= 0.54, "the receipt stays inside the Worker band around the 0.5 page look"
     assert receipt["sourceRecipeTreatment"]["filters"]["brightness"] == 0.5, "the recipe stays the recipe"
-    # The declaring master is a real BTL backup in the registry.
+    # The backup is a real BTL backup in the registry, and it declares no
+    # override: it renders at the page look (source_dna_registry._grade_override).
     declared = {master.sha256: master.grade_override
                 for master in parse_source_dna_manifest(_BTL_FILE.read_bytes()).masters if master.role == "backup"}
-    assert declared[doc["backupMasterSha256"]] == doc["masterGradeOverride"]
+    assert declared[doc["backupMasterSha256"]] is None
+    assert doc["masterGradeOverride"] == {}, "no override means the recipe look"
+
+
+def test_a_backup_cut_grade_receipt_stays_inside_the_worker_band_of_the_page_look():
+    # Lead 2026-10-26: backups render at the page look. Eric's gb20 rule means a
+    # cut is never brighter than the page look, and the Worker admits a backup
+    # grade only inside GRADE_BANDS of the recipe (brightness 0.46-0.54 around
+    # 0.5). A 0.65 override would be refused (a wasted encode), so it is gone.
+    from services.clip_variation import GRADE_BANDS, cut_grade
+    from services.source_treatment import source_treatment_receipt
+    library = parse_source_dna_manifest(_BTL_FILE.read_bytes())
+    backup = next(master for master in library.masters if master.role == "backup")
+    assert backup.grade_override is None
+    recipe = {"filters": {"brightness": 0.5, "contrast": 1.05}, "clipSpeed": 1.0}
+    filters = cut_grade(library.page_id, f"{backup.sha256}:120000:8000", dict(recipe["filters"]))
+    receipt = source_treatment_receipt({"jobId": "grade-band-1", "recipeSpecHash": "sha256:" + "a" * 64},
+                                       recipe, backup.sha256, clip_speed=0.88,
+                                       clip_crop={"zoom": 1.55, "focusX": 0.47, "focusY": 0.52},
+                                       filters=filters)
+    brightness = receipt["visualTreatment"]["filters"]["brightness"]
+    assert abs(brightness - 0.5) <= GRADE_BANDS["brightness"]
+    assert 0.46 <= brightness <= 0.54
 
 
 def test_btl_lists_its_night_backup_without_moving_its_version():
     library = parse_source_dna_manifest(_BTL_FILE.read_bytes())
     roles = {master.filename: (master.role, master.grade_override) for master in library.masters}
-    assert roles["IMG_0766.mp4"] == ("backup", {"brightness": 0.65})
+    assert roles["IMG_0766.mp4"] == ("backup", None)
     assert [master.role for master in library.masters].count("primary") == 1
     assert library.sha256 == "59cd051223535dfd56fba8228dc69f37379154112f6df0f46ad69e72a1b6233c", \
         "the version the Worker binds BTL's clips to (its primary-only library bytes)"
@@ -211,23 +235,24 @@ def test_a_declared_backup_grade_is_refused_on_a_page_that_does_not_vary():
     parse_source_dna_manifest((json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n").encode())
 
 
-# The Worker's BACKUP_MASTER_GRADES (control-plane-worker src/domain/clipVariation.js)
-# names these same declarations; both sides pin this exact table.
-BTL_DECLARED_BACKUPS = {
-    "ddbf980600f44e250dc3a076b0f9f3afa1f334520a2c9abb0221ba3d24ae6a63": {"brightness": 0.65},  # IMG_0766
-    "b716e9d6986d300a407be3c0080abc1fc1cc943421c2d6e909d761d88f13f26b": {"brightness": 0.65},  # IMG_4566
-    "34b8726404321c9a8078d37a0e00afeabe11255082becce06d76ac51171b797b": {"brightness": 0.65},  # IMG_4569
-    "dddada2a63cfe26a0f9d053cd26e67b891f4dd92103648e9b72525434a2a36a8": {"brightness": 0.65},  # IMG_6775 0-1121
-    "8526541b2588e91cacd2e500a566b22eed4ba90dc6062efed05d85673788996c": {"brightness": 0.65},  # IMG_6775 1121-2239
-    "be30bd5fd73edf765c00256b7d8df09133890736c96f1910e22301b2972b639d": {"brightness": 0.65},  # IMG_6776 0-761
-    "f20c57eb6486147e162ea46fbcd3f2f42286980f73b61ab5c20aea6ee57a08ad": {"brightness": 0.65},  # IMG_6776 761-1516
+# Backups render at the page look (lead 2026-10-26), so none declares a grade
+# override. Both sides pin this exact set of backup hashes; grade_override None.
+BTL_BACKUP_SHAS = {
+    "ddbf980600f44e250dc3a076b0f9f3afa1f334520a2c9abb0221ba3d24ae6a63": None,  # IMG_0766
+    "b716e9d6986d300a407be3c0080abc1fc1cc943421c2d6e909d761d88f13f26b": None,  # IMG_4566
+    "34b8726404321c9a8078d37a0e00afeabe11255082becce06d76ac51171b797b": None,  # IMG_4569
+    "dddada2a63cfe26a0f9d053cd26e67b891f4dd92103648e9b72525434a2a36a8": None,  # IMG_6775 0-1121
+    "8526541b2588e91cacd2e500a566b22eed4ba90dc6062efed05d85673788996c": None,  # IMG_6775 1121-2239
+    "be30bd5fd73edf765c00256b7d8df09133890736c96f1910e22301b2972b639d": None,  # IMG_6776 0-761
+    "f20c57eb6486147e162ea46fbcd3f2f42286980f73b61ab5c20aea6ee57a08ad": None,  # IMG_6776 761-1516
 }
 
 
 def test_btl_backups_are_exactly_the_declared_night_footage():
     library = parse_source_dna_manifest(_BTL_FILE.read_bytes())
     backups = {master.sha256: master.grade_override for master in library.masters if master.role == "backup"}
-    assert backups == BTL_DECLARED_BACKUPS
+    assert set(backups) == set(BTL_BACKUP_SHAS)
+    assert all(override is None for override in backups.values()), "backups render at the page look: no override"
     primary = [master for master in library.masters if master.role == "primary"]
     assert [master.source_id for master in primary] == ["drive-1divlf1qpl1c3gfl8bmf5nbr5-0-800"]
     # A split file keeps one origin: its parts share an identity and continue its timeline.

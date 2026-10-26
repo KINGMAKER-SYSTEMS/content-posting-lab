@@ -1891,10 +1891,13 @@ async def test_a_cut_on_a_backup_whose_file_is_missing_is_skipped_and_the_job_go
     client, tmp_path, _ = lab
     backup_sha = "d" * 64
     original_recipe = cp._dossier_source_recipe
+    primary_sha = None
 
     def pooled(publication):
+        nonlocal primary_sha
         recipe = original_recipe(publication)
         primary = recipe.masters[0]
+        primary_sha = primary.sha256
         backup = dc_replace(primary, source_id="zz-backup", sha256=backup_sha, role="backup",
                             storage_key="source-dna/backup/" + backup_sha + ".mp4")
         return dc_replace(recipe, masters=(primary, backup))
@@ -1908,7 +1911,7 @@ async def test_a_cut_on_a_backup_whose_file_is_missing_is_skipped_and_the_job_go
     store = cp._load_jobs()
     for index, cut in enumerate(store["jobs"][job_id]["sourceCuts"]):
         start = index * 15_000
-        sha = backup_sha if index in backup_cuts else cut["masterSha256"]
+        sha = backup_sha if index in backup_cuts else primary_sha
         cut.update({"masterSha256": sha, "slotId": f"{sha}:{start}:{cut['durationMs']}",
                     "libraryStartMs": start, "startMs": start})
     cp.atomic_save(cp._jobs_path(), store)
