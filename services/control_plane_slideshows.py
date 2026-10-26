@@ -308,7 +308,7 @@ def curated_plan_signature(plan: dict[str, Any]) -> str:
 # its own signature, reserved once like any other slideshow plan.
 CURATED_VARIANT_LIMIT = 200
 _VARIANT_FOCAL_OFFSETS = (0.0, -0.06, 0.06, -0.12, 0.12)
-_VARIANT_TAIL_MARGIN = 0.05
+_VARIANT_TAIL_MARGIN = 0.75  # Tides HIGH-1: stay clear of end-of-clip fades (ytal-v-0016 fades to black from 3.80 s)
 _VARIANT_STEP = 0.6180339887498949
 _VARIANT_WINDOW_STEP = 0.4142135623730951
 
