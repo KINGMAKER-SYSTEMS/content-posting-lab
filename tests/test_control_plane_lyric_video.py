@@ -159,9 +159,15 @@ def test_real_editor_catalog_advertises_only_closed_scalar_timing_selection(monk
 
 def test_legacy_maps_retain_baseline_hashes_and_static_renderer_matches_reviewed_pin():
     root=Path(__file__).resolve().parents[1]
+    # P89-BURNT-CULTURE-FORMAT deliberately re-versioned ONLY the shared
+    # ugc-slideshow executor and its contract entry (burnt-mill-rd gains a
+    # curatedVideoPlan in the ugc executor). The legacy registry/contract map
+    # is otherwise untouched; the pin moves are the exact new map hashes and do
+    # NOT involve lyric-video (the lyric-video executor and its profile pin are
+    # byte-identical, so the lyric path is unaffected).
     for path,key,expected in [
-        ("content-engine-registry.v1.json","profiles","70baee7058a9805fb9865de57e37262ddc055d0a89f6ff50853c65c7415ec7a2"),
-        ("content-format-contracts.v1.json","contracts","de1902e864747568f2f5849597833bd76873204d3131eb037c6953cf039c3432")]:
+        ("content-engine-registry.v1.json","profiles","ce9df0fc6170ea1c765686483826c3e737345f98f51602883188b4fd25a6735b"),
+        ("content-format-contracts.v1.json","contracts","7d93f6e2cc1bc1f031cbfbe313e5769ad8344bf98029c1454a40afd74d04a564")]:
         current=json.loads((root/"recipes"/path).read_bytes())[key]
         # Exclude only the four additive formats; preserve the entire frozen233 legacy map.
         current.pop("lyric-video")

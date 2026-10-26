@@ -641,3 +641,92 @@ def test_generic_photo_arc_survives_actual_library_fetch_sort(monkeypatch):
     library = slideshows._fetch_library(expected.library_id, expected.lane, expected.subject)
     planned = plan_slideshows(_ugc_recipe(), library, 1, set(), "run")
     assert planned[0]["mediaKeys"] == [item.key for item in expected.objects]
+
+
+def _burnt_recipe() -> SlideshowRecipe:
+    ugc_sha = hashlib.sha256(UGC_EXECUTOR_PATH.read_bytes()).hexdigest()
+    return SlideshowRecipe(
+        recipe_id="ugc-slideshow:master",
+        format_slug="ugc-slideshow",
+        engine="sourced_slideshow",
+        engine_registry_hash="e" * 64,
+        format_contract_version="sha256:" + "f" * 64,
+        material_source="image_library",
+        asset_type="video/mp4",
+        executor_version=f"sha256:{ugc_sha}",
+        library_id="syzygy:slideshow-webweaving:burnt-mill-rd",
+        lane="slideshow-webweaving",
+        subject="burnt-mill-rd",
+        minimum_library_items=3,
+        templates=(SyzygyTemplate("clean-slideshow", 3),),
+        max_quantity=1,
+        output_width=1080,
+        output_height=1920,
+        encode_preset="tiktok_delivery_v1",
+        recipe_spec={"masterPages": {"pageId": "acct:burnt-mill-rd"}},
+    )
+
+
+def _burnt_library() -> SyzygyLibrary:
+    treatment = ugc_page_treatment("acct:burnt-mill-rd")
+    curated = treatment["curatedVideoPlan"]
+    files = [source["file"] for source in curated["sources"]]
+    by_file = {source["file"]: source for source in curated["sources"]}
+    objects = tuple(
+        SyzygyObject(
+            f"slideshow-webweaving/burnt-mill-rd/clips/{file}",
+            by_file[file]["bytes"],
+            f"https://r2.example/slideshow-webweaving/burnt-mill-rd/clips/{file}",
+        )
+        for file in files
+    )
+    canonical = json.dumps(
+        [[item.key, item.bytes] for item in objects],
+        separators=(",", ":"), ensure_ascii=False,
+    )
+    return SyzygyLibrary(
+        library_id="syzygy:slideshow-webweaving:burnt-mill-rd",
+        lane="slideshow-webweaving",
+        subject="burnt-mill-rd",
+        objects=objects,
+        snapshot_hash=hashlib.sha256(canonical.encode()).hexdigest(),
+    )
+
+
+def test_burnt_curated_plan_matches_approved_lyric_plan_and_uses_burnt_sources():
+    # P89-BURNT-CULTURE-FORMAT: burnt-mill-rd now runs the shared ugc-slideshow
+    # executor from its OWN 20 clips, verbatim the approved lyric-video montage.
+    treatment = ugc_page_treatment("acct:burnt-mill-rd")
+    assert isinstance(treatment, dict)
+    curated = treatment["curatedVideoPlan"]
+    lyric = json.loads(slideshows.LYRIC_VIDEO_EXECUTOR_PATH.read_bytes())
+    approved = lyric["pageTreatments"]["acct:burnt-mill-rd"]["curatedVideoPlan"]
+    assert curated == approved
+    assert len(curated["sources"]) == 20
+    assert len(curated["windows"]) == 27
+    assert curated["audioSectionEnd"] == 20
+    assert curated["lane"] == "slideshow-webweaving"
+    assert curated["subject"] == "burnt-mill-rd"
+    assert all(
+        w["source"] in {s["file"] for s in curated["sources"]}
+        for w in curated["windows"]
+    )
+
+    recipe = _burnt_recipe()
+    library = _burnt_library()
+    plans = plan_slideshows(recipe, library, 5, set(), "run-a")
+    assert len(plans) >= 1
+    assert all(
+        p["mediaKeys"]
+        and all("slideshow-webweaving/burnt-mill-rd/clips/" in k for k in p["mediaKeys"])
+        and len(p["windows"]) == 27
+        for p in plans
+    )
+
+    from services.content_engine_registry import load_engine_registry
+
+    profiles, _ = load_engine_registry()
+    profile = profiles["ugc-slideshow"]
+    assert profile.executor_version == "sha256:" + hashlib.sha256(
+        UGC_EXECUTOR_PATH.read_bytes()
+    ).hexdigest()

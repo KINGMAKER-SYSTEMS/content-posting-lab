@@ -1202,7 +1202,7 @@
       "creativeAuthority": {
         "kind": "slideshow_renderer",
         "id": "syzygy-slideshow",
-        "version": "sha256:1c800420efd659f1f0a38608f6e34d3a38d16da53a43cdf8cc27c67f7cb0440e"
+        "version": "sha256:092647ed849c4b62d48a19d9a9b346a450b049ae5dc7587ddf6dc6eace33a9ef"
       },
       "dimensions": {
         "subject": {
@@ -1217,7 +1217,7 @@
         },
         "shotGrammar": {
           "status": "defined",
-          "rule": "Generic UGC pages render a neutral vertical clean-slideshow sequence using the template's exact ordered media count; the Culture Core page renders an operator-approved curated video montage of ordered source clip windows instead of a fixed photo cycle.",
+          "rule": "Generic UGC pages render a neutral vertical clean-slideshow sequence using the template's exact ordered media count; the Culture Core and Burnt Mill Road pages render an operator-approved curated video montage of ordered source clip windows instead of a fixed photo cycle.",
           "authority": "syzygy-slideshow.formats.ugc-slideshow.templates+pageTreatments.curatedVideoPlan"
         },
         "lighting": {
