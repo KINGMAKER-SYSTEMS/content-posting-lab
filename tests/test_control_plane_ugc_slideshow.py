@@ -236,7 +236,7 @@ def test_ugc_page_treatment_curated_for_culture_only():
     assert ugc_page_treatment("") is None
 
 
-def test_culture_curated_plan_15_unique_keys_19_windows_exhausted_once():
+def test_culture_curated_plan_15_unique_keys_19_windows_then_next_variant():
     recipe = _culture_recipe()
     library = _culture_library()
     plans = plan_slideshows(recipe, library, 1, set(), "run-a")
@@ -253,8 +253,12 @@ def test_culture_curated_plan_15_unique_keys_19_windows_exhausted_once():
     # Extras in the library are never selected.
     assert all(key.count("/clips/") == 1 for key in plan["mediaKeys"])
     assert "slideshow-webweaving/culture-core-1/clips/ytal-v-0010.mp4" not in plan["mediaKeys"]
-    # One curated set: reserving it truthfully exhausts the page.
-    assert plan_slideshows(recipe, library, 1, {plan["signature"]}, "run-a") == []
+    # Reserving the approved plan offers the next re-chop variant (same
+    # sources, same output timing), never the reserved plan again.
+    following = plan_slideshows(recipe, library, 1, {plan["signature"]}, "run-a")
+    assert len(following) == 1 and following[0]["variant"] == 1
+    assert following[0]["signature"] != plan["signature"]
+    assert following[0]["mediaKeys"] == plan["mediaKeys"]
 
 
 async def test_culture_curated_wire_is_video_format_no_template_no_cuts(monkeypatch):

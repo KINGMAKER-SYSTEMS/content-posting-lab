@@ -87,16 +87,17 @@ def test_any_other_treatment_key_drift_is_refused(mutation):
         validate_lyric_recipe(value)
 
 
-def test_exact_27_window_plan_is_single_use_not_photo_permutation():
+def test_exact_27_window_plan_then_variants_each_once_not_photo_permutation():
     recipe, library=recipe_and_library()
     assert slides.requires_curated_video_plan(recipe)
     plans=slides.plan_slideshows(recipe,library,10,set(),'fixture')
-    assert len(plans)==1
+    assert len(plans)==10 and [p.get('variant',0) for p in plans]==list(range(10))
     plan=plans[0]
     assert len(plan['windows'])==27 and len(plan['mediaKeys'])==20
     assert plan['audioSectionEnd']==20
     assert plan['windows'][0]['outputStart']==0 and plan['windows'][-1]['outputEnd']==20
-    assert slides.plan_slideshows(recipe,library,1,{plan['signature']},'fixture')==[]
+    following=slides.plan_slideshows(recipe,library,1,{plan['signature']},'fixture')
+    assert following==[plans[1]]
     missing=slides.SyzygyLibrary(library.library_id,library.lane,library.subject,library.objects[:-1],library.snapshot_hash)
     assert slides.plan_slideshows(recipe,missing,1,set(),'fixture')==[]
 
