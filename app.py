@@ -12,8 +12,10 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
+from fastapi.routing import APIRoute
 from fastapi.staticfiles import StaticFiles
 from starlette.datastructures import Headers, QueryParams
+from starlette.routing import Match
 from starlette.staticfiles import NotModifiedResponse
 import uvicorn
 
@@ -615,6 +617,51 @@ async def serve_frontend(full_path: str):
         status_code=404,
         detail="Frontend not built. Run 'npm run build' in frontend/ directory.",
     )
+
+
+class _ApiNotFoundRoute(APIRoute):
+    """Catch-all for unknown/removed ``/api/*`` paths.
+
+    The built frontend registers ``GET /{full_path:path}``, so a removed API
+    path matched it (GET -> SPA HTML, any other verb -> a misleading 405).
+    This route is registered unconditionally (independent of frontend/dist)
+    and returns 404 for ``/api/`` paths no real route claims. A real route
+    that matches the path with a *different* verb must keep winning, so this
+    route defers (PARTIAL) and lets the framework emit that route's own
+    405 + Allow instead of swallowing it into a 404. That works only for
+    routes registered BEFORE this one, so every ``/api`` router must be
+    included above it (pinned by tests/test_api404_retired_paths.py).
+    """
+
+    def matches(self, scope):
+        if scope.get("type") != "http":
+            return Match.NONE, {}
+        if not scope.get("path", "").startswith("/api/"):
+            return Match.NONE, {}
+        for route in app.routes:
+            if route is self:
+                continue
+            # The SPA catch-all would FULL-match any /api path; it must not
+            # count as a real route here or unknown /api paths stay SPA/405.
+            if getattr(route, "endpoint", None) is serve_frontend:
+                continue
+            match, _ = route.matches(scope)
+            if match is not Match.NONE:
+                return Match.PARTIAL, {}
+        return super().matches(scope)
+
+
+async def api_not_found(full_path: str):
+    raise HTTPException(status_code=404, detail="Not Found")
+
+
+app.router.add_api_route(
+    "/api/{full_path:path}",
+    api_not_found,
+    methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"],
+    include_in_schema=False,
+    route_class_override=_ApiNotFoundRoute,
+)
 
 
 if FRONTEND_DIR.exists():
