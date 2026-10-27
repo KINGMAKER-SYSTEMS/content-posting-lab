@@ -56,17 +56,32 @@ The row does still appear in the operator roster listings (`/api/roster`,
 `/api/pages`). The existing `PUT /api/roster/{id}` and `POST /api/roster/dedup`
 can still change or remove it, just as they can a Notion row.
 
-## Not covered by this route
+## Sourced video for an external page
 
-Registering a page makes it resolvable. It does not make sourced-video
-execution work for it:
+Registering a page makes it resolvable. Cutting its footage also needs the
+vault's `source-manifest.json` to bind to the page without a Notion page id.
+`services/shipstream_source_manifest.py` accepts a null `notionPageId` only for
+a registered external page, and only through that page's own Content Lab
+import. For such a page ShipStream must write:
 
-- `services/shipstream_source_manifest.py` refuses a Master Pages intent with a
-  blank `notionPageId`, and requires the vault's `source-manifest.json` to
-  repeat it.
-- ShipStream's source registration refuses one too.
+- `notion.pageId: null`, the key present and explicitly null, beside the same
+  `contentNiche`, `contentEngine` and `serviceMode` the intent carries;
+- `sourceAuthority.kind: "content_lab_page_source_import"`;
+- `sourceAuthority.pageId` equal to the operational page id (the registered
+  `pageId`);
+- `sourceAuthority.pageHandle` equal to the page handle;
+- `sourceAuthority.notionPageId: null`, the key present and explicitly null;
+- `sourceAuthority.replacementEligible: true`;
+- a `master` block, as for any Content Lab import.
 
-Both need a non-Notion page-binding rule before a North Star page can cut
-footage.
+Everything else is refused exactly as before: a blank string, an omitted key,
+a Notion-source page missing its id, a null-source row, another authority kind
+(historical-posted-cut recovery included), or an authority naming another
+page id.
 
-Tests: `pytest -q tests/test_control_plane_external_pages.py`.
+ShipStream's own source registration still refuses a page without a Notion
+page id. That change is proposed separately in the control plane and must send
+the fields above.
+
+Tests: `pytest -q tests/test_control_plane_external_pages.py
+tests/test_shipstream_source_manifest.py`.

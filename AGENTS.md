@@ -204,6 +204,9 @@
   DELETE removes only external-source rows. Notion sync and the fleet roster
   projection keep their `source == "notion"` filters, so such a row is never
   overwritten, pruned or published to the fleet. See `docs/external-pages.md`.
+  The closed `EXTERNAL_PAGE_SOURCES` set lives in
+  `services/master_pages_contract.py`, shared with the ShipStream manifest
+  parser's null-Notion-id exception.
 - `services/control_plane_source_imports.py` owns bounded public-HTTPS download,
   exact-byte hashing, media probing, and refillable-master normalization for
   page-scoped source-link intake.
@@ -345,6 +348,16 @@
   Lab format must match the Master Pages niche before a source is displayed or
   executed. The Master Pages Notion page id itself must be nonblank; a null id
   never matches omitted manifest fields or establishes exact-page authority.
+  The one exception is a registered external page (`source` in
+  `EXTERNAL_PAGE_SOURCES` from `services/master_pages_contract.py`, today
+  `northstar`), whose intent has `notionPageId: null` because it has no Notion
+  row. Its manifest is executable only when `sourceAuthority.kind` is
+  `content_lab_page_source_import`, `sourceAuthority.pageId` is the
+  operational page id, and `notion.pageId` and `sourceAuthority.notionPageId`
+  are both present as explicit nulls. A blank string, an omitted key, a Notion
+  or null-source page, any other authority kind (historical-posted-cut
+  recovery included), or an authority naming another page id is refused as
+  before.
 - Capability and job execution dispatch only to the resolver named by the
   publication's closed content engine. A sourced-video publication never probes
   the AI-video resolver, and an unknown engine exposes no executor.
@@ -436,7 +449,8 @@
 - ShipStream `content_lab_page_source_import` manifests are executable only
   when their authority repeats the exact Control Plane page id, page handle,
   Notion page id, and replacement eligibility required by the active Master
-  Pages projection.
+  Pages projection. For a registered external page the Notion page id it
+  repeats is an explicit null; see the sourced-video exception above.
 - Signed job download and thumbnail URLs use one per-job credential. The
   operator rotation CLI (`python -m services.job_token_rotation`, which is
   included in the production image) requires an explicit absolute existing job-store path,
@@ -759,6 +773,9 @@
 - Run `pytest -q tests/test_control_plane_external_pages.py` for external-page
   auth, refusals, real-roster resolution by source imports, clip jobs and
   capabilities, Notion sync survival, fleet projection exclusion and DELETE scope.
+- Run `pytest -q tests/test_shipstream_source_manifest.py` for exact page-source
+  projection, including the external-page null-Notion-id exception and every
+  shape it still refuses.
 - Run `pytest -q tests/test_production_image_imports.py` for isolated imports from
   the Dockerfile's backend file selection. Build the Docker image for release;
   its app-import smoke check must pass before deployment. Confirm TgCrypto can
