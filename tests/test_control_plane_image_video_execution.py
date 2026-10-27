@@ -14,7 +14,16 @@ import routers.control_plane as cp
 ])
 def image_lab(request,monkeypatch,tmp_path):
     page,handle,format_slug,engine,niche,notion=request.param;photo=iv.image_video_plan(page)
-    library=ss.SyzygyLibrary(photo['libraryId'],photo['lane'],photo['subject'],tuple(ss.SyzygyObject(x['key'],x['bytes'],'https://r2.example/'+x['key'])for x in photo['media']),'c'*64)
+    # The live libraries carry the approved pinned objects plus the page's own
+    # pexels orphans (SHA-256 embedded in the filename). Those orphans are what
+    # the variants draw from, so the fixture mirrors the real library shape.
+    base_objects = [ss.SyzygyObject(x['key'],x['bytes'],'https://r2.example/'+x['key']) for x in photo['media']]
+    extras = []
+    for index in range(3):
+        sha = hashlib.sha256(f"{page}-extra-{index}".encode()).hexdigest()
+        key = f"{photo['lane']}/{photo['subject']}/photos/pexels_extra_{index:02d}_{sha}.jpg"
+        extras.append(ss.SyzygyObject(key, 10_000 + index, 'https://r2.example/'+key))
+    library=ss.SyzygyLibrary(photo['libraryId'],photo['lane'],photo['subject'],tuple(sorted(base_objects + extras, key=lambda o: o.key)),'c'*64)
     for key,value in {'PAGE_ID':page,'HANDLE':handle,'SUBJECT':photo['subject'],'LANE':photo['lane'],'FORMAT':format_slug,'ENGINE':engine,'NICHE':niche,'LIBRARY_ID':photo['libraryId'],'RECIPE_ID':format_slug+':master'}.items():monkeypatch.setattr(base,key,value)
     # These are the actual observed Notion tuples, not a slideshow-normalized Twin.
     original_master_pages = base.master_pages
@@ -35,13 +44,30 @@ def image_lab(request,monkeypatch,tmp_path):
     client,tmp_path,started,library,payload=base.lab.__wrapped__(monkeypatch,tmp_path)
     return client,library,payload,photo
 
+
+def _library_pins(photo, library):
+    """key -> (bytes, sha256) for every library object.
+
+    The pinned photo media carry their executor sha256; the extra orphans carry
+    it embedded in the filename, exactly as the variant generator resolves them.
+    """
+    pins = {x['key']: (x['bytes'], x['sha256']) for x in photo['media']}
+    for obj in library.objects:
+        if obj.key in pins:
+            continue
+        sha = obj.key.rsplit('/', 1)[-1].rsplit('.', 1)[0].split('_')[-1]
+        pins[obj.key] = (obj.bytes, sha)
+    return pins
+
+
 @pytest.mark.asyncio
-async def test_managed_photo_admission_wire_grade_provenance_and_exhaustion(image_lab,monkeypatch):
+async def test_managed_photo_admission_wire_grade_provenance_and_variants(image_lab,monkeypatch):
     client,library,payload,photo=image_lab
     response=client.post('/api/control-plane/v1/jobs',json=base.job_body(1,payload),headers=base.headers('image-run-1'))
     assert response.status_code==200,response.json();job_id=response.json()['jobId'];captured=[];grades=[]
     base._fake_syzygy_boundary(monkeypatch,library)
-    async def observe(_lib,keys):return [{'objectKey':x['key'],'bytes':x['bytes'],'sha256':x['sha256'],'etag':'"pinned"'} for x in photo['media'] if x['key'] in keys]
+    pins=_library_pins(photo,library)
+    async def observe(_lib,keys):return [{'objectKey':k,'bytes':pins[k][0],'sha256':pins[k][1],'etag':'"pinned"'} for k in keys]
     async def request(method,endpoint,**kwargs):captured.append((method,endpoint,kwargs));return {'job_id':'real-boundary-fixture','quality':'draft'}
     async def grade(src,dst,correction,**kwargs):grades.append(correction);Path(dst).write_bytes(b'fixture-managed-photo-output')
     monkeypatch.setattr(cp,'observe_library_media',observe);monkeypatch.setattr(cp,'submit_syzygy_render',ss.submit_syzygy_render);monkeypatch.setattr(ss,'_request_json',request);monkeypatch.setattr(cp,'run_color_correct',grade)
@@ -54,8 +80,16 @@ async def test_managed_photo_admission_wire_grade_provenance_and_exhaustion(imag
     assert clip['source']['contentEngine']==base.ENGINE
     assert clip['sourceTreatment']['visualTreatment']['filters']['brightness']==.85
     assert clip['sourceTreatment']['sourceSha256']==clip['sha256']
+    # Reserving the approved plan no longer exhausts the page: the next job
+    # draws a deterministic variant from the page's own library.
     again=client.post('/api/control-plane/v1/jobs',json=base.job_body(1,payload),headers=base.headers('image-run-2'))
-    assert again.status_code==409 and again.json()['detail']=='slideshow_inventory_exhausted'
+    assert again.status_code==200,again.json()
+    next_job=cp._load_jobs()['jobs'][again.json()['jobId']]
+    variant=next_job['slideshowPlan'][0]
+    assert variant['signature']!=photo['signature']
+    assert variant['photoPlan'].get('variant')==1
+    assert variant['photoPlan']['signature']==variant['signature']
+    assert set(variant['mediaKeys']) <= {o.key for o in library.objects}
 
 @pytest.mark.asyncio
 async def test_wrong_pinned_source_refuses_before_provider(image_lab,monkeypatch):

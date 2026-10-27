@@ -3916,11 +3916,27 @@ async def _run_syzygy_slideshow(job_id: str) -> None:
             if not curated and "windows" in plan:
                 raise RuntimeError("slideshow_plan_invalid")
             if image_video:
-                from services.control_plane_image_video import recipe_image_video_plan
-                canonical = recipe_image_video_plan(recipe, library)
-                if canonical is None or {key: value for key, value in plan.items() if key != "media"} != canonical:
+                from services.control_plane_image_video import (
+                    image_video_plan_signature,
+                    image_video_variant_number,
+                    recipe_image_video_plan_for_variant,
+                )
+                photo_plan = plan.get("photoPlan") if isinstance(plan, dict) else None
+                variant = image_video_variant_number(photo_plan)
+                canonical = (
+                    recipe_image_video_plan_for_variant(recipe, library, variant)
+                    if variant is not None else None
+                )
+                if (
+                    canonical is None
+                    or not isinstance(photo_plan, dict)
+                    or not isinstance(photo_plan.get("media"), list)
+                    or signature != canonical["signature"]
+                    or signature != image_video_plan_signature(photo_plan)
+                    or media_keys != canonical["mediaKeys"]
+                ):
                     raise RuntimeError("slideshow_plan_invalid")
-                pinned_by_key = {row["key"]: (row["sha256"], row["bytes"]) for row in plan["photoPlan"]["media"]}
+                pinned_by_key = {row["key"]: (row["sha256"], row["bytes"]) for row in photo_plan["media"]}
                 if (not isinstance(planned_media, list)
                         or planned_media != [{"objectKey": key, "bytes": pinned_by_key[key][1]} for key in media_keys]):
                     raise RuntimeError("slideshow_plan_invalid")
