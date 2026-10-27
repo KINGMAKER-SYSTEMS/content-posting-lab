@@ -619,6 +619,17 @@ async def serve_frontend(full_path: str):
     )
 
 
+def _route_path(scope) -> str:
+    """The request path as Starlette's router matches it: without the app's
+    ``root_path`` prefix (same rule as ``starlette._utils.get_route_path``)."""
+    path, root_path = scope.get("path", ""), scope.get("root_path", "")
+    if not root_path or not path.startswith(root_path):
+        return path
+    if path == root_path:
+        return ""
+    return path[len(root_path):] if path[len(root_path)] == "/" else path
+
+
 class _ApiNotFoundRoute(APIRoute):
     """Catch-all for unknown/removed ``/api/*`` paths.
 
@@ -639,7 +650,7 @@ class _ApiNotFoundRoute(APIRoute):
         # Only paths with something after "/api/". Bare "/api" and "/api/" keep
         # their old behavior, and Starlette's slash-redirect probe of "/api" (to
         # "/api/") is not turned into a redirect by this route.
-        path = scope.get("path", "")
+        path = _route_path(scope)
         if not path.startswith("/api/") or path == "/api/":
             return Match.NONE, {}
         for route in app.routes:
@@ -664,7 +675,7 @@ def _slash_redirect_target(scope) -> str | None:
     toggled is a real route (e.g. ``/api/health/`` -> ``/api/health``).
     """
     path = scope["path"]
-    other = dict(scope, path=path.rstrip("/") if path.endswith("/") else path + "/")
+    other = dict(scope, path=path.rstrip("/") if _route_path(scope).endswith("/") else path + "/")
     for route in app.routes:
         if isinstance(route, _ApiNotFoundRoute) or getattr(route, "endpoint", None) is serve_frontend:
             continue

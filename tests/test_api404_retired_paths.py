@@ -69,7 +69,7 @@ def _client():
 # ------------------------------------------------------------------- built state
 
 
-def test_unknown_api_all_methods_404_not_spa(tmp_path, monkeypatch):
+def test_unknown_api_standard_methods_404_not_spa(tmp_path, monkeypatch):
     monkeypatch.setattr(app_module, "FRONTEND_DIR", _build_dist(tmp_path))
     _ensure_spa_catchall()
     client = _client()
@@ -222,6 +222,21 @@ def test_trailing_slash_redirects_kept_unbuilt(tmp_path, monkeypatch):
     monkeypatch.setattr(app_module, "FRONTEND_DIR", tmp_path / "missing")
     _drop_spa_catchall()
     _assert_slash_redirects(_client())
+
+
+def test_root_path_prefix_is_honoured(tmp_path, monkeypatch):
+    # Behind a path prefix (ASGI root_path) the catch-all must read the path the
+    # way Starlette's router does, or prefixed unknown /api paths fall to the SPA.
+    monkeypatch.setattr(app_module, "FRONTEND_DIR", _build_dist(tmp_path))
+    _ensure_spa_catchall()
+    client = TestClient(app_module.app, root_path="/lab")
+    for method in ("GET", "POST", "TRACE"):
+        resp = client.request(method, "/lab/api/no-such-thing", follow_redirects=False)
+        assert resp.status_code == 404, (method, resp.status_code)
+    resp = client.get("/lab/api/health/", follow_redirects=False)
+    assert resp.status_code == 307
+    assert resp.headers["location"].endswith("/lab/api/health")
+    assert client.get("/lab/api/health").status_code == 200
 
 
 def test_trailing_slash_redirects_kept_built(tmp_path, monkeypatch):
