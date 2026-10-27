@@ -919,11 +919,17 @@ def plan_slideshows(
     ):
         return []
     if recipe.format_slug in IMAGE_VIDEO_FORMATS:
-        from services.control_plane_image_video import recipe_image_video_plan
-        plan = recipe_image_video_plan(recipe, library)
-        if plan is None or plan["signature"] in unavailable_signatures:
+        from services.control_plane_image_video import recipe_image_video_plans
+        plans = recipe_image_video_plans(recipe, library)
+        if not plans:
             return []
-        return [plan]
+        # Variant 0 is the approved photo hold; each later variant re-draws the
+        # page's own library photos and is reserved once through its own
+        # signature. Extras in the library are ignored.
+        return [
+            plan for plan in plans
+            if plan["signature"] not in unavailable_signatures
+        ][:count]
     # The UGC format is a curated page library. A page with a curatedVideoPlan
     # renders its approved montage (variant 0) and then its deterministic
     # re-chop variants 1..N, each exactly once, in variant order; a generic
