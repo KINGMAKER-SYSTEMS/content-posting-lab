@@ -56,15 +56,16 @@ REQUEST_SCHEMA_V2 = "content-lab.post-render-request.v2"
 RECEIPT_SCHEMA_V2 = "posting-prepared-artifact/v2"
 RENDERER_ID = "content-lab.prepared-post"
 RENDERER_VERSION_V2 = "2"
-# The production timed set is an exact 20 second master.
-TARGET_DURATION_MS = 20_000
+# A timed page's duration is its timing manifest's ``durationMs`` (data), never
+# a compiled-in constant. The tolerance is a delivery-QA bound, not a page value.
 DURATION_TOLERANCE_MS = 34
 
 TIMING_FIELDS = frozenset({"id", "pageId", "account", "soundId", "durationMs",
                            "phrases", "canonicalCaption", "sha256"})
 PHRASE_FIELDS = frozenset({"startMs", "endMs", "text"})
 
-from services.lyric_timing import resolve_lyric_timing, LyricTimingError
+from services.lyric_timing import resolve_lyric_timing, LyricTimingError, MIN_TIMING_PHRASES, MAX_TIMING_PHRASES
+from services.timed_render_math import expected_decoded_frames, phrase_input_seconds, retry_bitrate_bps
 
 
 class TimedPostRenderRequest(PostRenderRequest):
@@ -119,16 +120,17 @@ def _resolve_timing(request: TimedPostRenderRequest) -> tuple[dict, list[dict]]:
     if timing["canonicalCaption"] != request.caption:
         raise PostRenderError("lyric_caption_mismatch", "request caption is not the timing's canonical caption")
     if (isinstance(timing["durationMs"], bool) or not isinstance(timing["durationMs"], int)
-            or timing["durationMs"] != TARGET_DURATION_MS):
-        raise PostRenderError("lyric_duration_invalid", "lyric timing master must be exactly 20 seconds")
+            or timing["durationMs"] <= 0):
+        raise PostRenderError("lyric_duration_invalid", "lyric timing master must have a positive duration")
     if (timing.get("sourceProgramId"), timing.get("sourceProgramSha256")) != (request.source_program_id, request.source_program_sha256):
         raise PostRenderError("lyric_source_program_mismatch", "lyric timing and source program revisions differ")
     return timing, _validate_phrases(timing["phrases"], timing["durationMs"])
 
 
 def _validate_phrases(phrases, duration_ms: int) -> list[dict]:
-    if not isinstance(phrases, list) or len(phrases) != 7:
-        raise PostRenderError("lyric_phrases_invalid", "lyric timing must carry exactly seven phrases")
+    if (not isinstance(phrases, list)
+            or not MIN_TIMING_PHRASES <= len(phrases) <= MAX_TIMING_PHRASES):
+        raise PostRenderError("lyric_phrases_invalid", "lyric timing must carry a bounded number of phrases")
     validated = []
     previous_end = -1
     for phrase in phrases:
@@ -150,9 +152,12 @@ def _validate_phrases(phrases, duration_ms: int) -> list[dict]:
 
 
 
-# The page-approved 20s clean background is bounded to the delivery byte cap.
-# This keeps seven PNG+JSON pairs and four cue frames inside the existing
-# conservative durable-worker disk reservation without changing v1 capacity.
+# The page-approved clean background source is bounded to the delivery byte cap;
+# each phrase then contributes one transparent PNG plus one receipt JSON, and the
+# edge-phrase check writes two cue frames per edge phrase. MAX_TIMING_PHRASES
+# (see services/lyric_timing.py) keeps that per-job peak workspace inside the
+# unchanged v1 durable-worker disk reservation, pinned by
+# tests/test_post_render_timed_jobs.py.
 def _copy_timed_source(source: Path, destination: Path, expected_sha: str) -> None:
     fd = os.open(source, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     with os.fdopen(fd, "rb") as reader:
@@ -210,18 +215,19 @@ def _delivery_video_args() -> list[str]:
 
 
 def _encode_timed_final(source: Path, phrase_pngs: list[Path], phrases: list[dict],
-                        final: Path, source_probe: MediaProbe, tools: RenderTools) -> MediaProbe:
+                        final: Path, source_probe: MediaProbe, tools: RenderTools,
+                        duration_ms: int) -> MediaProbe:
     graph = _timed_graph(source_probe, phrases)
     base = [tools.ffmpeg, "-nostdin", "-v", "error", "-xerror", "-protocol_whitelist", "file,pipe",
             "-noautorotate", "-f", "mov", "-i", str(source)]
     for png in phrase_pngs:
         base += ["-protocol_whitelist", "file,pipe", "-framerate", "30", "-loop", "1",
-                 "-t", f"{TARGET_DURATION_MS / 1000:.3f}", "-i", str(png)]
+                 "-t", f"{phrase_input_seconds(duration_ms):.3f}", "-i", str(png)]
     base += ["-filter_complex_threads", "1", "-filter_complex", graph, "-map", "[v]", "-an", "-map_metadata", "-1", "-map_chapters", "-1"]
     for attempt in range(2):
         encode = _delivery_video_args()
         if attempt:
-            bitrate = int(MAX_FINAL_BYTES * 8 * 0.90 * 1000 / TARGET_DURATION_MS)
+            bitrate = retry_bitrate_bps(MAX_FINAL_BYTES, duration_ms)
             if bitrate <= 0:
                 raise PostRenderError("delivery_budget_impossible", "duration cannot fit the delivery byte budget")
             for option in ("-crf", "-minrate", "-maxrate", "-bufsize"):
@@ -233,7 +239,7 @@ def _encode_timed_final(source: Path, phrase_pngs: list[Path], phrases: list[dic
                  tools, output_file=final)
             probe = _probe(final, tools)
             if (final.stat().st_size <= MAX_FINAL_BYTES
-                    and abs(probe.duration_ms - TARGET_DURATION_MS) <= DURATION_TOLERANCE_MS):
+                    and abs(probe.duration_ms - duration_ms) <= DURATION_TOLERANCE_MS):
                 return probe
         except PostRenderError as error:
             if error.code != "artifact_too_large":
@@ -280,7 +286,8 @@ def render_timed_post(source_path: Path, output_directory: Path, request: TimedP
     The source must already be upright, silent, 1080x1920 video with the exact
     requested visual treatment. This renderer only verifies/copies that source,
     renders the immutable lyric phrases as transparent PNGs at their exact cue
-    windows, and delivery-encodes a silent 20s 1080x1920 video. It never
+    windows, and delivery-encodes a silent 1080x1920 video at the timing master's
+    duration. It never
     regrades, re-speeds, re-crops, or fabricates operator/generation receipts.
     """
     request = TimedPostRenderRequest.model_validate(request.model_dump(by_alias=True))
@@ -291,6 +298,7 @@ def render_timed_post(source_path: Path, output_directory: Path, request: TimedP
     if _caption_delivery(request) == CAPTION_DELIVERY_IN_APP:
         raise PostRenderError("in_app_timed_unsupported", "in_app caption delivery is not supported for timed lyric rendering")
     timing, phrases = _resolve_timing(request)
+    target_duration_ms = timing["durationMs"]
     from services.control_plane_lyric_video import lyric_treatment_matches
     if not lyric_treatment_matches(_slot_treatment(request)):
         raise PostRenderError("lyric_source_treatment_mismatch", "timed lyric source must retain the approved once-graded 20-second program")
@@ -308,8 +316,8 @@ def render_timed_post(source_path: Path, output_directory: Path, request: TimedP
         if ((source_probe.width, source_probe.height) != (1080, 1920) or source_probe.sample_aspect_ratio not in {"1:1", "", "N/A", "0:1"}
                 or source_probe.rotation != 0 or not near_vertical):
             raise PostRenderError("regeneration_required", "source must be upright square-pixel 1080x1920 video")
-        if abs(source_probe.duration_ms - TARGET_DURATION_MS) > DURATION_TOLERANCE_MS:
-            raise PostRenderError("source_duration_invalid", "timed lyric source must be a 20 second master")
+        if abs(source_probe.duration_ms - target_duration_ms) > DURATION_TOLERANCE_MS:
+            raise PostRenderError("source_duration_invalid", "timed lyric source must match the timing master duration")
         if frame_band_height(_slot_treatment(request)) is not None:
             raise PostRenderError("unsupported_frame_treatment", "timed lyric render supports only full 9:16 vertical delivery")
 
@@ -342,12 +350,12 @@ def render_timed_post(source_path: Path, output_directory: Path, request: TimedP
 
         _resolve_timing(request)
         final_path = output_directory / "final.mp4"
-        final_probe = _encode_timed_final(source, phrase_pngs, phrases, final_path, source_probe, tools)
+        final_probe = _encode_timed_final(source, phrase_pngs, phrases, final_path, source_probe, tools, target_duration_ms)
         if (final_probe.width, final_probe.height, final_probe.video_codec, final_probe.pixel_format,
             final_probe.sample_aspect_ratio, final_probe.rotation) != (1080, 1920, "h264", "yuv420p", "1:1", 0):
             raise PostRenderError("final_probe_mismatch", "encoded final media facts do not match delivery contract")
-        if abs(final_probe.duration_ms - TARGET_DURATION_MS) > DURATION_TOLERANCE_MS:
-            raise PostRenderError("duration_changed", "timed lyric delivery is not a 20 second video")
+        if abs(final_probe.duration_ms - target_duration_ms) > DURATION_TOLERANCE_MS:
+            raise PostRenderError("duration_changed", "timed lyric delivery duration does not match the timing master")
         if any(stream.get("codec_type") == "audio" for stream in _streams(final_path, tools)):
             raise PostRenderError("final_has_audio", "timed lyric delivery must be silent")
 
@@ -355,7 +363,7 @@ def render_timed_post(source_path: Path, output_directory: Path, request: TimedP
                          "-f", "mov", "-i", str(final_path), "-map", "0:v:0",
                          "-progress", "pipe:1", "-nostats", "-f", "null", "-"], tools).decode("ascii")
         frames = [int(line.partition("=")[2]) for line in progress.splitlines() if line.startswith("frame=")]
-        if not frames or frames[-1] != 600 or "progress=end" not in progress:
+        if not frames or frames[-1] != expected_decoded_frames(target_duration_ms) or "progress=end" not in progress:
             raise PostRenderError("final_decode_failed", "full final-video decode did not complete")
         phrase_frame_evidence = _verify_edge_phrase_frames(final_path, phrase_pngs, phrases, output_directory, tools)
         qa_at_ms = final_probe.duration_ms // 2
