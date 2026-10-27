@@ -71,17 +71,19 @@ import. For such a page ShipStream must write:
   `pageId`);
 - `sourceAuthority.pageHandle` equal to the page handle;
 - `sourceAuthority.notionPageId: null`, the key present and explicitly null;
+- `sourceAuthority.intentSource: "northstar"`, repeating the intent's `source`
+  (Rising Tides manifests carry no `intentSource`; one that does is refused);
 - `sourceAuthority.replacementEligible: true`;
 - a `master` block, as for any Content Lab import.
 
 Everything else is refused exactly as before: a blank string, an omitted key,
-a Notion-source page missing its id, a null-source row, another authority kind
-(historical-posted-cut recovery included), or an authority naming another
-page id.
+a missing or different `intentSource`, a Notion-source page missing its id, a
+null-source row, another authority kind (historical-posted-cut recovery
+included), or an authority naming another page id.
 
-ShipStream's own source registration still refuses a page without a Notion
-page id. That change is proposed separately in the control plane and must send
-the fields above.
+ShipStream's side is Risingtides-dev/shipstream PR 54, which writes exactly
+these fields (plus `assignment.notionPageId: null`, which Content Lab does not
+read) for a `source: "northstar"` registration.
 
 Tests: `pytest -q tests/test_control_plane_external_pages.py
 tests/test_shipstream_source_manifest.py`.

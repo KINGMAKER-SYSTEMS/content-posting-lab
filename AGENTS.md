@@ -353,11 +353,14 @@
   `northstar`), whose intent has `notionPageId: null` because it has no Notion
   row. Its manifest is executable only when `sourceAuthority.kind` is
   `content_lab_page_source_import`, `sourceAuthority.pageId` is the
-  operational page id, and `notion.pageId` and `sourceAuthority.notionPageId`
-  are both present as explicit nulls. A blank string, an omitted key, a Notion
-  or null-source page, any other authority kind (historical-posted-cut
-  recovery included), or an authority naming another page id is refused as
-  before.
+  operational page id, `sourceAuthority.intentSource` repeats the intent's
+  `source`, and `notion.pageId` and `sourceAuthority.notionPageId` are both
+  present as explicit nulls. A blank string, an omitted key, a missing or
+  different `intentSource`, a Notion or null-source page, any other authority
+  kind (historical-posted-cut recovery included), or an authority naming
+  another page id is refused as before. ShipStream writes `intentSource` only
+  on an external page's manifest, so a Notion page's manifest that carries it
+  diverges.
 - Capability and job execution dispatch only to the resolver named by the
   publication's closed content engine. A sourced-video publication never probes
   the AI-video resolver, and an unknown engine exposes no executor.

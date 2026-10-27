@@ -607,6 +607,7 @@ def _external_import_manifest(page_id: str = EXTERNAL_PAGE_ID, handle: str = EXT
             "pageId": page_id,
             "pageHandle": handle,
             "notionPageId": None,
+            "intentSource": "northstar",
             "replacementEligible": True,
         },
         "master": {
@@ -684,6 +685,45 @@ def test_null_id_exception_requires_an_external_owner_and_a_null_id(overrides):
             _raw(_external_import_manifest()), _external_intent(**overrides),
             page_id=EXTERNAL_PAGE_ID, expected_format=FORMAT,
         )
+
+
+def test_null_notion_manifest_without_intent_source_is_refused():
+    """ShipStream marks an external page's manifest with intentSource; without it the null id is just missing."""
+    manifest = _external_import_manifest()
+    manifest["sourceAuthority"].pop("intentSource")
+    with pytest.raises(ShipStreamSourceError, match="Notion page ID is missing"):
+        parse_shipstream_source_manifest(
+            _raw(manifest), _external_intent(), page_id=EXTERNAL_PAGE_ID, expected_format=FORMAT,
+        )
+
+
+@pytest.mark.parametrize("intent_source", ["notion", "northstar-legacy", None, ""])
+def test_null_notion_manifest_with_another_intent_source_is_refused(intent_source):
+    manifest = _external_import_manifest()
+    manifest["sourceAuthority"]["intentSource"] = intent_source
+    with pytest.raises(ShipStreamSourceError, match="Notion page ID is missing"):
+        parse_shipstream_source_manifest(
+            _raw(manifest), _external_intent(), page_id=EXTERNAL_PAGE_ID, expected_format=FORMAT,
+        )
+
+
+@pytest.mark.parametrize("intent_source", ["northstar", "notion", None])
+def test_notion_page_manifest_carrying_intent_source_diverges(intent_source):
+    """Rising Tides manifests carry no intentSource; one that does is not this page's manifest."""
+    intent, _ = _intent()
+    manifest = _external_import_manifest(PAGE_ID, HANDLE)
+    manifest["notion"]["pageId"] = NOTION_PAGE_ID
+    manifest["sourceAuthority"]["notionPageId"] = NOTION_PAGE_ID
+    manifest["sourceAuthority"]["intentSource"] = intent_source
+    with pytest.raises(ShipStreamSourceError, match="diverges from Master Pages"):
+        parse_shipstream_source_manifest(
+            _raw(manifest), intent, page_id=PAGE_ID, expected_format=FORMAT,
+        )
+    manifest["sourceAuthority"].pop("intentSource")
+    library = parse_shipstream_source_manifest(
+        _raw(manifest), intent, page_id=PAGE_ID, expected_format=FORMAT,
+    )
+    assert library.page_id == PAGE_ID
 
 
 def _as_exact_page_binding(manifest: dict) -> None:
