@@ -91,6 +91,59 @@ async def test_managed_photo_admission_wire_grade_provenance_and_variants(image_
     assert variant['photoPlan']['signature']==variant['signature']
     assert set(variant['mediaKeys']) <= {o.key for o in library.objects}
 
+
+@pytest.mark.asyncio
+async def test_variant_job_renders_its_own_photo_hold(image_lab,monkeypatch):
+    client,library,payload,photo=image_lab
+    # Admit and complete the approved plan first, then admit the next variant.
+    first=client.post('/api/control-plane/v1/jobs',json=base.job_body(1,payload),headers=base.headers('image-variant-1'))
+    assert first.status_code==200,first.json()
+    cp._update_job(first.json()['jobId'],status='completed')
+    second=client.post('/api/control-plane/v1/jobs',json=base.job_body(1,payload),headers=base.headers('image-variant-2'))
+    assert second.status_code==200,second.json()
+    job_id=second.json()['jobId'];captured=[];grades=[]
+    base._fake_syzygy_boundary(monkeypatch,library)
+    pins=_library_pins(photo,library)
+    async def observe(_lib,keys):return [{'objectKey':k,'bytes':pins[k][0],'sha256':pins[k][1],'etag':'"pinned"'} for k in keys]
+    async def request(method,endpoint,**kwargs):captured.append((method,endpoint,kwargs));return {'job_id':'real-boundary-fixture','quality':'draft'}
+    async def grade(src,dst,correction,**kwargs):grades.append(correction);Path(dst).write_bytes(b'fixture-managed-photo-output')
+    monkeypatch.setattr(cp,'observe_library_media',observe);monkeypatch.setattr(cp,'submit_syzygy_render',ss.submit_syzygy_render);monkeypatch.setattr(ss,'_request_json',request);monkeypatch.setattr(cp,'run_color_correct',grade)
+    await cp._run_syzygy_slideshow(job_id);job=cp._load_jobs()['jobs'][job_id];assert job['status']=='completed',job.get('error')
+    assert len(captured)==1 and len(grades)==1
+    plan=job['slideshowPlan'][0]
+    assert plan['photoPlan'].get('variant')==1
+    clip=job['clips'][0];assert clip['source']['photoPlan']==plan['photoPlan']
+    assert clip['source']['planSignature']==plan['signature']
+    spec=captured[0][2]['body']['spec'];assert spec==iv.build_image_video_spec(plan['photoPlan'])
+    # The rendered media are the variant's own keys, not the approved plan's.
+    assert [m['library'] for m in spec['media']] == [m['key'] for m in plan['photoPlan']['media']]
+
+
+@pytest.mark.asyncio
+async def test_tampered_variant_resigned_is_refused_before_media_work(image_lab,monkeypatch):
+    client,library,payload,photo=image_lab
+    first=client.post('/api/control-plane/v1/jobs',json=base.job_body(1,payload),headers=base.headers('image-tamper-1'))
+    assert first.status_code==200,first.json()
+    cp._update_job(first.json()['jobId'],status='completed')
+    second=client.post('/api/control-plane/v1/jobs',json=base.job_body(1,payload),headers=base.headers('image-tamper-2'))
+    assert second.status_code==200,second.json()
+    job_id=second.json()['jobId'];job=cp._load_jobs()['jobs'][job_id]
+    plan=job['slideshowPlan'][0]
+    # Shift one media key (still well-formed), then re-sign inside and outside.
+    plan['photoPlan']['media'][0]['key'] = (
+        plan['photoPlan']['media'][0]['key'].replace('pexels_', 'pexelsX_')
+    )
+    plan['photoPlan']['signature']=iv.image_video_plan_signature(plan['photoPlan'])
+    plan['signature']=plan['photoPlan']['signature']
+    plan['mediaKeys']=[m['key'] for m in plan['photoPlan']['media']]
+    plan['media']=[{'objectKey':m['key'],'bytes':m['bytes']} for m in plan['photoPlan']['media']]
+    cp._update_job(job_id,slideshowPlan=[plan])
+    called=[]
+    async def forbidden(*args,**kwargs):called.append(True);raise AssertionError('media work forbidden')
+    monkeypatch.setattr(cp,'observe_library_media',forbidden);monkeypatch.setattr(cp,'submit_syzygy_render',forbidden)
+    await cp._run_syzygy_slideshow(job_id);job=cp._load_jobs()['jobs'][job_id]
+    assert job['status']=='failed' and job['error']=='slideshow_plan_invalid';assert called==[]
+
 @pytest.mark.asyncio
 async def test_wrong_pinned_source_refuses_before_provider(image_lab,monkeypatch):
     client,library,payload,photo=image_lab;response=client.post('/api/control-plane/v1/jobs',json=base.job_body(1,payload),headers=base.headers('image-bad-sha'));assert response.status_code==200,response.json();called=[]

@@ -148,8 +148,36 @@ def test_reserving_every_variant_exhausts_the_page(
 
 def test_foreign_subject_objects_are_never_drawn():
     library = _real_library("animals", "pen-pal3", "syzygy:animals:pen-pal3")
+    # Inject a foreign-lane object with a valid embedded SHA. It must never be
+    # selected even though it is grammatically well-formed.
+    foreign_key = (
+        "animals/twin47996/photos/pexels_foreign_"
+        + "f" * 64 + ".jpg"
+    )
+    foreign = ss.SyzygyObject(foreign_key, 999_999, "https://r2.example/" + foreign_key)
+    library = ss.SyzygyLibrary(
+        library.library_id, library.lane, library.subject,
+        tuple(sorted((*library.objects, foreign), key=lambda o: o.key)),
+        library.snapshot_hash,
+    )
     variants = iv.image_video_variant_plans(PENPAL_PAGE, library)
-    # The fixture only contains pen-pal3's own objects; twin keys never enter.
     for plan in variants:
         assert all(media["key"].startswith("animals/pen-pal3/photos/")
                    for media in plan["media"])
+        assert all("twin47996" not in media["key"] for media in plan["media"])
+
+
+@pytest.mark.parametrize("name,page,lane,subject,library_id,format_slug,canonical,count", PAGES,
+                         ids=["pen-pal3", "twin47996"])
+def test_signature_binds_the_variant_number(
+    name, page, lane, subject, library_id, format_slug, canonical, count,
+):
+    library = _real_library(lane, subject, library_id)
+    variants = iv.image_video_variant_plans(page, library)
+    assert len(variants) >= 2
+    plan = variants[1]
+    assert plan["variant"] == 1
+    assert iv.image_video_plan_signature(plan) == plan["signature"]
+    assert iv.image_video_plan_signature({**plan, "variant": 2}) != plan["signature"]
+    unnumbered = {key: value for key, value in plan.items() if key != "variant"}
+    assert iv.image_video_plan_signature(unnumbered) != plan["signature"]
