@@ -18,6 +18,13 @@ FIELDS = (
 REQUIRED_MATERIAL_FIELDS = (
     "contentNiche", "contentEngine", "automationMode", "vaultUrl",
 )
+# Master Pages owners outside Notion. The control plane registers such a page
+# through ``routers/control_plane_external_pages.py``, and the Syzygy slideshow
+# library subject for such a page derives from its page id, never its handle
+# (``services/control_plane_slideshows.library_subject``). Closed on purpose: a
+# null-source row is a legacy Postiz page or a pipeline placeholder awaiting
+# its Notion sync, and neither belongs to the control plane.
+EXTERNAL_PAGE_SOURCES = frozenset({"northstar"})
 HASH = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 

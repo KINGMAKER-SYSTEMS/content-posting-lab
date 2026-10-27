@@ -19,6 +19,10 @@ construction:
   an external page never enters the Rising Tides fleet snapshot.
 * An id or handle another roster row already holds is refused, and DELETE
   removes only rows whose source this door owns.
+* The Syzygy slideshow library subject an external page derives is its page
+  id slug, never its handle slug (``services.control_plane_slideshows``), and
+  a subject any other roster page already derives is refused by name, so no
+  two pages ever render from one picture pool.
 """
 
 from __future__ import annotations
@@ -35,8 +39,10 @@ from routers.control_plane import (
 )
 from routers.control_plane_recipes import LANE, require_control_plane_bearer
 from services import roster
+from services.control_plane_slideshows import library_subject, library_subject_holder
 from services.json_store import lock_for
 from services.master_pages_contract import (
+    EXTERNAL_PAGE_SOURCES,
     REQUIRED_MATERIAL_FIELDS,
     SCHEMA as MASTER_PAGES_SCHEMA,
     canonical_intent,
@@ -46,10 +52,9 @@ from services.master_pages_contract import (
 
 router = APIRouter()
 
-# Sources whose rows this door may write and delete. Closed on purpose: a
-# null-source row is a legacy Postiz page or a pipeline placeholder awaiting
-# its Notion sync, and neither belongs to the control plane.
-EXTERNAL_PAGE_SOURCES = frozenset({"northstar"})
+# ``EXTERNAL_PAGE_SOURCES`` (the sources whose rows this door may write and
+# delete) lives in ``services.master_pages_contract`` so the slideshow service
+# can derive a page-owned library subject from the same closed set.
 # Notion sync and pipeline intake mint ``acct:<handle>``. Keeping external ids
 # out of that namespace is what guarantees a later Notion row can never land on
 # (and overwrite) an external page.
@@ -162,6 +167,21 @@ def register_external_page(
                 if other.get("source") == "notion":
                     raise HTTPException(409, "handle is held by a Notion Master Pages row")
                 raise HTTPException(409, "handle is held by another roster page")
+        # The page's Syzygy slideshow library subject is its page id slug. A
+        # subject any other roster page derives (a Notion row from its handle,
+        # an external row from its page id) would make two pages render from
+        # one picture pool, so it is refused by name.
+        subject = library_subject(page_id, intent["handle"], intent["source"])
+        holder = library_subject_holder(subject, (
+            (other_id, other.get("name"), other.get("source"))
+            for other_id, other in pages.items()
+            if other_id != page_id and isinstance(other, dict)
+        ))
+        if holder is not None:
+            raise HTTPException(
+                409,
+                f"Syzygy library subject {subject} is already derived by roster page {holder}",
+            )
         if existing is not None and _resolved_intent(page_id, existing) == intent:
             status = "unchanged"
         else:

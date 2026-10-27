@@ -12,11 +12,14 @@ from fastapi.testclient import TestClient
 import routers.control_plane as cp
 import routers.control_plane_recipes as recipes
 import services.dossier_ingredients as ingredients_module
+from services.content_engine_registry import resolve_material_profile
 from services.control_plane_slideshows import (
     SyzygyLibrary,
     SyzygyObject,
+    library_subject,
     plan_slideshows,
     resolve_slideshow_recipe,
+    slideshow_library_address,
 )
 from services.dossier_ingredients import (
     build_dossier_ingredient_catalog,
@@ -230,6 +233,31 @@ def test_slideshow_recipe_resolves_only_a_full_pinned_publication(monkeypatch):
     payload["recipeSpecHash"] = "sha256:" + hashlib.sha256(canonical.encode()).hexdigest()
     assert resolve_slideshow_recipe(payload) is None
     assert resolve_slideshow_recipe({**payload, "engine": "ai_video"}) is None
+
+
+def test_rising_tides_pages_keep_the_handle_subject_byte_for_byte(monkeypatch):
+    """A Notion-owned page addresses syzygy:{lane}:{handle slug}, as always.
+
+    Only a page whose intent is owned outside Notion (see
+    tests/test_northstar_slideshow_library.py) derives from its page id.
+    """
+    payload = publication(monkeypatch)
+    spec = json.loads(payload["recipeSpecCanonical"])
+    intent = spec["masterPages"]
+    assert intent["source"] == "notion"
+    profile = resolve_material_profile(payload, spec)
+    assert slideshow_library_address(profile, intent) == (LIBRARY_ID, LANE, SUBJECT)
+    # The page id never enters a Rising Tides subject.
+    assert slideshow_library_address(
+        profile, {**intent, "pageId": "tt-some-other-id"},
+    ) == (LIBRARY_ID, LANE, SUBJECT)
+    # Casefold, collapse every non-[a-z0-9] run to one '-', strip the ends.
+    assert slideshow_library_address(
+        profile, {**intent, "handle": "Holy..Fumble_2"},
+    ) == (f"syzygy:{LANE}:holy-fumble-2", LANE, "holy-fumble-2")
+    assert library_subject(PAGE_ID, HANDLE, "notion") == SUBJECT
+    assert library_subject(PAGE_ID, HANDLE, None) == SUBJECT
+    assert resolve_slideshow_recipe(payload, require_runtime=False).subject == SUBJECT
 
 
 def test_slideshow_recipe_requires_the_runtime(monkeypatch):
