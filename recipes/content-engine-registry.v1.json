@@ -189,8 +189,8 @@
       "executionStatus": "commissioned",
       "executorKind": "slideshow_renderer",
       "executorId": "syzygy-slideshow",
-      "executorVersion": "sha256:1c800420efd659f1f0a38608f6e34d3a38d16da53a43cdf8cc27c67f7cb0440e",
-      "formatContractVersion": "sha256:9b13a25a76ece570244c08bc7dc316f15818113b6cc8352916c7a0bc1f50b65f",
+      "executorVersion": "sha256:092647ed849c4b62d48a19d9a9b346a450b049ae5dc7587ddf6dc6eace33a9ef",
+      "formatContractVersion": "sha256:d98415b21dd9fcd8629d11c045008100a657ccc871c1ad3101cea31efc70eb49",
       "maxQuantity": 10
     },
     "lyric-video": {
