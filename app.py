@@ -11,10 +11,10 @@ from pathlib import Path
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.routing import APIRoute
 from fastapi.staticfiles import StaticFiles
-from starlette.datastructures import Headers, QueryParams
+from starlette.datastructures import URL, Headers, QueryParams
 from starlette.routing import Match
 from starlette.staticfiles import NotModifiedResponse
 import uvicorn
@@ -625,7 +625,7 @@ class _ApiNotFoundRoute(APIRoute):
     The built frontend registers ``GET /{full_path:path}``, so a removed API
     path matched it (GET -> SPA HTML, any other verb -> a misleading 405).
     This route is registered unconditionally (independent of frontend/dist)
-    and returns 404 for ``/api/`` paths no real route claims. A real route
+    and returns 404 for ``/api/...`` paths no real route claims. A real route
     that matches the path with a *different* verb must keep winning, so this
     route defers (PARTIAL) and lets the framework emit that route's own
     405 + Allow instead of swallowing it into a 404. That works only for
@@ -636,7 +636,11 @@ class _ApiNotFoundRoute(APIRoute):
     def matches(self, scope):
         if scope.get("type") != "http":
             return Match.NONE, {}
-        if not scope.get("path", "").startswith("/api/"):
+        # Only paths with something after "/api/". Bare "/api" and "/api/" keep
+        # their old behavior, and Starlette's slash-redirect probe of "/api" (to
+        # "/api/") is not turned into a redirect by this route.
+        path = scope.get("path", "")
+        if not path.startswith("/api/") or path == "/api/":
             return Match.NONE, {}
         for route in app.routes:
             if route is self:
@@ -651,14 +655,35 @@ class _ApiNotFoundRoute(APIRoute):
         return super().matches(scope)
 
 
-async def api_not_found(full_path: str):
+def _slash_redirect_target(scope) -> str | None:
+    """Redo Starlette's ``redirect_slashes`` for ``/api`` paths.
+
+    The router only tries the other trailing-slash spelling when NO route
+    matched, and this catch-all matches every unknown ``/api/...`` path. So,
+    like the router would have, redirect when the path with its trailing slash
+    toggled is a real route (e.g. ``/api/health/`` -> ``/api/health``).
+    """
+    path = scope["path"]
+    other = dict(scope, path=path.rstrip("/") if path.endswith("/") else path + "/")
+    for route in app.routes:
+        if isinstance(route, _ApiNotFoundRoute) or getattr(route, "endpoint", None) is serve_frontend:
+            continue
+        if route.matches(other)[0] is not Match.NONE:
+            return str(URL(scope=other))
+    return None
+
+
+async def api_not_found(request: Request, full_path: str):
+    target = _slash_redirect_target(request.scope)
+    if target is not None:
+        return RedirectResponse(target)
     raise HTTPException(status_code=404, detail="Not Found")
 
 
 app.router.add_api_route(
     "/api/{full_path:path}",
     api_not_found,
-    methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"],
+    methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS", "TRACE"],
     include_in_schema=False,
     route_class_override=_ApiNotFoundRoute,
 )

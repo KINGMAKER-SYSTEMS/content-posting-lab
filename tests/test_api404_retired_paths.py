@@ -53,6 +53,13 @@ def _ensure_spa_catchall():
     app_module.app.get("/{full_path:path}")(app_module.serve_frontend)
 
 
+def _drop_spa_catchall():
+    """Make the app look unbuilt, whatever earlier code registered (restored after each test)."""
+    app_module.app.router.routes[:] = [
+        r for r in app_module.app.router.routes if getattr(r, "endpoint", None) is not app_module.serve_frontend
+    ]
+
+
 def _client():
     # No context manager: entering it would run the lifespan (DB seed + the
     # autonomous factory loop), which tests/conftest.py deliberately avoids.
@@ -66,7 +73,7 @@ def test_unknown_api_all_methods_404_not_spa(tmp_path, monkeypatch):
     monkeypatch.setattr(app_module, "FRONTEND_DIR", _build_dist(tmp_path))
     _ensure_spa_catchall()
     client = _client()
-    for method in ("GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"):
+    for method in ("GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS", "TRACE"):
         resp = client.request(method, "/api/agenticnews/chat")
         assert resp.status_code == 404, (method, resp.status_code, resp.text)
         # body must not be the SPA; HEAD has no body.
@@ -139,9 +146,10 @@ def test_bare_api_and_api_slash_decided(tmp_path, monkeypatch):
     # frontend catch-all behavior (SPA when built).
     assert client.get("/api").status_code == 200
     assert client.get("/api").content == INDEX
-    # /api/ IS inside the /api/ prefix contract and has no route: 404.
-    assert client.get("/api/").status_code == 404
-    assert client.post("/api/").status_code == 404
+    # /api/ (nothing after the prefix) is left as it was: the catch-all only
+    # claims /api/<something>, so the built app still answers with the SPA.
+    assert client.get("/api/").status_code == 200
+    assert client.get("/api/").content == INDEX
 
 
 def test_cors_preflight_preserved(tmp_path, monkeypatch):
@@ -175,10 +183,51 @@ def test_cors_preflight_preserved(tmp_path, monkeypatch):
 
 def test_unknown_api_404_even_without_frontend(tmp_path, monkeypatch):
     monkeypatch.setattr(app_module, "FRONTEND_DIR", tmp_path / "missing")
+    _drop_spa_catchall()
     client = _client()
-    for method in ("GET", "POST", "PUT", "DELETE"):
+    for method in ("GET", "POST", "PUT", "DELETE", "TRACE"):
         resp = client.request(method, "/api/agenticnews/chat")
         assert resp.status_code == 404, (method, resp.status_code)
+
+
+def test_unbuilt_bare_api_is_unchanged_404_not_a_redirect(tmp_path, monkeypatch):
+    # Starlette probes "/api/" for a bare "/api"; the catch-all must not claim
+    # "/api/", or the old 404 would turn into a 307 into the auth check.
+    monkeypatch.setattr(app_module, "FRONTEND_DIR", tmp_path / "missing")
+    _drop_spa_catchall()
+    client = _client()
+    for path in ("/api", "/api/"):
+        resp = client.get(path, follow_redirects=False)
+        assert resp.status_code == 404, (path, resp.status_code, resp.headers.get("location"))
+
+
+def _assert_slash_redirects(client):
+    # Same answers Starlette's redirect_slashes gave before the catch-all existed.
+    resp = client.get("/api/health/", follow_redirects=False)
+    assert resp.status_code == 307
+    assert resp.headers["location"].endswith("/api/health")
+    resp = client.get("/api/health/?probe=1", follow_redirects=False)
+    assert resp.status_code == 307
+    assert resp.headers["location"].endswith("/api/health?probe=1")
+    resp = client.get("/api/pages", follow_redirects=False)
+    assert resp.status_code == 307
+    assert resp.headers["location"].endswith("/api/pages/")
+    # an unknown path with or without a slash is still a plain 404
+    for path in ("/api/agenticnews/chat/", "/api/no-such-thing", "/api/no-such-thing/"):
+        resp = client.get(path, follow_redirects=False)
+        assert resp.status_code == 404, (path, resp.status_code, resp.headers.get("location"))
+
+
+def test_trailing_slash_redirects_kept_unbuilt(tmp_path, monkeypatch):
+    monkeypatch.setattr(app_module, "FRONTEND_DIR", tmp_path / "missing")
+    _drop_spa_catchall()
+    _assert_slash_redirects(_client())
+
+
+def test_trailing_slash_redirects_kept_built(tmp_path, monkeypatch):
+    monkeypatch.setattr(app_module, "FRONTEND_DIR", _build_dist(tmp_path))
+    _ensure_spa_catchall()
+    _assert_slash_redirects(_client())
 
 
 def test_api_catchall_registered_unconditionally():
@@ -258,6 +307,8 @@ def test_unknown_api_auth_exemptions_and_boundary(tmp_path, monkeypatch):
     assert client.get("/api/health").status_code == 200
     # bare /api is not under the /api/ prefix: no auth, still the SPA
     assert client.get("/api").status_code == 200
-    # /api/ IS under the prefix: 401 without key, 404 with it
+    # /api/ is under the auth prefix: 401 without key; with it, unchanged (SPA)
     assert client.get("/api/").status_code == 401
-    assert client.get("/api/", headers={"Authorization": f"Bearer {KEY}"}).status_code == 404
+    assert client.get("/api/", headers={"Authorization": f"Bearer {KEY}"}).status_code == 200
+    # an unknown /api/<x> with the key is 404
+    assert client.get("/api/no-such-thing", headers={"Authorization": f"Bearer {KEY}"}).status_code == 404
