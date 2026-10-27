@@ -8,9 +8,9 @@ no render receipt here may claim that gain has been applied.
 
 The executor file is a closed page -> ordered photo plan. Every configured
 object carries its exact original source key plus its runtime canonical
-dedicated key, SHA-256 and byte count. Planning is deterministic, never
-permuted, and each page has at most one plan; reserving that plan truthfully
-exhausts the page. This module is a pure helper consumable by the existing
+dedicated key, SHA-256 and byte count. Planning is deterministic and never
+permuted; the approved plan is variant 0 and later variants re-draw the page's
+own library photos. This module is a pure helper consumable by the existing
 SlideshowRecipe dispatch, which remains owned elsewhere.
 """
 
@@ -41,8 +41,9 @@ MAX_OBJECTS = 1_000
 PLAN_SLUG = "page-photo-hold"
 # Deterministic re-draw variants of the approved photo hold. Variant 0 is the
 # approved plan; variants 1..N rotate the same slot timings/framing across the
-# page's own library photos, exactly once each, in variant order. The cap is a
-# sane bound well above any page's photo count (pen-pal3: 33, twin47996: 24).
+# page's own library photos in a deterministic order, each distinct content
+# window once. The cap is a sane bound well above any page's photo count
+# (pen-pal3: 33, twin47996: 24).
 IMAGE_VIDEO_VARIANT_LIMIT = 200
 
 
@@ -240,12 +241,13 @@ def _plan_config(page_id: Any) -> dict[str, Any] | None:
 
 
 def image_video_plan_signature(plan: dict[str, Any]) -> str:
-    """SHA-256 identity binding the page, library, and ordered media plan.
+    """SHA-256 identity binding only the page, library, and ordered media plan.
 
-    Variant 0 (the approved photo hold) carries no variant field, so its
-    identity — and every reservation already recorded against it — stays byte
-    for byte what it was before variants existed. Variants 1..N sign their
-    number so two plans can never share a signature.
+    The identity is content-addressed: two plans with the same page/library,
+    ordered media set and render params share one signature regardless of any
+    variant number. Variant 0 (the approved photo hold) carries no variant
+    field, so its identity — and every reservation already recorded against it
+    — stays byte for byte what it was before variants existed.
     """
     identity = {
         "pageId": plan["pageId"],
@@ -267,18 +269,16 @@ def image_video_plan_signature(plan: dict[str, Any]) -> str:
             for item in plan["media"]
         ],
     }
-    variant = plan.get("variant", 0)
-    if variant != 0:
-        identity["variant"] = variant
     canonical = json.dumps(identity, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode()).hexdigest()
 
 
 def image_video_plan(page_id: str) -> dict[str, Any] | None:
-    """The single closed ordered photo plan for one page, or None if unknown.
+    """The approved (variant 0) closed ordered photo plan, or None if unknown.
 
-    Never permuted; a page has exactly one plan. ``brightnessGainFromOriginals``
-    is provenance for the later source-treatment boundary, not an applied grade.
+    Never permuted; this is the pinned photo hold whose signature predates
+    variants. ``brightnessGainFromOriginals`` is provenance for the later
+    source-treatment boundary, not an applied grade.
     """
     cfg = _plan_config(page_id)
     if cfg is None:
@@ -384,7 +384,9 @@ def image_video_variant_plans(page_id: str, library: Any) -> list[dict[str, Any]
     Variant 0 is the approved plan, byte-identical to ``image_video_plan``.
     Variants 1..N keep each slot's duration, focal and ken-burns and rotate
     which of the page's own photos fills each slot, in a deterministic order
-    seeded by the variant number. No two offered plans share a signature.
+    indexed by the variant number. Plans are content-addressed, so no two
+    offered plans share a signature and identical content is never offered
+    twice.
     """
     cfg = _plan_config(page_id)
     if cfg is None:

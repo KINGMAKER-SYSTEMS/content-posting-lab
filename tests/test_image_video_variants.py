@@ -88,6 +88,39 @@ def _recipe(page, format_slug, library):
     )
 
 
+def _media_content(plan):
+    """The exact posted asset identity: ordered media + per-slot render params."""
+    return tuple(
+        (
+            item["key"],
+            item["duration"],
+            item["focalX"],
+            item["focalY"],
+            json.dumps(item["kenBurns"], sort_keys=True),
+        )
+        for item in plan["media"]
+    )
+
+
+def _library_with(library, lane, subject, extra=(), drop=()):
+    """Rebuild a library with photos added/removed, snapshot hash recomputed."""
+    dropped = set(drop)
+    rows = [(obj.key, obj.bytes) for obj in library.objects if obj.key not in dropped]
+    rows += list(extra)
+    objects = tuple(
+        ss.SyzygyObject(key, nbytes, f"https://r2.example/{key}")
+        for key, nbytes in sorted(rows)
+    )
+    canonical = json.dumps(
+        [[obj.key, obj.bytes] for obj in objects],
+        separators=(",", ":"), ensure_ascii=False,
+    )
+    return ss.SyzygyLibrary(
+        library.library_id, lane, subject, objects,
+        hashlib.sha256(canonical.encode()).hexdigest(),
+    )
+
+
 @pytest.mark.parametrize("name,page,lane,subject,library_id,format_slug,canonical,count", PAGES,
                          ids=["pen-pal3", "twin47996"])
 def test_first_plan_unchanged_and_variants_offer_after_reservation(
@@ -169,7 +202,7 @@ def test_foreign_subject_objects_are_never_drawn():
 
 @pytest.mark.parametrize("name,page,lane,subject,library_id,format_slug,canonical,count", PAGES,
                          ids=["pen-pal3", "twin47996"])
-def test_signature_binds_the_variant_number(
+def test_signature_is_content_addressed_not_variant_bound(
     name, page, lane, subject, library_id, format_slug, canonical, count,
 ):
     library = _real_library(lane, subject, library_id)
@@ -178,6 +211,56 @@ def test_signature_binds_the_variant_number(
     plan = variants[1]
     assert plan["variant"] == 1
     assert iv.image_video_plan_signature(plan) == plan["signature"]
-    assert iv.image_video_plan_signature({**plan, "variant": 2}) != plan["signature"]
+    # The variant number is carried for the runner's re-derivation but is not
+    # part of the identity: re-numbering (or dropping) it leaves the signature
+    # for the same content unchanged.
+    assert iv.image_video_plan_signature({**plan, "variant": 2}) == plan["signature"]
     unnumbered = {key: value for key, value in plan.items() if key != "variant"}
-    assert iv.image_video_plan_signature(unnumbered) != plan["signature"]
+    assert iv.image_video_plan_signature(unnumbered) == plan["signature"]
+
+
+@pytest.mark.parametrize("name,page,lane,subject,library_id,format_slug,canonical,count", PAGES,
+                         ids=["pen-pal3", "twin47996"])
+def test_library_drift_never_reoffers_posted_content(
+    name, page, lane, subject, library_id, format_slug, canonical, count,
+):
+    library = _real_library(lane, subject, library_id)
+    variants = iv.image_video_variant_plans(page, library)
+    assert len(variants) >= 6, "need v0..v5 to reserve"
+    posted = variants[:6]
+    reserved = {plan["signature"] for plan in posted}
+    posted_content = {_media_content(plan) for plan in posted}
+    # Variant 0 stays byte-identical to the pre-variant approved plan.
+    assert posted[0]["signature"] == canonical
+    recipe = _recipe(page, format_slug, library)
+
+    # (a) Add one page photo that sorts first: no posted content re-offered.
+    new_key = (
+        f"{lane}/{subject}/photos/pexels_00000001_"
+        + hashlib.sha256(b"new").hexdigest()
+        + ".jpg"
+    )
+    add_lib = _library_with(library, lane, subject, extra=[(new_key, 12_345)])
+    offered = ss.plan_slideshows(recipe, add_lib, 10_000, reserved, "run")
+    assert offered, "the page must still offer fresh variants after an add"
+    assert all(
+        _media_content(plan["photoPlan"]) not in posted_content for plan in offered
+    )
+
+    # (b) Remove the first unpinned photo: no posted content re-offered, and the
+    # next job is not an exact repeat.
+    unpinned = sorted(
+        item["key"]
+        for plan in variants
+        for item in plan["media"]
+        if item["key"].rsplit("/", 1)[-1].startswith("pexels_")
+    )
+    drop_lib = _library_with(library, lane, subject, drop={unpinned[0]})
+    offered = ss.plan_slideshows(recipe, drop_lib, 10_000, reserved, "run")
+    assert offered, "the page must still offer fresh variants after a drop"
+    assert all(
+        _media_content(plan["photoPlan"]) not in posted_content for plan in offered
+    )
+    assert _media_content(offered[0]["photoPlan"]) not in posted_content, (
+        "the next job must not be an exact posted photo hold"
+    )
