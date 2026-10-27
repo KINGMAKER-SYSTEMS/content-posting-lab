@@ -250,7 +250,7 @@ def test_unsupported_frame_treatment_is_refused_before_encoding(tmp_path, monkey
 
 def test_missing_actual_overlay_is_rejected_by_decoded_cue_evidence(actual_source, tmp_path, monkeypatch):
     _patch_resolver(monkeypatch, TIMING)
-    def omit_overlay(source, pngs, phrases, final, probe, tools):
+    def omit_overlay(source, pngs, phrases, final, probe, tools, target_duration_ms):
         shutil.copyfile(source, final)
         return probe
     monkeypatch.setattr(rt, "_encode_timed_final", omit_overlay)
