@@ -389,7 +389,7 @@ def _selection_catalog_version(
                 }
                 if isinstance(selected_source, dict)
                 and selected_source.get("role") == "syzygy_r2_library"
-                else selected_source
+                else _without_backups(selected_source)
             ),
             "treatment": treatment,
             **({"lyricTiming": timing_binding} if timing is not None else {}),
@@ -399,6 +399,13 @@ def _selection_catalog_version(
         projection, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
     )
     return dossier_catalog_version(canonical)
+
+
+def _without_backups(option):
+    """The catalog version names a library by its primaries (pinned version)."""
+    if isinstance(option, dict) and "backupMasters" in option:
+        return {key: value for key, value in option.items() if key != "backupMasters"}
+    return option
 
 
 def _production_selections(format_entry: dict[str, Any]) -> list[dict[str, Any]]:
@@ -610,23 +617,38 @@ def _shipstream_approved_cut_option(
     }
 
 
+def _master_entry(master) -> dict[str, Any]:
+    return {
+        "sourceId": master.source_id,
+        "sha256": master.sha256,
+        "bytes": master.bytes,
+        "filename": master.filename,
+        "mimeType": master.mime_type,
+        "storageKey": master.storage_key,
+        "durationMs": master.duration_ms,
+        "sourceOffsetMs": master.source_offset_ms,
+        "provenance": master.provenance,
+    }
+
+
 def _source_library_option(library: SourceDnaLibrary) -> dict[str, Any]:
+    """A library as a catalog option. ``masters`` and ``masterCount`` are the
+    primaries only, so the selected catalog version (which hashes this option)
+    does not move when a backup is added; backups ride beside them in
+    ``backupMasters`` (with their declared grade), which the version leaves out
+    (_selection_catalog_version) and the Worker's media route still serves."""
+    primaries = [master for master in library.masters if master.role != "backup"]
+    backups = [master for master in library.masters if master.role == "backup"]
     return {
         "libraryId": library.library_id,
         "version": f"sha256:{library.sha256}",
         "pageId": library.page_id,
-        "masterCount": len(library.masters),
-        "masters": [{
-            "sourceId": master.source_id,
-            "sha256": master.sha256,
-            "bytes": master.bytes,
-            "filename": master.filename,
-            "mimeType": master.mime_type,
-            "storageKey": master.storage_key,
-            "durationMs": master.duration_ms,
-            "sourceOffsetMs": master.source_offset_ms,
-            "provenance": master.provenance,
-        } for master in library.masters],
+        "masterCount": len(primaries),
+        "masters": [_master_entry(master) for master in primaries],
+        **({"backupMasters": [
+            {**_master_entry(master), **({"gradeOverride": master.grade_override} if master.grade_override else {})}
+            for master in backups
+        ]} if backups else {}),
     }
 
 
@@ -652,6 +674,20 @@ def _master_source_options(
     ):
         options.append(_source_library_option(shipstream_library))
     return options
+
+
+def _pooled_library_ids(format_slug: str, page_id: str) -> set[str]:
+    """Registered libraries of this page that hold a backup master."""
+    pooled: set[str] = set()
+    for path in sorted(Path(SOURCE_DNA_MANIFEST_DIR).glob("*.json")):
+        try:
+            library = parse_source_dna_manifest(path.read_bytes(), path.stem)
+        except (OSError, SourceDnaError):
+            continue
+        if (library.format_slug == format_slug and library.page_id == page_id
+                and any(master.role == "backup" for master in library.masters)):
+            pooled.add(library.library_id)
+    return pooled
 
 
 def _ingredient(
@@ -740,8 +776,13 @@ def _sourced_ingredients(
     # A valid page manifest is ShipStream's current source authority. When it
     # supersedes a legacy source-dna registration, keep both choices visible but
     # bind the ShipStream library so replacement can proceed without an
-    # impossible selection_required state.
-    bound_master = next((
+    # impossible selection_required state. The one exception is a page POOL:
+    # a registered library that lists a backup master (source_dna_registry
+    # MASTER_ROLES) was curated by a reviewed commit, and its primary is never
+    # replaced by an imported or vault-followed master.
+    pooled = _pooled_library_ids(format_slug, page_id)
+    bound_master = next((option for option in master_options if option["libraryId"] in pooled), None)
+    bound_master = bound_master or next((
         option for option in master_options
         if shipstream_library is not None
         and option["libraryId"] == shipstream_library.library_id

@@ -33,12 +33,16 @@ def test_both_manifests_parse_existing_contract():
         library = parse_source_dna_manifest(_raw(library_id), library_id)
         assert library.format_slug == "pov-night-core"
         assert library.library_id == library_id
-        assert len(library.masters) == 1
+        # One primary each; the live alias may also list backups (source pool).
+        assert [master.role for master in library.masters].count("primary") == 1
 
 
 def test_alias_is_only_library_id_and_page_id_delta():
     original = json.loads(_raw(ORIGINAL_LIBRARY_ID))
     alias = json.loads(_raw(ALIAS_LIBRARY_ID))
+    # Backups added to the live alias (source pool, role "backup") are not part
+    # of the alias contract: its primary masters are exactly the original's.
+    alias["masters"] = [row for row in alias["masters"] if row.get("role", "primary") == "primary"]
     expected = dict(original)
     expected["libraryId"] = ALIAS_LIBRARY_ID
     expected["pageId"] = ALIAS_PAGE_ID
@@ -60,13 +64,19 @@ def test_original_manifest_bytes_sha_is_pinned():
 def test_alias_preserves_master_identity_source_window_and_provenance():
     original = parse_source_dna_manifest(_raw(ORIGINAL_LIBRARY_ID), ORIGINAL_LIBRARY_ID)
     alias = parse_source_dna_manifest(_raw(ALIAS_LIBRARY_ID), ALIAS_LIBRARY_ID)
-    master = alias.masters[0]
+    primaries = tuple(item for item in alias.masters if item.role == "primary")
+    master = primaries[0]
     assert master.duration_ms == MASTER_DURATION_MS
     assert master.bytes == MASTER_BYTES
     assert master.sha256 == MASTER_SHA256
     assert master.source_offset_ms == 0
     # Master records and provenance remain equal: only page scope changed.
-    assert alias.masters == original.masters
+    assert primaries == original.masters
+    assert alias.sha256 == parse_source_dna_manifest(
+        (json.dumps({**json.loads(_raw(ALIAS_LIBRARY_ID)), "masters": [
+            row for row in json.loads(_raw(ALIAS_LIBRARY_ID))["masters"] if row.get("role", "primary") == "primary"
+        ]}, sort_keys=True, separators=(",", ":")) + "\n").encode(), ALIAS_LIBRARY_ID).sha256, \
+        "a backup never moves the alias's version"
 
 
 def test_alias_exposes_new_page_and_original_exposes_old_tt_not_wrong_page():

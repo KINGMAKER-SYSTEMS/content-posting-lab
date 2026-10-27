@@ -9,6 +9,7 @@ import shutil
 import subprocess
 
 import pytest
+from services.clip_variation import GRADE_BANDS
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -1832,7 +1833,17 @@ async def test_a_clip_varying_page_cuts_each_window_at_its_own_speed_and_records
         output = Path(job["artifactRoot"]) / clip["path"]
         assert _probe_duration(output) == pytest.approx(cut["durationMs"] / 1000 / clip["clipSpeed"], abs=0.2)
         looks.append((visual["clipSpeed"], tuple(sorted(visual["clipCrop"].items()))))
+        # The transforms ride on the manifest, never in the receipt.
+        assert set(clip["clipTransforms"]) == {"mirror", "motion", "reverse"}
+        assert "clipTransforms" not in clip["sourceTreatment"]
+        # The trial similarity record never blocks; the second cut is compared with the first.
+        assert clip["similarity"]["mode"] == "trial"
+        assert len(clip["similarity"]["fingerprint"]) == 8
+        # The grade moved inside its bands, recorded in the receipt.
+        for name, band in GRADE_BANDS.items():
+            assert abs(visual["filters"][name] - (1.0 if name != "warmth" else 0.0)) <= band
     assert looks[0] != looks[1]
+    assert job["clips"][1]["similarity"]["nearestClip"] == f"{response.json()['jobId']}/0"
 
 
 def test_the_latest_page_cut_seeds_the_next_jobs_look(monkeypatch):
@@ -1850,3 +1861,73 @@ def test_the_latest_page_cut_seeds_the_next_jobs_look(monkeypatch):
     monkeypatch.setattr(cp, "_load_jobs", lambda: {"jobs": jobs})
     assert cp._latest_page_cut_look(PAGE_ID, "running") == (0.9, {"zoom": 1.6, "focusX": 0.48, "focusY": 0.52})
     assert cp._latest_page_cut_look("acct:none", "running") is None
+
+
+@pytest.mark.asyncio
+async def test_a_varied_job_whose_history_read_fails_ends_failed_not_running(lab, monkeypatch):
+    client, tmp_path, _ = lab
+    monkeypatch.setattr(cp, "varies_clips", lambda page_id: page_id == PAGE_ID)
+    response = client.post(
+        "/api/control-plane/v1/jobs", json=job_body(1),
+        headers=headers("source-job-varied-history-fails"),
+    )
+
+    def broken(*_args, **_kwargs):
+        raise OSError("job store unreadable")
+
+    monkeypatch.setattr(cp.clip_similarity, "recent_fingerprints", broken)
+    await cp._run_dossier_source(response.json()["jobId"])
+    job = cp._load_jobs()["jobs"][response.json()["jobId"]]
+    assert job["status"] == "failed"
+    assert "job store unreadable" in job["error"]
+
+
+@pytest.mark.parametrize("backup_cuts,status", [((1,), "completed"), ((0, 1), "failed")])
+@pytest.mark.asyncio
+async def test_a_cut_on_a_backup_whose_file_is_missing_is_skipped_and_the_job_goes_on(
+    lab, monkeypatch, backup_cuts, status,
+):
+    from dataclasses import replace as dc_replace
+    client, tmp_path, _ = lab
+    backup_sha = "d" * 64
+    original_recipe = cp._dossier_source_recipe
+    primary_sha = None
+
+    def pooled(publication):
+        nonlocal primary_sha
+        recipe = original_recipe(publication)
+        primary = recipe.masters[0]
+        primary_sha = primary.sha256
+        backup = dc_replace(primary, source_id="zz-backup", sha256=backup_sha, role="backup",
+                            storage_key="source-dna/backup/" + backup_sha + ".mp4")
+        return dc_replace(recipe, masters=(primary, backup))
+
+    monkeypatch.setattr(cp, "_dossier_source_recipe", pooled)
+    response = client.post(
+        "/api/control-plane/v1/jobs", json=job_body(2),
+        headers=headers(f"source-job-backup-missing-{status}"),
+    )
+    job_id = response.json()["jobId"]
+    store = cp._load_jobs()
+    for index, cut in enumerate(store["jobs"][job_id]["sourceCuts"]):
+        start = index * 15_000
+        sha = backup_sha if index in backup_cuts else primary_sha
+        cut.update({"masterSha256": sha, "slotId": f"{sha}:{start}:{cut['durationMs']}",
+                    "libraryStartMs": start, "startMs": start})
+    cp.atomic_save(cp._jobs_path(), store)
+    source = tmp_path / "master.mp4"
+    _write_av_test_clip(source, duration=40.0)
+
+    async def cached_source(page_id, master, job):
+        if master.sha256 == backup_sha:
+            raise RuntimeError("source_dna_master_unavailable")
+        return source
+
+    monkeypatch.setattr(cp, "_cached_source_master", cached_source)
+    await cp._run_dossier_source(job_id)
+    job = cp._load_jobs()["jobs"][job_id]
+    assert job["status"] == status, job.get("error")
+    if status == "completed":
+        assert len(job["clips"]) == 1
+    else:
+        assert job["error"] == "source_dna_master_unavailable"

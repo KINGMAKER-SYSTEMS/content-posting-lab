@@ -36,11 +36,19 @@ def normalized_visual_treatment(treatment: dict) -> dict:
             "clipCrop": {name: _number(crop[name], 1 if name == "zoom" else 0, 3 if name == "zoom" else 1) for name in NEUTRAL_CROP}}
 
 
-def source_treatment_receipt(job: dict, recipe_treatment: dict, source_sha256: str, *, clip_speed, clip_crop) -> dict:
-    """Call only after a successful actual generation/treatment and exact output hashing."""
+def source_treatment_receipt(job: dict, recipe_treatment: dict, source_sha256: str, *, clip_speed, clip_crop,
+                             filters: dict | None = None) -> dict:
+    """Call only after a successful actual generation/treatment and exact output hashing.
+
+    ``filters`` is the grade actually applied when it is not the recipe's own
+    (a clip-varying page's per-cut jitter, services/clip_variation.py).
+    """
     if not re.fullmatch(r"[0-9a-f]{64}", source_sha256) or not re.fullmatch(r"(?:sha256:)?[0-9a-f]{64}", job.get("recipeSpecHash", "")):
         raise ValueError("source treatment identity is incomplete")
-    visual = normalized_visual_treatment({**recipe_treatment, "clipSpeed": clip_speed, "clipCrop": clip_crop})
+    applied = {**recipe_treatment, "clipSpeed": clip_speed, "clipCrop": clip_crop}
+    if filters is not None:
+        applied["filters"] = filters
+    visual = normalized_visual_treatment(applied)
     return {"schema": "content-lab.source-treatment.v1", "sourceSha256": source_sha256,
             "visualTreatment": visual, "sourceRecipeTreatment": copy.deepcopy(recipe_treatment),
             "recipeSpecHash": job["recipeSpecHash"], "generationJobId": job["jobId"]}

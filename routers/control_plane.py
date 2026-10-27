@@ -78,6 +78,7 @@ from routers.control_plane_recipes import (
     require_control_plane_bearer,
 )
 from services.control_plane_generation import (
+    filters_to_color_correction,
     CATALOG_PATH,
     MAX_CAPABILITY_QUANTITY,
     compose_prompt_combination,
@@ -143,13 +144,15 @@ from services.content_engine_registry import (
 from services.content_format_contracts import CONTRACTS_PATH, load_format_contracts
 from services.ffmpeg import (
     FrameGeometryUnavailable, delivery_encode_args, probe_display_size, run_color_correct,
-    _probe_input_duration_seconds as probe_source_output_duration_seconds,
+    _COLOR_CORRECT_GATE, _probe_input_duration_seconds as probe_source_output_duration_seconds,
 )
 from services.master_pages_contract import SCHEMA as MASTER_PAGES_SCHEMA, canonical_intent, exact_intent, intent_hash
 from services.page_frame import VERTICAL_FRAME, resolved_frame
 from services import generation_budget, moderation_retry
 from services.roster_public import require_roster_auth
-from services.clip_variation import cut_variant, varies_clips
+from services import clip_similarity
+from services.clip_transforms import apply_transforms, cut_transforms, transforms_from_manifest
+from services.clip_variation import cut_grade, cut_variant, varies_clips
 from services.source_treatment import (
     derived_source_treatment,
     recovery_treatment_matches,
@@ -3519,20 +3522,48 @@ async def _video_geometry_for_delivery(path: Path) -> tuple[int, int]:
     return width, height
 
 
-def _latest_page_cut_look(page_id: str, job_id: str) -> tuple[float, dict[str, float]] | None:
-    """The speed and crop of this page's most recent delivered source cut."""
+def _latest_page_cut(page_id: str, job_id: str, jobs: dict | None = None) -> dict | None:
+    """This page's most recent delivered source cut (its manifest), or None."""
     latest = None
-    for other_id, other in _load_jobs()["jobs"].items():
+    for other_id, other in (jobs if jobs is not None else _load_jobs()["jobs"]).items():
         if (other_id == job_id or other.get("pageId") != page_id or other.get("status") != "completed"
                 or other.get("sourceKind") != "dossier_source_dna" or not other.get("clips")):
             continue
         if latest is None or str(other.get("completedAt") or "") > str(latest.get("completedAt") or ""):
             latest = other
-    clip = latest["clips"][-1] if latest else None
+    return latest["clips"][-1] if latest else None
+
+
+def _latest_page_cut_look(page_id: str, job_id: str, jobs: dict | None = None) -> tuple[float, dict[str, float]] | None:
+    """The speed and crop of this page's most recent delivered source cut."""
+    clip = _latest_page_cut(page_id, job_id, jobs)
     try:
         return (float(clip["clipSpeed"]), {name: float(clip["clipCrop"][name]) for name in ("zoom", "focusX", "focusY")})
     except (TypeError, KeyError, ValueError):
         return None
+
+
+async def _similarity_trial(job, destination, duration_s, transforms, recent, siblings) -> dict:
+    """Fingerprint one varied cut and log how close it is to the page's recent cuts.
+
+    TRIAL mode (services/clip_similarity.py): the record rides on the manifest
+    and the log; a failure is recorded, never raised, so it cannot stop a cut.
+    """
+    try:
+        candidate = await asyncio.to_thread(clip_similarity.fingerprint, destination, duration_s)
+        record = clip_similarity.judge(candidate, recent + [entry for entry in siblings if entry[1]])
+    except Exception as error:  # noqa: BLE001 - trial instrumentation must never fail a cut
+        return {"mode": clip_similarity.MODE, "error": type(error).__name__}
+    log.info("similarity_trial page=%s job=%s transforms=%s nearest=%.4f nearest_clip=%s would_recut=%s",
+             job["pageId"], job["jobId"], json.dumps(transforms.manifest(), sort_keys=True),
+             record["nearestDistance"], record["nearestClip"], record["wouldRecut"])
+    return record
+
+
+def _latest_page_cut_transforms(page_id: str, job_id: str, jobs: dict | None = None):
+    """The transforms of this page's most recent delivered source cut."""
+    clip = _latest_page_cut(page_id, job_id, jobs)
+    return transforms_from_manifest(clip.get("clipTransforms")) if clip else None
 
 
 async def _run_dossier_source(job_id: str) -> None:
@@ -3602,10 +3633,20 @@ async def _run_dossier_source(job_id: str) -> None:
     # A page listed in services/clip_variation.py cuts every clip at its own
     # speed and framing; every other page keeps the recipe's one look.
     vary = varies_clips(job["pageId"])
-    # The page's latest cut seeds the "never the same look twice" rule, so it
-    # holds across jobs, not only inside this one.
-    previous_variant = _latest_page_cut_look(job["pageId"], job_id) if vary else None
+    previous_variant = previous_transforms = None
+    recent_cuts: list = []
+    skipped_backup_cuts: list = []
     try:
+        if vary:
+            # One read of the job store, inside the try that terminalizes the
+            # job: the page's latest cut seeds the "never the same look twice"
+            # rule across jobs, and the TRIAL similarity gate compares against
+            # the page's recent cuts (logged, never blocking).
+            page_jobs = (await asyncio.to_thread(_load_jobs))["jobs"]
+            previous_variant = _latest_page_cut_look(job["pageId"], job_id, page_jobs)
+            previous_transforms = _latest_page_cut_transforms(job["pageId"], job_id, page_jobs)
+            recent_cuts = clip_similarity.recent_fingerprints(page_jobs, job["pageId"], job_id,
+                                                              clip_similarity.now_utc())
         masters = {master.sha256: master for master in recipe.masters}
         for index, source_cut in enumerate(source_cuts):
             if not _job_matches_current_master_pages(job):
@@ -3623,20 +3664,41 @@ async def _run_dossier_source(job_id: str) -> None:
                 )
             ):
                 raise RuntimeError("source_recipe_cut_invalid")
-            source = await _cached_source_master(job["pageId"], master, job_id)
+            try:
+                source = await _cached_source_master(job["pageId"], master, job_id)
+            except RuntimeError as error:
+                # A backup master whose file is not in the store yet costs only
+                # its own cut; the job delivers the rest (primaries are never
+                # skipped: their failure still fails the job, as before).
+                if master.role != "backup" or not str(error).startswith("source_dna_master"):
+                    raise
+                log.warning("source_cut_skipped_backup_unavailable page=%s job=%s master=%s error=%s",
+                            job["pageId"], job_id, master.sha256, error)
+                skipped_backup_cuts.append(source_cut.get("slotId"))
+                continue
             destination = treated_root / f"source-{index:04d}.mp4"
             frame_cut = await _page_frame_cut_kwargs(
                 recipe.recipe_spec["renderTreatment"], source,
             )
             cut_speed, cut_crop = clip_speed, clip_crop
+            cut_filters, cut_cc = None, color_correction
             if vary:
                 # Seeded by the cut's own time frame, so a resumed job recuts it identically.
                 cut_speed, cut_crop = cut_variant(job["pageId"], f"{master.sha256}:{start_ms}:{duration_ms}",
                                                   clip_speed, clip_crop, previous_variant,
                                                   duration_ms=duration_ms)
                 previous_variant = (cut_speed, cut_crop)
+                # A backup master's declared brightness replaces the recipe's
+                # before the jitter (source_dna_registry.GRADE_OVERRIDE_BOUNDS).
+                cut_filters = cut_grade(job["pageId"], f"{master.sha256}:{start_ms}:{duration_ms}",
+                                        {**recipe.recipe_spec["renderTreatment"]["filters"],
+                                         **(master.grade_override or {})})
+                transforms = cut_transforms(job["pageId"], f"{master.sha256}:{start_ms}:{duration_ms}",
+                                            previous_transforms)
+                previous_transforms = transforms
+                cut_cc = filters_to_color_correction(cut_filters)
             await run_color_correct(
-                str(source), str(destination), color_correction, scale=None,
+                str(source), str(destination), cut_cc, scale=None,
                 encode_args=delivery_encode_args(recipe.encode_preset),
                 playback_speed=cut_speed,
                 clip_crop=cut_crop,
@@ -3645,6 +3707,15 @@ async def _run_dossier_source(job_id: str) -> None:
                 clip_duration_ms=duration_ms,
                 **frame_cut,
             )
+            if vary and transforms.any():
+                # Mirror, camera move and reverse work on the finished short
+                # clip (services/clip_transforms.py). They are full 1080x1920
+                # x264 encodes (~0.9 GB each, measured), so they take the same
+                # process-wide one-encode gate as run_color_correct: without it
+                # a transform could overlap another job's cut encode.
+                async with _COLOR_CORRECT_GATE:
+                    await asyncio.to_thread(apply_transforms, destination, transforms,
+                                            delivery_encode_args(recipe.encode_preset))
             if recipe.format_slug == "pov-club" or vary:
                 measured_duration = await asyncio.to_thread(
                     probe_source_output_duration_seconds, str(destination),
@@ -3656,6 +3727,12 @@ async def _run_dossier_source(job_id: str) -> None:
             manifest = _generated_manifest(job_root, destination)
             manifest["clipSpeed"] = cut_speed
             manifest["clipCrop"] = cut_crop
+            if vary:
+                manifest["clipTransforms"] = transforms.manifest()
+                manifest["similarity"] = await _similarity_trial(
+                    job, destination, measured_duration, transforms, recent_cuts,
+                    [(f"{job_id}/{done}", (clip.get("similarity") or {}).get("fingerprint"))
+                     for done, clip in enumerate(manifests)])
             if frame_cut:
                 manifest["frameCut"] = {"frame": frame_cut["page_frame"], "frameFit": frame_cut["frame_fit"]}
             manifest["sourceTreatment"] = source_treatment_receipt(
@@ -3664,6 +3741,7 @@ async def _run_dossier_source(job_id: str) -> None:
                 manifest["sha256"],
                 clip_speed=cut_speed,
                 clip_crop=cut_crop,
+                filters=cut_filters,
             )
             manifest["source"] = _source_provenance(job, {
                 "recipeId": recipe.recipe_id,
@@ -3696,6 +3774,8 @@ async def _run_dossier_source(job_id: str) -> None:
                 job_id,
                 progress=int(((index + 1) / len(source_cuts)) * 100),
             )
+        if skipped_backup_cuts and not manifests:
+            raise RuntimeError("source_dna_master_unavailable")
     except asyncio.CancelledError:
         shutil.rmtree(job_root, ignore_errors=True)
         await asyncio.to_thread(_update_job,

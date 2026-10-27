@@ -1,0 +1,69 @@
+{
+  "backupMasterSha256": "ddbf980600f44e250dc3a076b0f9f3afa1f334520a2c9abb0221ba3d24ae6a63",
+  "masterGradeOverride": {},
+  "pageId": "acct:between-the-lines66",
+  "recipeRenderTreatment": {
+    "captionStyle": {
+      "align": "center",
+      "color": "#ffffff",
+      "font": "TikTokSans16pt-Medium.ttf",
+      "line_balance": 30,
+      "position": "middle",
+      "size_pt": 14
+    },
+    "clipCrop": {
+      "focusX": 0.5,
+      "focusY": 0.5,
+      "zoom": 1.63
+    },
+    "clipSpeed": 1.0,
+    "filters": {
+      "brightness": 0.5,
+      "contrast": 1.05
+    }
+  },
+  "schema": "content-lab.contract.backup-grade-receipt.v1",
+  "sourceTreatment": {
+    "generationJobId": "cpl-contract-backup-grade",
+    "recipeSpecHash": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+    "schema": "content-lab.source-treatment.v1",
+    "sourceRecipeTreatment": {
+      "captionStyle": {
+        "align": "center",
+        "color": "#ffffff",
+        "font": "TikTokSans16pt-Medium.ttf",
+        "line_balance": 30,
+        "position": "middle",
+        "size_pt": 14
+      },
+      "clipCrop": {
+        "focusX": 0.5,
+        "focusY": 0.5,
+        "zoom": 1.63
+      },
+      "clipSpeed": 1.0,
+      "filters": {
+        "brightness": 0.5,
+        "contrast": 1.05
+      }
+    },
+    "sourceSha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    "visualTreatment": {
+      "clipCrop": {
+        "focusX": 0.47,
+        "focusY": 0.52,
+        "zoom": 1.55
+      },
+      "clipSpeed": 0.88,
+      "filters": {
+        "brightness": 0.512,
+        "contrast": 1.082,
+        "fade": 0.0,
+        "grain": 0.0,
+        "saturation": 1.026,
+        "vignette": 0.0,
+        "warmth": 0.027
+      }
+    }
+  }
+}

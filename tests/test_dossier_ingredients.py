@@ -2,6 +2,7 @@
 
 import copy
 import json
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -673,6 +674,90 @@ def test_newest_ready_shipstream_import_binds_over_legacy_source_dna(monkeypatch
     assert master["status"] == "bound"
     assert master["binding"]["libraryId"] == projection.source_library.library_id
     assert master["binding"]["masters"][0]["sha256"] == imported_sha
+    assert {option["libraryId"] for option in master["options"]} == {
+        "pov-dirt-bike-chase-miles-4l-v1",
+        projection.source_library.library_id,
+    }
+    assert "master-source-video:selection_required" not in dirtbike["blockers"]
+
+
+def test_an_imported_master_never_replaces_a_pooled_library_primary(monkeypatch, tmp_path):
+    """A registered library holding a backup master is a reviewed page pool:
+    a vault import is listed beside it but never bound over its primary."""
+    import services.dossier_ingredients as ingredients
+    from services.shipstream_source_manifest import (
+        parse_shipstream_source_projection,
+    )
+
+    page_id = "tt-chase-miles-4l"
+    notion_page_id = "3981465b-b829-8067-9317-eccc81093e4b"
+    intent, _ = master_pages(
+        page_id,
+        handle="chase.miles.4l",
+        content_niche="POV - Dirtbike",
+        content_engine="sourced_video",
+        vault_url="https://shipstream.test/vault/chase.miles.4l",
+    )
+    intent["notionPageId"] = notion_page_id
+    intent["automationMode"] = "Automation"
+    revision = intent_hash(intent)
+    imported_sha = "a3073e1000b1a760e38dc8f054c422bbcf1bc9451101dd67e9e354c81148a6dd"
+    manifest = {
+        "schema": "shipstream.source-manifest.v1",
+        "page": "chase.miles.4l",
+        "notion": {
+            "pageId": notion_page_id,
+            "contentEngine": "sourced_video",
+            "contentNiche": "POV - Dirtbike",
+            "serviceMode": "Automation",
+        },
+        "format": "pov-dirt-bike",
+        "sourceAuthority": {
+            "kind": "content_lab_page_source_import",
+            "pageId": page_id,
+            "pageHandle": "chase.miles.4l",
+            "notionPageId": notion_page_id,
+            "replacementEligible": True,
+        },
+        "master": {
+            "sha256": imported_sha,
+            "storageKey": f"vault/chase.miles.4l/masters/{imported_sha}.mp4",
+            "bytes": 99_140_709,
+            "media": {"durationSeconds": 120.0},
+            "originSourceUrl": "https://www.youtube.com/watch?v=vt5im2TRAKw",
+            "originWindowSeconds": [0.0, 120.0],
+            "registeredAt": "2026-10-01T18:13:51Z",
+        },
+        "historicalPostedCuts": [],
+        "cuts": [],
+        "updatedAt": "2026-10-01T18:13:51Z",
+    }
+    projection = parse_shipstream_source_projection(
+        json.dumps(manifest).encode(), intent,
+        page_id=page_id, expected_format="pov-dirt-bike",
+    )
+    monkeypatch.setattr(
+        ingredients, "load_shipstream_source_projection", lambda *args, **kwargs: projection,
+    )
+
+    registry = Path(ingredients.SOURCE_DNA_MANIFEST_DIR)
+    for path in registry.glob("*.json"):
+        (tmp_path / path.name).write_bytes(path.read_bytes())
+    pooled_path = tmp_path / "pov-dirt-bike-chase-miles-4l-v1.json"
+    pooled = json.loads(pooled_path.read_bytes())
+    backup = {**pooled["masters"][0], "role": "backup", "sourceId": "zz-backup-night", "sha256": "d" * 64,
+              "storageKey": "source-dna/backup/" + "d" * 64 + ".mp4"}
+    pooled["masters"].append(backup)
+    pooled_path.write_bytes((json.dumps(pooled, sort_keys=True, separators=(",", ":")) + "\n").encode())
+    monkeypatch.setattr(ingredients, "SOURCE_DNA_MANIFEST_DIR", tmp_path)
+
+    catalog = ingredients.build_dossier_ingredient_catalog(page_id, intent, revision)
+    dirtbike = _format(catalog, "pov-dirt-bike")
+    master = _ingredient(dirtbike, "master-source-video")
+
+    assert master["status"] == "bound"
+    assert master["binding"]["libraryId"] == "pov-dirt-bike-chase-miles-4l-v1"
+    assert imported_sha not in {item["sha256"] for item in master["binding"]["masters"]}
     assert {option["libraryId"] for option in master["options"]} == {
         "pov-dirt-bike-chase-miles-4l-v1",
         projection.source_library.library_id,

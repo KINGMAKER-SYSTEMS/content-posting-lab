@@ -51,3 +51,49 @@ def test_every_planned_window_length_delivers_a_clip_the_worker_admits():
             assert OUTPUT_MIN_MS <= duration_ms / speed <= OUTPUT_MAX_MS, (duration_ms, speed)
             assert 5_000 <= duration_ms / speed <= 10_000
         assert len(speeds) > 1, duration_ms
+
+
+def test_cut_grade_stays_inside_the_bands_around_the_recipe():
+    from services.clip_variation import GRADE_BANDS, cut_grade
+    recipe = {"brightness": 1.1, "contrast": 0.95, "fade": 0.1}
+    moved = set()
+    for start in range(0, 600_000, 2_000):
+        cut = f"{MASTER}:{start}:8000"
+        graded = cut_grade(BTL, cut, recipe)
+        assert graded == cut_grade(BTL, cut, recipe)
+        assert graded["fade"] == 0.1, "a filter outside the bands is never touched"
+        for name, band in GRADE_BANDS.items():
+            centre = recipe.get(name, 0.0 if name == "warmth" else 1.0)
+            assert abs(graded[name] - centre) <= band, (name, graded[name])
+        moved.add(graded["brightness"])
+    assert len(moved) > 20, "the grade actually varies"
+
+
+def test_the_receipt_records_the_grade_actually_applied():
+    from services.source_treatment import source_treatment_receipt
+    job = {"jobId": "generation-1", "recipeSpecHash": "sha256:" + "a" * 64}
+    recipe = {"filters": {"brightness": 1.1}, "clipSpeed": 1.0}
+    receipt = source_treatment_receipt(job, recipe, "b" * 64, clip_speed=0.9, clip_crop=None,
+                                       filters={"brightness": 1.12, "warmth": -0.02})
+    assert receipt["visualTreatment"]["filters"]["brightness"] == 1.12
+    assert receipt["visualTreatment"]["filters"]["warmth"] == -0.02
+    assert receipt["sourceRecipeTreatment"]["filters"] == {"brightness": 1.1}, "the recipe stays the recipe"
+
+
+def test_transforms_are_drawn_at_their_shares_and_never_repeat_the_previous_combination():
+    from services.clip_transforms import CutTransforms, cut_transforms
+    previous = None
+    counts = {"mirror": 0, "motion": 0, "reverse": 0}
+    for start in range(0, 1_200_000, 2_000):
+        drawn = cut_transforms(BTL, f"{MASTER}:{start}:8000", previous)
+        assert drawn == cut_transforms(BTL, f"{MASTER}:{start}:8000", previous)
+        assert drawn != previous
+        counts["mirror"] += drawn.mirror
+        counts["motion"] += drawn.motion is not None
+        counts["reverse"] += drawn.reverse
+        previous = drawn
+    assert 0.25 < counts["mirror"] / 600 < 0.42
+    assert 0.25 < counts["motion"] / 600 < 0.42
+    assert 0.17 < counts["reverse"] / 600 < 0.33
+    same = CutTransforms(mirror=True)
+    assert cut_transforms(BTL, "x", same) != same
