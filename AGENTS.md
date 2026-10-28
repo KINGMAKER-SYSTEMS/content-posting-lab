@@ -201,6 +201,15 @@
 - `services/job_token_rotation.py` and `scripts/rotate_job_download_token.py`
   own operator-only rotation of one job's signed download credential.
 - `routers/burn.py` exposes caption rendering and final video compositing.
+  `POST /api/burn/import-tos` requires the server-only `CONTROL_PLANE_TOKEN`
+  Bearer credential before any Supabase read or project CSV write. An unset or
+  blank token returns 503; missing, wrong, or browser `APP_API_KEY` credentials
+  return 401. `app.py` passes this exact POST through its browser-key middleware
+  to the route's machine guard even when `APP_API_KEY` is configured. Other Burn
+  routes keep their existing authentication contracts. The import reads the
+  TOS corpus only with server-held `SUPABASE_SERVICE_KEY`; a generic
+  `SUPABASE_KEY` never substitutes for it. Missing URL or service key returns
+  503 before the Supabase request or project write.
 - `services/roster_public.py` owns what `/api/roster`, `/api/pipeline` and
   `/api/email` may serialise: an allowlist of roster row fields plus a
   credential-key scrub (`CredentialGuardRoute`) applied to every response of
@@ -785,7 +794,9 @@
 
 - Run `pytest -q tests/test_caption_render_contract.py` for the typed caption
   contract and `pytest -q tests/test_burn_and_captions_api.py` for Burn API
-  regressions. Run `pytest -q tests/test_burn_quality_gate.py` for legacy and
+  regressions. Run `pytest -q tests/test_burn_import_tos_auth.py` for the
+  server-only TOS import credential and side-effect boundary. Run
+  `pytest -q tests/test_burn_quality_gate.py` for legacy and
   typed overlay placement gates. Run the control-plane recipe, generation, and
   source-execution test files together when changing a Dossier recipe schema.
 - Run `node --test tools/gh-capture/target_policy.test.cjs` for GitHub URL,
