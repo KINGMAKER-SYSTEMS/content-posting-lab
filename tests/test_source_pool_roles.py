@@ -148,7 +148,7 @@ def test_the_backup_grade_contract_matches_what_the_lab_writes():
     assert again == receipt
     brightness = receipt["visualTreatment"]["filters"]["brightness"]
     assert abs(brightness - 0.5) <= GRADE_BANDS["brightness"], "jitter rides on the page look, never a backup override"
-    assert 0.46 <= brightness <= 0.54, "the receipt stays inside the Worker band around the 0.5 page look"
+    assert 0.46 <= brightness <= 0.5, "the receipt stays at or below the 0.5 page look (never brighter)"
     assert receipt["sourceRecipeTreatment"]["filters"]["brightness"] == 0.5, "the recipe stays the recipe"
     # The backup is a real BTL backup in the registry, and it declares no
     # override: it renders at the page look (source_dna_registry._grade_override).
@@ -176,7 +176,7 @@ def test_a_backup_cut_grade_receipt_stays_inside_the_worker_band_of_the_page_loo
                                        filters=filters)
     brightness = receipt["visualTreatment"]["filters"]["brightness"]
     assert abs(brightness - 0.5) <= GRADE_BANDS["brightness"]
-    assert 0.46 <= brightness <= 0.54
+    assert 0.46 <= brightness <= 0.5, "a cut is never brighter than the 0.5 page look"
 
 
 def test_btl_lists_its_night_backup_without_moving_its_version():

@@ -69,6 +69,24 @@ def test_cut_grade_stays_inside_the_bands_around_the_recipe():
     assert len(moved) > 20, "the grade actually varies"
 
 
+def test_brightness_never_exceeds_the_page_look_and_keeps_its_spread():
+    # Eric's gb20 rule: a cut is never brighter than the page look. BTL's look
+    # is brightness 0.5, so every cut must grade at or below 0.5 while still
+    # moving almost the full band (~0.039) so the cuts stay varied.
+    from services.clip_variation import GRADE_BANDS, cut_grade
+    look = 0.5
+    recipe = {"brightness": look, "contrast": 1.05, "fade": 0.1}
+    values = []
+    for start in range(0, 1_600_000, 8_000):  # 200 seeded cuts
+        cut = f"{MASTER}:{start}:8000"
+        graded = cut_grade(BTL, cut, recipe)
+        assert graded["brightness"] <= look, (cut, graded["brightness"])
+        values.append(graded["brightness"])
+    assert len(values) == 200
+    spread = look - min(values)
+    assert 0.03 <= spread <= GRADE_BANDS["brightness"] * 0.98 + 0.001, spread
+
+
 def test_the_receipt_records_the_grade_actually_applied():
     from services.source_treatment import source_treatment_receipt
     job = {"jobId": "generation-1", "recipeSpecHash": "sha256:" + "a" * 64}

@@ -11,10 +11,11 @@ those values (control-plane-worker src/domain/clipVariation.js, which holds the
 same page list). Grade, caption and sound are never touched here.
 
 Each cut also gets a small grade jitter around the recipe's own values
-(brightness, contrast, saturation, warmth; the recipe values stay the centre,
-so the page's look is kept), written into the receipt's filters. The Worker
-admits a jittered grade only inside GRADE_BANDS (its domain/clipVariation.js
-holds the same bands).
+(contrast, saturation and warmth stay centred on the recipe; brightness is
+one-sided and only ever darkens, never brighter than the page look), written
+into the receipt's filters. The Worker admits a jittered grade only inside
+GRADE_BANDS (its domain/clipVariation.js holds the same bands), and refuses a
+cut brighter than the look.
 
 Mirror, slow camera moves and reverse are added after the cut by
 services/clip_transforms.py and recorded on the clip manifest.
@@ -103,7 +104,9 @@ def cut_variant(page_id: str, cut_slot_id: str, base_speed: float, base_crop: di
     raise ValueError("no distinct cut variant")
 
 
-# Grade jitter, symmetric around the recipe's own value (SOURCE-ENGINE-DESIGN-1022 §3).
+# Grade jitter. Brightness is one-sided (darkens only, Eric's gb20 rule: a cut
+# is never brighter than the page look); the other grades stay centred on the
+# recipe (SOURCE-ENGINE-DESIGN-1022 §3).
 GRADE_BANDS = {"brightness": 0.04, "contrast": 0.05, "saturation": 0.06, "warmth": 0.03}
 _GRADE_LIMITS = {"brightness": (0.0, 3.0), "contrast": (0.0, 3.0), "saturation": (0.0, 3.0), "warmth": (-1.0, 1.0)}
 _GRADE_NEUTRAL = {"brightness": 1.0, "contrast": 1.0, "saturation": 1.0, "warmth": 0.0}
@@ -114,12 +117,16 @@ def cut_grade(page_id: str, cut_slot_id: str, filters: dict) -> dict:
 
     Seeded by the cut's own time frame, so a resumed job grades it the same.
     Values move at most GRADE_BANDS from the recipe and are rounded to
-    0.001, well inside the band the Worker admits.
+    0.001, well inside the band the Worker admits. Brightness moves only down
+    (``[look - band*0.98, look]``), never brighter than the page look; the
+    other grades stay symmetric around the recipe.
     """
     seed = f"{page_id}\0{cut_slot_id}\0grade"
     graded = dict(filters)
     for name, band in GRADE_BANDS.items():
         base = float(filters.get(name, _GRADE_NEUTRAL[name]))
         low, high = _GRADE_LIMITS[name]
-        graded[name] = round(_clamp(base + (_unit(seed, name) * 2 - 1) * band * 0.98, low, high), 3)
+        unit = _unit(seed, name)
+        offset = -unit * band if name == "brightness" else (unit * 2 - 1) * band
+        graded[name] = round(_clamp(base + offset * 0.98, low, high), 3)
     return graded
