@@ -87,6 +87,19 @@ def test_brightness_never_exceeds_the_page_look_and_keeps_its_spread():
     assert 0.03 <= spread <= GRADE_BANDS["brightness"] * 0.98 + 0.001, spread
 
 
+def test_fractional_page_look_never_rounds_a_cut_brighter_or_below_the_worker_band():
+    from services.clip_variation import GRADE_BANDS, cut_grade
+
+    # Nearest 0.001 rounding previously turned a 0.5006 look into 0.501 for
+    # some seeded cuts, even though the raw jitter only darkened it.
+    for look in (0.5006, 0.5001, 0.0406, 0.0006, 1.2346):
+        for start in range(0, 2_400_000, 8_000):
+            cut = f"{MASTER}:{start}:8000"
+            value = cut_grade(BTL, cut, {"brightness": look})["brightness"]
+            assert max(0, look - GRADE_BANDS["brightness"]) <= value <= look, (look, cut, value)
+            assert value == round(value, 3), (look, cut, value)
+
+
 def test_the_receipt_records_the_grade_actually_applied():
     from services.source_treatment import source_treatment_receipt
     job = {"jobId": "generation-1", "recipeSpecHash": "sha256:" + "a" * 64}

@@ -23,6 +23,7 @@ services/clip_transforms.py and recorded on the clip manifest.
 from __future__ import annotations
 
 import hashlib
+import math
 
 CLIP_VARIATION_PAGES = frozenset({"acct:between-the-lines66"})
 
@@ -128,5 +129,12 @@ def cut_grade(page_id: str, cut_slot_id: str, filters: dict) -> dict:
         low, high = _GRADE_LIMITS[name]
         unit = _unit(seed, name)
         offset = -unit * band if name == "brightness" else (unit * 2 - 1) * band
-        graded[name] = round(_clamp(base + offset * 0.98, low, high), 3)
+        value = _clamp(base + offset * 0.98, low, high)
+        if name == "brightness":
+            # Nearest rounding can turn a fractional page look into a brighter
+            # cut. Quantize downward, while retaining the Worker's lower band.
+            minimum = math.ceil(max(low, base - band) * 1000) / 1000
+            graded[name] = max(minimum, math.floor(value * 1000) / 1000)
+        else:
+            graded[name] = round(value, 3)
     return graded

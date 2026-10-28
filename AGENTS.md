@@ -85,6 +85,9 @@
   lengths still verify. Preserve the saved speed and video treatment.
   Normalize cut timestamps and extend a fractional missing tail frame to the
   planned output duration; source-window provenance remains unchanged.
+- Per-cut brightness jitter quantizes downward to 0.001 from the page look,
+  including fractional looks, and remains within the Worker's 0.04 lower
+  admission band. Other grade channels retain nearest rounding.
 - `GET /api/control-plane/v1/capabilities` requires the existing `CONTROL_PLANE_TOKEN` Bearer credential before reading page intent or job state. A missing server token returns 503; missing, invalid, or browser `APP_API_KEY` credentials return 401. The authorized Worker request and capability response schema stay unchanged.
 - Source cut planning honors the immutable original 60-second minimum for raw
   source libraries and the Worker-supplied global source-window exclusions
@@ -229,9 +232,10 @@
   `_patch_page` refuses non-canonical ids before any request. Alias-collision 409s never echo the alias.
 - `burn_server.py` exposes the same typed caption-render route on the posting
   Mac's canonical port-8002 Burn runtime for Rail consumption.
-- `events.md` is frozen legacy history. New meaningful work uses one new
-  `events/YYYY-MM-DD-HHMM-<branch-slug>.md` file per event; never edit an
-  existing event file.
+- `events/` is the repository's append-only chronological ledger: one new
+  `YYYY-MM-DD-HHMM-<branch-slug>.md` file per meaningful event, committed on
+  the work branch. Legacy root `events.md` is frozen history; never edit it or
+  an existing `events/` entry.
 - `SCHEMA.md` describes the current Editor Bay timeline, edit-command, ABN import,
   and render-cache contracts; `services/editor_timeline.py` and `routers/agenticnews.py` own the implementation.
 
