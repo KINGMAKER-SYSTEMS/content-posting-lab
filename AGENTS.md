@@ -277,9 +277,29 @@
   processing, listing and polling fail closed until the original history is
   restored or an operator rules out prior attempts before provisioning anew.
   Admission never proves a TikTok publication. A queued,
-  uploading, held, failed, or unproved completed job for the same real video path and cookie account
+  uploading, held, failed, or unproved completed job for the same captured resolved video path or device/inode and cookie account
   blocks another submission with 409 until the original attempt is reconciled;
-  a stable local file lock serializes queue writes and the queued-to-uploading
+  admission captures that identity and a SHA-256 digest in a worker thread,
+  outside the queue write lock, with a 1 GiB and 30-second streaming budget.
+  It rechecks the resolved path, inode and change times under the lock before
+  committing the job; concurrent submissions may use the queue meanwhile.
+  The async submit route shields its worker from request cancellation and
+  schedules queue processing when the worker finishes persisting, including
+  after a client disconnect. A wake arriving while the single queue runner is
+  active stays pending until that runner atomically rechecks idle, so a job
+  cannot be stranded between its last empty read and exit. Startup does not
+  automatically post preexisting queued jobs; a normal submission owns wake.
+  Before a new
+  identity-bearing job calls the provider, copy the original inode's bytes to a
+  private temporary file, check its identity and change times around the copy,
+  and require the staged-byte SHA-256 to match the admission digest,
+  and pass only that staged path to the provider. A retargeted request symlink
+  cannot redirect the provider to different bytes; a replaced or changing
+  source fails closed. A newly admitted row with no file identity also refuses
+  the provider call, even if its source appears later. Staging requires enough
+  free space and is removed after the provider returns. Legacy rows without
+  any captured identity fields retain their original execution behavior and
+  require separate reconciliation. A stable local file lock serializes queue writes and the queued-to-uploading
   claim/cancel decision across worker processes. An unresolved uploading or held
   claim also bars another provider call for that account, even for a different
   queued job or process. A quarantined row with a readable account but invalid

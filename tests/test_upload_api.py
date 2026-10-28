@@ -18,8 +18,11 @@ CWD). We point it at a tmp dir per-test so the suite neither reads real
 import asyncio
 import builtins
 import json
+import os
+import sys
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 
 import pytest
@@ -180,6 +183,202 @@ def test_legacy_completed_without_canonical_receipt_cannot_be_replayed(cookie_di
     with pytest.raises(upload_svc.UploadReconciliationRequired, match=original["job_id"]):
         upload_svc.submit_job(video_path="/tmp/legacy.mp4", account_name="linked")
     assert len(upload_svc.get_all_jobs()) == 1
+
+
+def test_unresolved_symlink_retarget_and_hardlink_alias_keep_original_identity(
+    cookie_dir, monkeypatch, tmp_path,
+):
+    monkeypatch.setattr(upload_svc, "require_upload_runtime", lambda: None)
+    original = tmp_path / "original.mp4"
+    original.write_bytes(b"first video")
+    link = tmp_path / "selected.mp4"
+    link.symlink_to(original)
+    alias = tmp_path / "alias.mp4"
+    os.link(original, alias)
+    first = upload_svc.submit_job(video_path=str(link), account_name="linked")
+    upload_svc._update_job(first["job_id"], {"status": "held"})
+
+    replacement = tmp_path / "replacement.mp4"
+    replacement.write_bytes(b"other video")
+    link.unlink()
+    link.symlink_to(replacement)
+    with pytest.raises(upload_svc.UploadReconciliationRequired, match=first["job_id"]):
+        upload_svc.submit_job(video_path=str(original), account_name="linked")
+    with pytest.raises(upload_svc.UploadReconciliationRequired, match=first["job_id"]):
+        upload_svc.submit_job(video_path=str(alias), account_name="linked")
+
+
+def test_provider_receives_staged_original_bytes_not_retargeted_symlink(
+    cookie_dir, monkeypatch, tmp_path,
+):
+    monkeypatch.setattr(upload_svc, "require_upload_runtime", lambda: None)
+    original = tmp_path / "original.mp4"
+    original.write_bytes(b"original media")
+    selected = tmp_path / "selected.mp4"
+    selected.symlink_to(original)
+    job = upload_svc.submit_job(video_path=str(selected), account_name="linked")
+    observed = []
+
+    def fake_upload_tiktok(**kwargs):
+        observed.append((kwargs["video"], open(kwargs["video"], "rb").read()))
+        return "Completed"
+
+    monkeypatch.setitem(sys.modules, "tiktokautouploader", SimpleNamespace(upload_tiktok=fake_upload_tiktok))
+    replacement = tmp_path / "replacement.mp4"
+    replacement.write_bytes(b"different media")
+    selected.unlink()
+    selected.symlink_to(replacement)
+    assert upload_svc._run_upload_sync(job) == "Completed"
+    assert observed[0][1] == b"original media"
+    assert observed[0][0] != str(selected)
+    assert not os.path.exists(observed[0][0])
+
+    original.unlink()
+    original.write_bytes(b"replaced original path")
+    assert "identity changed" in upload_svc._run_upload_sync(job)
+    assert len(observed) == 1
+
+
+def test_missing_source_at_admission_cannot_post_when_file_appears(
+    cookie_dir, monkeypatch, tmp_path,
+):
+    monkeypatch.setattr(upload_svc, "require_upload_runtime", lambda: None)
+    missing = tmp_path / "late.mp4"
+    job = upload_svc.submit_job(video_path=str(missing), account_name="linked")
+    assert job["video_file_id"] is None
+    calls = []
+    monkeypatch.setitem(sys.modules, "tiktokautouploader", SimpleNamespace(
+        upload_tiktok=lambda **kwargs: calls.append(kwargs) or "Completed"
+    ))
+    missing.write_bytes(b"appeared later")
+    assert "no immutable identity" in upload_svc._run_upload_sync(job)
+    assert calls == []
+
+    legacy = dict(job)
+    legacy.pop("video_real_path")
+    legacy.pop("video_file_id")
+    assert upload_svc._run_upload_sync(legacy) == "Completed"
+    assert len(calls) == 1
+
+
+def test_same_inode_rewrite_after_admission_never_reaches_provider(
+    cookie_dir, monkeypatch, tmp_path,
+):
+    monkeypatch.setattr(upload_svc, "require_upload_runtime", lambda: None)
+    video = tmp_path / "mutable.mp4"
+    video.write_bytes(b"admitted media")
+    job = upload_svc.submit_job(video_path=str(video), account_name="linked")
+    inode = video.stat().st_ino
+    calls = []
+    monkeypatch.setitem(sys.modules, "tiktokautouploader", SimpleNamespace(
+        upload_tiktok=lambda **kwargs: calls.append(kwargs) or "Completed"
+    ))
+    video.write_bytes(b"rewritten media")
+    assert video.stat().st_ino == inode
+    assert "bytes changed since admission" in upload_svc._run_upload_sync(job)
+    assert calls == []
+
+
+def test_slow_identity_hash_does_not_hold_global_upload_queue_lock(
+    cookie_dir, monkeypatch, tmp_path,
+):
+    monkeypatch.setattr(upload_svc, "require_upload_runtime", lambda: None)
+    video = tmp_path / "large.mp4"
+    video.write_bytes(b"admitted media")
+    started = threading.Event()
+    release = threading.Event()
+    original_hash = upload_svc._video_sha256
+
+    def slow_hash(real_path, file_id):
+        started.set()
+        assert release.wait(2)
+        return original_hash(real_path, file_id)
+
+    monkeypatch.setattr(upload_svc, "_video_sha256", slow_hash)
+    with ThreadPoolExecutor(max_workers=2) as workers:
+        first = workers.submit(upload_svc.submit_job, str(video), "first")
+        assert started.wait(1)
+        second = workers.submit(upload_svc.submit_job, str(tmp_path / "missing.mp4"), "second")
+        try:
+            assert second.result(timeout=0.5)["status"] == "queued"
+        finally:
+            release.set()
+        assert first.result(timeout=2)["status"] == "queued"
+
+
+def test_cancelled_submit_request_still_wakes_persisted_queue(monkeypatch):
+    started = threading.Event()
+    release = threading.Event()
+    calls = []
+    monkeypatch.setattr(upload_router, "get_cookie_status", lambda account: "valid")
+    monkeypatch.setattr(upload_router, "require_upload_admission", lambda: None)
+
+    def persist_job(**kwargs):
+        started.set()
+        assert release.wait(2)
+        calls.append("persisted")
+        return {"job_id": "persisted", "status": "queued"}
+
+    monkeypatch.setattr(upload_router, "submit_job", persist_job)
+
+    async def exercise():
+        woke = asyncio.Event()
+
+        async def wake():
+            woke.set()
+
+        monkeypatch.setattr(upload_router, "process_queue", wake)
+        request = upload_router.SubmitRequest(video_path="/tmp/x.mp4", account_name="linked")
+        task = asyncio.create_task(upload_router.submit_upload(request))
+        assert await asyncio.to_thread(started.wait, 1)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        release.set()
+        await asyncio.wait_for(woke.wait(), 1)
+
+    try:
+        asyncio.run(exercise())
+    finally:
+        release.set()
+    assert calls == ["persisted"]
+
+
+def test_queue_wake_during_active_runner_survives_empty_read(monkeypatch):
+    reads = iter([
+        [{"job_id": "first", "status": "queued"}],
+        [],
+        [{"job_id": "second", "status": "queued"}],
+        [],
+    ])
+    monkeypatch.setattr(upload_svc, "_load_jobs", lambda: next(reads))
+    monkeypatch.setattr(upload_svc, "_has_runnable_queued_job", lambda: False)
+    monkeypatch.setattr(upload_svc, "_queue_running", False)
+    monkeypatch.setattr(upload_svc, "_queue_wake_pending", False)
+
+    async def exercise():
+        first_started = asyncio.Event()
+        release_first = asyncio.Event()
+        processed = []
+
+        async def process(job_id):
+            processed.append(job_id)
+            if job_id == "first":
+                first_started.set()
+                await release_first.wait()
+            return True
+
+        monkeypatch.setattr(upload_svc, "_process_single_job", process)
+        runner = asyncio.create_task(upload_svc.process_queue())
+        await asyncio.wait_for(first_started.wait(), 1)
+        await upload_svc.process_queue()  # persisted second job wakes busy runner
+        release_first.set()
+        await asyncio.wait_for(runner, 1)
+        assert processed == ["first", "second"]
+        assert upload_svc._queue_running is False
+        assert upload_svc._queue_wake_pending is False
+
+    asyncio.run(exercise())
 
 
 @pytest.mark.parametrize("video_url", [

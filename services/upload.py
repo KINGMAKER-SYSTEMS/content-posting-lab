@@ -7,12 +7,15 @@ cookie file detection, and thread-pool execution of sync Playwright calls.
 import asyncio
 import fcntl
 import glob
+import hashlib
 import importlib
 import json
 import logging
 import os
 import random
 import re
+import shutil
+import tempfile
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -29,11 +32,14 @@ COOKIE_DIR = "."  # TK_cookies_{account}.json stored in project root
 MAX_CONCURRENT = 1
 DEFAULT_DELAY_MIN = 5 * 60   # 5 minutes
 DEFAULT_DELAY_MAX = 15 * 60  # 15 minutes
+MAX_UPLOAD_IDENTITY_BYTES = 1024 * 1024 * 1024
+MAX_UPLOAD_IDENTITY_SECONDS = 30
 
 _executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="tiktok-upload")
 _queue_lock = asyncio.Lock()
 _active_job_id: str | None = None
 _queue_running = False
+_queue_wake_pending = False
 logger = logging.getLogger(__name__)
 _quarantined_job_rows: dict[str, list[object]] = {}
 
@@ -80,6 +86,27 @@ def _stored_job_error(job: object, seen_ids: set[str]) -> str | None:
             return f"{key} must be a non-empty string"
     if "\x00" in job["video_path"]:
         return "video_path contains NUL"
+    if "video_real_path" in job and (
+        not isinstance(job["video_real_path"], str)
+        or not job["video_real_path"]
+        or "\x00" in job["video_real_path"]
+    ):
+        return "video_real_path is invalid"
+    if "video_file_id" in job and job["video_file_id"] is not None and (
+        not isinstance(job["video_file_id"], str)
+        or re.fullmatch(r"[0-9]+:[0-9]+", job["video_file_id"]) is None
+        or "video_real_path" not in job
+    ):
+        return "video_file_id is invalid"
+    if "video_real_path" in job:
+        digest = job.get("video_sha256")
+        if job.get("video_file_id") is not None and (
+            not isinstance(digest, str)
+            or re.fullmatch(r"[0-9a-f]{64}", digest) is None
+        ):
+            return "video_sha256 is required for captured file identity"
+        if job.get("video_file_id") is None and digest is not None:
+            return "video_sha256 requires captured file identity"
     if job["status"] == "queued":
         required = (
             "description", "hashtags", "sound_name", "sound_aud_vol",
@@ -319,7 +346,7 @@ def _quarantined_unknown_account_attempt(video_path: str) -> dict | None:
     rejected = _quarantined_job_rows.get(str(Path(UPLOAD_JOBS_FILE).resolve()), [])
     if not rejected:
         return None
-    target = os.path.realpath(video_path)
+    target, file_id = _video_identity(video_path)
     for row in rejected:
         # A scalar or list may be a lost Post with neither identity retained.
         if not isinstance(row, dict):
@@ -330,12 +357,60 @@ def _quarantined_unknown_account_attempt(video_path: str) -> dict | None:
         if not isinstance(path, str) or not path:
             return row
         try:
-            if os.path.realpath(path) == target:
+            if _same_video_identity(row, target, file_id):
                 return row
         except ValueError:
             # NUL or another invalid persisted path cannot rule out a target.
             return row
     return None
+
+
+def _video_identity(video_path: str) -> tuple[str, str | None]:
+    """Capture path and file identity once, before a symlink can be retargeted."""
+    real_path = os.path.realpath(video_path)
+    try:
+        stat = os.stat(real_path)
+    except OSError:
+        return real_path, None
+    return real_path, f"{stat.st_dev}:{stat.st_ino}"
+
+
+def _video_sha256(real_path: str, file_id: str) -> tuple[str, tuple[int, int, int]]:
+    """Hash bounded admitted bytes and reject an in-place change during hashing."""
+    started = time.monotonic()
+    try:
+        source_fd = os.open(real_path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        with os.fdopen(source_fd, "rb") as source:
+            before = os.fstat(source.fileno())
+            if f"{before.st_dev}:{before.st_ino}" != file_id:
+                raise UploadUnavailable("Upload source identity changed during admission")
+            if before.st_size > MAX_UPLOAD_IDENTITY_BYTES:
+                raise UploadUnavailable("Upload source exceeds immutable identity size limit")
+            digest = hashlib.sha256()
+            read_bytes = 0
+            while chunk := source.read(1024 * 1024):
+                read_bytes += len(chunk)
+                if read_bytes > MAX_UPLOAD_IDENTITY_BYTES or time.monotonic() - started > MAX_UPLOAD_IDENTITY_SECONDS:
+                    raise UploadUnavailable("Upload source identity budget exceeded")
+                digest.update(chunk)
+            after = os.fstat(source.fileno())
+            if (before.st_size, before.st_mtime_ns, before.st_ctime_ns) != (
+                after.st_size, after.st_mtime_ns, after.st_ctime_ns
+            ):
+                raise UploadUnavailable("Upload source changed during admission")
+            return digest.hexdigest(), (after.st_size, after.st_mtime_ns, after.st_ctime_ns)
+    except OSError as exc:
+        raise UploadUnavailable("Upload source could not be read during admission") from exc
+
+
+def _same_video_identity(existing: dict, real_path: str, file_id: str | None) -> bool:
+    prior_path = existing.get("video_real_path")
+    if not isinstance(prior_path, str) or not prior_path:
+        prior_path = os.path.realpath(existing["video_path"])
+    prior_file_id = existing.get("video_file_id")
+    return prior_path == real_path or (
+        file_id is not None and isinstance(prior_file_id, str) and prior_file_id == file_id
+    )
 
 
 def _has_runnable_queued_job() -> bool:
@@ -435,8 +510,28 @@ def submit_job(
     if not _valid_stored_jobs([job]):
         raise ValueError("invalid upload job")
 
+    # Stream potentially large media before taking the shared queue lock.
+    # The router runs this synchronous call in a worker thread.
+    video_real_path, video_file_id = _video_identity(video_path)
+    video_sha256, hashed_stat = (
+        _video_sha256(video_real_path, video_file_id) if video_file_id else (None, None)
+    )
+
     with _job_store_write_lock():
         jobs = _read_stored_jobs(_lock_held=True)
+        current_path, current_file_id = _video_identity(video_path)
+        if (current_path, current_file_id) != (video_real_path, video_file_id):
+            raise UploadUnavailable("Upload source identity changed before admission commit")
+        if hashed_stat is not None:
+            try:
+                current_stat = os.stat(video_real_path)
+            except OSError as exc:
+                raise UploadUnavailable("Upload source vanished before admission commit") from exc
+            if (current_stat.st_size, current_stat.st_mtime_ns, current_stat.st_ctime_ns) != hashed_stat:
+                raise UploadUnavailable("Upload source changed before admission commit")
+        job["video_real_path"] = video_real_path
+        job["video_file_id"] = video_file_id
+        job["video_sha256"] = video_sha256
         unresolved = _quarantined_account_attempt(account_name)
         if unresolved is not None:
             raise UploadReconciliationRequired(
@@ -450,7 +545,6 @@ def submit_job(
                 "submission for this video or an unknowable target (job %s)"
                 % (unresolved.get("job_id") or "unknown")
             )
-        target = os.path.realpath(video_path)
         stored_rows = [*jobs, *_quarantined_job_rows.get(str(Path(UPLOAD_JOBS_FILE).resolve()), [])]
         duplicate_ids = _duplicate_stored_job_ids(stored_rows)
         for existing in stored_rows:
@@ -461,7 +555,7 @@ def submit_job(
                     and (existing.get("status") != "cancelled"
                          and not (existing.get("status") == "completed" and _has_canonical_video_receipt(existing))
                          or (isinstance(existing.get("job_id"), str) and existing["job_id"] in duplicate_ids))
-                    and os.path.realpath(existing["video_path"]) == target):
+                    and _same_video_identity(existing, video_real_path, video_file_id)):
                 # Only cancelled or canonically proven completed history permits
                 # explicit resubmission; unresolved history stays a barrier.
                 raise UploadReconciliationRequired(
@@ -569,8 +663,48 @@ def _run_upload_sync(job: dict) -> str:
         kwargs["proxy"] = job["proxy"]
 
     try:
-        result = upload_tiktok(**kwargs)
-        return str(result)
+        # A symlink may change after admission. For a job with a captured file
+        # identity, hand the provider private copied bytes, never the mutable
+        # request path. Legacy rows retain their existing execution behavior.
+        if "video_real_path" not in job:
+            return str(upload_tiktok(**kwargs))
+        if not job.get("video_file_id"):
+            raise UploadReconciliationRequired(
+                "Upload source had no immutable identity when admitted"
+            )
+        if not isinstance(job.get("video_sha256"), str):
+            raise UploadReconciliationRequired("Upload source has no admitted byte digest")
+        with tempfile.TemporaryDirectory(prefix="content-lab-upload-") as staging_dir:
+            staged_path = os.path.join(staging_dir, "video.mp4")
+            source_path = job["video_real_path"]
+            source_fd = os.open(source_path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+            with os.fdopen(source_fd, "rb") as source:
+                before = os.fstat(source.fileno())
+                if f"{before.st_dev}:{before.st_ino}" != job["video_file_id"]:
+                    raise UploadReconciliationRequired("Upload source identity changed before provider call")
+                if before.st_size + 64 * 1024 * 1024 > shutil.disk_usage(staging_dir).free:
+                    raise UploadUnavailable("Insufficient free space to stage immutable upload bytes")
+                digest = hashlib.sha256()
+                copied = 0
+                started = time.monotonic()
+                with open(staged_path, "xb") as staged:
+                    while chunk := source.read(1024 * 1024):
+                        copied += len(chunk)
+                        if copied > MAX_UPLOAD_IDENTITY_BYTES or time.monotonic() - started > MAX_UPLOAD_IDENTITY_SECONDS:
+                            raise UploadUnavailable("Upload source staging budget exceeded")
+                        digest.update(chunk)
+                        staged.write(chunk)
+                    staged.flush()
+                after = os.fstat(source.fileno())
+                if (before.st_size, before.st_mtime_ns, before.st_ctime_ns) != (
+                    after.st_size, after.st_mtime_ns, after.st_ctime_ns
+                ):
+                    raise UploadReconciliationRequired("Upload source changed while staging")
+                if digest.hexdigest() != job["video_sha256"]:
+                    raise UploadReconciliationRequired("Upload source bytes changed since admission")
+            os.chmod(staged_path, 0o400)
+            kwargs["video"] = staged_path
+            return str(upload_tiktok(**kwargs))
     except Exception as e:
         return f"Error: {e}"
 
@@ -615,13 +749,17 @@ async def _process_single_job(job_id: str) -> bool:
 
 async def process_queue() -> None:
     """Process the upload queue. Called after submitting a job."""
-    global _queue_running
+    global _queue_running, _queue_wake_pending
 
     async with _queue_lock:
         if _queue_running:
+            # A submission may persist after this runner's last empty read.
+            # Keep its wake until the current runner atomically rechecks idle.
+            _queue_wake_pending = True
             return
         _queue_running = True
 
+    released = False
     try:
         while True:
             # A queued job may belong to an account with an unresolved claim in
@@ -629,14 +767,26 @@ async def process_queue() -> None:
             jobs = _load_jobs()
             queued = [job for job in jobs if job["status"] == "queued"]
             if not queued:
-                break
+                async with _queue_lock:
+                    if _queue_wake_pending:
+                        _queue_wake_pending = False
+                        continue
+                    _queue_running = False
+                    released = True
+                return
             processed = False
             for job in queued:
                 if await _process_single_job(job["job_id"]):
                     processed = True
                     break
             if not processed:
-                break
+                async with _queue_lock:
+                    if _queue_wake_pending:
+                        _queue_wake_pending = False
+                        continue
+                    _queue_running = False
+                    released = True
+                return
 
             # Random delay between uploads (anti-rate-limit)
             delay = random.uniform(DEFAULT_DELAY_MIN, DEFAULT_DELAY_MAX)
@@ -644,7 +794,10 @@ async def process_queue() -> None:
             if _has_runnable_queued_job():
                 await asyncio.sleep(delay)
     finally:
-        _queue_running = False
+        if not released:
+            async with _queue_lock:
+                _queue_running = False
+                _queue_wake_pending = False
 
 
 def get_queue_stats() -> dict:

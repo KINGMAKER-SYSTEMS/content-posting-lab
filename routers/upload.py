@@ -68,7 +68,8 @@ async def submit_upload(req: SubmitRequest):
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
     try:
-        job = submit_job(
+        submit_task = asyncio.create_task(asyncio.to_thread(
+            submit_job,
             video_path=req.video_path,
             account_name=req.account_name,
             description=req.description,
@@ -81,7 +82,21 @@ async def submit_upload(req: SubmitRequest):
             headless=req.headless,
             stealth=req.stealth,
             proxy=req.proxy,
-        )
+        ))
+
+        def wake_queued_job(done: asyncio.Task):
+            if done.cancelled():
+                return
+            try:
+                done.result()
+            except Exception:
+                return
+            # The worker can finish after its request disconnects. Schedule
+            # the durable queue once the job is actually persisted.
+            asyncio.create_task(process_queue())
+
+        submit_task.add_done_callback(wake_queued_job)
+        job = await asyncio.shield(submit_task)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except UploadReconciliationRequired as exc:
@@ -90,9 +105,6 @@ async def submit_upload(req: SubmitRequest):
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except OSError as exc:
         raise HTTPException(status_code=503, detail="TikTok upload is unavailable: job storage write failed") from exc
-
-    # Start queue processing in background
-    asyncio.create_task(process_queue())
 
     return {"job": job}
 
