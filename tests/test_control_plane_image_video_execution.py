@@ -7,6 +7,7 @@ import pytest
 import tests.test_control_plane_slideshow_execution as base
 import services.control_plane_slideshows as ss
 import services.control_plane_image_video as iv
+import services.control_plane_plan_reasons as reasons
 import routers.control_plane as cp
 
 @pytest.fixture(params=[
@@ -59,6 +60,24 @@ def _library_pins(photo, library):
         sha = obj.key.rsplit('/', 1)[-1].rsplit('.', 1)[0].split('_')[-1]
         pins[obj.key] = (obj.bytes, sha)
     return pins
+
+
+def test_image_video_short_plan_explainer_names_plan_available_not_library_mismatch(image_lab):
+    client, library, payload, photo = image_lab
+    if photo["pageId"] != "acct:pen-pal3":
+        pytest.skip("pen.pal3 is the multi-variant page this partial-plan probe needs")
+    recipe = ss.resolve_slideshow_recipe(payload, require_runtime=False)
+    assert recipe is not None
+    variants = iv.image_video_variant_plans(photo["pageId"], library)
+    assert len(variants) > 1
+    reserved = {plan["signature"] for plan in variants[:-1]}
+    # 1 variant of N left, asking 3: the planner returns the one remaining plan
+    # (partial, not empty) and the explainer must name the caller's bug, never
+    # "re-point the recipe".
+    plans = ss.plan_slideshows(recipe, library, 3, reserved, "run-a")
+    assert len(plans) == 1
+    assert reasons.explain_empty_slideshow_plan(recipe, library, 3, reserved) \
+        == reasons.PLAN_AVAILABLE
 
 
 @pytest.mark.asyncio

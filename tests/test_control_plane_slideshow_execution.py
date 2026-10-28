@@ -346,12 +346,41 @@ def test_slideshow_admission_returns_409_when_fresh_inventory_is_exhausted(lab):
     )
     assert exhausted.status_code == 409
     assert exhausted.json()["detail"] == "slideshow_inventory_exhausted"
+    assert exhausted.headers.get("X-RT-Zero-Reason") == "slideshow_permutations_exhausted"
     capabilities = client.get(
         "/api/control-plane/v1/capabilities",
         headers={"X-RT-Page-Id": PAGE_ID, "Authorization": f"Bearer {TOKEN}"},
     ).json()["capabilities"]
     row = next(item for item in capabilities if item["recipeId"] == RECIPE_ID)
     assert row["maxQuantity"] == 0
+    assert row["zeroReason"] == "slideshow_permutations_exhausted"
+
+
+def test_slideshow_short_plan_names_insufficient_inventory_not_library_mismatch(lab):
+    client, _, _, library, payload = lab
+    recipe = resolve_slideshow_recipe(payload, require_runtime=False)
+    assert recipe is not None
+    every = plan_slideshows(recipe, library, 10_000, set(), "run-a")
+    assert len(every) > 1
+    # Reserve all but one candidate: a quantity-2 job comes back short (1 plan),
+    # which is a reservation race, not a library problem.
+    store = cp._load_jobs()
+    store["jobs"]["short-plan-seed"] = {
+        "jobId": "short-plan-seed",
+        "pageId": PAGE_ID,
+        "sourceKind": "syzygy_slideshow",
+        "sourceLibraryId": recipe.library_id,
+        "status": "completed",
+        "slideshowPlan": [{"signature": plan["signature"]} for plan in every[:-1]],
+    }
+    cp.atomic_save(cp._jobs_path(), store)
+    response = client.post(
+        "/api/control-plane/v1/jobs", json=job_body(2, payload),
+        headers=headers("slideshow-short-plan"),
+    )
+    assert response.status_code == 409
+    assert response.json()["detail"] == "slideshow_inventory_exhausted"
+    assert response.headers.get("X-RT-Zero-Reason") == "insufficient_inventory"
 
 
 def test_failed_slideshow_job_releases_its_plan_signatures(lab):

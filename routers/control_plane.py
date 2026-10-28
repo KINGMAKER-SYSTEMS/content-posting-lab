@@ -90,6 +90,7 @@ from services.control_plane_generation import (
     plan_prompt_combinations,
     prompt_combination_space,
     prompt_sha256,
+    generation_recipe_unavailable_reason,
     resolve_generation_recipe,
     typed_recipe_spec,
 )
@@ -107,6 +108,16 @@ from services.control_plane_sources import (
     SOURCE_SPEED_DURATION_UNSUPPORTED,
 )
 from services.control_plane_image_video import IMAGE_VIDEO_FORMATS, image_video_source_for_wire
+from services.control_plane_plan_reasons import (
+    INSUFFICIENT_INVENTORY,
+    LIBRARY_LOAD_FAILED,
+    MATERIAL_PROFILE_MISSING,
+    PROMPT_INVENTORY_EXHAUSTED,
+    RECIPE_UNRESOLVED,
+    SLIDESHOW_RUNTIME_UNAVAILABLE,
+    SOURCE_IDENTITY_MISSING,
+    explain_empty_slideshow_plan,
+)
 from services.control_plane_slideshows import (
     SyzygyError,
     UGC_FORMAT_SLUG,
@@ -124,6 +135,7 @@ from services.control_plane_slideshows import (
     resolve_slideshow_recipe,
     submit_syzygy_render,
     syzygy_revision,
+    syzygy_runtime_available,
     ugc_encode_args,
 )
 from services.control_plane_source_imports import (
@@ -176,8 +188,27 @@ SUPPORTED_CONSTRAINTS = ("sourceWindowExclusions", "priority")
 ADVERTISE_CONSTRAINTS_ENV = "CONTENT_LAB_ADVERTISE_SUPPORTED_CONSTRAINTS"
 
 
-def _capabilities_response(entries: list[dict[str, Any]]) -> dict[str, Any]:
+def _zero_plan_recipe(
+    publication: dict[str, Any], reason: str, detail: str | None = None,
+) -> dict[str, Any]:
+    """A zeroPlanRecipes row: only the fields the binding actually carries."""
+    entry: dict[str, Any] = {"zeroReason": reason}
+    if detail:
+        entry["detail"] = detail
+    for key in ("recipeId", "engine", "recipeVersion"):
+        value = publication.get(key)
+        if isinstance(value, str):
+            entry[key] = value
+    return entry
+
+
+def _capabilities_response(
+    entries: list[dict[str, Any]],
+    zero_plan_recipes: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     response: dict[str, Any] = {"schema": RESPONSE_SCHEMA, "capabilities": entries}
+    if zero_plan_recipes:
+        response["zeroPlanRecipes"] = zero_plan_recipes
     if os.environ.get(ADVERTISE_CONSTRAINTS_ENV, "").strip().lower() in {"1", "true", "yes", "on"}:
         response["supportedConstraints"] = list(SUPPORTED_CONSTRAINTS)
     return response
@@ -364,7 +395,9 @@ def _registered_recipes() -> list[dict[str, Any]]:
 # write, an intent change, a registry edit, a contract edit, or a catalog
 # edit for a bound format ALL hard, immediate misses.
 _capabilities_cache_lock = Lock()
-_capabilities_cache: dict[tuple[Any, ...], tuple[float, list[dict[str, Any]]]] = {}
+_capabilities_cache: dict[
+    tuple[Any, ...], tuple[float, list[dict[str, Any]], list[dict[str, Any]]],
+] = {}
 _CAPABILITIES_CACHE_TTL_SECONDS = 2.0
 _CAPABILITIES_CACHE_MAX_ENTRIES = 4096
 
@@ -467,18 +500,23 @@ def _capabilities_catalog_signature(
     return ()
 
 
-def _capabilities_cache_lookup(key: tuple[Any, ...]) -> list[dict[str, Any]] | None:
+def _capabilities_cache_lookup(
+    key: tuple[Any, ...],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]] | None:
     with _capabilities_cache_lock:
         hit = _capabilities_cache.get(key)
     if hit is None:
         return None
-    stored_at, entries = hit
+    stored_at, entries, zero_plan_recipes = hit
     if time.monotonic() - stored_at > _CAPABILITIES_CACHE_TTL_SECONDS:
         return None
-    return entries
+    return entries, zero_plan_recipes
 
 
-def _capabilities_cache_store(key: tuple[Any, ...], entries: list[dict[str, Any]]) -> None:
+def _capabilities_cache_store(
+    key: tuple[Any, ...], entries: list[dict[str, Any]],
+    zero_plan_recipes: list[dict[str, Any]],
+) -> None:
     with _capabilities_cache_lock:
         if len(_capabilities_cache) >= _CAPABILITIES_CACHE_MAX_ENTRIES:
             # Simple, bounded eviction: a stale-key pileup across many
@@ -487,7 +525,7 @@ def _capabilities_cache_store(key: tuple[Any, ...], entries: list[dict[str, Any]
             # clear is cheap and keeps this O(1)-to-reason-about rather
             # than needing real LRU bookkeeping on the hot path.
             _capabilities_cache.clear()
-        _capabilities_cache[key] = (time.monotonic(), entries)
+        _capabilities_cache[key] = (time.monotonic(), entries, zero_plan_recipes)
 
 
 def _generation_related_jobs_view(
@@ -566,6 +604,7 @@ def capabilities(
     master_pages, master_pages_hash = current
 
     entries = []
+    zero_plan_recipes: list[dict[str, Any]] = []
     try:
         jobs_snapshot = _read_jobs_snapshot_object()
     except _JobsDecodeFailed as error:
@@ -614,7 +653,7 @@ def capabilities(
         )
         cached_entries = _capabilities_cache_lookup(cache_key)
         if cached_entries is not None:
-            return _capabilities_response(list(cached_entries))
+            return _capabilities_response(list(cached_entries[0]), cached_entries[1])
 
     # capabilities() for one page only ever needs that page's own jobs, plus
     # (for the two async source-recipe kinds below) the jobs of the specific
@@ -686,11 +725,13 @@ def capabilities(
     # all available. Registration alone never becomes a capability.
     for _, publication in registered_bindings:
         publication_engine = publication.get("engine")
-        generation_recipe = (
-            resolve_generation_recipe(publication)
-            if publication_engine == "ai_video"
-            else None
-        )
+        generation_unavailable_reason = None
+        if publication_engine == "ai_video":
+            generation_recipe = resolve_generation_recipe(publication)
+            if generation_recipe is None:
+                generation_unavailable_reason = generation_recipe_unavailable_reason(publication)
+        else:
+            generation_recipe = None
         source_recipe = (
             _dossier_source_recipe(publication)
             if publication_engine == "sourced_video"
@@ -698,7 +739,7 @@ def capabilities(
         )
         slideshow_recipe = (
             resolve_slideshow_recipe(publication)
-            if publication_engine in {"sourced_slideshow", "lyrics_slideshows", "sourced_image"}
+            if publication_engine in _SLIDESHOW_ENGINES
             else None
         )
         if (
@@ -706,6 +747,15 @@ def capabilities(
             and source_recipe is None
             and slideshow_recipe is None
         ):
+            if publication_engine in _SLIDESHOW_ENGINES and not syzygy_runtime_available():
+                unresolved_reason = SLIDESHOW_RUNTIME_UNAVAILABLE
+                unresolved_detail = None
+            else:
+                unresolved_reason = RECIPE_UNRESOLVED
+                unresolved_detail = generation_unavailable_reason
+            zero_plan_recipes.append(
+                _zero_plan_recipe(publication, unresolved_reason, unresolved_detail)
+            )
             continue
         if slideshow_recipe is not None:
             try:
@@ -713,8 +763,14 @@ def capabilities(
                     resolve_material_profile(publication, slideshow_recipe.recipe_spec)
                 ), master_pages)
             except (SyzygyError, AttributeError):
+                zero_plan_recipes.append(
+                    _zero_plan_recipe(publication, LIBRARY_LOAD_FAILED)
+                )
                 continue
             if slideshow_recipe_profile is None:
+                zero_plan_recipes.append(
+                    _zero_plan_recipe(publication, MATERIAL_PROFILE_MISSING)
+                )
                 continue
             unavailable = _slideshow_unavailable_signatures(
                 page_jobs_view, slideshow_recipe, page_id,
@@ -748,10 +804,24 @@ def capabilities(
             identities = [canonical_source_identity(master.provenance.get("sourceUrl")) for master in source_recipe.masters]
             identities.extend(completed_import_identities)
             if not identities or any(identity is None for identity in identities):
+                zero_plan_recipes.append(
+                    _zero_plan_recipe(publication, SOURCE_IDENTITY_MISSING)
+                )
                 continue
             source_identities = sorted(set(identities))
+        zero_reason = None
+        if max_quantity == 0:
+            if slideshow_recipe is not None:
+                zero_reason = explain_empty_slideshow_plan(
+                    slideshow_recipe, library, slideshow_recipe.max_quantity, unavailable,
+                )
+            elif source_recipe is not None:
+                zero_reason = explain_empty_source_plan(source_recipe, unavailable_slots, None)
+            else:
+                zero_reason = PROMPT_INVENTORY_EXHAUSTED
         registered_entry = {
             **({"sourceIdentities": source_identities} if source_identities is not None else {}),
+            **({"zeroReason": zero_reason} if zero_reason is not None else {}),
             "recipeId": publication["recipeId"],
             "engine": publication["engine"],
             "recipeVersion": publication["recipeVersion"],
@@ -766,8 +836,8 @@ def capabilities(
             break
 
     if cacheable:
-        _capabilities_cache_store(cache_key, entries)
-    return _capabilities_response(entries)
+        _capabilities_cache_store(cache_key, entries, zero_plan_recipes)
+    return _capabilities_response(entries, zero_plan_recipes)
 
 
 # Registry reads must not queue behind network-heavy capability/catalog work
@@ -4763,7 +4833,11 @@ async def create_job(
                 unavailable_slots,
             )
             if len(prompt_plan) != provider_calls:
-                raise HTTPException(status_code=409, detail="prompt_inventory_exhausted")
+                raise HTTPException(
+                    status_code=409,
+                    detail="prompt_inventory_exhausted",
+                    headers={"X-RT-Zero-Reason": PROMPT_INVENTORY_EXHAUSTED},
+                )
             # Daily total generation budget: the admission no longer reserves
             # the whole planned amount (that would let queued work shift
             # unbounded reserved spend across midnight). Every *new billable
@@ -4869,12 +4943,15 @@ async def create_job(
             if not cuts:
                 # source_master_too_short, source_windows_exhausted (every
                 # window already cut: the page needs new footage) or
-                # source_windows_reserved_by_other_pages.
+                # source_windows_reserved_by_other_pages. The same code rides
+                # the X-RT-Zero-Reason header for a future Worker reader.
+                reason = explain_empty_source_plan(
+                    source_recipe, served_slots, excluded_windows,
+                )
                 raise HTTPException(
                     status_code=409,
-                    detail=explain_empty_source_plan(
-                        source_recipe, served_slots, excluded_windows,
-                    ),
+                    detail=reason,
+                    headers={"X-RT-Zero-Reason": reason},
                 )
             if len(cuts) != quantity:
                 raise HTTPException(status_code=409, detail="insufficient_inventory")
@@ -4919,7 +4996,22 @@ async def create_job(
                 unavailable_signatures, job_id,
             )
             if len(plans) != quantity:
-                raise HTTPException(status_code=409, detail="slideshow_inventory_exhausted")
+                # Only an empty plan is explained (the explainer's contract).
+                # A short-but-non-empty plan is a reservation race between the
+                # capability poll and job creation, not a library diagnosis.
+                reason = (
+                    explain_empty_slideshow_plan(
+                        slideshow_recipe, slideshow_library, quantity,
+                        unavailable_signatures,
+                    )
+                    if not plans
+                    else INSUFFICIENT_INVENTORY
+                )
+                raise HTTPException(
+                    status_code=409,
+                    detail="slideshow_inventory_exhausted",
+                    headers={"X-RT-Zero-Reason": reason},
+                )
             # Pin the exact byte count each planned key carried at admission
             # so the runner can prove the library still holds those bytes.
             bytes_by_key = {

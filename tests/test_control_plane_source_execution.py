@@ -906,6 +906,7 @@ def test_capability_counts_down_to_zero_only_when_every_window_is_cut(lab, monke
         "sourceIdentities": ["https://www.youtube.com/watch?v=vt5im2TRAKw"],
         "recipeVersion": "dossier-feedfacefeedface",
         "maxQuantity": 0,
+        "zeroReason": "source_windows_exhausted",
         "sourceIdentities": [SOURCE_IDENTITY],
     }]
     stopped = client.post(
@@ -914,6 +915,7 @@ def test_capability_counts_down_to_zero_only_when_every_window_is_cut(lab, monke
     )
     assert stopped.status_code == 409
     assert stopped.json() == {"detail": "source_windows_exhausted"}
+    assert stopped.headers.get("X-RT-Zero-Reason") == "source_windows_exhausted"
 
 
 @pytest.mark.asyncio
