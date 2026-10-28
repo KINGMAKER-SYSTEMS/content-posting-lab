@@ -637,6 +637,11 @@ def _runtime() -> tuple[str, str] | None:
     return raw.rstrip("/"), key
 
 
+def syzygy_runtime_available() -> bool:
+    """The Syzygy slideshow runtime is configured and usable."""
+    return _runtime() is not None
+
+
 def _headers(key: str, idempotency_key: str | None = None) -> dict[str, str]:
     headers = {"Authorization": f"Bearer {key}", "Accept": "application/json"}
     if idempotency_key is not None:
@@ -901,6 +906,73 @@ def curated_plans_for_recipe(
     ]
 
 
+def _generic_clean_video_chunk(
+    template: SyzygyTemplate, objects_in_order: list[SyzygyObject], chunk: int,
+) -> dict[str, Any] | None:
+    """One media chunk for the generic clean-video path, or None.
+
+    Chunk 0 is ``objects[:mediaCount]`` exactly as before (same signature);
+    later chunks are the next ``objects[k*n:(k+1)*n]``. The signature is
+    content-only (media keys + template slug), so adding or removing a photo
+    never re-offers a posted chunk (#266's HIGH-1 lesson: never bind an index).
+    """
+    media_count = template.media_count
+    start = chunk * media_count
+    end = start + media_count
+    if end > len(objects_in_order):
+        return None
+    selected = objects_in_order[start:end]
+    identity = {
+        "templateSlug": template.slug,
+        "mediaKeys": [item.key for item in selected],
+    }
+    canonical = json.dumps(identity, sort_keys=True, separators=(",", ":"))
+    return {
+        **identity,
+        "signature": hashlib.sha256(canonical.encode()).hexdigest(),
+    }
+
+
+def _permutation_plan_candidates(
+    recipe: SlideshowRecipe, library: SyzygyLibrary, unavailable_signatures: set[str],
+) -> list[dict[str, Any]]:
+    """Every unreserved stride/start permutation plan, in deterministic order.
+
+    Extracted from plan_slideshows so explain_empty_slideshow_plan can re-derive
+    exhaustion without duplicating the signature logic. The produced plan shapes
+    and signatures are byte-identical to the inline version that preceded it.
+    """
+    objects = list(library.objects)
+    candidates: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for template in recipe.templates:
+        if template.media_count > len(objects):
+            continue
+        for stride in range(1, len(objects) + 1):
+            if math.gcd(stride, len(objects)) != 1:
+                continue
+            for start in range(len(objects)):
+                selected = [
+                    objects[(start + index * stride) % len(objects)]
+                    for index in range(template.media_count)
+                ]
+                identity = {
+                    "templateSlug": template.slug,
+                    "mediaKeys": [item.key for item in selected],
+                }
+                canonical = json.dumps(identity, sort_keys=True, separators=(",", ":"))
+                signature = hashlib.sha256(canonical.encode()).hexdigest()
+                if signature in seen or signature in unavailable_signatures:
+                    continue
+                seen.add(signature)
+                candidates.append({
+                    **identity,
+                    "signature": signature,
+                    "librarySnapshotHash": library.snapshot_hash,
+                })
+    return candidates
+
+
 def plan_slideshows(
     recipe: SlideshowRecipe,
     library: SyzygyLibrary,
@@ -934,7 +1006,9 @@ def plan_slideshows(
     # renders its approved montage (variant 0) and then its deterministic
     # re-chop variants 1..N, each exactly once, in variant order; a generic
     # page renders the first mediaCount photo objects in ordinal order (no
-    # offset/stride permutation), so an exhausted generic set stays exhausted.
+    # offset/stride permutation) as chunk 0, then the next unreserved chunk
+    # objects[k*n:(k+1)*n] when chunk 0 is reserved, so fresh media keeps
+    # producing new plans instead of an exhausted generic set staying exhausted.
     if recipe.format_slug in CLEAN_VIDEO_FORMATS:
         has_curated_plan = requires_curated_video_plan(recipe)
         variants = curated_plans_for_recipe(recipe, library)
@@ -949,50 +1023,18 @@ def plan_slideshows(
             ][:count]
         template = recipe.templates[0]
         objects_in_order = list(library.objects)
-        if template.media_count > len(objects_in_order):
-            return []
-        selected = objects_in_order[: template.media_count]
-        identity = {
-            "templateSlug": template.slug,
-            "mediaKeys": [item.key for item in selected],
-        }
-        canonical = json.dumps(identity, sort_keys=True, separators=(",", ":"))
-        signature = hashlib.sha256(canonical.encode()).hexdigest()
-        if signature in unavailable_signatures:
-            return []
-        return [{
-            **identity,
-            "signature": signature,
-            "librarySnapshotHash": library.snapshot_hash,
-        }]
-    objects = list(library.objects)
-    candidates: list[dict[str, Any]] = []
-    seen: set[str] = set()
-    for template in recipe.templates:
-        if template.media_count > len(objects):
-            continue
-        for stride in range(1, len(objects) + 1):
-            if math.gcd(stride, len(objects)) != 1:
+        for chunk in range(len(objects_in_order) + 1):
+            plan = _generic_clean_video_chunk(template, objects_in_order, chunk)
+            if plan is None:
+                return []
+            if plan["signature"] in unavailable_signatures:
                 continue
-            for start in range(len(objects)):
-                selected = [
-                    objects[(start + index * stride) % len(objects)]
-                    for index in range(template.media_count)
-                ]
-                identity = {
-                    "templateSlug": template.slug,
-                    "mediaKeys": [item.key for item in selected],
-                }
-                canonical = json.dumps(identity, sort_keys=True, separators=(",", ":"))
-                signature = hashlib.sha256(canonical.encode()).hexdigest()
-                if signature in seen or signature in unavailable_signatures:
-                    continue
-                seen.add(signature)
-                candidates.append({
-                    **identity,
-                    "signature": signature,
-                    "librarySnapshotHash": library.snapshot_hash,
-                })
+            return [{
+                **plan,
+                "librarySnapshotHash": library.snapshot_hash,
+            }]
+        return []
+    candidates = _permutation_plan_candidates(recipe, library, unavailable_signatures)
     if not candidates:
         return []
     seed = int(hashlib.sha256(run_id.encode()).hexdigest()[:16], 16)

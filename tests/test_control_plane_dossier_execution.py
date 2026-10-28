@@ -310,6 +310,7 @@ def test_capability_reaches_zero_when_every_active_prompt_is_reserved(lab, statu
         "engine": "ai_video",
         "recipeVersion": "dossier-1234567890abcdef",
         "maxQuantity": 0,
+        "zeroReason": "prompt_inventory_exhausted",
     }]
 
     response = client.post(
@@ -319,6 +320,7 @@ def test_capability_reaches_zero_when_every_active_prompt_is_reserved(lab, statu
     )
     assert response.status_code == 409
     assert response.json()["detail"] == "prompt_inventory_exhausted"
+    assert response.headers.get("X-RT-Zero-Reason") == "prompt_inventory_exhausted"
     assert started == []
 
 

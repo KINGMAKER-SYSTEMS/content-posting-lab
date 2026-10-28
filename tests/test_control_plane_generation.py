@@ -546,3 +546,49 @@ def test_frame_fit_without_a_frame_or_unknown_is_not_executable(render):
     spec["renderTreatment"].update(render)
     payload["recipeSpecCanonical"] = json.dumps(spec, sort_keys=True, separators=(",", ":"))
     assert resolve_generation_recipe(payload) is None
+
+
+def _logged_reason(caplog):
+    lines = [r.getMessage() for r in caplog.records if "registered dossier recipe unavailable" in r.getMessage()]
+    assert len(lines) == 1, lines
+    return lines[0].rsplit("reason=", 1)[1]
+
+
+def test_unavailable_reason_returns_the_exact_logged_reason(monkeypatch, caplog):
+    """zeroPlanRecipes ``detail`` is the resolver's own logged reason= string,
+    exercised through the REAL function (no stub), for three different failures."""
+    from services.control_plane_generation import generation_recipe_unavailable_reason
+    import logging
+
+    # A recipe that resolves has no reason.
+    assert resolve_generation_recipe(publication()) is not None
+    assert generation_recipe_unavailable_reason(publication()) is None
+
+    cases = []
+    cases.append(("engine", lambda: publication(engine="wan-i2v-fast")))
+
+    def mode_off():
+        monkeypatch.setenv("CONTENT_LAB_GENERATION_MODE", "off")
+        return publication()
+
+    def no_key():
+        monkeypatch.setenv("CONTENT_LAB_GENERATION_MODE", "ready")
+        monkeypatch.setitem(API_KEYS, "replicate", None)
+        return publication()
+
+    cases.append(("mode_off", mode_off))
+    cases.append(("no_key", no_key))
+    seen = {}
+    for name, make in cases:
+        payload = make()
+        caplog.clear()
+        with caplog.at_level(logging.WARNING):
+            assert resolve_generation_recipe(payload) is None
+        logged = _logged_reason(caplog)
+        caplog.clear()
+        with caplog.at_level(logging.WARNING):
+            got = generation_recipe_unavailable_reason(payload)
+        assert got is not None and got == logged, (name, got, logged)
+        seen[name] = got
+    # The reasons are real, distinct causes, not one collapsed label.
+    assert seen["engine"] != seen["mode_off"], seen

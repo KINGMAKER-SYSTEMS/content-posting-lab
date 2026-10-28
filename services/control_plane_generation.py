@@ -305,17 +305,55 @@ def typed_recipe_spec(publication: dict[str, Any]) -> dict[str, Any] | None:
     return _typed_recipe_spec(publication)
 
 
+class _GenerationUnavailable(Exception):
+    """A recipe resolved to nothing for one bounded, loggable reason."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
 def _unavailable(publication: dict[str, Any], reason: str) -> None:
-    """Record one bounded reason without logging recipe bytes or credentials."""
+    """Record one bounded reason without logging recipe bytes or credentials.
+
+    Raises so the caller can carry the exact reason string (zeroPlanRecipes
+    ``detail``) instead of collapsing every resolve failure to one code.
+    """
     log.warning(
         "registered dossier recipe unavailable page=%s recipe=%s version=%s reason=%s",
         publication.get("pageId"), publication.get("recipeId"),
         publication.get("recipeVersion"), reason,
     )
-    return None
+    raise _GenerationUnavailable(reason)
 
 
 def resolve_generation_recipe(
+    publication: dict[str, Any], *, require_runtime: bool = True,
+) -> GenerationRecipe | None:
+    try:
+        return _resolve_generation_recipe(publication, require_runtime=require_runtime)
+    except _GenerationUnavailable:
+        return None
+
+
+def generation_recipe_unavailable_reason(
+    publication: dict[str, Any], *, require_runtime: bool = True,
+) -> str | None:
+    """The Lab's exact reason= string when the recipe fails to resolve.
+
+    None when the recipe resolves (or when the resolve failure has no bounded
+    reason, which the current resolver never produces). This is the same value
+    the resolver writes to the log line, so zeroPlanRecipes can name the cause
+    without re-deriving the decision tree.
+    """
+    try:
+        _resolve_generation_recipe(publication, require_runtime=require_runtime)
+    except _GenerationUnavailable as exc:
+        return exc.reason
+    return None
+
+
+def _resolve_generation_recipe(
     publication: dict[str, Any], *, require_runtime: bool = True,
 ) -> GenerationRecipe | None:
     recipe_id = publication.get("recipeId")
