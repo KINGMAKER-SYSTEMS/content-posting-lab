@@ -239,6 +239,32 @@ def test_provider_receives_staged_original_bytes_not_retargeted_symlink(
     assert len(observed) == 1
 
 
+def test_source_replaced_by_fifo_before_staging_never_calls_provider(
+    cookie_dir, monkeypatch, tmp_path,
+):
+    monkeypatch.setattr(upload_svc, "require_upload_runtime", lambda: None)
+    video = tmp_path / "regular.mp4"
+    video.write_bytes(b"original")
+    job = upload_svc.submit_job(video_path=str(video), account_name="linked")
+    calls = []
+    monkeypatch.setitem(sys.modules, "tiktokautouploader", SimpleNamespace(
+        upload_tiktok=lambda **kwargs: calls.append(kwargs) or "Completed"
+    ))
+    video.unlink()
+    os.mkfifo(video)
+    finished = threading.Event()
+    results = []
+
+    def attempt():
+        results.append(upload_svc._run_upload_sync(job))
+        finished.set()
+
+    threading.Thread(target=attempt, daemon=True).start()
+    assert finished.wait(0.5), "FIFO staging blocked waiting for a writer"
+    assert "regular file" in results[0]
+    assert calls == []
+
+
 def test_missing_source_at_admission_cannot_post_when_file_appears(
     cookie_dir, monkeypatch, tmp_path,
 ):
@@ -277,6 +303,32 @@ def test_same_inode_rewrite_after_admission_never_reaches_provider(
     assert video.stat().st_ino == inode
     assert "bytes changed since admission" in upload_svc._run_upload_sync(job)
     assert calls == []
+
+
+def test_fifo_upload_source_fails_closed_without_waiting_for_writer(
+    cookie_dir, monkeypatch, tmp_path,
+):
+    monkeypatch.setattr(upload_svc, "require_upload_runtime", lambda: None)
+    pipe = tmp_path / "pipe.mp4"
+    os.mkfifo(pipe)
+    finished = threading.Event()
+    errors = []
+
+    def admit():
+        try:
+            upload_svc.submit_job(video_path=str(pipe), account_name="linked")
+        except Exception as exc:
+            errors.append(exc)
+        finally:
+            finished.set()
+
+    thread = threading.Thread(target=admit, daemon=True)
+    thread.start()
+    assert finished.wait(0.5), "FIFO admission blocked waiting for a writer"
+    assert len(errors) == 1
+    assert isinstance(errors[0], upload_svc.UploadUnavailable)
+    assert "regular file" in str(errors[0])
+    assert upload_svc.get_all_jobs() == []
 
 
 def test_slow_identity_hash_does_not_hold_global_upload_queue_lock(

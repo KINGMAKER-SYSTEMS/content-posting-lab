@@ -281,6 +281,9 @@
   blocks another submission with 409 until the original attempt is reconciled;
   admission captures that identity and a SHA-256 digest in a worker thread,
   outside the queue write lock, with a 1 GiB and 30-second streaming budget.
+  Admission and staging accept only regular source files; nonblocking opens
+  and post-open file-type checks refuse FIFOs and devices before any read or
+  provider call, including if a path changes between stat and open.
   It rechecks the resolved path, inode and change times under the lock before
   committing the job; concurrent submissions may use the queue meanwhile.
   The async submit route shields its worker from request cancellation and

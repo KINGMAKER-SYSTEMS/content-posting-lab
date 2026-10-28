@@ -15,6 +15,7 @@ import os
 import random
 import re
 import shutil
+import stat
 import tempfile
 import time
 import uuid
@@ -369,17 +370,34 @@ def _video_identity(video_path: str) -> tuple[str, str | None]:
     """Capture path and file identity once, before a symlink can be retargeted."""
     real_path = os.path.realpath(video_path)
     try:
-        stat = os.stat(real_path)
+        source_stat = os.stat(real_path)
     except OSError:
         return real_path, None
-    return real_path, f"{stat.st_dev}:{stat.st_ino}"
+    if not stat.S_ISREG(source_stat.st_mode):
+        raise UploadUnavailable("Upload source must be a regular file")
+    return real_path, f"{source_stat.st_dev}:{source_stat.st_ino}"
+
+
+def _open_regular_video(real_path: str) -> int:
+    """Never wait on a FIFO/device, including a path swapped before open."""
+    source_stat = os.stat(real_path, follow_symlinks=False)
+    if not stat.S_ISREG(source_stat.st_mode):
+        raise UploadUnavailable("Upload source must be a regular file")
+    source_fd = os.open(
+        real_path,
+        os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0),
+    )
+    if not stat.S_ISREG(os.fstat(source_fd).st_mode):
+        os.close(source_fd)
+        raise UploadUnavailable("Upload source changed to a non-regular file")
+    return source_fd
 
 
 def _video_sha256(real_path: str, file_id: str) -> tuple[str, tuple[int, int, int]]:
     """Hash bounded admitted bytes and reject an in-place change during hashing."""
     started = time.monotonic()
     try:
-        source_fd = os.open(real_path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        source_fd = _open_regular_video(real_path)
         with os.fdopen(source_fd, "rb") as source:
             before = os.fstat(source.fileno())
             if f"{before.st_dev}:{before.st_ino}" != file_id:
@@ -677,7 +695,7 @@ def _run_upload_sync(job: dict) -> str:
         with tempfile.TemporaryDirectory(prefix="content-lab-upload-") as staging_dir:
             staged_path = os.path.join(staging_dir, "video.mp4")
             source_path = job["video_real_path"]
-            source_fd = os.open(source_path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+            source_fd = _open_regular_video(source_path)
             with os.fdopen(source_fd, "rb") as source:
                 before = os.fstat(source.fileno())
                 if f"{before.st_dev}:{before.st_ino}" != job["video_file_id"]:
