@@ -209,14 +209,47 @@ def test_signature_is_content_addressed_not_variant_bound(
     variants = iv.image_video_variant_plans(page, library)
     assert len(variants) >= 2
     plan = variants[1]
-    assert plan["variant"] == 1
+    assert plan["variantIndex"] == 1
     assert iv.image_video_plan_signature(plan) == plan["signature"]
     # The variant number is carried for the runner's re-derivation but is not
     # part of the identity: re-numbering (or dropping) it leaves the signature
     # for the same content unchanged.
-    assert iv.image_video_plan_signature({**plan, "variant": 2}) == plan["signature"]
-    unnumbered = {key: value for key, value in plan.items() if key != "variant"}
+    assert iv.image_video_plan_signature({**plan, "variantIndex": 2}) == plan["signature"]
+    unnumbered = {key: value for key, value in plan.items() if key != "variantIndex"}
     assert iv.image_video_plan_signature(unnumbered) == plan["signature"]
+
+
+def test_variant_number_reads_variant_index_and_legacy_variant():
+    # New plans carry variantIndex; the legacy "variant" spelling is accepted
+    # on read only (the two in-flight jobs predate the rename) and never both.
+    assert iv.image_video_variant_number({"variantIndex": 1}) == 1
+    assert iv.image_video_variant_number({"variant": 1}) == 1
+    assert iv.image_video_variant_number({}) == 0
+    # Both spellings is ambiguous and refused; explicit variant 0 is refused.
+    assert iv.image_video_variant_number({"variantIndex": 1, "variant": 1}) is None
+    assert iv.image_video_variant_number({"variant": 0}) is None
+    assert iv.image_video_variant_number({"variant": True}) is None
+    assert iv.image_video_variant_number("not-a-plan") is None
+
+
+@pytest.mark.parametrize("name,page,lane,subject,library_id,format_slug,canonical,count", PAGES,
+                         ids=["pen-pal3", "twin47996"])
+def test_legacy_variant_key_rederives_to_same_canonical_plan(
+    name, page, lane, subject, library_id, format_slug, canonical, count,
+):
+    library = _real_library(lane, subject, library_id)
+    recipe = _recipe(page, format_slug, library)
+    variants = iv.image_video_variant_plans(page, library)
+    variant = variants[1]
+    # A job stored before the rename spells the index as "variant"; the
+    # job-time runner must still re-derive the exact same canonical envelope.
+    legacy = {key: value for key, value in variant.items() if key != "variantIndex"}
+    legacy["variant"] = variant["variantIndex"]
+    assert iv.image_video_variant_number(legacy) == 1
+    canonical = iv.recipe_image_video_plan_for_variant(recipe, library, 1)
+    assert canonical is not None
+    assert canonical["photoPlan"] == variant
+    assert iv.image_video_variant_number(canonical["photoPlan"]) == 1
 
 
 @pytest.mark.parametrize("name,page,lane,subject,library_id,format_slug,canonical,count", PAGES,

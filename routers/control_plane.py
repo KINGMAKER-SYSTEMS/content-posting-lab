@@ -106,7 +106,7 @@ from services.control_plane_sources import (
     source_window_exclusions,
     SOURCE_SPEED_DURATION_UNSUPPORTED,
 )
-from services.control_plane_image_video import IMAGE_VIDEO_FORMATS
+from services.control_plane_image_video import IMAGE_VIDEO_FORMATS, image_video_source_for_wire
 from services.control_plane_slideshows import (
     SyzygyError,
     UGC_FORMAT_SLUG,
@@ -5205,7 +5205,7 @@ def job_artifacts(
             # supply under provenance that no longer matches its bytes.
             "sha256": clip["sha256"],
             "bytes": clip["bytes"],
-            "source": clip["source"],
+            "source": image_video_source_for_wire(clip["source"]),
             "thumbnail": {
                 "url": f"{base}/api/control-plane/v1/jobs/{job_id}/thumbnail/{index}?token={job['token']}",
                 "type": "image/jpeg",

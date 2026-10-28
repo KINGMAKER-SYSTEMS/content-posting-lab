@@ -1,6 +1,7 @@
 """Real Lab admission/runner path with captured provider and renderer boundaries."""
 import hashlib
 import json
+import subprocess
 from pathlib import Path
 import pytest
 import tests.test_control_plane_slideshow_execution as base
@@ -87,7 +88,7 @@ async def test_managed_photo_admission_wire_grade_provenance_and_variants(image_
     next_job=cp._load_jobs()['jobs'][again.json()['jobId']]
     variant=next_job['slideshowPlan'][0]
     assert variant['signature']!=photo['signature']
-    assert variant['photoPlan'].get('variant')==1
+    assert variant['photoPlan'].get('variantIndex')==1
     assert variant['photoPlan']['signature']==variant['signature']
     assert set(variant['mediaKeys']) <= {o.key for o in library.objects}
 
@@ -111,7 +112,7 @@ async def test_variant_job_renders_its_own_photo_hold(image_lab,monkeypatch):
     await cp._run_syzygy_slideshow(job_id);job=cp._load_jobs()['jobs'][job_id];assert job['status']=='completed',job.get('error')
     assert len(captured)==1 and len(grades)==1
     plan=job['slideshowPlan'][0]
-    assert plan['photoPlan'].get('variant')==1
+    assert plan['photoPlan'].get('variantIndex')==1
     clip=job['clips'][0];assert clip['source']['photoPlan']==plan['photoPlan']
     assert clip['source']['planSignature']==plan['signature']
     spec=captured[0][2]['body']['spec'];assert spec==iv.build_image_video_spec(plan['photoPlan'])
@@ -182,3 +183,53 @@ def test_catalog_advertises_actual_page_photo_count(image_lab):
     assert bindings["image-library"]["minimumLibraryItems"]==count
     assert bindings["slideshow-treatment"]["minimumLibraryItems"]==count
     assert bindings["slideshow-treatment"]["templates"]==[{"slug":"page-photo-hold","mediaCount":count}]
+
+
+@pytest.mark.asyncio
+async def test_artifacts_response_serializes_legacy_stored_variant_index(image_lab,monkeypatch):
+    """A job already rendered with the legacy ``variant`` key re-serializes it as
+    ``variantIndex`` on the artifacts contract (never emitting ``variant``), so
+    the Worker validates the two in-flight pre-rename jobs without a re-render.
+    """
+    import copy
+
+    client,library,payload,photo=image_lab
+    first=client.post('/api/control-plane/v1/jobs',json=base.job_body(1,payload),headers=base.headers('image-legacy-1'))
+    assert first.status_code==200,first.json()
+    cp._update_job(first.json()['jobId'],status='completed')
+    second=client.post('/api/control-plane/v1/jobs',json=base.job_body(1,payload),headers=base.headers('image-legacy-2'))
+    assert second.status_code==200,second.json()
+    job_id=second.json()['jobId']
+    base._fake_syzygy_boundary(monkeypatch,library)
+    pins=_library_pins(photo,library)
+    async def observe(_lib,keys):return [{'objectKey':k,'bytes':pins[k][0],'sha256':pins[k][1],'etag':'"pinned"'} for k in keys]
+    async def request(method,endpoint,**kwargs):return {'job_id':'real-boundary-fixture','quality':'draft'}
+    async def grade(src,dst,correction,**kwargs):Path(dst).write_bytes(b'fixture-managed-photo-output')
+    monkeypatch.setattr(cp,'observe_library_media',observe);monkeypatch.setattr(cp,'submit_syzygy_render',ss.submit_syzygy_render);monkeypatch.setattr(ss,'_request_json',request);monkeypatch.setattr(cp,'run_color_correct',grade)
+    await cp._run_syzygy_slideshow(job_id)
+    job=cp._load_jobs()['jobs'][job_id];assert job['status']=='completed',job.get('error')
+    stored=copy.deepcopy(job['clips'])
+    plan=stored[0]['source']['photoPlan']
+    assert plan.get('variantIndex')==1
+    # Rewrite the persisted record back to the pre-rename shape only; the
+    # content signature is unchanged, exactly as the in-flight jobs stored it.
+    plan['variant']=plan.pop('variantIndex')
+    cp._update_job(job_id,clips=stored)
+    response=client.get(f'/api/control-plane/v1/jobs/{job_id}/artifacts',headers=base.headers('image-legacy-get'))
+    assert response.status_code==200,response.json()
+    wire=response.json()['artifacts'][0]['source']
+    assert 'variant' not in wire['photoPlan']
+    assert wire['photoPlan'].get('variantIndex')==1
+    # The Worker's real managedPhotoPlanValid must accept the translated source.
+    contract_dir=Path(__file__).resolve().parent/'worker_contract'
+    tmp=contract_dir/'legacy-artifact-source.json'
+    tmp.write_text(json.dumps([wire]),encoding='utf-8')
+    try:
+        result=subprocess.run(
+            ['node',str(contract_dir/'run_contract.mjs'),str(tmp)],
+            capture_output=True,text=True,cwd=str(Path(__file__).resolve().parent.parent),
+        )
+    finally:
+        tmp.unlink()
+    assert result.returncode==0,result.stdout+result.stderr
+    assert result.stdout.strip()=='OK: 1/1 sources valid'
