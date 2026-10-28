@@ -155,7 +155,7 @@ def _wire_slideshow_binding(monkeypatch, state):
     )
     monkeypatch.setattr(
         cp, "plan_slideshows",
-        lambda recipe, library, quantity, unavailable, seed: list(range(state["quantity"])),
+        lambda recipe, library, quantity, unavailable, seed, **kwargs: list(range(state["quantity"])),
     )
     return publication
 

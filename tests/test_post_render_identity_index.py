@@ -84,7 +84,7 @@ def test_deeply_nested_corrupt_authority_does_not_stop_startup(tmp_path, caplog)
     bad = worker.enqueue(submission(slot_id='slot:deep'), 'request:deep')
     with worker._db() as db:
         db.execute('UPDATE jobs SET output_authority_json=?,state=? WHERE id=?',
-                   ('[' * 2000 + '0' + ']' * 2000, 'succeeded', bad['id']))
+                   ('[' * 2000 + '0' + ']' * 1999, 'succeeded', bad['id']))
     worker = service(tmp_path)
     good = worker.enqueue(submission(slot_id='slot:afterdeep'), 'request:afterdeep')
     assert worker.run_one()
