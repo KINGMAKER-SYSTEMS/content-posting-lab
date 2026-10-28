@@ -775,10 +775,15 @@ def capabilities(
             unavailable = _slideshow_unavailable_signatures(
                 page_jobs_view, slideshow_recipe, page_id,
             )
+            reserved_keys, opaque_media = _generic_clean_video_reserved_media(
+                page_jobs_view, slideshow_recipe, page_id,
+            )
             max_quantity = len(plan_slideshows(
                 slideshow_recipe, library, slideshow_recipe.max_quantity,
                 unavailable,
                 f"capability:{page_id}:{slideshow_recipe.executor_version}",
+                reserved_media_keys=reserved_keys,
+                opaque_reserved_media=opaque_media,
             ))
         elif source_recipe is not None:
             unavailable_slots, cut_history = _source_dna_cut_ledger(
@@ -2011,6 +2016,54 @@ def _slideshow_unavailable_signatures(
             if isinstance(signature, str) and re.fullmatch(r"[0-9a-f]{64}", signature):
                 signatures.add(signature)
     return signatures
+
+
+def _generic_clean_video_reserved_media(
+    store: dict[str, Any], recipe: Any, page_id: str,
+) -> tuple[set[str], bool]:
+    """Return reserved keys and whether an opaque legacy plan makes reuse uncertain."""
+    keys: set[str] = set()
+    opaque = False
+
+    def remember(plan: dict[str, Any]) -> None:
+        nonlocal opaque
+        signature = plan.get("signature")
+        if not isinstance(signature, str) or not re.fullmatch(r"[0-9a-f]{64}", signature):
+            return
+        media_keys = plan.get("mediaKeys")
+        if (
+            isinstance(media_keys, list)
+            and media_keys
+            and all(isinstance(key, str) and key for key in media_keys)
+            and len(set(media_keys)) == len(media_keys)
+            and signature == hashlib.sha256(json.dumps(
+                {"templateSlug": plan.get("templateSlug"), "mediaKeys": media_keys},
+                sort_keys=True, separators=(",", ":"),
+            ).encode()).hexdigest()
+        ):
+            keys.update(media_keys)
+        else:
+            opaque = True
+
+    for job in store.get("jobs", {}).values():
+        if (
+            isinstance(job, dict)
+            and job.get("sourceKind") == "syzygy_slideshow"
+            and job.get("pageId") == page_id
+            and job.get("sourceLibraryId") == recipe.library_id
+            and job.get("status") in SOURCE_DNA_UNAVAILABLE_STATUSES
+        ):
+            for plan in job.get("slideshowPlan", []):
+                if isinstance(plan, dict):
+                    remember(plan)
+    for entry in (store.get(compaction.ARCHIVE_INDEX_KEY, {}) or {}).get("slideshow", []):
+        if (
+            isinstance(entry, dict)
+            and entry.get("pageId") == page_id
+            and entry.get("sourceLibraryId") == recipe.library_id
+        ):
+            remember(entry)
+    return keys, opaque
 
 
 def _generated_unavailable_prompts(
@@ -4991,9 +5044,14 @@ async def create_job(
             unavailable_signatures = _slideshow_unavailable_signatures(
                 store, slideshow_recipe, page_id,
             )
+            reserved_keys, opaque_media = _generic_clean_video_reserved_media(
+                store, slideshow_recipe, page_id,
+            )
             plans = plan_slideshows(
                 slideshow_recipe, slideshow_library, quantity,
                 unavailable_signatures, job_id,
+                reserved_media_keys=reserved_keys,
+                opaque_reserved_media=opaque_media,
             )
             if len(plans) != quantity:
                 # Only an empty plan is explained (the explainer's contract).
@@ -5003,6 +5061,8 @@ async def create_job(
                     explain_empty_slideshow_plan(
                         slideshow_recipe, slideshow_library, quantity,
                         unavailable_signatures,
+                        reserved_media_keys=reserved_keys,
+                        opaque_reserved_media=opaque_media,
                     )
                     if not plans
                     else INSUFFICIENT_INVENTORY

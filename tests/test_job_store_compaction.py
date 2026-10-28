@@ -860,6 +860,30 @@ def test_page_view_keeps_archived_slideshow_signatures(job_path):
     assert [j["jobId"] for j in archived] == ["slide-old"] and not new_store["jobs"]
     page_view, _, _ = _views(job_path, new_store)
     assert cp._slideshow_unavailable_signatures(page_view, recipe, "acct:p") == {sig}
+    assert cp._generic_clean_video_reserved_media(page_view, recipe, "acct:p") == (set(), True)
+
+
+def test_compacted_slideshow_retains_media_reservation(job_path):
+    import hashlib
+    import json
+    store = _empty()
+    keys = ["a.jpg", "b.jpg", "c.jpg"]
+    plan = {"templateSlug": "clean-slideshow", "mediaKeys": keys}
+    plan["signature"] = hashlib.sha256(json.dumps(
+        plan, sort_keys=True, separators=(",", ":"),
+    ).encode()).hexdigest()
+    old = _old()
+    store["jobs"]["slide-old"] = {
+        "jobId": "slide-old", "pageId": "acct:p", "sourceKind": "syzygy_slideshow",
+        "status": "completed", "sourceLibraryId": "lib", "createdAt": old,
+        "completedAt": old, "slideshowPlan": [plan],
+    }
+    recipe = SimpleNamespace(library_id="lib")
+    new_store, _ = c.compact_job_store(store, _now())
+    page_view, _, _ = _views(job_path, new_store)
+    assert cp._generic_clean_video_reserved_media(page_view, recipe, "acct:p") == (
+        set(keys), False,
+    )
 
 
 def test_generation_view_keeps_archived_truck_jobs(job_path, tmp_path, monkeypatch):

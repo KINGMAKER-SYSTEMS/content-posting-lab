@@ -162,6 +162,8 @@ def explain_empty_slideshow_plan(
     library: Any,
     count: int,
     unavailable_signatures: set[str],
+    reserved_media_keys: set[str] | None = None,
+    opaque_reserved_media: bool = False,
 ) -> str:
     """Name why plan_slideshows returned nothing for a slideshow recipe.
 
@@ -214,7 +216,12 @@ def explain_empty_slideshow_plan(
                 return CURATED_VARIANTS_EXHAUSTED
             return PLAN_AVAILABLE
         template = recipe.templates[0]
-        objects_in_order = list(library.objects)
+        if opaque_reserved_media:
+            return GENERIC_MEDIA_EXHAUSTED
+        objects_in_order = [
+            item for item in library.objects
+            if item.key not in (reserved_media_keys or set())
+        ]
         for chunk in range(len(objects_in_order) + 1):
             plan = _generic_clean_video_chunk(template, objects_in_order, chunk)
             if plan is None:

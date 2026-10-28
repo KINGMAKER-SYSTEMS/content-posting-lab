@@ -979,6 +979,8 @@ def plan_slideshows(
     count: int,
     unavailable_signatures: set[str],
     run_id: str,
+    reserved_media_keys: set[str] | None = None,
+    opaque_reserved_media: bool = False,
 ) -> list[dict[str, Any]]:
     if (
         library.library_id != recipe.library_id
@@ -1022,11 +1024,19 @@ def plan_slideshows(
                 if plan["signature"] not in unavailable_signatures
             ][:count]
         template = recipe.templates[0]
+        # Signature-only legacy archives cannot reveal which media was posted.
+        # Fail closed until an operator reconciles those reservations.
+        if opaque_reserved_media:
+            return []
+        reserved_media_keys = reserved_media_keys or set()
         objects_in_order = list(library.objects)
-        for chunk in range(len(objects_in_order) + 1):
-            plan = _generic_clean_video_chunk(template, objects_in_order, chunk)
+        # Keep the original first chunk/signature when unreserved; remove
+        # reserved keys before taking the next complete, disjoint media set.
+        available = [item for item in objects_in_order if item.key not in reserved_media_keys]
+        for chunk in range(len(available) + 1):
+            plan = _generic_clean_video_chunk(template, available, chunk)
             if plan is None:
-                return []
+                break
             if plan["signature"] in unavailable_signatures:
                 continue
             return [{
