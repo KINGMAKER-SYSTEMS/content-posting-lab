@@ -14,6 +14,7 @@ import ast
 import hashlib
 import inspect
 import json
+from pathlib import Path
 import types
 from dataclasses import replace
 
@@ -731,16 +732,32 @@ def test_generated_prompt_space_zero_refills_when_inflight_jobs_finish():
 
 # ── Wire contract: by default the response fits the deployed Worker ──────────
 # The Worker (contentLabClient.js) rejects any capability entry field and any
-# top-level field it does not allow-list, and then fails the whole page. These
-# are the allow-lists it enforces today. Widen them here only after the Worker
-# ships the same change.
-WORKER_CAPABILITY_ENTRY_FIELDS = {"recipeId", "engine", "recipeVersion", "maxQuantity", "sourceIdentities"}
-WORKER_CAPABILITIES_TOP_LEVEL_FIELDS = {"schema", "capabilities", "degraded"}
+# top-level field it does not allow-list, and then fails the whole page
+# (10-28 outage). The lists live in one shared fixture; the Lab's own
+# projection constant must match it.
+_CONTRACT_PATH = Path(__file__).parent / "fixtures" / "worker_capabilities_contract.json"
+_CONTRACT = json.loads(_CONTRACT_PATH.read_text())
+WORKER_CAPABILITY_ENTRY_FIELDS = frozenset(_CONTRACT["capabilityEntryAllowedFields"])
+WORKER_CAPABILITIES_TOP_LEVEL_FIELDS = frozenset(_CONTRACT["capabilitiesTopLevelAllowedFields"])
+
+
+def _assert_fits_worker(response):
+    assert set(response) <= WORKER_CAPABILITIES_TOP_LEVEL_FIELDS, sorted(response)
+    for entry in response["capabilities"]:
+        assert set(entry) <= WORKER_CAPABILITY_ENTRY_FIELDS, entry
+
+
+def _flag_off(monkeypatch):
+    monkeypatch.delenv(cp.ADVERTISE_ZERO_REASONS_ENV, raising=False)
+    monkeypatch.delenv(cp.ADVERTISE_CONSTRAINTS_ENV, raising=False)
+
+
+def test_lab_projection_list_matches_the_pinned_worker_contract():
+    assert cp.WORKER_CAPABILITY_ENTRY_FIELDS == WORKER_CAPABILITY_ENTRY_FIELDS
 
 
 def test_default_capabilities_response_fits_the_worker_allow_lists(monkeypatch):
-    monkeypatch.delenv(cp.ADVERTISE_ZERO_REASONS_ENV, raising=False)
-    monkeypatch.delenv(cp.ADVERTISE_CONSTRAINTS_ENV, raising=False)
+    _flag_off(monkeypatch)
     entries = [
         {"recipeId": "r-zero", "engine": "slideshow", "recipeVersion": "v1", "maxQuantity": 0,
          "zeroReason": reasons.LIBRARY_BELOW_MINIMUM},
@@ -748,11 +765,23 @@ def test_default_capabilities_response_fits_the_worker_allow_lists(monkeypatch):
     ]
     zero_rows = [{"engine": "slideshow", "zeroReason": reasons.LIBRARY_LOAD_FAILED}]
     response = cp._capabilities_response(entries, zero_rows)
-    assert set(response) <= WORKER_CAPABILITIES_TOP_LEVEL_FIELDS, response
-    for entry in response["capabilities"]:
-        assert set(entry) <= WORKER_CAPABILITY_ENTRY_FIELDS, entry
+    _assert_fits_worker(response)
     # the caller's (cached) entries are not mutated
     assert entries[0]["zeroReason"] == reasons.LIBRARY_BELOW_MINIMUM
+
+
+def test_an_unknown_entry_field_never_reaches_the_worker(monkeypatch):
+    # Allow-list, not deny-list: tomorrow's new field is dropped with the flag
+    # off AND on, until someone widens the contract on purpose.
+    entry = {"recipeId": "r", "engine": "slideshow", "recipeVersion": "v1", "maxQuantity": 0,
+             "zeroReason": reasons.LIBRARY_BELOW_MINIMUM, "futureField": 1}
+    _flag_off(monkeypatch)
+    off = cp._capabilities_response([entry])
+    _assert_fits_worker(off)
+    monkeypatch.setenv(cp.ADVERTISE_ZERO_REASONS_ENV, "1")
+    on = cp._capabilities_response([entry])
+    assert "futureField" not in on["capabilities"][0]
+    assert on["capabilities"][0]["zeroReason"] == reasons.LIBRARY_BELOW_MINIMUM
 
 
 def test_zero_reason_fields_go_on_the_wire_only_with_the_flag(monkeypatch):
@@ -763,3 +792,65 @@ def test_zero_reason_fields_go_on_the_wire_only_with_the_flag(monkeypatch):
     response = cp._capabilities_response(entries, zero_rows)
     assert response["capabilities"][0]["zeroReason"] == reasons.LIBRARY_BELOW_MINIMUM
     assert response["zeroPlanRecipes"] == zero_rows
+
+
+# ── Endpoint level: the real capabilities() output, flag off, every path ────
+def test_capabilities_endpoint_fresh_zero_entry_fits_the_worker(monkeypatch, tmp_path):
+    recipe, library = _permutation_recipe_and_library()
+    small = ss.SyzygyLibrary(
+        recipe.library_id, recipe.lane, recipe.subject, library.objects[:2],
+        library.snapshot_hash,
+    )
+    _capability_scaffold(monkeypatch, tmp_path, recipe=recipe, library=small)
+    _flag_off(monkeypatch)
+    response = cp.capabilities(x_rt_page_id="acct:guard-page", x_page_id=None)
+    _assert_fits_worker(response)
+    assert response["capabilities"][0]["maxQuantity"] == 0
+
+
+def test_capabilities_endpoint_skipped_recipe_fits_the_worker(monkeypatch, tmp_path):
+    recipe, library = _permutation_recipe_and_library()
+    _capability_scaffold(
+        monkeypatch, tmp_path, recipe=recipe, library=library,
+        load_error=ss.SyzygyUnavailable("down"),
+    )
+    _flag_off(monkeypatch)
+    response = cp.capabilities(x_rt_page_id="acct:guard-page", x_page_id=None)
+    _assert_fits_worker(response)
+    assert set(response) == {"schema", "capabilities"}
+
+
+def test_capabilities_endpoint_cached_path_fits_the_worker_and_keeps_reasons(monkeypatch, tmp_path):
+    recipe, library = _permutation_recipe_and_library()
+    resolve_calls = {"n": 0}
+
+    def resolve_generation(publication):
+        resolve_calls["n"] += 1
+        return None
+
+    _capability_scaffold(
+        monkeypatch, tmp_path, recipe=recipe, library=library,
+        publication_engine="ai_video", publication_recipe_id="boat-lake:master",
+        resolve_generation=resolve_generation, generation_reason="executor_version",
+    )
+    _flag_off(monkeypatch)
+    first = cp.capabilities(x_rt_page_id="acct:guard-page", x_page_id=None)
+    second = cp.capabilities(x_rt_page_id="acct:guard-page", x_page_id=None)
+    assert resolve_calls["n"] == 1, "the second call must be served from the cache"
+    _assert_fits_worker(first)
+    _assert_fits_worker(second)
+    # The cache kept the reasons: turning the flag on serves them from it.
+    monkeypatch.setenv(cp.ADVERTISE_ZERO_REASONS_ENV, "1")
+    third = cp.capabilities(x_rt_page_id="acct:guard-page", x_page_id=None)
+    assert resolve_calls["n"] == 1
+    assert third["zeroPlanRecipes"][0]["zeroReason"] == reasons.RECIPE_UNRESOLVED
+
+
+def test_capabilities_endpoint_no_intent_path_fits_the_worker(monkeypatch, tmp_path):
+    recipe, library = _permutation_recipe_and_library()
+    _capability_scaffold(monkeypatch, tmp_path, recipe=recipe, library=library)
+    monkeypatch.setattr(cp, "_current_intent_for_capabilities", lambda _: None)
+    _flag_off(monkeypatch)
+    response = cp.capabilities(x_rt_page_id="acct:guard-page", x_page_id=None)
+    _assert_fits_worker(response)
+    assert response["capabilities"] == []
