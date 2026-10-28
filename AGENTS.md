@@ -232,10 +232,10 @@
   `_patch_page` refuses non-canonical ids before any request. Alias-collision 409s never echo the alias.
 - `burn_server.py` exposes the same typed caption-render route on the posting
   Mac's canonical port-8002 Burn runtime for Rail consumption.
-- `events/` is the repository's append-only chronological ledger: one new
-  `YYYY-MM-DD-HHMM-<branch-slug>.md` file per meaningful event, committed on
-  the work branch. Legacy root `events.md` is frozen history; never edit it or
-  an existing `events/` entry.
+- `events/` is the repository's append-only chronological log: one new
+  `YYYY-MM-DD-HHMM-<branch-slug>.md` per meaningful event, committed on the
+  work branch with its `worktree:` ref. Read frozen root `events.md` before
+  `events/` entries; never edit it or an existing event entry.
 - `SCHEMA.md` describes the current Editor Bay timeline, edit-command, ABN import,
   and render-cache contracts; `services/editor_timeline.py` and `routers/agenticnews.py` own the implementation.
 
@@ -270,6 +270,69 @@
 - `routers/upload.py` passes the legacy cookie-login account to its static
   Python subprocess runner as an argv value. Request values must never be
   interpolated into executable source; the exact account argument is preserved.
+- TikTok upload and cookie-login admission refuse Railway before queue writes
+  or login subprocess creation:
+  a mounted JSON file alone cannot coordinate worker claims or reconcile an
+  ambiguous browser Post after a crash. Enabling hosted uploads requires a
+  durable original-attempt receipt/reconciliation and single-writer claim
+  contract, plus the provider runtime and volume-backed queue migration.
+  Local installs retain the checkout-relative queue and must have an importable
+  callable uploader; upload submission also requires a job store whose existing
+  records have the queue-readable shape and unique job IDs. New records must
+  pass the same shape check before persistence; invalid submissions return 400.
+  Corrupt records are preserved and
+  never replaced with an empty queue. Missing prerequisites or failed
+  writes return 503; the job store itself must be explicitly provisioned as
+  an empty `[]` file for first use. If it is missing later, admission, queue
+  processing, listing and polling fail closed until the original history is
+  restored or an operator rules out prior attempts before provisioning anew.
+  Admission never proves a TikTok publication. A queued,
+  uploading, held, failed, or unproved completed job for the same captured resolved video path or device/inode and cookie account
+  blocks another submission with 409 until the original attempt is reconciled;
+  admission captures that identity and a SHA-256 digest in a worker thread,
+  outside the queue write lock, with a 1 GiB and 30-second streaming budget.
+  Admission and staging accept only regular source files; nonblocking opens
+  and post-open file-type checks refuse FIFOs and devices before any read or
+  provider call, including if a path changes between stat and open.
+  It rechecks the resolved path, inode and change times under the lock before
+  committing the job; concurrent submissions may use the queue meanwhile.
+  The async submit route shields its worker from request cancellation and
+  schedules queue processing when the worker finishes persisting, including
+  after a client disconnect. A wake arriving while the single queue runner is
+  active stays pending until that runner atomically rechecks idle, so a job
+  cannot be stranded between its last empty read and exit. Startup does not
+  automatically post preexisting queued jobs; a normal submission owns wake.
+  Before a new
+  identity-bearing job calls the provider, copy the original inode's bytes to a
+  private temporary file, check its identity and change times around the copy,
+  and require the staged-byte SHA-256 to match the admission digest,
+  and pass only that staged path to the provider. A retargeted request symlink
+  cannot redirect the provider to different bytes; a replaced or changing
+  source fails closed. A newly admitted row with no file identity also refuses
+  the provider call, even if its source appears later. Staging requires enough
+  free space and is removed after the provider returns. Legacy rows without
+  any captured identity fields retain their original execution behavior and
+  require separate reconciliation. A stable local file lock serializes queue writes and the queued-to-uploading
+  claim/cancel decision across worker processes. An unresolved uploading or held
+  claim also bars another provider call for that account, even for a different
+  queued job or process. A quarantined row with a readable account but invalid
+  status likewise blocks that account until reconciled. A quarantined prior
+  attempt with no readable account blocks any new submission or queued claim
+  for its real video path across accounts; if its video path is also unreadable,
+  all new upload claims wait for operator reconciliation. Preserve the original
+  row and allow unrelated known video paths to proceed. A bare provider
+  `Completed` or error return becomes a durable held result with its original
+  claim and return retained; it cannot
+  establish posting success or authorize a repeat. A completed row permits
+  explicit resubmission only with a matching canonical TikTok URL/video ID;
+  cancelled history retains its existing resubmission behavior. A conflict
+  creates no job or provider action.
+  Repeated saved copies of one upload ID, even identical rows, are all held for reconciliation;
+  no copy may execute or authorize a retry, even if one claims a terminal state.
+  Listing and polling expose the held status without making it executable.
+  The Uploads tab shows held records in their own section with the reconciliation
+  reason and no cancel/retry actions; held records suppress the empty-queue invitation.
+  Other valid jobs remain processable while those source rows are retained.
 - `POST /api/telegram/send` delivers only a media file whose real path is under
   `projects/<project>/<videos|clips|burned|recreate|slideshow-images>/` or the
   legacy `output`/`burn_output` dirs. The volume root beside those dirs holds
@@ -654,6 +717,14 @@
   is ambiguous and must never be submitted again. The existing one-time PA
   interruption retry remains bounded across restarts. Processing deadlines do
   not reset; an already-completed prediction may still be read after downtime.
+- `POST /api/control-plane/v1/job-receipts/by-idempotency-key` is a side-effect-free
+  lost-ack read. It requires the app API key and Control Plane bearer, scoped
+  page/lane/idempotency headers, and the exact original job-create JSON body.
+  It returns only the job ID and status when the durable key and canonical
+  request hash match and the saved status is queued, running, completed, or
+  failed. Missing, foreign, archived, mismatched, or legacy-unhashed jobs
+  require reconciliation; malformed saved statuses fail as unavailable. The
+  lookup must not start or resume work.
 - Application shutdown pauses checkpointed generation instead of deleting its
   paid artifacts. Authenticated, exact-page status/idempotency reads resume the
   same active job after replacement. A kernel-held per-job lock prevents two
@@ -748,9 +819,10 @@
   HDR encode cases need only ffmpeg/ffprobe; real-master cases additionally
   use the optional `HDR_FIXTURES_DIR` fixture directory.
 
-- Run `pytest -q tests/test_upload_login_account_data.py tests/test_upload_api.py tests/test_upload_cookies.py`
+- Run `pytest -q tests/test_upload_login_account_data.py tests/test_upload_api.py tests/test_upload_locking.py tests/test_upload_cookies.py`
   for literal account transport, injected expressions, login failure responses
-  and existing upload/cookie behavior without launching a browser.
+  and existing upload/cookie behavior without launching a browser. Spawned-process
+  races cover competing claims and cancellation before the winning claim is saved.
 
 - Run `pytest -q tests/test_visual_admission.py` for observed boat-frame OCR
   noise, short readable text, rotated single-frame text, complete coverage,

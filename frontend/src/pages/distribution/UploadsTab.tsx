@@ -55,6 +55,11 @@ export function UploadsTab({
     [uploadJobs],
   );
 
+  const heldJobs = useMemo(
+    () => uploadJobs.filter((j) => j.status === 'held'),
+    [uploadJobs],
+  );
+
   const recentJobs = useMemo(
     () =>
       uploadJobs
@@ -247,8 +252,32 @@ export function UploadsTab({
         </div>
       )}
 
+      {heldJobs.length > 0 && (
+        <section
+          aria-labelledby="held-uploads-heading"
+          className="rounded-[var(--border-radius)] border border-border bg-card shadow-[var(--shadow)] p-4 space-y-3"
+        >
+          <h2 id="held-uploads-heading" className="text-sm font-heading font-bold">Held uploads</h2>
+          {heldJobs.map((job) => (
+            <div key={job.job_id} className="rounded-[var(--border-radius)] border border-border px-3 py-2 space-y-2">
+              <div className="flex flex-wrap items-center gap-2 text-xs">
+                <Badge variant="warning">held</Badge>
+                <span className="font-bold">{typeof job.account_name === 'string' ? job.account_name : 'Unknown account'}</span>
+                <span className="break-all text-muted-foreground">
+                  {typeof job.video_path === 'string' ? job.video_path.split('/').pop() : 'Unknown video'}
+                </span>
+              </div>
+              <p className="text-xs break-words">
+                {typeof job.error === 'string' && job.error ? job.error : 'This upload requires reconciliation before execution or resubmission.'}
+              </p>
+              <p className="text-[10px] text-muted-foreground break-all">Job {job.job_id}</p>
+            </div>
+          ))}
+        </section>
+      )}
+
       {/* Empty state when no form and no jobs */}
-      {!showUploadForm && activeJobs.length === 0 && recentJobs.length === 0 && (
+      {!showUploadForm && activeJobs.length === 0 && recentJobs.length === 0 && heldJobs.length === 0 && (
         <div className="rounded-[var(--border-radius)] border border-border bg-muted px-4 py-8 text-center text-muted-foreground">
           No uploads in progress. Click "Upload" on a page in the Roster tab to queue a video.
         </div>
