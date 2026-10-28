@@ -85,6 +85,9 @@
   lengths still verify. Preserve the saved speed and video treatment.
   Normalize cut timestamps and extend a fractional missing tail frame to the
   planned output duration; source-window provenance remains unchanged.
+- Per-cut brightness jitter quantizes downward to 0.001 from the page look,
+  including fractional looks, and remains within the Worker's 0.04 lower
+  admission band. Other grade channels retain nearest rounding.
 - `GET /api/control-plane/v1/capabilities` requires the existing `CONTROL_PLANE_TOKEN` Bearer credential before reading page intent or job state. A missing server token returns 503; missing, invalid, or browser `APP_API_KEY` credentials return 401. The authorized Worker request and capability response schema stay unchanged.
 - Source cut planning honors the immutable original 60-second minimum for raw
   source libraries and the Worker-supplied global source-window exclusions
