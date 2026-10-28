@@ -240,6 +240,35 @@ def test_generic_clean_video_exhaustion_names_code_and_fresh_photos_refill():
     )
 
 
+def test_generic_clean_video_insertion_never_reuses_reserved_media():
+    recipe = _ugc_recipe()
+    library = _ugc_library()
+    first = ss.plan_slideshows(recipe, library, 1, set(), "run")[0]
+    early = ss.SyzygyObject(
+        "ugc/french-core/photos/img-00-early.jpg", 1000,
+        "https://r2.example/ugc/french-core/photos/img-00-early.jpg",
+    )
+    grown = replace(library, objects=(early, *library.objects))
+    assert ss.plan_slideshows(
+        recipe, grown, 1, {first["signature"]}, "run",
+        reserved_media_keys=set(first["mediaKeys"]),
+    ) == []  # one fresh key is insufficient for a disjoint three-photo plan
+    more = tuple(ss.SyzygyObject(
+        f"ugc/french-core/photos/img-00-{index}.jpg", 1000,
+        f"https://r2.example/ugc/french-core/photos/img-00-{index}.jpg",
+    ) for index in range(2))
+    grown = replace(grown, objects=tuple(sorted((*grown.objects, *more), key=lambda x: x.key)))
+    next_plan = ss.plan_slideshows(
+        recipe, grown, 1, {first["signature"]}, "run",
+        reserved_media_keys=set(first["mediaKeys"]),
+    )[0]
+    assert set(next_plan["mediaKeys"]).isdisjoint(first["mediaKeys"])
+    assert ss.plan_slideshows(
+        recipe, grown, 1, {first["signature"]}, "run",
+        opaque_reserved_media=True,
+    ) == []
+
+
 def _permutation_recipe_and_library(
     format_slug: str = "meme-slideshow",
     engine: str = "sourced_slideshow",

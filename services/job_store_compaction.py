@@ -120,7 +120,7 @@ def empty_index() -> dict[str, Any]:
         "version": ARCHIVE_INDEX_VERSION,
         "sourceIdentities": {},       # pageId -> sorted list of canonical identities
         "sourceDnaCuts": [],          # completed dossier_source_dna cut projections
-        "slideshow": [],              # {pageId, sourceLibraryId, signature}
+        "slideshow": [],              # {pageId, sourceLibraryId, signature, mediaKeys}
         "truckRecoveryMasters": [],   # sha256 of recovered masters (permanent)
         "truckCandidateJobs": [],     # completed generated truck clips (re-crop)
         "usedClipSha256": {},         # pageId -> sorted list of clip sha256
@@ -191,6 +191,8 @@ def extract_index_entries(job: dict[str, Any]) -> dict[str, Any]:
                     "pageId": page_id,
                     "sourceLibraryId": job.get("sourceLibraryId"),
                     "signature": signature,
+                    "templateSlug": plan.get("templateSlug"),
+                    "mediaKeys": plan.get("mediaKeys"),
                 })
 
     if kind == "truck_master_recovery" and job.get("status") == "completed":

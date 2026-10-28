@@ -229,11 +229,20 @@
   `_patch_page` refuses non-canonical ids before any request. Alias-collision 409s never echo the alias.
 - `burn_server.py` exposes the same typed caption-render route on the posting
   Mac's canonical port-8002 Burn runtime for Rail consumption.
-- `events.md` is the repository's append-only chronological ledger.
+- `events.md` is frozen legacy history. New meaningful work uses one new
+  `events/YYYY-MM-DD-HHMM-<branch-slug>.md` file per event; never edit an
+  existing event file.
 - `SCHEMA.md` describes the current Editor Bay timeline, edit-command, ABN import,
   and render-cache contracts; `services/editor_timeline.py` and `routers/agenticnews.py` own the implementation.
 
 ## Local Contracts
+
+- Generic clean-video replenishment excludes every media key held by an active
+  or archived slideshow reservation before forming the next complete chunk.
+  The archive index retains each plan's template and media keys with its
+  signature. Signature-only legacy archives cannot prove disjoint media and
+  hold generic replenishment until reconciled; do not infer disjointness from
+  changed sorted offsets or a new signature alone.
 
 - `services/abn_factory.py` kinetic-template parameters remain inert JSON inside
   the HTML script. Escape HTML script delimiters while preserving decoded values.
