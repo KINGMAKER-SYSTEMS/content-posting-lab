@@ -316,12 +316,20 @@ def image_video_variant_number(plan: Any) -> int | None:
 
     The approved plan is only ever spelled without a variant field, so an
     explicit ``"variant": 0`` is refused rather than given a second spelling.
+    New plans are emitted with ``variantIndex``; the legacy ``variant`` spelling
+    is accepted here on read only, so jobs created before the rename (the two
+    in-flight pen/twin jobs) still re-derive, and never emitted again.
     """
     if not isinstance(plan, dict):
         return None
-    if "variant" not in plan:
+    if "variantIndex" in plan and "variant" in plan:
+        return None
+    if "variantIndex" in plan:
+        variant = plan["variantIndex"]
+    elif "variant" in plan:
+        variant = plan["variant"]
+    else:
         return 0
-    variant = plan["variant"]
     if (
         isinstance(variant, bool)
         or not isinstance(variant, int)
@@ -329,6 +337,28 @@ def image_video_variant_number(plan: Any) -> int | None:
     ):
         return None
     return variant
+
+
+def image_video_source_for_wire(source: Any) -> Any:
+    """Serialize a stored artifact source for the wire, translating legacy ``variant``.
+
+    Jobs rendered before the ``variant`` → ``variantIndex`` rename (the two
+    in-flight pen/twin jobs) persisted ``photoPlan`` with the legacy key. The
+    Worker's ``managedPhotoPlanValid`` only accepts ``variantIndex``, so those
+    already-rendered artifacts are re-serialized with ``variantIndex`` (never
+    emitting ``variant``) without a re-render. The plan signature is
+    content-only, so the rename leaves it unchanged.
+    """
+    if not isinstance(source, dict):
+        return source
+    plan = source.get("photoPlan")
+    if not isinstance(plan, dict) or "variant" not in plan or "variantIndex" in plan:
+        return source
+    wire = dict(source)
+    photo = dict(plan)
+    photo["variantIndex"] = photo.pop("variant")
+    wire["photoPlan"] = photo
+    return wire
 
 
 def _sha256_from_photo_key(key: str) -> str | None:
@@ -433,7 +463,7 @@ def image_video_variant_plans(page_id: str, library: Any) -> list[dict[str, Any]
             "totalDurationSeconds": cfg["totalDurationSeconds"],
             "brightnessGainFromOriginals": cfg["brightnessGainFromOriginals"],
             "media": media,
-            "variant": variant,
+            "variantIndex": variant,
         }
         plan["signature"] = image_video_plan_signature(plan)
         seen_media.add(fingerprint)
@@ -446,7 +476,7 @@ def image_video_plan_for_variant(page_id: str, library: Any, variant: int) -> di
     if isinstance(variant, bool) or not isinstance(variant, int):
         return None
     for plan in image_video_variant_plans(page_id, library):
-        if plan.get("variant", 0) == variant:
+        if image_video_variant_number(plan) == variant:
             return plan
     return None
 
@@ -780,7 +810,7 @@ def recipe_image_video_plan_for_variant(recipe, library, variant):
     if not plans:
         return None
     for plan in plans:
-        if plan["photoPlan"].get("variant", 0) == variant:
+        if image_video_variant_number(plan["photoPlan"]) == variant:
             return plan
     return None
 

@@ -1,0 +1,4376 @@
+[
+  {
+    "schema": "content-lab.syzygy-slideshow-source.v1",
+    "kind": "syzygy_slideshow",
+    "recipeId": "image-video:master",
+    "recipeVersion": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "sourceLibraryId": "syzygy:animals:pen-pal3",
+    "librarySnapshotHash": "70f20ca509e00acc8a606bb55ec1aff104d620bd252572e730a4f573c2a41f6c",
+    "templateSlug": "page-photo-hold",
+    "planSignature": "9b2b68c3a69e99cbbf1e5bb8f1f263e43d8590e93052c9fc68586f326e0e7aa5",
+    "rendererRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "renderJobId": "render-pen-pal3-0000",
+    "media": [
+      {
+        "objectKey": "animals/pen-pal3/photos/pinterest_784681935144260004.jpg",
+        "bytes": 132530,
+        "sha256": "09a1b391a05c29944705bd5b3c662cad05218b476e1a8d2e813c01dda119247d",
+        "etag": "\"pinned\""
+      },
+      {
+        "objectKey": "animals/pen-pal3/photos/pinterest_784681935144260020.jpg",
+        "bytes": 227679,
+        "sha256": "39a5346f6cd04217b766bf00fc590993d8a6f5546f191785ae2885748ab0e92b",
+        "etag": "\"pinned\""
+      },
+      {
+        "objectKey": "animals/pen-pal3/photos/pinterest_784681935144259989.jpg",
+        "bytes": 224944,
+        "sha256": "5ad6eb5aa5f43607e1d27366feccd7b8c8a0fd4ae482ddbaaa241f8d0066d288",
+        "etag": "\"pinned\""
+      }
+    ],
+    "photoPlan": {
+      "planSlug": "page-photo-hold",
+      "pageId": "acct:pen-pal3",
+      "libraryId": "syzygy:animals:pen-pal3",
+      "lane": "animals",
+      "subject": "pen-pal3",
+      "totalDurationSeconds": 12.0,
+      "brightnessGainFromOriginals": 0.85,
+      "media": [
+        {
+          "key": "animals/pen-pal3/photos/pinterest_784681935144260004.jpg",
+          "sourceKey": "animals/kitten-flowers/photos/pinterest_784681935144260004.jpg",
+          "sha256": "09a1b391a05c29944705bd5b3c662cad05218b476e1a8d2e813c01dda119247d",
+          "bytes": 132530,
+          "duration": 4.0,
+          "focalX": 0.05,
+          "focalY": 0.5,
+          "cropMode": "cover",
+          "kenBurns": {
+            "dir": "in",
+            "zoom": 0.025
+          }
+        },
+        {
+          "key": "animals/pen-pal3/photos/pinterest_784681935144260020.jpg",
+          "sourceKey": "animals/kitten-flowers/photos/pinterest_784681935144260020.jpg",
+          "sha256": "39a5346f6cd04217b766bf00fc590993d8a6f5546f191785ae2885748ab0e92b",
+          "bytes": 227679,
+          "duration": 4.0,
+          "focalX": 0.5,
+          "focalY": 0.5,
+          "cropMode": "cover",
+          "kenBurns": {
+            "dir": "in",
+            "zoom": 0.025
+          }
+        },
+        {
+          "key": "animals/pen-pal3/photos/pinterest_784681935144259989.jpg",
+          "sourceKey": "animals/kitten-flowers/photos/pinterest_784681935144259989.jpg",
+          "sha256": "5ad6eb5aa5f43607e1d27366feccd7b8c8a0fd4ae482ddbaaa241f8d0066d288",
+          "bytes": 224944,
+          "duration": 4.0,
+          "focalX": 0.7,
+          "focalY": 0.5,
+          "cropMode": "cover",
+          "kenBurns": {
+            "dir": "in",
+            "zoom": 0.025
+          }
+        }
+      ],
+      "signature": "9b2b68c3a69e99cbbf1e5bb8f1f263e43d8590e93052c9fc68586f326e0e7aa5"
+    },
+    "pageId": "acct:pen-pal3",
+    "masterPagesHash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "contentNiche": "slideshow",
+    "contentEngine": "sourced_slideshow",
+    "vaultUrl": "https://shipstream.risingtidesviral.com/vault/pen.pal3"
+  },
+  {
+    "schema": "content-lab.syzygy-slideshow-source.v1",
+    "kind": "syzygy_slideshow",
+    "recipeId": "image-video:master",
+    "recipeVersion": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "sourceLibraryId": "syzygy:animals:pen-pal3",
+    "librarySnapshotHash": "70f20ca509e00acc8a606bb55ec1aff104d620bd252572e730a4f573c2a41f6c",
+    "templateSlug": "page-photo-hold",
+    "planSignature": "780717e671c723a3a9a2af993406b10e730ab142af85d8d5d328c1869d5d7ac6",
+    "rendererRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "renderJobId": "render-pen-pal3-0001",
+    "media": [
+      {
+        "objectKey": "animals/pen-pal3/photos/pexels_12718552_4c2c96914219e1e972ef4f3e99798087988945ba14422efc47c1d07705f17356.jpg",
+        "bytes": 294101,
+        "sha256": "4c2c96914219e1e972ef4f3e99798087988945ba14422efc47c1d07705f17356",
+        "etag": "\"pinned\""
+      },
+      {
+        "objectKey": "animals/pen-pal3/photos/pexels_12940576_67526062fc1a1dd8166182d2bcbcb6bbe73674181c3e78752399cec7aea27acf.jpg",
+        "bytes": 254670,
+        "sha256": "67526062fc1a1dd8166182d2bcbcb6bbe73674181c3e78752399cec7aea27acf",
+        "etag": "\"pinned\""
+      },
+      {
+        "objectKey": "animals/pen-pal3/photos/pexels_13283307_61de7e7e6bae3c20775d5ada619158b331a6ed58adda3f74eb21a33a3d6de195.jpg",
+        "bytes": 198527,
+        "sha256": "61de7e7e6bae3c20775d5ada619158b331a6ed58adda3f74eb21a33a3d6de195",
+        "etag": "\"pinned\""
+      }
+    ],
+    "photoPlan": {
+      "planSlug": "page-photo-hold",
+      "pageId": "acct:pen-pal3",
+      "libraryId": "syzygy:animals:pen-pal3",
+      "lane": "animals",
+      "subject": "pen-pal3",
+      "totalDurationSeconds": 12.0,
+      "brightnessGainFromOriginals": 0.85,
+      "media": [
+        {
+          "key": "animals/pen-pal3/photos/pexels_12718552_4c2c96914219e1e972ef4f3e99798087988945ba14422efc47c1d07705f17356.jpg",
+          "sourceKey": "animals/pen-pal3/photos/pexels_12718552_4c2c96914219e1e972ef4f3e99798087988945ba14422efc47c1d07705f17356.jpg",
+          "sha256": "4c2c96914219e1e972ef4f3e99798087988945ba14422efc47c1d07705f17356",
+          "bytes": 294101,
+          "duration": 4.0,
+          "focalX": 0.05,
+          "focalY": 0.5,
+          "cropMode": "cover",
+          "kenBurns": {
+            "dir": "in",
+            "zoom": 0.025
+          }
+        },
+        {
+          "key": "animals/pen-pal3/photos/pexels_12940576_67526062fc1a1dd8166182d2bcbcb6bbe73674181c3e78752399cec7aea27acf.jpg",
+          "sourceKey": "animals/pen-pal3/photos/pexels_12940576_67526062fc1a1dd8166182d2bcbcb6bbe73674181c3e78752399cec7aea27acf.jpg",
+          "sha256": "67526062fc1a1dd8166182d2bcbcb6bbe73674181c3e78752399cec7aea27acf",
+          "bytes": 254670,
+          "duration": 4.0,
+          "focalX": 0.5,
+          "focalY": 0.5,
+          "cropMode": "cover",
+          "kenBurns": {
+            "dir": "in",
+            "zoom": 0.025
+          }
+        },
+        {
+          "key": "animals/pen-pal3/photos/pexels_13283307_61de7e7e6bae3c20775d5ada619158b331a6ed58adda3f74eb21a33a3d6de195.jpg",
+          "sourceKey": "animals/pen-pal3/photos/pexels_13283307_61de7e7e6bae3c20775d5ada619158b331a6ed58adda3f74eb21a33a3d6de195.jpg",
+          "sha256": "61de7e7e6bae3c20775d5ada619158b331a6ed58adda3f74eb21a33a3d6de195",
+          "bytes": 198527,
+          "duration": 4.0,
+          "focalX": 0.7,
+          "focalY": 0.5,
+          "cropMode": "cover",
+          "kenBurns": {
+            "dir": "in",
+            "zoom": 0.025
+          }
+        }
+      ],
+      "variantIndex": 1,
+      "signature": "780717e671c723a3a9a2af993406b10e730ab142af85d8d5d328c1869d5d7ac6"
+    },
+    "pageId": "acct:pen-pal3",
+    "masterPagesHash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "contentNiche": "slideshow",
+    "contentEngine": "sourced_slideshow",
+    "vaultUrl": "https://shipstream.risingtidesviral.com/vault/pen.pal3"
+  },
+  {
+    "schema": "content-lab.syzygy-slideshow-source.v1",
+    "kind": "syzygy_slideshow",
+    "recipeId": "image-video:master",
+    "recipeVersion": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "sourceLibraryId": "syzygy:animals:pen-pal3",
+    "librarySnapshotHash": "70f20ca509e00acc8a606bb55ec1aff104d620bd252572e730a4f573c2a41f6c",
+    "templateSlug": "page-photo-hold",
+    "planSignature": "b602497e2dd5e0cd011c9b01327bbaef2a5ab82080e8b42eb5ce73df4110130a",
+    "rendererRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "renderJobId": "render-pen-pal3-0002",
+    "media": [
+      {
+        "objectKey": "animals/pen-pal3/photos/pexels_12940576_67526062fc1a1dd8166182d2bcbcb6bbe73674181c3e78752399cec7aea27acf.jpg",
+        "bytes": 254670,
+        "sha256": "67526062fc1a1dd8166182d2bcbcb6bbe73674181c3e78752399cec7aea27acf",
+        "etag": "\"pinned\""
+      },
+      {
+        "objectKey": "animals/pen-pal3/photos/pexels_13283307_61de7e7e6bae3c20775d5ada619158b331a6ed58adda3f74eb21a33a3d6de195.jpg",
+        "bytes": 198527,
+        "sha256": "61de7e7e6bae3c20775d5ada619158b331a6ed58adda3f74eb21a33a3d6de195",
+        "etag": "\"pinned\""
+      },
+      {
+        "objectKey": "animals/pen-pal3/photos/pexels_1472999_17e2fd67c073424615633b68481ce2c5418a6e208bc865dec6e7edd50806b029.jpg",
+        "bytes": 310921,
+        "sha256": "17e2fd67c073424615633b68481ce2c5418a6e208bc865dec6e7edd50806b029",
+        "etag": "\"pinned\""
+      }
+    ],
+    "photoPlan": {
+      "planSlug": "page-photo-hold",
+      "pageId": "acct:pen-pal3",
+      "libraryId": "syzygy:animals:pen-pal3",
+      "lane": "animals",
+      "subject": "pen-pal3",
+      "totalDurationSeconds": 12.0,
+      "brightnessGainFromOriginals": 0.85,
+      "media": [
+        {
+          "key": "animals/pen-pal3/photos/pexels_12940576_67526062fc1a1dd8166182d2bcbcb6bbe73674181c3e78752399cec7aea27acf.jpg",
+          "sourceKey": "animals/pen-pal3/photos/pexels_12940576_67526062fc1a1dd8166182d2bcbcb6bbe73674181c3e78752399cec7aea27acf.jpg",
+          "sha256": "67526062fc1a1dd8166182d2bcbcb6bbe73674181c3e78752399cec7aea27acf",
+          "bytes": 254670,
+          "duration": 4.0,
+          "focalX": 0.05,
+          "focalY": 0.5,
+          "cropMode": "cover",
+          "kenBurns": {
+            "dir": "in",
+            "zoom": 0.025
+          }
+        },
+        {
+          "key": "animals/pen-pal3/photos/pexels_13283307_61de7e7e6bae3c20775d5ada619158b331a6ed58adda3f74eb21a33a3d6de195.jpg",
+          "sourceKey": "animals/pen-pal3/photos/pexels_13283307_61de7e7e6bae3c20775d5ada619158b331a6ed58adda3f74eb21a33a3d6de195.jpg",
+          "sha256": "61de7e7e6bae3c20775d5ada619158b331a6ed58adda3f74eb21a33a3d6de195",
+          "bytes": 198527,
+          "duration": 4.0,
+          "focalX": 0.5,
+          "focalY": 0.5,
+          "cropMode": "cover",
+          "kenBurns": {
+            "dir": "in",
+            "zoom": 0.025
+          }
+        },
+        {
+          "key": "animals/pen-pal3/photos/pexels_1472999_17e2fd67c073424615633b68481ce2c5418a6e208bc865dec6e7edd50806b029.jpg",
+          "sourceKey": "animals/pen-pal3/photos/pexels_1472999_17e2fd67c073424615633b68481ce2c5418a6e208bc865dec6e7edd50806b029.jpg",
+          "sha256": "17e2fd67c073424615633b68481ce2c5418a6e208bc865dec6e7edd50806b029",
+          "bytes": 310921,
+          "duration": 4.0,
+          "focalX": 0.7,
+          "focalY": 0.5,
+          "cropMode": "cover",
+          "kenBurns": {
+            "dir": "in",
+            "zoom": 0.025
+          }
+        }
+      ],
+      "variantIndex": 2,
+      "signature": "b602497e2dd5e0cd011c9b01327bbaef2a5ab82080e8b42eb5ce73df4110130a"
+    },
+    "pageId": "acct:pen-pal3",
+    "masterPagesHash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "contentNiche": "slideshow",
+    "contentEngine": "sourced_slideshow",
+    "vaultUrl": "https://shipstream.risingtidesviral.com/vault/pen.pal3"
+  },
+  {
+    "schema": "content-lab.syzygy-slideshow-source.v1",
+    "kind": "syzygy_slideshow",
+    "recipeId": "image-video:master",
+    "recipeVersion": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "sourceLibraryId": "syzygy:animals:pen-pal3",
+    "librarySnapshotHash": "70f20ca509e00acc8a606bb55ec1aff104d620bd252572e730a4f573c2a41f6c",
+    "templateSlug": "page-photo-hold",
+    "planSignature": "3c6c6e2b7e2eea8449666f035cc04ca173fcf47b3d48980df87ef07c77b5a5f9",
+    "rendererRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "renderJobId": "render-pen-pal3-0003",
+    "media": [
+      {
+        "objectKey": "animals/pen-pal3/photos/pexels_13283307_61de7e7e6bae3c20775d5ada619158b331a6ed58adda3f74eb21a33a3d6de195.jpg",
+        "bytes": 198527,
+        "sha256": "61de7e7e6bae3c20775d5ada619158b331a6ed58adda3f74eb21a33a3d6de195",
+        "etag": "\"pinned\""
+      },
+      {
+        "objectKey": "animals/pen-pal3/photos/pexels_1472999_17e2fd67c073424615633b68481ce2c5418a6e208bc865dec6e7edd50806b029.jpg",
+        "bytes": 310921,
+        "sha256": "17e2fd67c073424615633b68481ce2c5418a6e208bc865dec6e7edd50806b029",
+        "etag": "\"pinned\""
+      },
+      {
+        "objectKey": "animals/pen-pal3/photos/pexels_14731705_de26a87ce78e2c964dc9ef0edd8bd5b590a33739856546555786a1631e327cc7.jpg",
+        "bytes": 281971,
+        "sha256": "de26a87ce78e2c964dc9ef0edd8bd5b590a33739856546555786a1631e327cc7",
+        "etag": "\"pinned\""
+      }
+    ],
+    "photoPlan": {
+      "planSlug": "page-photo-hold",
+      "pageId": "acct:pen-pal3",
+      "libraryId": "syzygy:animals:pen-pal3",
+      "lane": "animals",
+      "subject": "pen-pal3",
+      "totalDurationSeconds": 12.0,
+      "brightnessGainFromOriginals": 0.85,
+      "media": [
+        {
+          "key": "animals/pen-pal3/photos/pexels_13283307_61de7e7e6bae3c20775d5ada619158b331a6ed58adda3f74eb21a33a3d6de195.jpg",
+          "sourceKey": "animals/pen-pal3/photos/pexels_13283307_61de7e7e6bae3c20775d5ada619158b331a6ed58adda3f74eb21a33a3d6de195.jpg",
+          "sha256": "61de7e7e6bae3c20775d5ada619158b331a6ed58adda3f74eb21a33a3d6de195",
+          "bytes": 198527,
+          "duration": 4.0,
+          "focalX": 0.05,
+          "focalY": 0.5,
+          "cropMode": "cover",
+          "kenBurns": {
+            "dir": "in",
+            "zoom": 0.025
+          }
+        },
+        {
+          "key": "animals/pen-pal3/photos/pexels_1472999_17e2fd67c073424615633b68481ce2c5418a6e208bc865dec6e7edd50806b029.jpg",
+          "sourceKey": "animals/pen-pal3/photos/pexels_1472999_17e2fd67c073424615633b68481ce2c5418a6e208bc865dec6e7edd50806b029.jpg",
+          "sha256": "17e2fd67c073424615633b68481ce2c5418a6e208bc865dec6e7edd50806b029",
+          "bytes": 310921,
+          "duration": 4.0,
+          "focalX": 0.5,
+          "focalY": 0.5,
+          "cropMode": "cover",
+          "kenBurns": {
+            "dir": "in",
+            "zoom": 0.025
+          }
+        },
+        {
+          "key": "animals/pen-pal3/photos/pexels_14731705_de26a87ce78e2c964dc9ef0edd8bd5b590a33739856546555786a1631e327cc7.jpg",
+          "sourceKey": "animals/pen-pal3/photos/pexels_14731705_de26a87ce78e2c964dc9ef0edd8bd5b590a33739856546555786a1631e327cc7.jpg",
+          "sha256": "de26a87ce78e2c964dc9ef0edd8bd5b590a33739856546555786a1631e327cc7",
+          "bytes": 281971,
+          "duration": 4.0,
+          "focalX": 0.7,
+          "focalY": 0.5,
+          "cropMode": "cover",
+          "kenBurns": {
+            "dir": "in",
+            "zoom": 0.025
+          }
+        }
+      ],
+      "variantIndex": 3,
+      "signature": "3c6c6e2b7e2eea8449666f035cc04ca173fcf47b3d48980df87ef07c77b5a5f9"
+    },
+    "pageId": "acct:pen-pal3",
+    "masterPagesHash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "contentNiche": "slideshow",
+    "contentEngine": "sourced_slideshow",
+    "vaultUrl": "https://shipstream.risingtidesviral.com/vault/pen.pal3"
+  },
+  {
+    "schema": "content-lab.syzygy-slideshow-source.v1",
+    "kind": "syzygy_slideshow",
+    "recipeId": "image-video:master",
+    "recipeVersion": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "sourceLibraryId": "syzygy:animals:pen-pal3",
+    "librarySnapshotHash": "70f20ca509e00acc8a606bb55ec1aff104d620bd252572e730a4f573c2a41f6c",
+    "templateSlug": "page-photo-hold",
+    "planSignature": "8540dc66da0863614f29487e377ca25858a54af5d2470dcfde088c3eb736d19f",
+    "rendererRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "renderJobId": "render-pen-pal3-0004",
+    "media": [
+      {
+        "objectKey": "animals/pen-pal3/photos/pexels_1472999_17e2fd67c073424615633b68481ce2c5418a6e208bc865dec6e7edd50806b029.jpg",
+        "bytes": 310921,
+        "sha256": "17e2fd67c073424615633b68481ce2c5418a6e208bc865dec6e7edd50806b029",
+        "etag": "\"pinned\""
+      },
+      {
+        "objectKey": "animals/pen-pal3/photos/pexels_14731705_de26a87ce78e2c964dc9ef0edd8bd5b590a33739856546555786a1631e327cc7.jpg",
+        "bytes": 281971,
+        "sha256": "de26a87ce78e2c964dc9ef0edd8bd5b590a33739856546555786a1631e327cc7",
+        "etag": "\"pinned\""
+      },
+      {
+        "objectKey": "animals/pen-pal3/photos/pexels_14731706_384a521ea7724cebd1d9b78e3229dc851cb2f4505055a5df38ba0a679e6297b6.jpg",
+        "bytes": 137088,
+        "sha256": "384a521ea7724cebd1d9b78e3229dc851cb2f4505055a5df38ba0a679e6297b6",
+        "etag": "\"pinned\""
+      }
+    ],
+    "photoPlan": {
+      "planSlug": "page-photo-hold",
+      "pageId": "acct:pen-pal3",
+      "libraryId": "syzygy:animals:pen-pal3",
+      "lane": "animals",
+      "subject": "pen-pal3",
+      "totalDurationSeconds": 12.0,
+      "brightnessGainFromOriginals": 0.85,
+      "media": [
+        {
+          "key": "animals/pen-pal3/photos/pexels_1472999_17e2fd67c073424615633b68481ce2c5418a6e208bc865dec6e7edd50806b029.jpg",
+          "sourceKey": "animals/pen-pal3/photos/pexels_1472999_17e2fd67c073424615633b68481ce2c5418a6e208bc865dec6e7edd50806b029.jpg",
+          "sha256": "17e2fd67c073424615633b68481ce2c5418a6e208bc865dec6e7edd50806b029",
+          "bytes": 310921,
+          "duration": 4.0,
+          "focalX": 0.05,
+          "focalY": 0.5,
+          "cropMode": "cover",
+          "kenBurns": {
+            "dir": "in",
+            "zoom": 0.025
+          }
+        },
+        {
+          "key": "animals/pen-pal3/photos/pexels_14731705_de26a87ce78e2c964dc9ef0edd8bd5b590a33739856546555786a1631e327cc7.jpg",
+          "sourceKey": "animals/pen-pal3/photos/pexels_14731705_de26a87ce78e2c964dc9ef0edd8bd5b590a33739856546555786a1631e327cc7.jpg",
+          "sha256": "de26a87ce78e2c964dc9ef0edd8bd5b590a33739856546555786a1631e327cc7",
+          "bytes": 281971,
+          "duration": 4.0,
+          "focalX": 0.5,
+          "focalY": 0.5,
+          "cropMode": "cover",
+          "kenBurns": {
+            "dir": "in",
+            "zoom": 0.025
+          }
+        },
+        {
+          "key": "animals/pen-pal3/photos/pexels_14731706_384a521ea7724cebd1d9b78e3229dc851cb2f4505055a5df38ba0a679e6297b6.jpg",
+          "sourceKey": "animals/pen-pal3/photos/pexels_14731706_384a521ea7724cebd1d9b78e3229dc851cb2f4505055a5df38ba0a679e6297b6.jpg",
+          "sha256": "384a521ea7724cebd1d9b78e3229dc851cb2f4505055a5df38ba0a679e6297b6",
+          "bytes": 137088,
+          "duration": 4.0,
+          "focalX": 0.7,
+          "focalY": 0.5,
+          "cropMode": "cover",
+          "kenBurns": {
+            "dir": "in",
+            "zoom": 0.025
+          }
+        }
+      ],
+      "variantIndex": 4,
+      "signature": "8540dc66da0863614f29487e377ca25858a54af5d2470dcfde088c3eb736d19f"
+    },
+    "pageId": "acct:pen-pal3",
+    "masterPagesHash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "contentNiche": "slideshow",
+    "contentEngine": "sourced_slideshow",
+    "vaultUrl": "https://shipstream.risingtidesviral.com/vault/pen.pal3"
+  },
+  {
+    "schema": "content-lab.syzygy-slideshow-source.v1",
+    "kind": "syzygy_slideshow",
+    "recipeId": "image-video:master",
+    "recipeVersion": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "sourceLibraryId": "syzygy:animals:pen-pal3",
+    "librarySnapshotHash": "70f20ca509e00acc8a606bb55ec1aff104d620bd252572e730a4f573c2a41f6c",
+    "templateSlug": "page-photo-hold",
+    "planSignature": "521d315643f8b14dcaaca43bd73491a2a97b0ec6c8fb2369660a742230e8b220",
+    "rendererRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "renderJobId": "render-pen-pal3-0005",
+    "media": [
+      {
+        "objectKey": "animals/pen-pal3/photos/pexels_14731705_de26a87ce78e2c964dc9ef0edd8bd5b590a33739856546555786a1631e327cc7.jpg",
+        "bytes": 281971,
+        "sha256": "de26a87ce78e2c964dc9ef0edd8bd5b590a33739856546555786a1631e327cc7",
+        "etag": "\"pinned\""
+      },
+      {
+        "objectKey": "animals/pen-pal3/photos/pexels_14731706_384a521ea7724cebd1d9b78e3229dc851cb2f4505055a5df38ba0a679e6297b6.jpg",
+        "bytes": 137088,
+        "sha256": "384a521ea7724cebd1d9b78e3229dc851cb2f4505055a5df38ba0a679e6297b6",
+        "etag": "\"pinned\""
+      },
+      {
+        "objectKey": "animals/pen-pal3/photos/pexels_16303635_0a6bfd0dad7f556b1b2cfc01bb1ada8e84b0afd2bbfd881249bff941fc8c5e97.jpg",
+        "bytes": 251907,
+        "sha256": "0a6bfd0dad7f556b1b2cfc01bb1ada8e84b0afd2bbfd881249bff941fc8c5e97",
+        "etag": "\"pinned\""
+      }
+    ],
+    "photoPlan": {
+      "planSlug": "page-photo-hold",
+      "pageId": "acct:pen-pal3",
+      "libraryId": "syzygy:animals:pen-pal3",
+      "lane": "animals",
+      "subject": "pen-pal3",
+      "totalDurationSeconds": 12.0,
+      "brightnessGainFromOriginals": 0.85,
+      "media": [
+        {
+          "key": "animals/pen-pal3/photos/pexels_14731705_de26a87ce78e2c964dc9ef0edd8bd5b590a33739856546555786a1631e327cc7.jpg",
+          "sourceKey": "animals/pen-pal3/photos/pexels_14731705_de26a87ce78e2c964dc9ef0edd8bd5b590a33739856546555786a1631e327cc7.jpg",
+          "sha256": "de26a87ce78e2c964dc9ef0edd8bd5b590a33739856546555786a1631e327cc7",
+          "bytes": 281971,
+          "duration": 4.0,
+          "focalX": 0.05,
+          "focalY": 0.5,
+          "cropMode": "cover",
+          "kenBurns": {
+            "dir": "in",
+            "zoom": 0.025
+          }
+        },
+        {
+          "key": "animals/pen-pal3/photos/pexels_14731706_384a521ea7724cebd1d9b78e3229dc851cb2f4505055a5df38ba0a679e6297b6.jpg",
+          "sourceKey": "animals/pen-pal3/photos/pexels_14731706_384a521ea7724cebd1d9b78e3229dc851cb2f4505055a5df38ba0a679e6297b6.jpg",
+          "sha256": "384a521ea7724cebd1d9b78e3229dc851cb2f4505055a5df38ba0a679e6297b6",
+          "bytes": 137088,
+          "duration": 4.0,
+          "focalX": 0.5,
+          "focalY": 0.5,
+          "cropMode": "cover",
+          "kenBurns": {
+            "dir": "in",
+            "zoom": 0.025
+          }
+        },
+        {
+          "key": "animals/pen-pal3/photos/pexels_16303635_0a6bfd0dad7f556b1b2cfc01bb1ada8e84b0afd2bbfd881249bff941fc8c5e97.jpg",
+          "sourceKey": "animals/pen-pal3/photos/pexels_16303635_0a6bfd0dad7f556b1b2cfc01bb1ada8e84b0afd2bbfd881249bff941fc8c5e97.jpg",
+          "sha256": "0a6bfd0dad7f556b1b2cfc01bb1ada8e84b0afd2bbfd881249bff941fc8c5e97",
+          "bytes": 251907,
+          "duration": 4.0,
+          "focalX": 0.7,
+          "focalY": 0.5,
+          "cropMode": "cover",
+          "kenBurns": {
+            "dir": "in",
+            "zoom": 0.025
+          }
+        }
+      ],
+      "variantIndex": 5,
+      "signature": "521d315643f8b14dcaaca43bd73491a2a97b0ec6c8fb2369660a742230e8b220"
+    },
+    "pageId": "acct:pen-pal3",
+    "masterPagesHash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "contentNiche": "slideshow",
+    "contentEngine": "sourced_slideshow",
+    "vaultUrl": "https://shipstream.risingtidesviral.com/vault/pen.pal3"
+  },
+  {
+    "schema": "content-lab.syzygy-slideshow-source.v1",
+    "kind": "syzygy_slideshow",
+    "recipeId": "image-video:master",
+    "recipeVersion": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "sourceLibraryId": "syzygy:animals:pen-pal3",
+    "librarySnapshotHash": "70f20ca509e00acc8a606bb55ec1aff104d620bd252572e730a4f573c2a41f6c",
+    "templateSlug": "page-photo-hold",
+    "planSignature": "ae291662ac0921634fcb45a73b1bc833b1d67d2c22cb766ce91056b82027545a",
+    "rendererRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "renderJobId": "render-pen-pal3-0006",
+    "media": [
+      {
+        "objectKey": "animals/pen-pal3/photos/pexels_14731706_384a521ea7724cebd1d9b78e3229dc851cb2f4505055a5df38ba0a679e6297b6.jpg",
+        "bytes": 137088,
+        "sha256": "384a521ea7724cebd1d9b78e3229dc851cb2f4505055a5df38ba0a679e6297b6",
+        "etag": "\"pinned\""
+      },
+      {
+        "objectKey": "animals/pen-pal3/photos/pexels_16303635_0a6bfd0dad7f556b1b2cfc01bb1ada8e84b0afd2bbfd881249bff941fc8c5e97.jpg",
+        "bytes": 251907,
+        "sha256": "0a6bfd0dad7f556b1b2cfc01bb1ada8e84b0afd2bbfd881249bff941fc8c5e97",
+        "etag": "\"pinned\""
+      },
+      {
+        "objectKey": "animals/pen-pal3/photos/pexels_16385534_e4aa9fec76f3ef1163a20565c1b0ec9f311ea3a8d9aff5cfed62c7b702c53faa.jpg",
+        "bytes": 353379,
+        "sha256": "e4aa9fec76f3ef1163a20565c1b0ec9f311ea3a8d9aff5cfed62c7b702c53faa",
+        "etag": "\"pinned\""
+      }
+    ],
+    "photoPlan": {
+      "planSlug": "page-photo-hold",
+      "pageId": "acct:pen-pal3",
+      "libraryId": "syzygy:animals:pen-pal3",
+      "lane": "animals",
+      "subject": "pen-pal3",
+      "totalDurationSeconds": 12.0,
+      "brightnessGainFromOriginals": 0.85,
+      "media": [
+        {
+          "key": "animals/pen-pal3/photos/pexels_14731706_384a521ea7724cebd1d9b78e3229dc851cb2f4505055a5df38ba0a679e6297b6.jpg",
+          "sourceKey": "animals/pen-pal3/photos/pexels_14731706_384a521ea7724cebd1d9b78e3229dc851cb2f4505055a5df38ba0a679e6297b6.jpg",
+          "sha256": "384a521ea7724cebd1d9b78e3229dc851cb2f4505055a5df38ba0a679e6297b6",
+          "bytes": 137088,
+          "duration": 4.0,
+          "focalX": 0.05,
+          "focalY": 0.5,
+          "cropMode": "cover",
+          "kenBurns": {
+            "dir": "in",
+            "zoom": 0.025
+          }
+        },
+        {
+          "key": "animals/pen-pal3/photos/pexels_16303635_0a6bfd0dad7f556b1b2cfc01bb1ada8e84b0afd2bbfd881249bff941fc8c5e97.jpg",
+          "sourceKey": "animals/pen-pal3/photos/pexels_16303635_0a6bfd0dad7f556b1b2cfc01bb1ada8e84b0afd2bbfd881249bff941fc8c5e97.jpg",
+          "sha256": "0a6bfd0dad7f556b1b2cfc01bb1ada8e84b0afd2bbfd881249bff941fc8c5e97",
+          "bytes": 251907,
+          "duration": 4.0,
+          "focalX": 0.5,
+          "focalY": 0.5,
+          "cropMode": "cover",
+          "kenBurns": {
+            "dir": "in",
+            "zoom": 0.025
+          }
+        },
+        {
+          "key": "animals/pen-pal3/photos/pexels_16385534_e4aa9fec76f3ef1163a20565c1b0ec9f311ea3a8d9aff5cfed62c7b702c53faa.jpg",
+          "sourceKey": "animals/pen-pal3/photos/pexels_16385534_e4aa9fec76f3ef1163a20565c1b0ec9f311ea3a8d9aff5cfed62c7b702c53faa.jpg",
+          "sha256": "e4aa9fec76f3ef1163a20565c1b0ec9f311ea3a8d9aff5cfed62c7b702c53faa",
+          "bytes": 353379,
+          "duration": 4.0,
+          "focalX": 0.7,
+          "focalY": 0.5,
+          "cropMode": "cover",
+          "kenBurns": {
+            "dir": "in",
+            "zoom": 0.025
+          }
+        }
+      ],
+      "variantIndex": 6,
+      "signature": "ae291662ac0921634fcb45a73b1bc833b1d67d2c22cb766ce91056b82027545a"
+    },
+    "pageId": "acct:pen-pal3",
+    "masterPagesHash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "contentNiche": "slideshow",
+    "contentEngine": "sourced_slideshow",
+    "vaultUrl": "https://shipstream.risingtidesviral.com/vault/pen.pal3"
+  },
+  {
+    "schema": "content-lab.syzygy-slideshow-source.v1",
+    "kind": "syzygy_slideshow",
+    "recipeId": "image-video:master",
+    "recipeVersion": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "sourceLibraryId": "syzygy:animals:pen-pal3",
+    "librarySnapshotHash": "70f20ca509e00acc8a606bb55ec1aff104d620bd252572e730a4f573c2a41f6c",
+    "templateSlug": "page-photo-hold",
+    "planSignature": "1e525ef487987d9f139ff6a492c0c025035c5bb32fc56a20308f0365f52a45cf",
+    "rendererRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "renderJobId": "render-pen-pal3-0007",
+    "media": [
+      {
+        "objectKey": "animals/pen-pal3/photos/pexels_16303635_0a6bfd0dad7f556b1b2cfc01bb1ada8e84b0afd2bbfd881249bff941fc8c5e97.jpg",
+        "bytes": 251907,
+        "sha256": "0a6bfd0dad7f556b1b2cfc01bb1ada8e84b0afd2bbfd881249bff941fc8c5e97",
+        "etag": "\"pinned\""
+      },
+      {
+        "objectKey": "animals/pen-pal3/photos/pexels_16385534_e4aa9fec76f3ef1163a20565c1b0ec9f311ea3a8d9aff5cfed62c7b702c53faa.jpg",
+        "bytes": 353379,
+        "sha256": "e4aa9fec76f3ef1163a20565c1b0ec9f311ea3a8d9aff5cfed62c7b702c53faa",
+        "etag": "\"pinned\""
+      },
+      {
+        "objectKey": "animals/pen-pal3/photos/pexels_16458685_47f01ee2b27a374114fcafbd6a6594f00d3fc17ce73a7551332ac983a36deef5.jpg",
+        "bytes": 109802,
+        "sha256": "47f01ee2b27a374114fcafbd6a6594f00d3fc17ce73a7551332ac983a36deef5",
+        "etag": "\"pinned\""
+      }
+    ],
+    "photoPlan": {
+      "planSlug": "page-photo-hold",
+      "pageId": "acct:pen-pal3",
+      "libraryId": "syzygy:animals:pen-pal3",
+      "lane": "animals",
+      "subject": "pen-pal3",
+      "totalDurationSeconds": 12.0,
+      "brightnessGainFromOriginals": 0.85,
+      "media": [
+        {
+          "key": "animals/pen-pal3/photos/pexels_16303635_0a6bfd0dad7f556b1b2cfc01bb1ada8e84b0afd2bbfd881249bff941fc8c5e97.jpg",
+          "sourceKey": "animals/pen-pal3/photos/pexels_16303635_0a6bfd0dad7f556b1b2cfc01bb1ada8e84b0afd2bbfd881249bff941fc8c5e97.jpg",
+          "sha256": "0a6bfd0dad7f556b1b2cfc01bb1ada8e84b0afd2bbfd881249bff941fc8c5e97",
+          "bytes": 251907,
+          "duration": 4.0,
+          "focalX": 0.05,
+          "focalY": 0.5,
+          "cropMode": "cover",
+          "kenBurns": {
+            "dir": "in",
+            "zoom": 0.025
+          }
+        },
+        {
+          "key": "animals/pen-pal3/photos/pexels_16385534_e4aa9fec76f3ef1163a20565c1b0ec9f311ea3a8d9aff5cfed62c7b702c53faa.jpg",
+          "sourceKey": "animals/pen-pal3/photos/pexels_16385534_e4aa9fec76f3ef1163a20565c1b0ec9f311ea3a8d9aff5cfed62c7b702c53faa.jpg",
+          "sha256": "e4aa9fec76f3ef1163a20565c1b0ec9f311ea3a8d9aff5cfed62c7b702c53faa",
+          "bytes": 353379,
+          "duration": 4.0,
+          "focalX": 0.5,
+          "focalY": 0.5,
+          "cropMode": "cover",
+          "kenBurns": {
+            "dir": "in",
+            "zoom": 0.025
+          }
+        },
+        {
+          "key": "animals/pen-pal3/photos/pexels_16458685_47f01ee2b27a374114fcafbd6a6594f00d3fc17ce73a7551332ac983a36deef5.jpg",
+          "sourceKey": "animals/pen-pal3/photos/pexels_16458685_47f01ee2b27a374114fcafbd6a6594f00d3fc17ce73a7551332ac983a36deef5.jpg",
+          "sha256": "47f01ee2b27a374114fcafbd6a6594f00d3fc17ce73a7551332ac983a36deef5",
+          "bytes": 109802,
+          "duration": 4.0,
+          "focalX": 0.7,
+          "focalY": 0.5,
+          "cropMode": "cover",
+          "kenBurns": {
+            "dir": "in",
+            "zoom": 0.025
+          }
+        }
+      ],
+      "variantIndex": 7,
+      "signature": "1e525ef487987d9f139ff6a492c0c025035c5bb32fc56a20308f0365f52a45cf"
+    },
+    "pageId": "acct:pen-pal3",
+    "masterPagesHash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "contentNiche": "slideshow",
+    "contentEngine": "sourced_slideshow",
+    "vaultUrl": "https://shipstream.risingtidesviral.com/vault/pen.pal3"
+  },
+  {
+    "schema": "content-lab.syzygy-slideshow-source.v1",
+    "kind": "syzygy_slideshow",
+    "recipeId": "image-video:master",
+    "recipeVersion": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "sourceLibraryId": "syzygy:animals:pen-pal3",
+    "librarySnapshotHash": "70f20ca509e00acc8a606bb55ec1aff104d620bd252572e730a4f573c2a41f6c",
+    "templateSlug": "page-photo-hold",
+    "planSignature": "9c0b9133512d019cf8ccb8279de46cdf8721cf372b0881e7004dd745fc9722a9",
+    "rendererRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "renderJobId": "render-pen-pal3-0008",
+    "media": [
+      {
+        "objectKey": "animals/pen-pal3/photos/pexels_16385534_e4aa9fec76f3ef1163a20565c1b0ec9f311ea3a8d9aff5cfed62c7b702c53faa.jpg",
+        "bytes": 353379,
+        "sha256": "e4aa9fec76f3ef1163a20565c1b0ec9f311ea3a8d9aff5cfed62c7b702c53faa",
+        "etag": "\"pinned\""
+      },
+      {
+        "objectKey": "animals/pen-pal3/photos/pexels_16458685_47f01ee2b27a374114fcafbd6a6594f00d3fc17ce73a7551332ac983a36deef5.jpg",
+        "bytes": 109802,
+        "sha256": "47f01ee2b27a374114fcafbd6a6594f00d3fc17ce73a7551332ac983a36deef5",
+        "etag": "\"pinned\""
+      },
+      {
+        "objectKey": "animals/pen-pal3/photos/pexels_17000817_dcfe7d1752e67e5d24fa1292a3b69998cf44320c61f65f6c621fb88fab7c86c4.jpg",
+        "bytes": 260519,
+        "sha256": "dcfe7d1752e67e5d24fa1292a3b69998cf44320c61f65f6c621fb88fab7c86c4",
+        "etag": "\"pinned\""
+      }
+    ],
+    "photoPlan": {
+      "planSlug": "page-photo-hold",
+      "pageId": "acct:pen-pal3",
+      "libraryId": "syzygy:animals:pen-pal3",
+      "lane": "animals",
+      "subject": "pen-pal3",
+      "totalDurationSeconds": 12.0,
+      "brightnessGainFromOriginals": 0.85,
+      "media": [
+        {
+          "key": "animals/pen-pal3/photos/pexels_16385534_e4aa9fec76f3ef1163a20565c1b0ec9f311ea3a8d9aff5cfed62c7b702c53faa.jpg",
+          "sourceKey": "animals/pen-pal3/photos/pexels_16385534_e4aa9fec76f3ef1163a20565c1b0ec9f311ea3a8d9aff5cfed62c7b702c53faa.jpg",
+          "sha256": "e4aa9fec76f3ef1163a20565c1b0ec9f311ea3a8d9aff5cfed62c7b702c53faa",
+          "bytes": 353379,
+          "duration": 4.0,
+          "focalX": 0.05,
+          "focalY": 0.5,
+          "cropMode": "cover",
+          "kenBurns": {
+            "dir": "in",
+            "zoom": 0.025
+          }
+        },
+        {
+          "key": "animals/pen-pal3/photos/pexels_16458685_47f01ee2b27a374114fcafbd6a6594f00d3fc17ce73a7551332ac983a36deef5.jpg",
+          "sourceKey": "animals/pen-pal3/photos/pexels_16458685_47f01ee2b27a374114fcafbd6a6594f00d3fc17ce73a7551332ac983a36deef5.jpg",
+          "sha256": "47f01ee2b27a374114fcafbd6a6594f00d3fc17ce73a7551332ac983a36deef5",
+          "bytes": 109802,
+          "duration": 4.0,
+          "focalX": 0.5,
+          "focalY": 0.5,
+          "cropMode": "cover",
+          "kenBurns": {
+            "dir": "in",
+            "zoom": 0.025
+          }
+        },
+        {
+          "key": "animals/pen-pal3/photos/pexels_17000817_dcfe7d1752e67e5d24fa1292a3b69998cf44320c61f65f6c621fb88fab7c86c4.jpg",
+          "sourceKey": "animals/pen-pal3/photos/pexels_17000817_dcfe7d1752e67e5d24fa1292a3b69998cf44320c61f65f6c621fb88fab7c86c4.jpg",
+          "sha256": "dcfe7d1752e67e5d24fa1292a3b69998cf44320c61f65f6c621fb88fab7c86c4",
+          "bytes": 260519,
+          "duration": 4.0,
+          "focalX": 0.7,
+          "focalY": 0.5,
+          "cropMode": "cover",
+          "kenBurns": {
+            "dir": "in",
+            "zoom": 0.025
+          }
+        }
+      ],
+      "variantIndex": 8,
+      "signature": "9c0b9133512d019cf8ccb8279de46cdf8721cf372b0881e7004dd745fc9722a9"
+    },
+    "pageId": "acct:pen-pal3",
+    "masterPagesHash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "contentNiche": "slideshow",
+    "contentEngine": "sourced_slideshow",
+    "vaultUrl": "https://shipstream.risingtidesviral.com/vault/pen.pal3"
+  },
+  {
+    "schema": "content-lab.syzygy-slideshow-source.v1",
+    "kind": "syzygy_slideshow",
+    "recipeId": "image-video:master",
+    "recipeVersion": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "sourceLibraryId": "syzygy:animals:pen-pal3",
+    "librarySnapshotHash": "70f20ca509e00acc8a606bb55ec1aff104d620bd252572e730a4f573c2a41f6c",
+    "templateSlug": "page-photo-hold",
+    "planSignature": "fff858536bc2183e56f47653ab615d1c87902251aeb3f62bae0a5b947fef56a2",
+    "rendererRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "renderJobId": "render-pen-pal3-0009",
+    "media": [
+      {
+        "objectKey": "animals/pen-pal3/photos/pexels_16458685_47f01ee2b27a374114fcafbd6a6594f00d3fc17ce73a7551332ac983a36deef5.jpg",
+        "bytes": 109802,
+        "sha256": "47f01ee2b27a374114fcafbd6a6594f00d3fc17ce73a7551332ac983a36deef5",
+        "etag": "\"pinned\""
+      },
+      {
+        "objectKey": "animals/pen-pal3/photos/pexels_17000817_dcfe7d1752e67e5d24fa1292a3b69998cf44320c61f65f6c621fb88fab7c86c4.jpg",
+        "bytes": 260519,
+        "sha256": "dcfe7d1752e67e5d24fa1292a3b69998cf44320c61f65f6c621fb88fab7c86c4",
+        "etag": "\"pinned\""
+      },
+      {
+        "objectKey": "animals/pen-pal3/photos/pexels_17157866_838451324a6c4c736058dc919f7207868126cf08542429ea152618ee5dcc0245.jpg",
+        "bytes": 118535,
+        "sha256": "838451324a6c4c736058dc919f7207868126cf08542429ea152618ee5dcc0245",
+        "etag": "\"pinned\""
+      }
+    ],
+    "photoPlan": {
+      "planSlug": "page-photo-hold",
+      "pageId": "acct:pen-pal3",
+      "libraryId": "syzygy:animals:pen-pal3",
+      "lane": "animals",
+      "subject": "pen-pal3",
+      "totalDurationSeconds": 12.0,
+      "brightnessGainFromOriginals": 0.85,
+      "media": [
+        {
+          "key": "animals/pen-pal3/photos/pexels_16458685_47f01ee2b27a374114fcafbd6a6594f00d3fc17ce73a7551332ac983a36deef5.jpg",
+          "sourceKey": "animals/pen-pal3/photos/pexels_16458685_47f01ee2b27a374114fcafbd6a6594f00d3fc17ce73a7551332ac983a36deef5.jpg",
+          "sha256": "47f01ee2b27a374114fcafbd6a6594f00d3fc17ce73a7551332ac983a36deef5",
+          "bytes": 109802,
+          "duration": 4.0,
+          "focalX": 0.05,
+          "focalY": 0.5,
+          "cropMode": "cover",
+          "kenBurns": {
+            "dir": "in",
+            "zoom": 0.025
+          }
+        },
+        {
+          "key": "animals/pen-pal3/photos/pexels_17000817_dcfe7d1752e67e5d24fa1292a3b69998cf44320c61f65f6c621fb88fab7c86c4.jpg",
+          "sourceKey": "animals/pen-pal3/photos/pexels_17000817_dcfe7d1752e67e5d24fa1292a3b69998cf44320c61f65f6c621fb88fab7c86c4.jpg",
+          "sha256": "dcfe7d1752e67e5d24fa1292a3b69998cf44320c61f65f6c621fb88fab7c86c4",
+          "bytes": 260519,
+          "duration": 4.0,
+          "focalX": 0.5,
+          "focalY": 0.5,
+          "cropMode": "cover",
+          "kenBurns": {
+            "dir": "in",
+            "zoom": 0.025
+          }
+        },
+        {
+          "key": "animals/pen-pal3/photos/pexels_17157866_838451324a6c4c736058dc919f7207868126cf08542429ea152618ee5dcc0245.jpg",
+          "sourceKey": "animals/pen-pal3/photos/pexels_17157866_838451324a6c4c736058dc919f7207868126cf08542429ea152618ee5dcc0245.jpg",
+          "sha256": "838451324a6c4c736058dc919f7207868126cf08542429ea152618ee5dcc0245",
+          "bytes": 118535,
+          "duration": 4.0,
+          "focalX": 0.7,
+          "focalY": 0.5,
+          "cropMode": "cover",
+          "kenBurns": {
+            "dir": "in",
+            "zoom": 0.025
+          }
+        }
+      ],
+      "variantIndex": 9,
+      "signature": "fff858536bc2183e56f47653ab615d1c87902251aeb3f62bae0a5b947fef56a2"
+    },
+    "pageId": "acct:pen-pal3",
+    "masterPagesHash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "contentNiche": "slideshow",
+    "contentEngine": "sourced_slideshow",
+    "vaultUrl": "https://shipstream.risingtidesviral.com/vault/pen.pal3"
+  },
+  {
+    "schema": "content-lab.syzygy-slideshow-source.v1",
+    "kind": "syzygy_slideshow",
+    "recipeId": "image-video:master",
+    "recipeVersion": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "sourceLibraryId": "syzygy:animals:pen-pal3",
+    "librarySnapshotHash": "70f20ca509e00acc8a606bb55ec1aff104d620bd252572e730a4f573c2a41f6c",
+    "templateSlug": "page-photo-hold",
+    "planSignature": "8bcce4c29d744ad0077903b6d52d824c473407aa3cc9902ed28877e4a883d199",
+    "rendererRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "renderJobId": "render-pen-pal3-0010",
+    "media": [
+      {
+        "objectKey": "animals/pen-pal3/photos/pexels_17000817_dcfe7d1752e67e5d24fa1292a3b69998cf44320c61f65f6c621fb88fab7c86c4.jpg",
+        "bytes": 260519,
+        "sha256": "dcfe7d1752e67e5d24fa1292a3b69998cf44320c61f65f6c621fb88fab7c86c4",
+        "etag": "\"pinned\""
+      },
+      {
+        "objectKey": "animals/pen-pal3/photos/pexels_17157866_838451324a6c4c736058dc919f7207868126cf08542429ea152618ee5dcc0245.jpg",
+        "bytes": 118535,
+        "sha256": "838451324a6c4c736058dc919f7207868126cf08542429ea152618ee5dcc0245",
+        "etag": "\"pinned\""
+      },
+      {
+        "objectKey": "animals/pen-pal3/photos/pexels_18414753_b7834fa19be5dc7fca5dc28764d62a6f709be09af9c024b4b52b9935e3ecb076.jpg",
+        "bytes": 185606,
+        "sha256": "b7834fa19be5dc7fca5dc28764d62a6f709be09af9c024b4b52b9935e3ecb076",
+        "etag": "\"pinned\""
+      }
+    ],
+    "photoPlan": {
+      "planSlug": "page-photo-hold",
+      "pageId": "acct:pen-pal3",
+      "libraryId": "syzygy:animals:pen-pal3",
+      "lane": "animals",
+      "subject": "pen-pal3",
+      "totalDurationSeconds": 12.0,
+      "brightnessGainFromOriginals": 0.85,
+      "media": [
+        {
+          "key": "animals/pen-pal3/photos/pexels_17000817_dcfe7d1752e67e5d24fa1292a3b69998cf44320c61f65f6c621fb88fab7c86c4.jpg",
+          "sourceKey": "animals/pen-pal3/photos/pexels_17000817_dcfe7d1752e67e5d24fa1292a3b69998cf44320c61f65f6c621fb88fab7c86c4.jpg",
+          "sha256": "dcfe7d1752e67e5d24fa1292a3b69998cf44320c61f65f6c621fb88fab7c86c4",
+          "bytes": 260519,
+          "duration": 4.0,
+          "focalX": 0.05,
+          "focalY": 0.5,
+          "cropMode": "cover",
+          "kenBurns": {
+            "dir": "in",
+            "zoom": 0.025
+          }
+        },
+        {
+          "key": "animals/pen-pal3/photos/pexels_17157866_838451324a6c4c736058dc919f7207868126cf08542429ea152618ee5dcc0245.jpg",
+          "sourceKey": "animals/pen-pal3/photos/pexels_17157866_838451324a6c4c736058dc919f7207868126cf08542429ea152618ee5dcc0245.jpg",
+          "sha256": "838451324a6c4c736058dc919f7207868126cf08542429ea152618ee5dcc0245",
+          "bytes": 118535,
+          "duration": 4.0,
+          "focalX": 0.5,
+          "focalY": 0.5,
+          "cropMode": "cover",
+          "kenBurns": {
+            "dir": "in",
+            "zoom": 0.025
+          }
+        },
+        {
+          "key": "animals/pen-pal3/photos/pexels_18414753_b7834fa19be5dc7fca5dc28764d62a6f709be09af9c024b4b52b9935e3ecb076.jpg",
+          "sourceKey": "animals/pen-pal3/photos/pexels_18414753_b7834fa19be5dc7fca5dc28764d62a6f709be09af9c024b4b52b9935e3ecb076.jpg",
+          "sha256": "b7834fa19be5dc7fca5dc28764d62a6f709be09af9c024b4b52b9935e3ecb076",
+          "bytes": 185606,
+          "duration": 4.0,
+          "focalX": 0.7,
+          "focalY": 0.5,
+          "cropMode": "cover",
+          "kenBurns": {
+            "dir": "in",
+            "zoom": 0.025
+          }
+        }
+      ],
+      "variantIndex": 10,
+      "signature": "8bcce4c29d744ad0077903b6d52d824c473407aa3cc9902ed28877e4a883d199"
+    },
+    "pageId": "acct:pen-pal3",
+    "masterPagesHash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "contentNiche": "slideshow",
+    "contentEngine": "sourced_slideshow",
+    "vaultUrl": "https://shipstream.risingtidesviral.com/vault/pen.pal3"
+  },
+  {
+    "schema": "content-lab.syzygy-slideshow-source.v1",
+    "kind": "syzygy_slideshow",
+    "recipeId": "image-video:master",
+    "recipeVersion": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "sourceLibraryId": "syzygy:animals:pen-pal3",
+    "librarySnapshotHash": "70f20ca509e00acc8a606bb55ec1aff104d620bd252572e730a4f573c2a41f6c",
+    "templateSlug": "page-photo-hold",
+    "planSignature": "fd712a8182e6dac13334ccd5c6f15101b2311777f1c2e33defe9eb74799c6845",
+    "rendererRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "renderJobId": "render-pen-pal3-0011",
+    "media": [
+      {
+        "objectKey": "animals/pen-pal3/photos/pexels_17157866_838451324a6c4c736058dc919f7207868126cf08542429ea152618ee5dcc0245.jpg",
+        "bytes": 118535,
+        "sha256": "838451324a6c4c736058dc919f7207868126cf08542429ea152618ee5dcc0245",
+        "etag": "\"pinned\""
+      },
+      {
+        "objectKey": "animals/pen-pal3/photos/pexels_18414753_b7834fa19be5dc7fca5dc28764d62a6f709be09af9c024b4b52b9935e3ecb076.jpg",
+        "bytes": 185606,
+        "sha256": "b7834fa19be5dc7fca5dc28764d62a6f709be09af9c024b4b52b9935e3ecb076",
+        "etag": "\"pinned\""
+      },
+      {
+        "objectKey": "animals/pen-pal3/photos/pexels_26339925_ab059fdf7ee19fcdc1e1337ea451a7bbb65912dd2ec337a131f6139bfebc90c3.jpg",
+        "bytes": 60226,
+        "sha256": "ab059fdf7ee19fcdc1e1337ea451a7bbb65912dd2ec337a131f6139bfebc90c3",
+        "etag": "\"pinned\""
+      }
+    ],
+    "photoPlan": {
+      "planSlug": "page-photo-hold",
+      "pageId": "acct:pen-pal3",
+      "libraryId": "syzygy:animals:pen-pal3",
+      "lane": "animals",
+      "subject": "pen-pal3",
+      "totalDurationSeconds": 12.0,
+      "brightnessGainFromOriginals": 0.85,
+      "media": [
+        {
+          "key": "animals/pen-pal3/photos/pexels_17157866_838451324a6c4c736058dc919f7207868126cf08542429ea152618ee5dcc0245.jpg",
+          "sourceKey": "animals/pen-pal3/photos/pexels_17157866_838451324a6c4c736058dc919f7207868126cf08542429ea152618ee5dcc0245.jpg",
+          "sha256": "838451324a6c4c736058dc919f7207868126cf08542429ea152618ee5dcc0245",
+          "bytes": 118535,
+          "duration": 4.0,
+          "focalX": 0.05,
+          "focalY": 0.5,
+          "cropMode": "cover",
+          "kenBurns": {
+            "dir": "in",
+            "zoom": 0.025
+          }
+        },
+        {
+          "key": "animals/pen-pal3/photos/pexels_18414753_b7834fa19be5dc7fca5dc28764d62a6f709be09af9c024b4b52b9935e3ecb076.jpg",
+          "sourceKey": "animals/pen-pal3/photos/pexels_18414753_b7834fa19be5dc7fca5dc28764d62a6f709be09af9c024b4b52b9935e3ecb076.jpg",
+          "sha256": "b7834fa19be5dc7fca5dc28764d62a6f709be09af9c024b4b52b9935e3ecb076",
+          "bytes": 185606,
+          "duration": 4.0,
+          "focalX": 0.5,
+          "focalY": 0.5,
+          "cropMode": "cover",
+          "kenBurns": {
+            "dir": "in",
+            "zoom": 0.025
+          }
+        },
+        {
+          "key": "animals/pen-pal3/photos/pexels_26339925_ab059fdf7ee19fcdc1e1337ea451a7bbb65912dd2ec337a131f6139bfebc90c3.jpg",
+          "sourceKey": "animals/pen-pal3/photos/pexels_26339925_ab059fdf7ee19fcdc1e1337ea451a7bbb65912dd2ec337a131f6139bfebc90c3.jpg",
+          "sha256": "ab059fdf7ee19fcdc1e1337ea451a7bbb65912dd2ec337a131f6139bfebc90c3",
+          "bytes": 60226,
+          "duration": 4.0,
+          "focalX": 0.7,
+          "focalY": 0.5,
+          "cropMode": "cover",
+          "kenBurns": {
+            "dir": "in",
+            "zoom": 0.025
+          }
+        }
+      ],
+      "variantIndex": 11,
+      "signature": "fd712a8182e6dac13334ccd5c6f15101b2311777f1c2e33defe9eb74799c6845"
+    },
+    "pageId": "acct:pen-pal3",
+    "masterPagesHash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "contentNiche": "slideshow",
+    "contentEngine": "sourced_slideshow",
+    "vaultUrl": "https://shipstream.risingtidesviral.com/vault/pen.pal3"
+  },
+  {
+    "schema": "content-lab.syzygy-slideshow-source.v1",
+    "kind": "syzygy_slideshow",
+    "recipeId": "image-video:master",
+    "recipeVersion": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "sourceLibraryId": "syzygy:animals:pen-pal3",
+    "librarySnapshotHash": "70f20ca509e00acc8a606bb55ec1aff104d620bd252572e730a4f573c2a41f6c",
+    "templateSlug": "page-photo-hold",
+    "planSignature": "36326fc2bb074d35a6a7d7a483d9985c3ffcdee9f96e166b23584aaae2139900",
+    "rendererRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "renderJobId": "render-pen-pal3-0012",
+    "media": [
+      {
+        "objectKey": "animals/pen-pal3/photos/pexels_18414753_b7834fa19be5dc7fca5dc28764d62a6f709be09af9c024b4b52b9935e3ecb076.jpg",
+        "bytes": 185606,
+        "sha256": "b7834fa19be5dc7fca5dc28764d62a6f709be09af9c024b4b52b9935e3ecb076",
+        "etag": "\"pinned\""
+      },
+      {
+        "objectKey": "animals/pen-pal3/photos/pexels_26339925_ab059fdf7ee19fcdc1e1337ea451a7bbb65912dd2ec337a131f6139bfebc90c3.jpg",
+        "bytes": 60226,
+        "sha256": "ab059fdf7ee19fcdc1e1337ea451a7bbb65912dd2ec337a131f6139bfebc90c3",
+        "etag": "\"pinned\""
+      },
+      {
+        "objectKey": "animals/pen-pal3/photos/pexels_26555693_96a2f6e03d4e1cb7be787167f222204c502c8c68eb87f51e5a49acc16f3de6e6.jpg",
+        "bytes": 196084,
+        "sha256": "96a2f6e03d4e1cb7be787167f222204c502c8c68eb87f51e5a49acc16f3de6e6",
+        "etag": "\"pinned\""
+      }
+    ],
+    "photoPlan": {
+      "planSlug": "page-photo-hold",
+      "pageId": "acct:pen-pal3",
+      "libraryId": "syzygy:animals:pen-pal3",
+      "lane": "animals",
+      "subject": "pen-pal3",
+      "totalDurationSeconds": 12.0,
+      "brightnessGainFromOriginals": 0.85,
+      "media": [
+        {
+          "key": "animals/pen-pal3/photos/pexels_18414753_b7834fa19be5dc7fca5dc28764d62a6f709be09af9c024b4b52b9935e3ecb076.jpg",
+          "sourceKey": "animals/pen-pal3/photos/pexels_18414753_b7834fa19be5dc7fca5dc28764d62a6f709be09af9c024b4b52b9935e3ecb076.jpg",
+          "sha256": "b7834fa19be5dc7fca5dc28764d62a6f709be09af9c024b4b52b9935e3ecb076",
+          "bytes": 185606,
+          "duration": 4.0,
+          "focalX": 0.05,
+          "focalY": 0.5,
+          "cropMode": "cover",
+          "kenBurns": {
+            "dir": "in",
+            "zoom": 0.025
+          }
+        },
+        {
+          "key": "animals/pen-pal3/photos/pexels_26339925_ab059fdf7ee19fcdc1e1337ea451a7bbb65912dd2ec337a131f6139bfebc90c3.jpg",
+          "sourceKey": "animals/pen-pal3/photos/pexels_26339925_ab059fdf7ee19fcdc1e1337ea451a7bbb65912dd2ec337a131f6139bfebc90c3.jpg",
+          "sha256": "ab059fdf7ee19fcdc1e1337ea451a7bbb65912dd2ec337a131f6139bfebc90c3",
+          "bytes": 60226,
+          "duration": 4.0,
+          "focalX": 0.5,
+          "focalY": 0.5,
+          "cropMode": "cover",
+          "kenBurns": {
+            "dir": "in",
+            "zoom": 0.025
+          }
+        },
+        {
+          "key": "animals/pen-pal3/photos/pexels_26555693_96a2f6e03d4e1cb7be787167f222204c502c8c68eb87f51e5a49acc16f3de6e6.jpg",
+          "sourceKey": "animals/pen-pal3/photos/pexels_26555693_96a2f6e03d4e1cb7be787167f222204c502c8c68eb87f51e5a49acc16f3de6e6.jpg",
+          "sha256": "96a2f6e03d4e1cb7be787167f222204c502c8c68eb87f51e5a49acc16f3de6e6",
+          "bytes": 196084,
+          "duration": 4.0,
+          "focalX": 0.7,
+          "focalY": 0.5,
+          "cropMode": "cover",
+          "kenBurns": {
+            "dir": "in",
+            "zoom": 0.025
+          }
+        }
+      ],
+      "variantIndex": 12,
+      "signature": "36326fc2bb074d35a6a7d7a483d9985c3ffcdee9f96e166b23584aaae2139900"
+    },
+    "pageId": "acct:pen-pal3",
+    "masterPagesHash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "contentNiche": "slideshow",
+    "contentEngine": "sourced_slideshow",
+    "vaultUrl": "https://shipstream.risingtidesviral.com/vault/pen.pal3"
+  },
+  {
+    "schema": "content-lab.syzygy-slideshow-source.v1",
+    "kind": "syzygy_slideshow",
+    "recipeId": "image-video:master",
+    "recipeVersion": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "sourceLibraryId": "syzygy:animals:pen-pal3",
+    "librarySnapshotHash": "70f20ca509e00acc8a606bb55ec1aff104d620bd252572e730a4f573c2a41f6c",
+    "templateSlug": "page-photo-hold",
+    "planSignature": "7c9b1042af790b5106313074c471ff297dc296a45815d2bd875b64144d994aa9",
+    "rendererRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "renderJobId": "render-pen-pal3-0013",
+    "media": [
+      {
+        "objectKey": "animals/pen-pal3/photos/pexels_26339925_ab059fdf7ee19fcdc1e1337ea451a7bbb65912dd2ec337a131f6139bfebc90c3.jpg",
+        "bytes": 60226,
+        "sha256": "ab059fdf7ee19fcdc1e1337ea451a7bbb65912dd2ec337a131f6139bfebc90c3",
+        "etag": "\"pinned\""
+      },
+      {
+        "objectKey": "animals/pen-pal3/photos/pexels_26555693_96a2f6e03d4e1cb7be787167f222204c502c8c68eb87f51e5a49acc16f3de6e6.jpg",
+        "bytes": 196084,
+        "sha256": "96a2f6e03d4e1cb7be787167f222204c502c8c68eb87f51e5a49acc16f3de6e6",
+        "etag": "\"pinned\""
+      },
+      {
+        "objectKey": "animals/pen-pal3/photos/pexels_26798166_6463c864f2d26ec14ccddc2aaa30c139bea04b1cec8820aec78fd7223f5b361a.jpg",
+        "bytes": 49596,
+        "sha256": "6463c864f2d26ec14ccddc2aaa30c139bea04b1cec8820aec78fd7223f5b361a",
+        "etag": "\"pinned\""
+      }
+    ],
+    "photoPlan": {
+      "planSlug": "page-photo-hold",
+      "pageId": "acct:pen-pal3",
+      "libraryId": "syzygy:animals:pen-pal3",
+      "lane": "animals",
+      "subject": "pen-pal3",
+      "totalDurationSeconds": 12.0,
+      "brightnessGainFromOriginals": 0.85,
+      "media": [
+        {
+          "key": "animals/pen-pal3/photos/pexels_26339925_ab059fdf7ee19fcdc1e1337ea451a7bbb65912dd2ec337a131f6139bfebc90c3.jpg",
+          "sourceKey": "animals/pen-pal3/photos/pexels_26339925_ab059fdf7ee19fcdc1e1337ea451a7bbb65912dd2ec337a131f6139bfebc90c3.jpg",
+          "sha256": "ab059fdf7ee19fcdc1e1337ea451a7bbb65912dd2ec337a131f6139bfebc90c3",
+          "bytes": 60226,
+          "duration": 4.0,
+          "focalX": 0.05,
+          "focalY": 0.5,
+          "cropMode": "cover",
+          "kenBurns": {
+            "dir": "in",
+            "zoom": 0.025
+          }
+        },
+        {
+          "key": "animals/pen-pal3/photos/pexels_26555693_96a2f6e03d4e1cb7be787167f222204c502c8c68eb87f51e5a49acc16f3de6e6.jpg",
+          "sourceKey": "animals/pen-pal3/photos/pexels_26555693_96a2f6e03d4e1cb7be787167f222204c502c8c68eb87f51e5a49acc16f3de6e6.jpg",
+          "sha256": "96a2f6e03d4e1cb7be787167f222204c502c8c68eb87f51e5a49acc16f3de6e6",
+          "bytes": 196084,
+          "duration": 4.0,
+          "focalX": 0.5,
+          "focalY": 0.5,
+          "cropMode": "cover",
+          "kenBurns": {
+            "dir": "in",
+            "zoom": 0.025
+          }
+        },
+        {
+          "key": "animals/pen-pal3/photos/pexels_26798166_6463c864f2d26ec14ccddc2aaa30c139bea04b1cec8820aec78fd7223f5b361a.jpg",
+          "sourceKey": "animals/pen-pal3/photos/pexels_26798166_6463c864f2d26ec14ccddc2aaa30c139bea04b1cec8820aec78fd7223f5b361a.jpg",
+          "sha256": "6463c864f2d26ec14ccddc2aaa30c139bea04b1cec8820aec78fd7223f5b361a",
+          "bytes": 49596,
+          "duration": 4.0,
+          "focalX": 0.7,
+          "focalY": 0.5,
+          "cropMode": "cover",
+          "kenBurns": {
+            "dir": "in",
+            "zoom": 0.025
+          }
+        }
+      ],
+      "variantIndex": 13,
+      "signature": "7c9b1042af790b5106313074c471ff297dc296a45815d2bd875b64144d994aa9"
+    },
+    "pageId": "acct:pen-pal3",
+    "masterPagesHash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "contentNiche": "slideshow",
+    "contentEngine": "sourced_slideshow",
+    "vaultUrl": "https://shipstream.risingtidesviral.com/vault/pen.pal3"
+  },
+  {
+    "schema": "content-lab.syzygy-slideshow-source.v1",
+    "kind": "syzygy_slideshow",
+    "recipeId": "image-video:master",
+    "recipeVersion": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "sourceLibraryId": "syzygy:animals:pen-pal3",
+    "librarySnapshotHash": "70f20ca509e00acc8a606bb55ec1aff104d620bd252572e730a4f573c2a41f6c",
+    "templateSlug": "page-photo-hold",
+    "planSignature": "904cc48caae408b4945b8b8c47ea6dcc285250defb76c70cb04d3ea45a190b70",
+    "rendererRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "renderJobId": "render-pen-pal3-0014",
+    "media": [
+      {
+        "objectKey": "animals/pen-pal3/photos/pexels_26555693_96a2f6e03d4e1cb7be787167f222204c502c8c68eb87f51e5a49acc16f3de6e6.jpg",
+        "bytes": 196084,
+        "sha256": "96a2f6e03d4e1cb7be787167f222204c502c8c68eb87f51e5a49acc16f3de6e6",
+        "etag": "\"pinned\""
+      },
+      {
+        "objectKey": "animals/pen-pal3/photos/pexels_26798166_6463c864f2d26ec14ccddc2aaa30c139bea04b1cec8820aec78fd7223f5b361a.jpg",
+        "bytes": 49596,
+        "sha256": "6463c864f2d26ec14ccddc2aaa30c139bea04b1cec8820aec78fd7223f5b361a",
+        "etag": "\"pinned\""
+      },
+      {
+        "objectKey": "animals/pen-pal3/photos/pexels_27378768_74ee72462e35176aabf9fddda3c86b04ca277fa788e9ddb84dfddd36f590779e.jpg",
+        "bytes": 124692,
+        "sha256": "74ee72462e35176aabf9fddda3c86b04ca277fa788e9ddb84dfddd36f590779e",
+        "etag": "\"pinned\""
+      }
+    ],
+    "photoPlan": {
+      "planSlug": "page-photo-hold",
+      "pageId": "acct:pen-pal3",
+      "libraryId": "syzygy:animals:pen-pal3",
+      "lane": "animals",
+      "subject": "pen-pal3",
+      "totalDurationSeconds": 12.0,
+      "brightnessGainFromOriginals": 0.85,
+      "media": [
+        {
+          "key": "animals/pen-pal3/photos/pexels_26555693_96a2f6e03d4e1cb7be787167f222204c502c8c68eb87f51e5a49acc16f3de6e6.jpg",
+          "sourceKey": "animals/pen-pal3/photos/pexels_26555693_96a2f6e03d4e1cb7be787167f222204c502c8c68eb87f51e5a49acc16f3de6e6.jpg",
+          "sha256": "96a2f6e03d4e1cb7be787167f222204c502c8c68eb87f51e5a49acc16f3de6e6",
+          "bytes": 196084,
+          "duration": 4.0,
+          "focalX": 0.05,
+          "focalY": 0.5,
+          "cropMode": "cover",
+          "kenBurns": {
+            "dir": "in",
+            "zoom": 0.025
+          }
+        },
+        {
+          "key": "animals/pen-pal3/photos/pexels_26798166_6463c864f2d26ec14ccddc2aaa30c139bea04b1cec8820aec78fd7223f5b361a.jpg",
+          "sourceKey": "animals/pen-pal3/photos/pexels_26798166_6463c864f2d26ec14ccddc2aaa30c139bea04b1cec8820aec78fd7223f5b361a.jpg",
+          "sha256": "6463c864f2d26ec14ccddc2aaa30c139bea04b1cec8820aec78fd7223f5b361a",
+          "bytes": 49596,
+          "duration": 4.0,
+          "focalX": 0.5,
+          "focalY": 0.5,
+          "cropMode": "cover",
+          "kenBurns": {
+            "dir": "in",
+            "zoom": 0.025
+          }
+        },
+        {
+          "key": "animals/pen-pal3/photos/pexels_27378768_74ee72462e35176aabf9fddda3c86b04ca277fa788e9ddb84dfddd36f590779e.jpg",
+          "sourceKey": "animals/pen-pal3/photos/pexels_27378768_74ee72462e35176aabf9fddda3c86b04ca277fa788e9ddb84dfddd36f590779e.jpg",
+          "sha256": "74ee72462e35176aabf9fddda3c86b04ca277fa788e9ddb84dfddd36f590779e",
+          "bytes": 124692,
+          "duration": 4.0,
+          "focalX": 0.7,
+          "focalY": 0.5,
+          "cropMode": "cover",
+          "kenBurns": {
+            "dir": "in",
+            "zoom": 0.025
+          }
+        }
+      ],
+      "variantIndex": 14,
+      "signature": "904cc48caae408b4945b8b8c47ea6dcc285250defb76c70cb04d3ea45a190b70"
+    },
+    "pageId": "acct:pen-pal3",
+    "masterPagesHash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "contentNiche": "slideshow",
+    "contentEngine": "sourced_slideshow",
+    "vaultUrl": "https://shipstream.risingtidesviral.com/vault/pen.pal3"
+  },
+  {
+    "schema": "content-lab.syzygy-slideshow-source.v1",
+    "kind": "syzygy_slideshow",
+    "recipeId": "image-video:master",
+    "recipeVersion": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "sourceLibraryId": "syzygy:animals:pen-pal3",
+    "librarySnapshotHash": "70f20ca509e00acc8a606bb55ec1aff104d620bd252572e730a4f573c2a41f6c",
+    "templateSlug": "page-photo-hold",
+    "planSignature": "f82b7f31262ee9022c381753123c07e3730ccebf6a6a52c7c3fa8e9144a6764a",
+    "rendererRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "renderJobId": "render-pen-pal3-0015",
+    "media": [
+      {
+        "objectKey": "animals/pen-pal3/photos/pexels_26798166_6463c864f2d26ec14ccddc2aaa30c139bea04b1cec8820aec78fd7223f5b361a.jpg",
+        "bytes": 49596,
+        "sha256": "6463c864f2d26ec14ccddc2aaa30c139bea04b1cec8820aec78fd7223f5b361a",
+        "etag": "\"pinned\""
+      },
+      {
+        "objectKey": "animals/pen-pal3/photos/pexels_27378768_74ee72462e35176aabf9fddda3c86b04ca277fa788e9ddb84dfddd36f590779e.jpg",
+        "bytes": 124692,
+        "sha256": "74ee72462e35176aabf9fddda3c86b04ca277fa788e9ddb84dfddd36f590779e",
+        "etag": "\"pinned\""
+      },
+      {
+        "objectKey": "animals/pen-pal3/photos/pexels_28808508_788a57636df32c7242a62816b201aec566810a21057fe3b577618d5a453057ac.jpg",
+        "bytes": 350208,
+        "sha256": "788a57636df32c7242a62816b201aec566810a21057fe3b577618d5a453057ac",
+        "etag": "\"pinned\""
+      }
+    ],
+    "photoPlan": {
+      "planSlug": "page-photo-hold",
+      "pageId": "acct:pen-pal3",
+      "libraryId": "syzygy:animals:pen-pal3",
+      "lane": "animals",
+      "subject": "pen-pal3",
+      "totalDurationSeconds": 12.0,
+      "brightnessGainFromOriginals": 0.85,
+      "media": [
+        {
+          "key": "animals/pen-pal3/photos/pexels_26798166_6463c864f2d26ec14ccddc2aaa30c139bea04b1cec8820aec78fd7223f5b361a.jpg",
+          "sourceKey": "animals/pen-pal3/photos/pexels_26798166_6463c864f2d26ec14ccddc2aaa30c139bea04b1cec8820aec78fd7223f5b361a.jpg",
+          "sha256": "6463c864f2d26ec14ccddc2aaa30c139bea04b1cec8820aec78fd7223f5b361a",
+          "bytes": 49596,
+          "duration": 4.0,
+          "focalX": 0.05,
+          "focalY": 0.5,
+          "cropMode": "cover",
+          "kenBurns": {
+            "dir": "in",
+            "zoom": 0.025
+          }
+        },
+        {
+          "key": "animals/pen-pal3/photos/pexels_27378768_74ee72462e35176aabf9fddda3c86b04ca277fa788e9ddb84dfddd36f590779e.jpg",
+          "sourceKey": "animals/pen-pal3/photos/pexels_27378768_74ee72462e35176aabf9fddda3c86b04ca277fa788e9ddb84dfddd36f590779e.jpg",
+          "sha256": "74ee72462e35176aabf9fddda3c86b04ca277fa788e9ddb84dfddd36f590779e",
+          "bytes": 124692,
+          "duration": 4.0,
+          "focalX": 0.5,
+          "focalY": 0.5,
+          "cropMode": "cover",
+          "kenBurns": {
+            "dir": "in",
+            "zoom": 0.025
+          }
+        },
+        {
+          "key": "animals/pen-pal3/photos/pexels_28808508_788a57636df32c7242a62816b201aec566810a21057fe3b577618d5a453057ac.jpg",
+          "sourceKey": "animals/pen-pal3/photos/pexels_28808508_788a57636df32c7242a62816b201aec566810a21057fe3b577618d5a453057ac.jpg",
+          "sha256": "788a57636df32c7242a62816b201aec566810a21057fe3b577618d5a453057ac",
+          "bytes": 350208,
+          "duration": 4.0,
+          "focalX": 0.7,
+          "focalY": 0.5,
+          "cropMode": "cover",
+          "kenBurns": {
+            "dir": "in",
+            "zoom": 0.025
+          }
+        }
+      ],
+      "variantIndex": 15,
+      "signature": "f82b7f31262ee9022c381753123c07e3730ccebf6a6a52c7c3fa8e9144a6764a"
+    },
+    "pageId": "acct:pen-pal3",
+    "masterPagesHash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "contentNiche": "slideshow",
+    "contentEngine": "sourced_slideshow",
+    "vaultUrl": "https://shipstream.risingtidesviral.com/vault/pen.pal3"
+  },
+  {
+    "schema": "content-lab.syzygy-slideshow-source.v1",
+    "kind": "syzygy_slideshow",
+    "recipeId": "image-video:master",
+    "recipeVersion": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "sourceLibraryId": "syzygy:animals:pen-pal3",
+    "librarySnapshotHash": "70f20ca509e00acc8a606bb55ec1aff104d620bd252572e730a4f573c2a41f6c",
+    "templateSlug": "page-photo-hold",
+    "planSignature": "a1365b985e82592508de7adb5e26613144fa294a62cbf0712e5c5a3ac2430823",
+    "rendererRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "renderJobId": "render-pen-pal3-0016",
+    "media": [
+      {
+        "objectKey": "animals/pen-pal3/photos/pexels_27378768_74ee72462e35176aabf9fddda3c86b04ca277fa788e9ddb84dfddd36f590779e.jpg",
+        "bytes": 124692,
+        "sha256": "74ee72462e35176aabf9fddda3c86b04ca277fa788e9ddb84dfddd36f590779e",
+        "etag": "\"pinned\""
+      },
+      {
+        "objectKey": "animals/pen-pal3/photos/pexels_28808508_788a57636df32c7242a62816b201aec566810a21057fe3b577618d5a453057ac.jpg",
+        "bytes": 350208,
+        "sha256": "788a57636df32c7242a62816b201aec566810a21057fe3b577618d5a453057ac",
+        "etag": "\"pinned\""
+      },
+      {
+        "objectKey": "animals/pen-pal3/photos/pexels_29665916_cb592d2c67bc87f38717cda430bca8fa62ee9b0dd323d03468c3b5d94b9f96f1.jpg",
+        "bytes": 119391,
+        "sha256": "cb592d2c67bc87f38717cda430bca8fa62ee9b0dd323d03468c3b5d94b9f96f1",
+        "etag": "\"pinned\""
+      }
+    ],
+    "photoPlan": {
+      "planSlug": "page-photo-hold",
+      "pageId": "acct:pen-pal3",
+      "libraryId": "syzygy:animals:pen-pal3",
+      "lane": "animals",
+      "subject": "pen-pal3",
+      "totalDurationSeconds": 12.0,
+      "brightnessGainFromOriginals": 0.85,
+      "media": [
+        {
+          "key": "animals/pen-pal3/photos/pexels_27378768_74ee72462e35176aabf9fddda3c86b04ca277fa788e9ddb84dfddd36f590779e.jpg",
+          "sourceKey": "animals/pen-pal3/photos/pexels_27378768_74ee72462e35176aabf9fddda3c86b04ca277fa788e9ddb84dfddd36f590779e.jpg",
+          "sha256": "74ee72462e35176aabf9fddda3c86b04ca277fa788e9ddb84dfddd36f590779e",
+          "bytes": 124692,
+          "duration": 4.0,
+          "focalX": 0.05,
+          "focalY": 0.5,
+          "cropMode": "cover",
+          "kenBurns": {
+            "dir": "in",
+            "zoom": 0.025
+          }
+        },
+        {
+          "key": "animals/pen-pal3/photos/pexels_28808508_788a57636df32c7242a62816b201aec566810a21057fe3b577618d5a453057ac.jpg",
+          "sourceKey": "animals/pen-pal3/photos/pexels_28808508_788a57636df32c7242a62816b201aec566810a21057fe3b577618d5a453057ac.jpg",
+          "sha256": "788a57636df32c7242a62816b201aec566810a21057fe3b577618d5a453057ac",
+          "bytes": 350208,
+          "duration": 4.0,
+          "focalX": 0.5,
+          "focalY": 0.5,
+          "cropMode": "cover",
+          "kenBurns": {
+            "dir": "in",
+            "zoom": 0.025
+          }
+        },
+        {
+          "key": "animals/pen-pal3/photos/pexels_29665916_cb592d2c67bc87f38717cda430bca8fa62ee9b0dd323d03468c3b5d94b9f96f1.jpg",
+          "sourceKey": "animals/pen-pal3/photos/pexels_29665916_cb592d2c67bc87f38717cda430bca8fa62ee9b0dd323d03468c3b5d94b9f96f1.jpg",
+          "sha256": "cb592d2c67bc87f38717cda430bca8fa62ee9b0dd323d03468c3b5d94b9f96f1",
+          "bytes": 119391,
+          "duration": 4.0,
+          "focalX": 0.7,
+          "focalY": 0.5,
+          "cropMode": "cover",
+          "kenBurns": {
+            "dir": "in",
+            "zoom": 0.025
+          }
+        }
+      ],
+      "variantIndex": 16,
+      "signature": "a1365b985e82592508de7adb5e26613144fa294a62cbf0712e5c5a3ac2430823"
+    },
+    "pageId": "acct:pen-pal3",
+    "masterPagesHash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "contentNiche": "slideshow",
+    "contentEngine": "sourced_slideshow",
+    "vaultUrl": "https://shipstream.risingtidesviral.com/vault/pen.pal3"
+  },
+  {
+    "schema": "content-lab.syzygy-slideshow-source.v1",
+    "kind": "syzygy_slideshow",
+    "recipeId": "image-video:master",
+    "recipeVersion": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "sourceLibraryId": "syzygy:animals:pen-pal3",
+    "librarySnapshotHash": "70f20ca509e00acc8a606bb55ec1aff104d620bd252572e730a4f573c2a41f6c",
+    "templateSlug": "page-photo-hold",
+    "planSignature": "17fd527aa6fe4d215dbaea0bfdbfc1e59fb4f84d34faca9a8348441d536ef9ff",
+    "rendererRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "renderJobId": "render-pen-pal3-0017",
+    "media": [
+      {
+        "objectKey": "animals/pen-pal3/photos/pexels_28808508_788a57636df32c7242a62816b201aec566810a21057fe3b577618d5a453057ac.jpg",
+        "bytes": 350208,
+        "sha256": "788a57636df32c7242a62816b201aec566810a21057fe3b577618d5a453057ac",
+        "etag": "\"pinned\""
+      },
+      {
+        "objectKey": "animals/pen-pal3/photos/pexels_29665916_cb592d2c67bc87f38717cda430bca8fa62ee9b0dd323d03468c3b5d94b9f96f1.jpg",
+        "bytes": 119391,
+        "sha256": "cb592d2c67bc87f38717cda430bca8fa62ee9b0dd323d03468c3b5d94b9f96f1",
+        "etag": "\"pinned\""
+      },
+      {
+        "objectKey": "animals/pen-pal3/photos/pexels_30453866_f58d53d219f40ad0773ba8693d982d9ae68f21213f57d2ba31aa1f9d58d3302b.jpg",
+        "bytes": 245506,
+        "sha256": "f58d53d219f40ad0773ba8693d982d9ae68f21213f57d2ba31aa1f9d58d3302b",
+        "etag": "\"pinned\""
+      }
+    ],
+    "photoPlan": {
+      "planSlug": "page-photo-hold",
+      "pageId": "acct:pen-pal3",
+      "libraryId": "syzygy:animals:pen-pal3",
+      "lane": "animals",
+      "subject": "pen-pal3",
+      "totalDurationSeconds": 12.0,
+      "brightnessGainFromOriginals": 0.85,
+      "media": [
+        {
+          "key": "animals/pen-pal3/photos/pexels_28808508_788a57636df32c7242a62816b201aec566810a21057fe3b577618d5a453057ac.jpg",
+          "sourceKey": "animals/pen-pal3/photos/pexels_28808508_788a57636df32c7242a62816b201aec566810a21057fe3b577618d5a453057ac.jpg",
+          "sha256": "788a57636df32c7242a62816b201aec566810a21057fe3b577618d5a453057ac",
+          "bytes": 350208,
+          "duration": 4.0,
+          "focalX": 0.05,
+          "focalY": 0.5,
+          "cropMode": "cover",
+          "kenBurns": {
+            "dir": "in",
+            "zoom": 0.025
+          }
+        },
+        {
+          "key": "animals/pen-pal3/photos/pexels_29665916_cb592d2c67bc87f38717cda430bca8fa62ee9b0dd323d03468c3b5d94b9f96f1.jpg",
+          "sourceKey": "animals/pen-pal3/photos/pexels_29665916_cb592d2c67bc87f38717cda430bca8fa62ee9b0dd323d03468c3b5d94b9f96f1.jpg",
+          "sha256": "cb592d2c67bc87f38717cda430bca8fa62ee9b0dd323d03468c3b5d94b9f96f1",
+          "bytes": 119391,
+          "duration": 4.0,
+          "focalX": 0.5,
+          "focalY": 0.5,
+          "cropMode": "cover",
+          "kenBurns": {
+            "dir": "in",
+            "zoom": 0.025
+          }
+        },
+        {
+          "key": "animals/pen-pal3/photos/pexels_30453866_f58d53d219f40ad0773ba8693d982d9ae68f21213f57d2ba31aa1f9d58d3302b.jpg",
+          "sourceKey": "animals/pen-pal3/photos/pexels_30453866_f58d53d219f40ad0773ba8693d982d9ae68f21213f57d2ba31aa1f9d58d3302b.jpg",
+          "sha256": "f58d53d219f40ad0773ba8693d982d9ae68f21213f57d2ba31aa1f9d58d3302b",
+          "bytes": 245506,
+          "duration": 4.0,
+          "focalX": 0.7,
+          "focalY": 0.5,
+          "cropMode": "cover",
+          "kenBurns": {
+            "dir": "in",
+            "zoom": 0.025
+          }
+        }
+      ],
+      "variantIndex": 17,
+      "signature": "17fd527aa6fe4d215dbaea0bfdbfc1e59fb4f84d34faca9a8348441d536ef9ff"
+    },
+    "pageId": "acct:pen-pal3",
+    "masterPagesHash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "contentNiche": "slideshow",
+    "contentEngine": "sourced_slideshow",
+    "vaultUrl": "https://shipstream.risingtidesviral.com/vault/pen.pal3"
+  },
+  {
+    "schema": "content-lab.syzygy-slideshow-source.v1",
+    "kind": "syzygy_slideshow",
+    "recipeId": "image-video:master",
+    "recipeVersion": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "sourceLibraryId": "syzygy:animals:pen-pal3",
+    "librarySnapshotHash": "70f20ca509e00acc8a606bb55ec1aff104d620bd252572e730a4f573c2a41f6c",
+    "templateSlug": "page-photo-hold",
+    "planSignature": "60d32fc45321b0136aa8940abc668d28234eb418f0d6087491c0d8e73533e20b",
+    "rendererRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "renderJobId": "render-pen-pal3-0018",
+    "media": [
+      {
+        "objectKey": "animals/pen-pal3/photos/pexels_29665916_cb592d2c67bc87f38717cda430bca8fa62ee9b0dd323d03468c3b5d94b9f96f1.jpg",
+        "bytes": 119391,
+        "sha256": "cb592d2c67bc87f38717cda430bca8fa62ee9b0dd323d03468c3b5d94b9f96f1",
+        "etag": "\"pinned\""
+      },
+      {
+        "objectKey": "animals/pen-pal3/photos/pexels_30453866_f58d53d219f40ad0773ba8693d982d9ae68f21213f57d2ba31aa1f9d58d3302b.jpg",
+        "bytes": 245506,
+        "sha256": "f58d53d219f40ad0773ba8693d982d9ae68f21213f57d2ba31aa1f9d58d3302b",
+        "etag": "\"pinned\""
+      },
+      {
+        "objectKey": "animals/pen-pal3/photos/pexels_33378931_bd379e17de34aca8912929ceaa918c0a2e30ce4ea08dbf08ebcdcad9f702ae05.jpg",
+        "bytes": 257018,
+        "sha256": "bd379e17de34aca8912929ceaa918c0a2e30ce4ea08dbf08ebcdcad9f702ae05",
+        "etag": "\"pinned\""
+      }
+    ],
+    "photoPlan": {
+      "planSlug": "page-photo-hold",
+      "pageId": "acct:pen-pal3",
+      "libraryId": "syzygy:animals:pen-pal3",
+      "lane": "animals",
+      "subject": "pen-pal3",
+      "totalDurationSeconds": 12.0,
+      "brightnessGainFromOriginals": 0.85,
+      "media": [
+        {
+          "key": "animals/pen-pal3/photos/pexels_29665916_cb592d2c67bc87f38717cda430bca8fa62ee9b0dd323d03468c3b5d94b9f96f1.jpg",
+          "sourceKey": "animals/pen-pal3/photos/pexels_29665916_cb592d2c67bc87f38717cda430bca8fa62ee9b0dd323d03468c3b5d94b9f96f1.jpg",
+          "sha256": "cb592d2c67bc87f38717cda430bca8fa62ee9b0dd323d03468c3b5d94b9f96f1",
+          "bytes": 119391,
+          "duration": 4.0,
+          "focalX": 0.05,
+          "focalY": 0.5,
+          "cropMode": "cover",
+          "kenBurns": {
+            "dir": "in",
+            "zoom": 0.025
+          }
+        },
+        {
+          "key": "animals/pen-pal3/photos/pexels_30453866_f58d53d219f40ad0773ba8693d982d9ae68f21213f57d2ba31aa1f9d58d3302b.jpg",
+          "sourceKey": "animals/pen-pal3/photos/pexels_30453866_f58d53d219f40ad0773ba8693d982d9ae68f21213f57d2ba31aa1f9d58d3302b.jpg",
+          "sha256": "f58d53d219f40ad0773ba8693d982d9ae68f21213f57d2ba31aa1f9d58d3302b",
+          "bytes": 245506,
+          "duration": 4.0,
+          "focalX": 0.5,
+          "focalY": 0.5,
+          "cropMode": "cover",
+          "kenBurns": {
+            "dir": "in",
+            "zoom": 0.025
+          }
+        },
+        {
+          "key": "animals/pen-pal3/photos/pexels_33378931_bd379e17de34aca8912929ceaa918c0a2e30ce4ea08dbf08ebcdcad9f702ae05.jpg",
+          "sourceKey": "animals/pen-pal3/photos/pexels_33378931_bd379e17de34aca8912929ceaa918c0a2e30ce4ea08dbf08ebcdcad9f702ae05.jpg",
+          "sha256": "bd379e17de34aca8912929ceaa918c0a2e30ce4ea08dbf08ebcdcad9f702ae05",
+          "bytes": 257018,
+          "duration": 4.0,
+          "focalX": 0.7,
+          "focalY": 0.5,
+          "cropMode": "cover",
+          "kenBurns": {
+            "dir": "in",
+            "zoom": 0.025
+          }
+        }
+      ],
+      "variantIndex": 18,
+      "signature": "60d32fc45321b0136aa8940abc668d28234eb418f0d6087491c0d8e73533e20b"
+    },
+    "pageId": "acct:pen-pal3",
+    "masterPagesHash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "contentNiche": "slideshow",
+    "contentEngine": "sourced_slideshow",
+    "vaultUrl": "https://shipstream.risingtidesviral.com/vault/pen.pal3"
+  },
+  {
+    "schema": "content-lab.syzygy-slideshow-source.v1",
+    "kind": "syzygy_slideshow",
+    "recipeId": "image-video:master",
+    "recipeVersion": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "sourceLibraryId": "syzygy:animals:pen-pal3",
+    "librarySnapshotHash": "70f20ca509e00acc8a606bb55ec1aff104d620bd252572e730a4f573c2a41f6c",
+    "templateSlug": "page-photo-hold",
+    "planSignature": "5519ad7152f7fb75a8788a7e317d6e913db43c359d1a0eba119b939237f63fcd",
+    "rendererRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "renderJobId": "render-pen-pal3-0019",
+    "media": [
+      {
+        "objectKey": "animals/pen-pal3/photos/pexels_30453866_f58d53d219f40ad0773ba8693d982d9ae68f21213f57d2ba31aa1f9d58d3302b.jpg",
+        "bytes": 245506,
+        "sha256": "f58d53d219f40ad0773ba8693d982d9ae68f21213f57d2ba31aa1f9d58d3302b",
+        "etag": "\"pinned\""
+      },
+      {
+        "objectKey": "animals/pen-pal3/photos/pexels_33378931_bd379e17de34aca8912929ceaa918c0a2e30ce4ea08dbf08ebcdcad9f702ae05.jpg",
+        "bytes": 257018,
+        "sha256": "bd379e17de34aca8912929ceaa918c0a2e30ce4ea08dbf08ebcdcad9f702ae05",
+        "etag": "\"pinned\""
+      },
+      {
+        "objectKey": "animals/pen-pal3/photos/pexels_33518752_cc4c075814f1e8b64d4cd8cd2cb842496e83f8bf2b5f2369e6ac294d4a3b66b1.jpg",
+        "bytes": 116596,
+        "sha256": "cc4c075814f1e8b64d4cd8cd2cb842496e83f8bf2b5f2369e6ac294d4a3b66b1",
+        "etag": "\"pinned\""
+      }
+    ],
+    "photoPlan": {
+      "planSlug": "page-photo-hold",
+      "pageId": "acct:pen-pal3",
+      "libraryId": "syzygy:animals:pen-pal3",
+      "lane": "animals",
+      "subject": "pen-pal3",
+      "totalDurationSeconds": 12.0,
+      "brightnessGainFromOriginals": 0.85,
+      "media": [
+        {
+          "key": "animals/pen-pal3/photos/pexels_30453866_f58d53d219f40ad0773ba8693d982d9ae68f21213f57d2ba31aa1f9d58d3302b.jpg",
+          "sourceKey": "animals/pen-pal3/photos/pexels_30453866_f58d53d219f40ad0773ba8693d982d9ae68f21213f57d2ba31aa1f9d58d3302b.jpg",
+          "sha256": "f58d53d219f40ad0773ba8693d982d9ae68f21213f57d2ba31aa1f9d58d3302b",
+          "bytes": 245506,
+          "duration": 4.0,
+          "focalX": 0.05,
+          "focalY": 0.5,
+          "cropMode": "cover",
+          "kenBurns": {
+            "dir": "in",
+            "zoom": 0.025
+          }
+        },
+        {
+          "key": "animals/pen-pal3/photos/pexels_33378931_bd379e17de34aca8912929ceaa918c0a2e30ce4ea08dbf08ebcdcad9f702ae05.jpg",
+          "sourceKey": "animals/pen-pal3/photos/pexels_33378931_bd379e17de34aca8912929ceaa918c0a2e30ce4ea08dbf08ebcdcad9f702ae05.jpg",
+          "sha256": "bd379e17de34aca8912929ceaa918c0a2e30ce4ea08dbf08ebcdcad9f702ae05",
+          "bytes": 257018,
+          "duration": 4.0,
+          "focalX": 0.5,
+          "focalY": 0.5,
+          "cropMode": "cover",
+          "kenBurns": {
+            "dir": "in",
+            "zoom": 0.025
+          }
+        },
+        {
+          "key": "animals/pen-pal3/photos/pexels_33518752_cc4c075814f1e8b64d4cd8cd2cb842496e83f8bf2b5f2369e6ac294d4a3b66b1.jpg",
+          "sourceKey": "animals/pen-pal3/photos/pexels_33518752_cc4c075814f1e8b64d4cd8cd2cb842496e83f8bf2b5f2369e6ac294d4a3b66b1.jpg",
+          "sha256": "cc4c075814f1e8b64d4cd8cd2cb842496e83f8bf2b5f2369e6ac294d4a3b66b1",
+          "bytes": 116596,
+          "duration": 4.0,
+          "focalX": 0.7,
+          "focalY": 0.5,
+          "cropMode": "cover",
+          "kenBurns": {
+            "dir": "in",
+            "zoom": 0.025
+          }
+        }
+      ],
+      "variantIndex": 19,
+      "signature": "5519ad7152f7fb75a8788a7e317d6e913db43c359d1a0eba119b939237f63fcd"
+    },
+    "pageId": "acct:pen-pal3",
+    "masterPagesHash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "contentNiche": "slideshow",
+    "contentEngine": "sourced_slideshow",
+    "vaultUrl": "https://shipstream.risingtidesviral.com/vault/pen.pal3"
+  },
+  {
+    "schema": "content-lab.syzygy-slideshow-source.v1",
+    "kind": "syzygy_slideshow",
+    "recipeId": "image-video:master",
+    "recipeVersion": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "sourceLibraryId": "syzygy:animals:pen-pal3",
+    "librarySnapshotHash": "70f20ca509e00acc8a606bb55ec1aff104d620bd252572e730a4f573c2a41f6c",
+    "templateSlug": "page-photo-hold",
+    "planSignature": "ba3258a11cba1119668a42ed4cde2f46b6f9abfe845fd514acd3f5c95ac38498",
+    "rendererRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "renderJobId": "render-pen-pal3-0020",
+    "media": [
+      {
+        "objectKey": "animals/pen-pal3/photos/pexels_33378931_bd379e17de34aca8912929ceaa918c0a2e30ce4ea08dbf08ebcdcad9f702ae05.jpg",
+        "bytes": 257018,
+        "sha256": "bd379e17de34aca8912929ceaa918c0a2e30ce4ea08dbf08ebcdcad9f702ae05",
+        "etag": "\"pinned\""
+      },
+      {
+        "objectKey": "animals/pen-pal3/photos/pexels_33518752_cc4c075814f1e8b64d4cd8cd2cb842496e83f8bf2b5f2369e6ac294d4a3b66b1.jpg",
+        "bytes": 116596,
+        "sha256": "cc4c075814f1e8b64d4cd8cd2cb842496e83f8bf2b5f2369e6ac294d4a3b66b1",
+        "etag": "\"pinned\""
+      },
+      {
+        "objectKey": "animals/pen-pal3/photos/pexels_34389859_079f19e3277ecab92b141b0ab59fd0efdfb44b504715183d1c0249388bf1d9cc.jpg",
+        "bytes": 160164,
+        "sha256": "079f19e3277ecab92b141b0ab59fd0efdfb44b504715183d1c0249388bf1d9cc",
+        "etag": "\"pinned\""
+      }
+    ],
+    "photoPlan": {
+      "planSlug": "page-photo-hold",
+      "pageId": "acct:pen-pal3",
+      "libraryId": "syzygy:animals:pen-pal3",
+      "lane": "animals",
+      "subject": "pen-pal3",
+      "totalDurationSeconds": 12.0,
+      "brightnessGainFromOriginals": 0.85,
+      "media": [
+        {
+          "key": "animals/pen-pal3/photos/pexels_33378931_bd379e17de34aca8912929ceaa918c0a2e30ce4ea08dbf08ebcdcad9f702ae05.jpg",
+          "sourceKey": "animals/pen-pal3/photos/pexels_33378931_bd379e17de34aca8912929ceaa918c0a2e30ce4ea08dbf08ebcdcad9f702ae05.jpg",
+          "sha256": "bd379e17de34aca8912929ceaa918c0a2e30ce4ea08dbf08ebcdcad9f702ae05",
+          "bytes": 257018,
+          "duration": 4.0,
+          "focalX": 0.05,
+          "focalY": 0.5,
+          "cropMode": "cover",
+          "kenBurns": {
+            "dir": "in",
+            "zoom": 0.025
+          }
+        },
+        {
+          "key": "animals/pen-pal3/photos/pexels_33518752_cc4c075814f1e8b64d4cd8cd2cb842496e83f8bf2b5f2369e6ac294d4a3b66b1.jpg",
+          "sourceKey": "animals/pen-pal3/photos/pexels_33518752_cc4c075814f1e8b64d4cd8cd2cb842496e83f8bf2b5f2369e6ac294d4a3b66b1.jpg",
+          "sha256": "cc4c075814f1e8b64d4cd8cd2cb842496e83f8bf2b5f2369e6ac294d4a3b66b1",
+          "bytes": 116596,
+          "duration": 4.0,
+          "focalX": 0.5,
+          "focalY": 0.5,
+          "cropMode": "cover",
+          "kenBurns": {
+            "dir": "in",
+            "zoom": 0.025
+          }
+        },
+        {
+          "key": "animals/pen-pal3/photos/pexels_34389859_079f19e3277ecab92b141b0ab59fd0efdfb44b504715183d1c0249388bf1d9cc.jpg",
+          "sourceKey": "animals/pen-pal3/photos/pexels_34389859_079f19e3277ecab92b141b0ab59fd0efdfb44b504715183d1c0249388bf1d9cc.jpg",
+          "sha256": "079f19e3277ecab92b141b0ab59fd0efdfb44b504715183d1c0249388bf1d9cc",
+          "bytes": 160164,
+          "duration": 4.0,
+          "focalX": 0.7,
+          "focalY": 0.5,
+          "cropMode": "cover",
+          "kenBurns": {
+            "dir": "in",
+            "zoom": 0.025
+          }
+        }
+      ],
+      "variantIndex": 20,
+      "signature": "ba3258a11cba1119668a42ed4cde2f46b6f9abfe845fd514acd3f5c95ac38498"
+    },
+    "pageId": "acct:pen-pal3",
+    "masterPagesHash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "contentNiche": "slideshow",
+    "contentEngine": "sourced_slideshow",
+    "vaultUrl": "https://shipstream.risingtidesviral.com/vault/pen.pal3"
+  },
+  {
+    "schema": "content-lab.syzygy-slideshow-source.v1",
+    "kind": "syzygy_slideshow",
+    "recipeId": "image-video:master",
+    "recipeVersion": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "sourceLibraryId": "syzygy:animals:pen-pal3",
+    "librarySnapshotHash": "70f20ca509e00acc8a606bb55ec1aff104d620bd252572e730a4f573c2a41f6c",
+    "templateSlug": "page-photo-hold",
+    "planSignature": "11e5df7c092ccfd5c193fa72b2ddd06b2f441f904b43f1745c9c60537372b504",
+    "rendererRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "renderJobId": "render-pen-pal3-0021",
+    "media": [
+      {
+        "objectKey": "animals/pen-pal3/photos/pexels_33518752_cc4c075814f1e8b64d4cd8cd2cb842496e83f8bf2b5f2369e6ac294d4a3b66b1.jpg",
+        "bytes": 116596,
+        "sha256": "cc4c075814f1e8b64d4cd8cd2cb842496e83f8bf2b5f2369e6ac294d4a3b66b1",
+        "etag": "\"pinned\""
+      },
+      {
+        "objectKey": "animals/pen-pal3/photos/pexels_34389859_079f19e3277ecab92b141b0ab59fd0efdfb44b504715183d1c0249388bf1d9cc.jpg",
+        "bytes": 160164,
+        "sha256": "079f19e3277ecab92b141b0ab59fd0efdfb44b504715183d1c0249388bf1d9cc",
+        "etag": "\"pinned\""
+      },
+      {
+        "objectKey": "animals/pen-pal3/photos/pexels_34463873_4d4bdf23cb3a4a011b8803d03595b3821b18f295e13d091687c04e7263740425.jpg",
+        "bytes": 262964,
+        "sha256": "4d4bdf23cb3a4a011b8803d03595b3821b18f295e13d091687c04e7263740425",
+        "etag": "\"pinned\""
+      }
+    ],
+    "photoPlan": {
+      "planSlug": "page-photo-hold",
+      "pageId": "acct:pen-pal3",
+      "libraryId": "syzygy:animals:pen-pal3",
+      "lane": "animals",
+      "subject": "pen-pal3",
+      "totalDurationSeconds": 12.0,
+      "brightnessGainFromOriginals": 0.85,
+      "media": [
+        {
+          "key": "animals/pen-pal3/photos/pexels_33518752_cc4c075814f1e8b64d4cd8cd2cb842496e83f8bf2b5f2369e6ac294d4a3b66b1.jpg",
+          "sourceKey": "animals/pen-pal3/photos/pexels_33518752_cc4c075814f1e8b64d4cd8cd2cb842496e83f8bf2b5f2369e6ac294d4a3b66b1.jpg",
+          "sha256": "cc4c075814f1e8b64d4cd8cd2cb842496e83f8bf2b5f2369e6ac294d4a3b66b1",
+          "bytes": 116596,
+          "duration": 4.0,
+          "focalX": 0.05,
+          "focalY": 0.5,
+          "cropMode": "cover",
+          "kenBurns": {
+            "dir": "in",
+            "zoom": 0.025
+          }
+        },
+        {
+          "key": "animals/pen-pal3/photos/pexels_34389859_079f19e3277ecab92b141b0ab59fd0efdfb44b504715183d1c0249388bf1d9cc.jpg",
+          "sourceKey": "animals/pen-pal3/photos/pexels_34389859_079f19e3277ecab92b141b0ab59fd0efdfb44b504715183d1c0249388bf1d9cc.jpg",
+          "sha256": "079f19e3277ecab92b141b0ab59fd0efdfb44b504715183d1c0249388bf1d9cc",
+          "bytes": 160164,
+          "duration": 4.0,
+          "focalX": 0.5,
+          "focalY": 0.5,
+          "cropMode": "cover",
+          "kenBurns": {
+            "dir": "in",
+            "zoom": 0.025
+          }
+        },
+        {
+          "key": "animals/pen-pal3/photos/pexels_34463873_4d4bdf23cb3a4a011b8803d03595b3821b18f295e13d091687c04e7263740425.jpg",
+          "sourceKey": "animals/pen-pal3/photos/pexels_34463873_4d4bdf23cb3a4a011b8803d03595b3821b18f295e13d091687c04e7263740425.jpg",
+          "sha256": "4d4bdf23cb3a4a011b8803d03595b3821b18f295e13d091687c04e7263740425",
+          "bytes": 262964,
+          "duration": 4.0,
+          "focalX": 0.7,
+          "focalY": 0.5,
+          "cropMode": "cover",
+          "kenBurns": {
+            "dir": "in",
+            "zoom": 0.025
+          }
+        }
+      ],
+      "variantIndex": 21,
+      "signature": "11e5df7c092ccfd5c193fa72b2ddd06b2f441f904b43f1745c9c60537372b504"
+    },
+    "pageId": "acct:pen-pal3",
+    "masterPagesHash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "contentNiche": "slideshow",
+    "contentEngine": "sourced_slideshow",
+    "vaultUrl": "https://shipstream.risingtidesviral.com/vault/pen.pal3"
+  },
+  {
+    "schema": "content-lab.syzygy-slideshow-source.v1",
+    "kind": "syzygy_slideshow",
+    "recipeId": "image-video:master",
+    "recipeVersion": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "sourceLibraryId": "syzygy:animals:pen-pal3",
+    "librarySnapshotHash": "70f20ca509e00acc8a606bb55ec1aff104d620bd252572e730a4f573c2a41f6c",
+    "templateSlug": "page-photo-hold",
+    "planSignature": "760d456e92b527ff5afd44e23963c10e08586c7317e0160483f2be503cd92413",
+    "rendererRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "renderJobId": "render-pen-pal3-0022",
+    "media": [
+      {
+        "objectKey": "animals/pen-pal3/photos/pexels_34389859_079f19e3277ecab92b141b0ab59fd0efdfb44b504715183d1c0249388bf1d9cc.jpg",
+        "bytes": 160164,
+        "sha256": "079f19e3277ecab92b141b0ab59fd0efdfb44b504715183d1c0249388bf1d9cc",
+        "etag": "\"pinned\""
+      },
+      {
+        "objectKey": "animals/pen-pal3/photos/pexels_34463873_4d4bdf23cb3a4a011b8803d03595b3821b18f295e13d091687c04e7263740425.jpg",
+        "bytes": 262964,
+        "sha256": "4d4bdf23cb3a4a011b8803d03595b3821b18f295e13d091687c04e7263740425",
+        "etag": "\"pinned\""
+      },
+      {
+        "objectKey": "animals/pen-pal3/photos/pexels_34793801_3cde173367edfb57d1039358dd14f305abb93022075294fe44e5ebcdb6d3333b.jpg",
+        "bytes": 181182,
+        "sha256": "3cde173367edfb57d1039358dd14f305abb93022075294fe44e5ebcdb6d3333b",
+        "etag": "\"pinned\""
+      }
+    ],
+    "photoPlan": {
+      "planSlug": "page-photo-hold",
+      "pageId": "acct:pen-pal3",
+      "libraryId": "syzygy:animals:pen-pal3",
+      "lane": "animals",
+      "subject": "pen-pal3",
+      "totalDurationSeconds": 12.0,
+      "brightnessGainFromOriginals": 0.85,
+      "media": [
+        {
+          "key": "animals/pen-pal3/photos/pexels_34389859_079f19e3277ecab92b141b0ab59fd0efdfb44b504715183d1c0249388bf1d9cc.jpg",
+          "sourceKey": "animals/pen-pal3/photos/pexels_34389859_079f19e3277ecab92b141b0ab59fd0efdfb44b504715183d1c0249388bf1d9cc.jpg",
+          "sha256": "079f19e3277ecab92b141b0ab59fd0efdfb44b504715183d1c0249388bf1d9cc",
+          "bytes": 160164,
+          "duration": 4.0,
+          "focalX": 0.05,
+          "focalY": 0.5,
+          "cropMode": "cover",
+          "kenBurns": {
+            "dir": "in",
+            "zoom": 0.025
+          }
+        },
+        {
+          "key": "animals/pen-pal3/photos/pexels_34463873_4d4bdf23cb3a4a011b8803d03595b3821b18f295e13d091687c04e7263740425.jpg",
+          "sourceKey": "animals/pen-pal3/photos/pexels_34463873_4d4bdf23cb3a4a011b8803d03595b3821b18f295e13d091687c04e7263740425.jpg",
+          "sha256": "4d4bdf23cb3a4a011b8803d03595b3821b18f295e13d091687c04e7263740425",
+          "bytes": 262964,
+          "duration": 4.0,
+          "focalX": 0.5,
+          "focalY": 0.5,
+          "cropMode": "cover",
+          "kenBurns": {
+            "dir": "in",
+            "zoom": 0.025
+          }
+        },
+        {
+          "key": "animals/pen-pal3/photos/pexels_34793801_3cde173367edfb57d1039358dd14f305abb93022075294fe44e5ebcdb6d3333b.jpg",
+          "sourceKey": "animals/pen-pal3/photos/pexels_34793801_3cde173367edfb57d1039358dd14f305abb93022075294fe44e5ebcdb6d3333b.jpg",
+          "sha256": "3cde173367edfb57d1039358dd14f305abb93022075294fe44e5ebcdb6d3333b",
+          "bytes": 181182,
+          "duration": 4.0,
+          "focalX": 0.7,
+          "focalY": 0.5,
+          "cropMode": "cover",
+          "kenBurns": {
+            "dir": "in",
+            "zoom": 0.025
+          }
+        }
+      ],
+      "variantIndex": 22,
+      "signature": "760d456e92b527ff5afd44e23963c10e08586c7317e0160483f2be503cd92413"
+    },
+    "pageId": "acct:pen-pal3",
+    "masterPagesHash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "contentNiche": "slideshow",
+    "contentEngine": "sourced_slideshow",
+    "vaultUrl": "https://shipstream.risingtidesviral.com/vault/pen.pal3"
+  },
+  {
+    "schema": "content-lab.syzygy-slideshow-source.v1",
+    "kind": "syzygy_slideshow",
+    "recipeId": "image-video:master",
+    "recipeVersion": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "sourceLibraryId": "syzygy:animals:pen-pal3",
+    "librarySnapshotHash": "70f20ca509e00acc8a606bb55ec1aff104d620bd252572e730a4f573c2a41f6c",
+    "templateSlug": "page-photo-hold",
+    "planSignature": "6b19a7e89c65f8ec01072ab2e0cff1687069f1b6fb2c0f632cf979021b2b0a1d",
+    "rendererRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "renderJobId": "render-pen-pal3-0023",
+    "media": [
+      {
+        "objectKey": "animals/pen-pal3/photos/pexels_34463873_4d4bdf23cb3a4a011b8803d03595b3821b18f295e13d091687c04e7263740425.jpg",
+        "bytes": 262964,
+        "sha256": "4d4bdf23cb3a4a011b8803d03595b3821b18f295e13d091687c04e7263740425",
+        "etag": "\"pinned\""
+      },
+      {
+        "objectKey": "animals/pen-pal3/photos/pexels_34793801_3cde173367edfb57d1039358dd14f305abb93022075294fe44e5ebcdb6d3333b.jpg",
+        "bytes": 181182,
+        "sha256": "3cde173367edfb57d1039358dd14f305abb93022075294fe44e5ebcdb6d3333b",
+        "etag": "\"pinned\""
+      },
+      {
+        "objectKey": "animals/pen-pal3/photos/pexels_34793812_9dbd719e4974391d813974de2e2e80bc3a499ab2970e7fb1fe52ac7769391940.jpg",
+        "bytes": 174354,
+        "sha256": "9dbd719e4974391d813974de2e2e80bc3a499ab2970e7fb1fe52ac7769391940",
+        "etag": "\"pinned\""
+      }
+    ],
+    "photoPlan": {
+      "planSlug": "page-photo-hold",
+      "pageId": "acct:pen-pal3",
+      "libraryId": "syzygy:animals:pen-pal3",
+      "lane": "animals",
+      "subject": "pen-pal3",
+      "totalDurationSeconds": 12.0,
+      "brightnessGainFromOriginals": 0.85,
+      "media": [
+        {
+          "key": "animals/pen-pal3/photos/pexels_34463873_4d4bdf23cb3a4a011b8803d03595b3821b18f295e13d091687c04e7263740425.jpg",
+          "sourceKey": "animals/pen-pal3/photos/pexels_34463873_4d4bdf23cb3a4a011b8803d03595b3821b18f295e13d091687c04e7263740425.jpg",
+          "sha256": "4d4bdf23cb3a4a011b8803d03595b3821b18f295e13d091687c04e7263740425",
+          "bytes": 262964,
+          "duration": 4.0,
+          "focalX": 0.05,
+          "focalY": 0.5,
+          "cropMode": "cover",
+          "kenBurns": {
+            "dir": "in",
+            "zoom": 0.025
+          }
+        },
+        {
+          "key": "animals/pen-pal3/photos/pexels_34793801_3cde173367edfb57d1039358dd14f305abb93022075294fe44e5ebcdb6d3333b.jpg",
+          "sourceKey": "animals/pen-pal3/photos/pexels_34793801_3cde173367edfb57d1039358dd14f305abb93022075294fe44e5ebcdb6d3333b.jpg",
+          "sha256": "3cde173367edfb57d1039358dd14f305abb93022075294fe44e5ebcdb6d3333b",
+          "bytes": 181182,
+          "duration": 4.0,
+          "focalX": 0.5,
+          "focalY": 0.5,
+          "cropMode": "cover",
+          "kenBurns": {
+            "dir": "in",
+            "zoom": 0.025
+          }
+        },
+        {
+          "key": "animals/pen-pal3/photos/pexels_34793812_9dbd719e4974391d813974de2e2e80bc3a499ab2970e7fb1fe52ac7769391940.jpg",
+          "sourceKey": "animals/pen-pal3/photos/pexels_34793812_9dbd719e4974391d813974de2e2e80bc3a499ab2970e7fb1fe52ac7769391940.jpg",
+          "sha256": "9dbd719e4974391d813974de2e2e80bc3a499ab2970e7fb1fe52ac7769391940",
+          "bytes": 174354,
+          "duration": 4.0,
+          "focalX": 0.7,
+          "focalY": 0.5,
+          "cropMode": "cover",
+          "kenBurns": {
+            "dir": "in",
+            "zoom": 0.025
+          }
+        }
+      ],
+      "variantIndex": 23,
+      "signature": "6b19a7e89c65f8ec01072ab2e0cff1687069f1b6fb2c0f632cf979021b2b0a1d"
+    },
+    "pageId": "acct:pen-pal3",
+    "masterPagesHash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "contentNiche": "slideshow",
+    "contentEngine": "sourced_slideshow",
+    "vaultUrl": "https://shipstream.risingtidesviral.com/vault/pen.pal3"
+  },
+  {
+    "schema": "content-lab.syzygy-slideshow-source.v1",
+    "kind": "syzygy_slideshow",
+    "recipeId": "image-video:master",
+    "recipeVersion": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "sourceLibraryId": "syzygy:animals:pen-pal3",
+    "librarySnapshotHash": "70f20ca509e00acc8a606bb55ec1aff104d620bd252572e730a4f573c2a41f6c",
+    "templateSlug": "page-photo-hold",
+    "planSignature": "03294ccdc852529662e661503e01454ae343df44b3cad737054d4ee65e5636f0",
+    "rendererRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "renderJobId": "render-pen-pal3-0024",
+    "media": [
+      {
+        "objectKey": "animals/pen-pal3/photos/pexels_34793801_3cde173367edfb57d1039358dd14f305abb93022075294fe44e5ebcdb6d3333b.jpg",
+        "bytes": 181182,
+        "sha256": "3cde173367edfb57d1039358dd14f305abb93022075294fe44e5ebcdb6d3333b",
+        "etag": "\"pinned\""
+      },
+      {
+        "objectKey": "animals/pen-pal3/photos/pexels_34793812_9dbd719e4974391d813974de2e2e80bc3a499ab2970e7fb1fe52ac7769391940.jpg",
+        "bytes": 174354,
+        "sha256": "9dbd719e4974391d813974de2e2e80bc3a499ab2970e7fb1fe52ac7769391940",
+        "etag": "\"pinned\""
+      },
+      {
+        "objectKey": "animals/pen-pal3/photos/pexels_36621655_945e1ce31a243ab7bd0e69ce09356c5e6389d34b7be7ddfe51d8368dc69710d8.jpg",
+        "bytes": 131173,
+        "sha256": "945e1ce31a243ab7bd0e69ce09356c5e6389d34b7be7ddfe51d8368dc69710d8",
+        "etag": "\"pinned\""
+      }
+    ],
+    "photoPlan": {
+      "planSlug": "page-photo-hold",
+      "pageId": "acct:pen-pal3",
+      "libraryId": "syzygy:animals:pen-pal3",
+      "lane": "animals",
+      "subject": "pen-pal3",
+      "totalDurationSeconds": 12.0,
+      "brightnessGainFromOriginals": 0.85,
+      "media": [
+        {
+          "key": "animals/pen-pal3/photos/pexels_34793801_3cde173367edfb57d1039358dd14f305abb93022075294fe44e5ebcdb6d3333b.jpg",
+          "sourceKey": "animals/pen-pal3/photos/pexels_34793801_3cde173367edfb57d1039358dd14f305abb93022075294fe44e5ebcdb6d3333b.jpg",
+          "sha256": "3cde173367edfb57d1039358dd14f305abb93022075294fe44e5ebcdb6d3333b",
+          "bytes": 181182,
+          "duration": 4.0,
+          "focalX": 0.05,
+          "focalY": 0.5,
+          "cropMode": "cover",
+          "kenBurns": {
+            "dir": "in",
+            "zoom": 0.025
+          }
+        },
+        {
+          "key": "animals/pen-pal3/photos/pexels_34793812_9dbd719e4974391d813974de2e2e80bc3a499ab2970e7fb1fe52ac7769391940.jpg",
+          "sourceKey": "animals/pen-pal3/photos/pexels_34793812_9dbd719e4974391d813974de2e2e80bc3a499ab2970e7fb1fe52ac7769391940.jpg",
+          "sha256": "9dbd719e4974391d813974de2e2e80bc3a499ab2970e7fb1fe52ac7769391940",
+          "bytes": 174354,
+          "duration": 4.0,
+          "focalX": 0.5,
+          "focalY": 0.5,
+          "cropMode": "cover",
+          "kenBurns": {
+            "dir": "in",
+            "zoom": 0.025
+          }
+        },
+        {
+          "key": "animals/pen-pal3/photos/pexels_36621655_945e1ce31a243ab7bd0e69ce09356c5e6389d34b7be7ddfe51d8368dc69710d8.jpg",
+          "sourceKey": "animals/pen-pal3/photos/pexels_36621655_945e1ce31a243ab7bd0e69ce09356c5e6389d34b7be7ddfe51d8368dc69710d8.jpg",
+          "sha256": "945e1ce31a243ab7bd0e69ce09356c5e6389d34b7be7ddfe51d8368dc69710d8",
+          "bytes": 131173,
+          "duration": 4.0,
+          "focalX": 0.7,
+          "focalY": 0.5,
+          "cropMode": "cover",
+          "kenBurns": {
+            "dir": "in",
+            "zoom": 0.025
+          }
+        }
+      ],
+      "variantIndex": 24,
+      "signature": "03294ccdc852529662e661503e01454ae343df44b3cad737054d4ee65e5636f0"
+    },
+    "pageId": "acct:pen-pal3",
+    "masterPagesHash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "contentNiche": "slideshow",
+    "contentEngine": "sourced_slideshow",
+    "vaultUrl": "https://shipstream.risingtidesviral.com/vault/pen.pal3"
+  },
+  {
+    "schema": "content-lab.syzygy-slideshow-source.v1",
+    "kind": "syzygy_slideshow",
+    "recipeId": "image-video:master",
+    "recipeVersion": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "sourceLibraryId": "syzygy:animals:pen-pal3",
+    "librarySnapshotHash": "70f20ca509e00acc8a606bb55ec1aff104d620bd252572e730a4f573c2a41f6c",
+    "templateSlug": "page-photo-hold",
+    "planSignature": "c24a5e26684dcdabc2af53baf4c6e1b5143cbc1542f5ec8e960f369be8fd4527",
+    "rendererRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "renderJobId": "render-pen-pal3-0025",
+    "media": [
+      {
+        "objectKey": "animals/pen-pal3/photos/pexels_34793812_9dbd719e4974391d813974de2e2e80bc3a499ab2970e7fb1fe52ac7769391940.jpg",
+        "bytes": 174354,
+        "sha256": "9dbd719e4974391d813974de2e2e80bc3a499ab2970e7fb1fe52ac7769391940",
+        "etag": "\"pinned\""
+      },
+      {
+        "objectKey": "animals/pen-pal3/photos/pexels_36621655_945e1ce31a243ab7bd0e69ce09356c5e6389d34b7be7ddfe51d8368dc69710d8.jpg",
+        "bytes": 131173,
+        "sha256": "945e1ce31a243ab7bd0e69ce09356c5e6389d34b7be7ddfe51d8368dc69710d8",
+        "etag": "\"pinned\""
+      },
+      {
+        "objectKey": "animals/pen-pal3/photos/pexels_37622256_612c800b901c18b2b7bf903991e2e08cf2d3c1f10bbf8b8ae7d5494fdbc7a492.jpg",
+        "bytes": 146106,
+        "sha256": "612c800b901c18b2b7bf903991e2e08cf2d3c1f10bbf8b8ae7d5494fdbc7a492",
+        "etag": "\"pinned\""
+      }
+    ],
+    "photoPlan": {
+      "planSlug": "page-photo-hold",
+      "pageId": "acct:pen-pal3",
+      "libraryId": "syzygy:animals:pen-pal3",
+      "lane": "animals",
+      "subject": "pen-pal3",
+      "totalDurationSeconds": 12.0,
+      "brightnessGainFromOriginals": 0.85,
+      "media": [
+        {
+          "key": "animals/pen-pal3/photos/pexels_34793812_9dbd719e4974391d813974de2e2e80bc3a499ab2970e7fb1fe52ac7769391940.jpg",
+          "sourceKey": "animals/pen-pal3/photos/pexels_34793812_9dbd719e4974391d813974de2e2e80bc3a499ab2970e7fb1fe52ac7769391940.jpg",
+          "sha256": "9dbd719e4974391d813974de2e2e80bc3a499ab2970e7fb1fe52ac7769391940",
+          "bytes": 174354,
+          "duration": 4.0,
+          "focalX": 0.05,
+          "focalY": 0.5,
+          "cropMode": "cover",
+          "kenBurns": {
+            "dir": "in",
+            "zoom": 0.025
+          }
+        },
+        {
+          "key": "animals/pen-pal3/photos/pexels_36621655_945e1ce31a243ab7bd0e69ce09356c5e6389d34b7be7ddfe51d8368dc69710d8.jpg",
+          "sourceKey": "animals/pen-pal3/photos/pexels_36621655_945e1ce31a243ab7bd0e69ce09356c5e6389d34b7be7ddfe51d8368dc69710d8.jpg",
+          "sha256": "945e1ce31a243ab7bd0e69ce09356c5e6389d34b7be7ddfe51d8368dc69710d8",
+          "bytes": 131173,
+          "duration": 4.0,
+          "focalX": 0.5,
+          "focalY": 0.5,
+          "cropMode": "cover",
+          "kenBurns": {
+            "dir": "in",
+            "zoom": 0.025
+          }
+        },
+        {
+          "key": "animals/pen-pal3/photos/pexels_37622256_612c800b901c18b2b7bf903991e2e08cf2d3c1f10bbf8b8ae7d5494fdbc7a492.jpg",
+          "sourceKey": "animals/pen-pal3/photos/pexels_37622256_612c800b901c18b2b7bf903991e2e08cf2d3c1f10bbf8b8ae7d5494fdbc7a492.jpg",
+          "sha256": "612c800b901c18b2b7bf903991e2e08cf2d3c1f10bbf8b8ae7d5494fdbc7a492",
+          "bytes": 146106,
+          "duration": 4.0,
+          "focalX": 0.7,
+          "focalY": 0.5,
+          "cropMode": "cover",
+          "kenBurns": {
+            "dir": "in",
+            "zoom": 0.025
+          }
+        }
+      ],
+      "variantIndex": 25,
+      "signature": "c24a5e26684dcdabc2af53baf4c6e1b5143cbc1542f5ec8e960f369be8fd4527"
+    },
+    "pageId": "acct:pen-pal3",
+    "masterPagesHash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "contentNiche": "slideshow",
+    "contentEngine": "sourced_slideshow",
+    "vaultUrl": "https://shipstream.risingtidesviral.com/vault/pen.pal3"
+  },
+  {
+    "schema": "content-lab.syzygy-slideshow-source.v1",
+    "kind": "syzygy_slideshow",
+    "recipeId": "image-video:master",
+    "recipeVersion": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "sourceLibraryId": "syzygy:animals:pen-pal3",
+    "librarySnapshotHash": "70f20ca509e00acc8a606bb55ec1aff104d620bd252572e730a4f573c2a41f6c",
+    "templateSlug": "page-photo-hold",
+    "planSignature": "cbd8be10cb2763d877740624be0b8249a0a28ad2fa2b9183ca406f6a411d5ac9",
+    "rendererRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "renderJobId": "render-pen-pal3-0026",
+    "media": [
+      {
+        "objectKey": "animals/pen-pal3/photos/pexels_36621655_945e1ce31a243ab7bd0e69ce09356c5e6389d34b7be7ddfe51d8368dc69710d8.jpg",
+        "bytes": 131173,
+        "sha256": "945e1ce31a243ab7bd0e69ce09356c5e6389d34b7be7ddfe51d8368dc69710d8",
+        "etag": "\"pinned\""
+      },
+      {
+        "objectKey": "animals/pen-pal3/photos/pexels_37622256_612c800b901c18b2b7bf903991e2e08cf2d3c1f10bbf8b8ae7d5494fdbc7a492.jpg",
+        "bytes": 146106,
+        "sha256": "612c800b901c18b2b7bf903991e2e08cf2d3c1f10bbf8b8ae7d5494fdbc7a492",
+        "etag": "\"pinned\""
+      },
+      {
+        "objectKey": "animals/pen-pal3/photos/pexels_4460434_ded95cfb0d9ae290f50cade836b5bd9eebf059f1d31821210b45d7f1aaa45410.jpg",
+        "bytes": 136158,
+        "sha256": "ded95cfb0d9ae290f50cade836b5bd9eebf059f1d31821210b45d7f1aaa45410",
+        "etag": "\"pinned\""
+      }
+    ],
+    "photoPlan": {
+      "planSlug": "page-photo-hold",
+      "pageId": "acct:pen-pal3",
+      "libraryId": "syzygy:animals:pen-pal3",
+      "lane": "animals",
+      "subject": "pen-pal3",
+      "totalDurationSeconds": 12.0,
+      "brightnessGainFromOriginals": 0.85,
+      "media": [
+        {
+          "key": "animals/pen-pal3/photos/pexels_36621655_945e1ce31a243ab7bd0e69ce09356c5e6389d34b7be7ddfe51d8368dc69710d8.jpg",
+          "sourceKey": "animals/pen-pal3/photos/pexels_36621655_945e1ce31a243ab7bd0e69ce09356c5e6389d34b7be7ddfe51d8368dc69710d8.jpg",
+          "sha256": "945e1ce31a243ab7bd0e69ce09356c5e6389d34b7be7ddfe51d8368dc69710d8",
+          "bytes": 131173,
+          "duration": 4.0,
+          "focalX": 0.05,
+          "focalY": 0.5,
+          "cropMode": "cover",
+          "kenBurns": {
+            "dir": "in",
+            "zoom": 0.025
+          }
+        },
+        {
+          "key": "animals/pen-pal3/photos/pexels_37622256_612c800b901c18b2b7bf903991e2e08cf2d3c1f10bbf8b8ae7d5494fdbc7a492.jpg",
+          "sourceKey": "animals/pen-pal3/photos/pexels_37622256_612c800b901c18b2b7bf903991e2e08cf2d3c1f10bbf8b8ae7d5494fdbc7a492.jpg",
+          "sha256": "612c800b901c18b2b7bf903991e2e08cf2d3c1f10bbf8b8ae7d5494fdbc7a492",
+          "bytes": 146106,
+          "duration": 4.0,
+          "focalX": 0.5,
+          "focalY": 0.5,
+          "cropMode": "cover",
+          "kenBurns": {
+            "dir": "in",
+            "zoom": 0.025
+          }
+        },
+        {
+          "key": "animals/pen-pal3/photos/pexels_4460434_ded95cfb0d9ae290f50cade836b5bd9eebf059f1d31821210b45d7f1aaa45410.jpg",
+          "sourceKey": "animals/pen-pal3/photos/pexels_4460434_ded95cfb0d9ae290f50cade836b5bd9eebf059f1d31821210b45d7f1aaa45410.jpg",
+          "sha256": "ded95cfb0d9ae290f50cade836b5bd9eebf059f1d31821210b45d7f1aaa45410",
+          "bytes": 136158,
+          "duration": 4.0,
+          "focalX": 0.7,
+          "focalY": 0.5,
+          "cropMode": "cover",
+          "kenBurns": {
+            "dir": "in",
+            "zoom": 0.025
+          }
+        }
+      ],
+      "variantIndex": 26,
+      "signature": "cbd8be10cb2763d877740624be0b8249a0a28ad2fa2b9183ca406f6a411d5ac9"
+    },
+    "pageId": "acct:pen-pal3",
+    "masterPagesHash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "contentNiche": "slideshow",
+    "contentEngine": "sourced_slideshow",
+    "vaultUrl": "https://shipstream.risingtidesviral.com/vault/pen.pal3"
+  },
+  {
+    "schema": "content-lab.syzygy-slideshow-source.v1",
+    "kind": "syzygy_slideshow",
+    "recipeId": "image-video:master",
+    "recipeVersion": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "sourceLibraryId": "syzygy:animals:pen-pal3",
+    "librarySnapshotHash": "70f20ca509e00acc8a606bb55ec1aff104d620bd252572e730a4f573c2a41f6c",
+    "templateSlug": "page-photo-hold",
+    "planSignature": "fb830a1f80f4fa85d1b2a8aa24f8e1d2a503d3f3f5ae76bbb0102eb9ef7bd855",
+    "rendererRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "renderJobId": "render-pen-pal3-0027",
+    "media": [
+      {
+        "objectKey": "animals/pen-pal3/photos/pexels_37622256_612c800b901c18b2b7bf903991e2e08cf2d3c1f10bbf8b8ae7d5494fdbc7a492.jpg",
+        "bytes": 146106,
+        "sha256": "612c800b901c18b2b7bf903991e2e08cf2d3c1f10bbf8b8ae7d5494fdbc7a492",
+        "etag": "\"pinned\""
+      },
+      {
+        "objectKey": "animals/pen-pal3/photos/pexels_4460434_ded95cfb0d9ae290f50cade836b5bd9eebf059f1d31821210b45d7f1aaa45410.jpg",
+        "bytes": 136158,
+        "sha256": "ded95cfb0d9ae290f50cade836b5bd9eebf059f1d31821210b45d7f1aaa45410",
+        "etag": "\"pinned\""
+      },
+      {
+        "objectKey": "animals/pen-pal3/photos/pexels_7684087_f7d32bf26fc389d6da0eec6d332ecce06fa5b02d7015cba17f938b8cff673e69.jpg",
+        "bytes": 154935,
+        "sha256": "f7d32bf26fc389d6da0eec6d332ecce06fa5b02d7015cba17f938b8cff673e69",
+        "etag": "\"pinned\""
+      }
+    ],
+    "photoPlan": {
+      "planSlug": "page-photo-hold",
+      "pageId": "acct:pen-pal3",
+      "libraryId": "syzygy:animals:pen-pal3",
+      "lane": "animals",
+      "subject": "pen-pal3",
+      "totalDurationSeconds": 12.0,
+      "brightnessGainFromOriginals": 0.85,
+      "media": [
+        {
+          "key": "animals/pen-pal3/photos/pexels_37622256_612c800b901c18b2b7bf903991e2e08cf2d3c1f10bbf8b8ae7d5494fdbc7a492.jpg",
+          "sourceKey": "animals/pen-pal3/photos/pexels_37622256_612c800b901c18b2b7bf903991e2e08cf2d3c1f10bbf8b8ae7d5494fdbc7a492.jpg",
+          "sha256": "612c800b901c18b2b7bf903991e2e08cf2d3c1f10bbf8b8ae7d5494fdbc7a492",
+          "bytes": 146106,
+          "duration": 4.0,
+          "focalX": 0.05,
+          "focalY": 0.5,
+          "cropMode": "cover",
+          "kenBurns": {
+            "dir": "in",
+            "zoom": 0.025
+          }
+        },
+        {
+          "key": "animals/pen-pal3/photos/pexels_4460434_ded95cfb0d9ae290f50cade836b5bd9eebf059f1d31821210b45d7f1aaa45410.jpg",
+          "sourceKey": "animals/pen-pal3/photos/pexels_4460434_ded95cfb0d9ae290f50cade836b5bd9eebf059f1d31821210b45d7f1aaa45410.jpg",
+          "sha256": "ded95cfb0d9ae290f50cade836b5bd9eebf059f1d31821210b45d7f1aaa45410",
+          "bytes": 136158,
+          "duration": 4.0,
+          "focalX": 0.5,
+          "focalY": 0.5,
+          "cropMode": "cover",
+          "kenBurns": {
+            "dir": "in",
+            "zoom": 0.025
+          }
+        },
+        {
+          "key": "animals/pen-pal3/photos/pexels_7684087_f7d32bf26fc389d6da0eec6d332ecce06fa5b02d7015cba17f938b8cff673e69.jpg",
+          "sourceKey": "animals/pen-pal3/photos/pexels_7684087_f7d32bf26fc389d6da0eec6d332ecce06fa5b02d7015cba17f938b8cff673e69.jpg",
+          "sha256": "f7d32bf26fc389d6da0eec6d332ecce06fa5b02d7015cba17f938b8cff673e69",
+          "bytes": 154935,
+          "duration": 4.0,
+          "focalX": 0.7,
+          "focalY": 0.5,
+          "cropMode": "cover",
+          "kenBurns": {
+            "dir": "in",
+            "zoom": 0.025
+          }
+        }
+      ],
+      "variantIndex": 27,
+      "signature": "fb830a1f80f4fa85d1b2a8aa24f8e1d2a503d3f3f5ae76bbb0102eb9ef7bd855"
+    },
+    "pageId": "acct:pen-pal3",
+    "masterPagesHash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "contentNiche": "slideshow",
+    "contentEngine": "sourced_slideshow",
+    "vaultUrl": "https://shipstream.risingtidesviral.com/vault/pen.pal3"
+  },
+  {
+    "schema": "content-lab.syzygy-slideshow-source.v1",
+    "kind": "syzygy_slideshow",
+    "recipeId": "image-video:master",
+    "recipeVersion": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "sourceLibraryId": "syzygy:animals:pen-pal3",
+    "librarySnapshotHash": "70f20ca509e00acc8a606bb55ec1aff104d620bd252572e730a4f573c2a41f6c",
+    "templateSlug": "page-photo-hold",
+    "planSignature": "b77e273f96c5e895f936bde4717ed7cf1072fc50610b324c8171d083380752a9",
+    "rendererRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "renderJobId": "render-pen-pal3-0028",
+    "media": [
+      {
+        "objectKey": "animals/pen-pal3/photos/pexels_4460434_ded95cfb0d9ae290f50cade836b5bd9eebf059f1d31821210b45d7f1aaa45410.jpg",
+        "bytes": 136158,
+        "sha256": "ded95cfb0d9ae290f50cade836b5bd9eebf059f1d31821210b45d7f1aaa45410",
+        "etag": "\"pinned\""
+      },
+      {
+        "objectKey": "animals/pen-pal3/photos/pexels_7684087_f7d32bf26fc389d6da0eec6d332ecce06fa5b02d7015cba17f938b8cff673e69.jpg",
+        "bytes": 154935,
+        "sha256": "f7d32bf26fc389d6da0eec6d332ecce06fa5b02d7015cba17f938b8cff673e69",
+        "etag": "\"pinned\""
+      },
+      {
+        "objectKey": "animals/pen-pal3/photos/pexels_9978367_5633ffc0b6f8aeaed8ed5a436c68d7859817d74a8ae7bd5536bb5fc62694798f.jpg",
+        "bytes": 145435,
+        "sha256": "5633ffc0b6f8aeaed8ed5a436c68d7859817d74a8ae7bd5536bb5fc62694798f",
+        "etag": "\"pinned\""
+      }
+    ],
+    "photoPlan": {
+      "planSlug": "page-photo-hold",
+      "pageId": "acct:pen-pal3",
+      "libraryId": "syzygy:animals:pen-pal3",
+      "lane": "animals",
+      "subject": "pen-pal3",
+      "totalDurationSeconds": 12.0,
+      "brightnessGainFromOriginals": 0.85,
+      "media": [
+        {
+          "key": "animals/pen-pal3/photos/pexels_4460434_ded95cfb0d9ae290f50cade836b5bd9eebf059f1d31821210b45d7f1aaa45410.jpg",
+          "sourceKey": "animals/pen-pal3/photos/pexels_4460434_ded95cfb0d9ae290f50cade836b5bd9eebf059f1d31821210b45d7f1aaa45410.jpg",
+          "sha256": "ded95cfb0d9ae290f50cade836b5bd9eebf059f1d31821210b45d7f1aaa45410",
+          "bytes": 136158,
+          "duration": 4.0,
+          "focalX": 0.05,
+          "focalY": 0.5,
+          "cropMode": "cover",
+          "kenBurns": {
+            "dir": "in",
+            "zoom": 0.025
+          }
+        },
+        {
+          "key": "animals/pen-pal3/photos/pexels_7684087_f7d32bf26fc389d6da0eec6d332ecce06fa5b02d7015cba17f938b8cff673e69.jpg",
+          "sourceKey": "animals/pen-pal3/photos/pexels_7684087_f7d32bf26fc389d6da0eec6d332ecce06fa5b02d7015cba17f938b8cff673e69.jpg",
+          "sha256": "f7d32bf26fc389d6da0eec6d332ecce06fa5b02d7015cba17f938b8cff673e69",
+          "bytes": 154935,
+          "duration": 4.0,
+          "focalX": 0.5,
+          "focalY": 0.5,
+          "cropMode": "cover",
+          "kenBurns": {
+            "dir": "in",
+            "zoom": 0.025
+          }
+        },
+        {
+          "key": "animals/pen-pal3/photos/pexels_9978367_5633ffc0b6f8aeaed8ed5a436c68d7859817d74a8ae7bd5536bb5fc62694798f.jpg",
+          "sourceKey": "animals/pen-pal3/photos/pexels_9978367_5633ffc0b6f8aeaed8ed5a436c68d7859817d74a8ae7bd5536bb5fc62694798f.jpg",
+          "sha256": "5633ffc0b6f8aeaed8ed5a436c68d7859817d74a8ae7bd5536bb5fc62694798f",
+          "bytes": 145435,
+          "duration": 4.0,
+          "focalX": 0.7,
+          "focalY": 0.5,
+          "cropMode": "cover",
+          "kenBurns": {
+            "dir": "in",
+            "zoom": 0.025
+          }
+        }
+      ],
+      "variantIndex": 28,
+      "signature": "b77e273f96c5e895f936bde4717ed7cf1072fc50610b324c8171d083380752a9"
+    },
+    "pageId": "acct:pen-pal3",
+    "masterPagesHash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "contentNiche": "slideshow",
+    "contentEngine": "sourced_slideshow",
+    "vaultUrl": "https://shipstream.risingtidesviral.com/vault/pen.pal3"
+  },
+  {
+    "schema": "content-lab.syzygy-slideshow-source.v1",
+    "kind": "syzygy_slideshow",
+    "recipeId": "image-video:master",
+    "recipeVersion": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "sourceLibraryId": "syzygy:animals:pen-pal3",
+    "librarySnapshotHash": "70f20ca509e00acc8a606bb55ec1aff104d620bd252572e730a4f573c2a41f6c",
+    "templateSlug": "page-photo-hold",
+    "planSignature": "8e61d39a09b8d5c12f122d001b5fcfd49422ddb941dfaf31f5ecac3bbe994b67",
+    "rendererRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "renderJobId": "render-pen-pal3-0029",
+    "media": [
+      {
+        "objectKey": "animals/pen-pal3/photos/pexels_7684087_f7d32bf26fc389d6da0eec6d332ecce06fa5b02d7015cba17f938b8cff673e69.jpg",
+        "bytes": 154935,
+        "sha256": "f7d32bf26fc389d6da0eec6d332ecce06fa5b02d7015cba17f938b8cff673e69",
+        "etag": "\"pinned\""
+      },
+      {
+        "objectKey": "animals/pen-pal3/photos/pexels_9978367_5633ffc0b6f8aeaed8ed5a436c68d7859817d74a8ae7bd5536bb5fc62694798f.jpg",
+        "bytes": 145435,
+        "sha256": "5633ffc0b6f8aeaed8ed5a436c68d7859817d74a8ae7bd5536bb5fc62694798f",
+        "etag": "\"pinned\""
+      },
+      {
+        "objectKey": "animals/pen-pal3/photos/pinterest_784681935144259989.jpg",
+        "bytes": 224944,
+        "sha256": "5ad6eb5aa5f43607e1d27366feccd7b8c8a0fd4ae482ddbaaa241f8d0066d288",
+        "etag": "\"pinned\""
+      }
+    ],
+    "photoPlan": {
+      "planSlug": "page-photo-hold",
+      "pageId": "acct:pen-pal3",
+      "libraryId": "syzygy:animals:pen-pal3",
+      "lane": "animals",
+      "subject": "pen-pal3",
+      "totalDurationSeconds": 12.0,
+      "brightnessGainFromOriginals": 0.85,
+      "media": [
+        {
+          "key": "animals/pen-pal3/photos/pexels_7684087_f7d32bf26fc389d6da0eec6d332ecce06fa5b02d7015cba17f938b8cff673e69.jpg",
+          "sourceKey": "animals/pen-pal3/photos/pexels_7684087_f7d32bf26fc389d6da0eec6d332ecce06fa5b02d7015cba17f938b8cff673e69.jpg",
+          "sha256": "f7d32bf26fc389d6da0eec6d332ecce06fa5b02d7015cba17f938b8cff673e69",
+          "bytes": 154935,
+          "duration": 4.0,
+          "focalX": 0.05,
+          "focalY": 0.5,
+          "cropMode": "cover",
+          "kenBurns": {
+            "dir": "in",
+            "zoom": 0.025
+          }
+        },
+        {
+          "key": "animals/pen-pal3/photos/pexels_9978367_5633ffc0b6f8aeaed8ed5a436c68d7859817d74a8ae7bd5536bb5fc62694798f.jpg",
+          "sourceKey": "animals/pen-pal3/photos/pexels_9978367_5633ffc0b6f8aeaed8ed5a436c68d7859817d74a8ae7bd5536bb5fc62694798f.jpg",
+          "sha256": "5633ffc0b6f8aeaed8ed5a436c68d7859817d74a8ae7bd5536bb5fc62694798f",
+          "bytes": 145435,
+          "duration": 4.0,
+          "focalX": 0.5,
+          "focalY": 0.5,
+          "cropMode": "cover",
+          "kenBurns": {
+            "dir": "in",
+            "zoom": 0.025
+          }
+        },
+        {
+          "key": "animals/pen-pal3/photos/pinterest_784681935144259989.jpg",
+          "sourceKey": "animals/kitten-flowers/photos/pinterest_784681935144259989.jpg",
+          "sha256": "5ad6eb5aa5f43607e1d27366feccd7b8c8a0fd4ae482ddbaaa241f8d0066d288",
+          "bytes": 224944,
+          "duration": 4.0,
+          "focalX": 0.7,
+          "focalY": 0.5,
+          "cropMode": "cover",
+          "kenBurns": {
+            "dir": "in",
+            "zoom": 0.025
+          }
+        }
+      ],
+      "variantIndex": 29,
+      "signature": "8e61d39a09b8d5c12f122d001b5fcfd49422ddb941dfaf31f5ecac3bbe994b67"
+    },
+    "pageId": "acct:pen-pal3",
+    "masterPagesHash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "contentNiche": "slideshow",
+    "contentEngine": "sourced_slideshow",
+    "vaultUrl": "https://shipstream.risingtidesviral.com/vault/pen.pal3"
+  },
+  {
+    "schema": "content-lab.syzygy-slideshow-source.v1",
+    "kind": "syzygy_slideshow",
+    "recipeId": "image-video:master",
+    "recipeVersion": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "sourceLibraryId": "syzygy:animals:pen-pal3",
+    "librarySnapshotHash": "70f20ca509e00acc8a606bb55ec1aff104d620bd252572e730a4f573c2a41f6c",
+    "templateSlug": "page-photo-hold",
+    "planSignature": "9f44b76d9d174cfe01dd30ea790a178de9091aab1c312bf7f168183fc3cecc4c",
+    "rendererRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "renderJobId": "render-pen-pal3-0030",
+    "media": [
+      {
+        "objectKey": "animals/pen-pal3/photos/pexels_9978367_5633ffc0b6f8aeaed8ed5a436c68d7859817d74a8ae7bd5536bb5fc62694798f.jpg",
+        "bytes": 145435,
+        "sha256": "5633ffc0b6f8aeaed8ed5a436c68d7859817d74a8ae7bd5536bb5fc62694798f",
+        "etag": "\"pinned\""
+      },
+      {
+        "objectKey": "animals/pen-pal3/photos/pinterest_784681935144259989.jpg",
+        "bytes": 224944,
+        "sha256": "5ad6eb5aa5f43607e1d27366feccd7b8c8a0fd4ae482ddbaaa241f8d0066d288",
+        "etag": "\"pinned\""
+      },
+      {
+        "objectKey": "animals/pen-pal3/photos/pinterest_784681935144260004.jpg",
+        "bytes": 132530,
+        "sha256": "09a1b391a05c29944705bd5b3c662cad05218b476e1a8d2e813c01dda119247d",
+        "etag": "\"pinned\""
+      }
+    ],
+    "photoPlan": {
+      "planSlug": "page-photo-hold",
+      "pageId": "acct:pen-pal3",
+      "libraryId": "syzygy:animals:pen-pal3",
+      "lane": "animals",
+      "subject": "pen-pal3",
+      "totalDurationSeconds": 12.0,
+      "brightnessGainFromOriginals": 0.85,
+      "media": [
+        {
+          "key": "animals/pen-pal3/photos/pexels_9978367_5633ffc0b6f8aeaed8ed5a436c68d7859817d74a8ae7bd5536bb5fc62694798f.jpg",
+          "sourceKey": "animals/pen-pal3/photos/pexels_9978367_5633ffc0b6f8aeaed8ed5a436c68d7859817d74a8ae7bd5536bb5fc62694798f.jpg",
+          "sha256": "5633ffc0b6f8aeaed8ed5a436c68d7859817d74a8ae7bd5536bb5fc62694798f",
+          "bytes": 145435,
+          "duration": 4.0,
+          "focalX": 0.05,
+          "focalY": 0.5,
+          "cropMode": "cover",
+          "kenBurns": {
+            "dir": "in",
+            "zoom": 0.025
+          }
+        },
+        {
+          "key": "animals/pen-pal3/photos/pinterest_784681935144259989.jpg",
+          "sourceKey": "animals/kitten-flowers/photos/pinterest_784681935144259989.jpg",
+          "sha256": "5ad6eb5aa5f43607e1d27366feccd7b8c8a0fd4ae482ddbaaa241f8d0066d288",
+          "bytes": 224944,
+          "duration": 4.0,
+          "focalX": 0.5,
+          "focalY": 0.5,
+          "cropMode": "cover",
+          "kenBurns": {
+            "dir": "in",
+            "zoom": 0.025
+          }
+        },
+        {
+          "key": "animals/pen-pal3/photos/pinterest_784681935144260004.jpg",
+          "sourceKey": "animals/kitten-flowers/photos/pinterest_784681935144260004.jpg",
+          "sha256": "09a1b391a05c29944705bd5b3c662cad05218b476e1a8d2e813c01dda119247d",
+          "bytes": 132530,
+          "duration": 4.0,
+          "focalX": 0.7,
+          "focalY": 0.5,
+          "cropMode": "cover",
+          "kenBurns": {
+            "dir": "in",
+            "zoom": 0.025
+          }
+        }
+      ],
+      "variantIndex": 30,
+      "signature": "9f44b76d9d174cfe01dd30ea790a178de9091aab1c312bf7f168183fc3cecc4c"
+    },
+    "pageId": "acct:pen-pal3",
+    "masterPagesHash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "contentNiche": "slideshow",
+    "contentEngine": "sourced_slideshow",
+    "vaultUrl": "https://shipstream.risingtidesviral.com/vault/pen.pal3"
+  },
+  {
+    "schema": "content-lab.syzygy-slideshow-source.v1",
+    "kind": "syzygy_slideshow",
+    "recipeId": "image-video:master",
+    "recipeVersion": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "sourceLibraryId": "syzygy:animals:pen-pal3",
+    "librarySnapshotHash": "70f20ca509e00acc8a606bb55ec1aff104d620bd252572e730a4f573c2a41f6c",
+    "templateSlug": "page-photo-hold",
+    "planSignature": "edc3213bfc8a6cf4af9f7aafb7ff2a11e6217aabd0ac29f4b7e44fa5ccf01d0d",
+    "rendererRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "renderJobId": "render-pen-pal3-0031",
+    "media": [
+      {
+        "objectKey": "animals/pen-pal3/photos/pinterest_784681935144259989.jpg",
+        "bytes": 224944,
+        "sha256": "5ad6eb5aa5f43607e1d27366feccd7b8c8a0fd4ae482ddbaaa241f8d0066d288",
+        "etag": "\"pinned\""
+      },
+      {
+        "objectKey": "animals/pen-pal3/photos/pinterest_784681935144260004.jpg",
+        "bytes": 132530,
+        "sha256": "09a1b391a05c29944705bd5b3c662cad05218b476e1a8d2e813c01dda119247d",
+        "etag": "\"pinned\""
+      },
+      {
+        "objectKey": "animals/pen-pal3/photos/pinterest_784681935144260020.jpg",
+        "bytes": 227679,
+        "sha256": "39a5346f6cd04217b766bf00fc590993d8a6f5546f191785ae2885748ab0e92b",
+        "etag": "\"pinned\""
+      }
+    ],
+    "photoPlan": {
+      "planSlug": "page-photo-hold",
+      "pageId": "acct:pen-pal3",
+      "libraryId": "syzygy:animals:pen-pal3",
+      "lane": "animals",
+      "subject": "pen-pal3",
+      "totalDurationSeconds": 12.0,
+      "brightnessGainFromOriginals": 0.85,
+      "media": [
+        {
+          "key": "animals/pen-pal3/photos/pinterest_784681935144259989.jpg",
+          "sourceKey": "animals/kitten-flowers/photos/pinterest_784681935144259989.jpg",
+          "sha256": "5ad6eb5aa5f43607e1d27366feccd7b8c8a0fd4ae482ddbaaa241f8d0066d288",
+          "bytes": 224944,
+          "duration": 4.0,
+          "focalX": 0.05,
+          "focalY": 0.5,
+          "cropMode": "cover",
+          "kenBurns": {
+            "dir": "in",
+            "zoom": 0.025
+          }
+        },
+        {
+          "key": "animals/pen-pal3/photos/pinterest_784681935144260004.jpg",
+          "sourceKey": "animals/kitten-flowers/photos/pinterest_784681935144260004.jpg",
+          "sha256": "09a1b391a05c29944705bd5b3c662cad05218b476e1a8d2e813c01dda119247d",
+          "bytes": 132530,
+          "duration": 4.0,
+          "focalX": 0.5,
+          "focalY": 0.5,
+          "cropMode": "cover",
+          "kenBurns": {
+            "dir": "in",
+            "zoom": 0.025
+          }
+        },
+        {
+          "key": "animals/pen-pal3/photos/pinterest_784681935144260020.jpg",
+          "sourceKey": "animals/kitten-flowers/photos/pinterest_784681935144260020.jpg",
+          "sha256": "39a5346f6cd04217b766bf00fc590993d8a6f5546f191785ae2885748ab0e92b",
+          "bytes": 227679,
+          "duration": 4.0,
+          "focalX": 0.7,
+          "focalY": 0.5,
+          "cropMode": "cover",
+          "kenBurns": {
+            "dir": "in",
+            "zoom": 0.025
+          }
+        }
+      ],
+      "variantIndex": 31,
+      "signature": "edc3213bfc8a6cf4af9f7aafb7ff2a11e6217aabd0ac29f4b7e44fa5ccf01d0d"
+    },
+    "pageId": "acct:pen-pal3",
+    "masterPagesHash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "contentNiche": "slideshow",
+    "contentEngine": "sourced_slideshow",
+    "vaultUrl": "https://shipstream.risingtidesviral.com/vault/pen.pal3"
+  },
+  {
+    "schema": "content-lab.syzygy-slideshow-source.v1",
+    "kind": "syzygy_slideshow",
+    "recipeId": "image-video:master",
+    "recipeVersion": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "sourceLibraryId": "syzygy:animals:pen-pal3",
+    "librarySnapshotHash": "70f20ca509e00acc8a606bb55ec1aff104d620bd252572e730a4f573c2a41f6c",
+    "templateSlug": "page-photo-hold",
+    "planSignature": "f67eb91229bd8ef2352b097e5a70d80a0b7bca123c9ece92ddea282a359fbffb",
+    "rendererRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "renderJobId": "render-pen-pal3-0032",
+    "media": [
+      {
+        "objectKey": "animals/pen-pal3/photos/pinterest_784681935144260004.jpg",
+        "bytes": 132530,
+        "sha256": "09a1b391a05c29944705bd5b3c662cad05218b476e1a8d2e813c01dda119247d",
+        "etag": "\"pinned\""
+      },
+      {
+        "objectKey": "animals/pen-pal3/photos/pinterest_784681935144260020.jpg",
+        "bytes": 227679,
+        "sha256": "39a5346f6cd04217b766bf00fc590993d8a6f5546f191785ae2885748ab0e92b",
+        "etag": "\"pinned\""
+      },
+      {
+        "objectKey": "animals/pen-pal3/photos/pexels_12718552_4c2c96914219e1e972ef4f3e99798087988945ba14422efc47c1d07705f17356.jpg",
+        "bytes": 294101,
+        "sha256": "4c2c96914219e1e972ef4f3e99798087988945ba14422efc47c1d07705f17356",
+        "etag": "\"pinned\""
+      }
+    ],
+    "photoPlan": {
+      "planSlug": "page-photo-hold",
+      "pageId": "acct:pen-pal3",
+      "libraryId": "syzygy:animals:pen-pal3",
+      "lane": "animals",
+      "subject": "pen-pal3",
+      "totalDurationSeconds": 12.0,
+      "brightnessGainFromOriginals": 0.85,
+      "media": [
+        {
+          "key": "animals/pen-pal3/photos/pinterest_784681935144260004.jpg",
+          "sourceKey": "animals/kitten-flowers/photos/pinterest_784681935144260004.jpg",
+          "sha256": "09a1b391a05c29944705bd5b3c662cad05218b476e1a8d2e813c01dda119247d",
+          "bytes": 132530,
+          "duration": 4.0,
+          "focalX": 0.05,
+          "focalY": 0.5,
+          "cropMode": "cover",
+          "kenBurns": {
+            "dir": "in",
+            "zoom": 0.025
+          }
+        },
+        {
+          "key": "animals/pen-pal3/photos/pinterest_784681935144260020.jpg",
+          "sourceKey": "animals/kitten-flowers/photos/pinterest_784681935144260020.jpg",
+          "sha256": "39a5346f6cd04217b766bf00fc590993d8a6f5546f191785ae2885748ab0e92b",
+          "bytes": 227679,
+          "duration": 4.0,
+          "focalX": 0.5,
+          "focalY": 0.5,
+          "cropMode": "cover",
+          "kenBurns": {
+            "dir": "in",
+            "zoom": 0.025
+          }
+        },
+        {
+          "key": "animals/pen-pal3/photos/pexels_12718552_4c2c96914219e1e972ef4f3e99798087988945ba14422efc47c1d07705f17356.jpg",
+          "sourceKey": "animals/pen-pal3/photos/pexels_12718552_4c2c96914219e1e972ef4f3e99798087988945ba14422efc47c1d07705f17356.jpg",
+          "sha256": "4c2c96914219e1e972ef4f3e99798087988945ba14422efc47c1d07705f17356",
+          "bytes": 294101,
+          "duration": 4.0,
+          "focalX": 0.7,
+          "focalY": 0.5,
+          "cropMode": "cover",
+          "kenBurns": {
+            "dir": "in",
+            "zoom": 0.025
+          }
+        }
+      ],
+      "variantIndex": 32,
+      "signature": "f67eb91229bd8ef2352b097e5a70d80a0b7bca123c9ece92ddea282a359fbffb"
+    },
+    "pageId": "acct:pen-pal3",
+    "masterPagesHash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "contentNiche": "slideshow",
+    "contentEngine": "sourced_slideshow",
+    "vaultUrl": "https://shipstream.risingtidesviral.com/vault/pen.pal3"
+  },
+  {
+    "schema": "content-lab.syzygy-slideshow-source.v1",
+    "kind": "syzygy_slideshow",
+    "recipeId": "image-video:master",
+    "recipeVersion": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "sourceLibraryId": "syzygy:animals:pen-pal3",
+    "librarySnapshotHash": "70f20ca509e00acc8a606bb55ec1aff104d620bd252572e730a4f573c2a41f6c",
+    "templateSlug": "page-photo-hold",
+    "planSignature": "acd05468d22b30b23858adc9f0067c5db948807515150b4f07b36b231fb96ec3",
+    "rendererRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "renderJobId": "render-pen-pal3-0033",
+    "media": [
+      {
+        "objectKey": "animals/pen-pal3/photos/pinterest_784681935144260020.jpg",
+        "bytes": 227679,
+        "sha256": "39a5346f6cd04217b766bf00fc590993d8a6f5546f191785ae2885748ab0e92b",
+        "etag": "\"pinned\""
+      },
+      {
+        "objectKey": "animals/pen-pal3/photos/pexels_12718552_4c2c96914219e1e972ef4f3e99798087988945ba14422efc47c1d07705f17356.jpg",
+        "bytes": 294101,
+        "sha256": "4c2c96914219e1e972ef4f3e99798087988945ba14422efc47c1d07705f17356",
+        "etag": "\"pinned\""
+      },
+      {
+        "objectKey": "animals/pen-pal3/photos/pexels_12940576_67526062fc1a1dd8166182d2bcbcb6bbe73674181c3e78752399cec7aea27acf.jpg",
+        "bytes": 254670,
+        "sha256": "67526062fc1a1dd8166182d2bcbcb6bbe73674181c3e78752399cec7aea27acf",
+        "etag": "\"pinned\""
+      }
+    ],
+    "photoPlan": {
+      "planSlug": "page-photo-hold",
+      "pageId": "acct:pen-pal3",
+      "libraryId": "syzygy:animals:pen-pal3",
+      "lane": "animals",
+      "subject": "pen-pal3",
+      "totalDurationSeconds": 12.0,
+      "brightnessGainFromOriginals": 0.85,
+      "media": [
+        {
+          "key": "animals/pen-pal3/photos/pinterest_784681935144260020.jpg",
+          "sourceKey": "animals/kitten-flowers/photos/pinterest_784681935144260020.jpg",
+          "sha256": "39a5346f6cd04217b766bf00fc590993d8a6f5546f191785ae2885748ab0e92b",
+          "bytes": 227679,
+          "duration": 4.0,
+          "focalX": 0.05,
+          "focalY": 0.5,
+          "cropMode": "cover",
+          "kenBurns": {
+            "dir": "in",
+            "zoom": 0.025
+          }
+        },
+        {
+          "key": "animals/pen-pal3/photos/pexels_12718552_4c2c96914219e1e972ef4f3e99798087988945ba14422efc47c1d07705f17356.jpg",
+          "sourceKey": "animals/pen-pal3/photos/pexels_12718552_4c2c96914219e1e972ef4f3e99798087988945ba14422efc47c1d07705f17356.jpg",
+          "sha256": "4c2c96914219e1e972ef4f3e99798087988945ba14422efc47c1d07705f17356",
+          "bytes": 294101,
+          "duration": 4.0,
+          "focalX": 0.5,
+          "focalY": 0.5,
+          "cropMode": "cover",
+          "kenBurns": {
+            "dir": "in",
+            "zoom": 0.025
+          }
+        },
+        {
+          "key": "animals/pen-pal3/photos/pexels_12940576_67526062fc1a1dd8166182d2bcbcb6bbe73674181c3e78752399cec7aea27acf.jpg",
+          "sourceKey": "animals/pen-pal3/photos/pexels_12940576_67526062fc1a1dd8166182d2bcbcb6bbe73674181c3e78752399cec7aea27acf.jpg",
+          "sha256": "67526062fc1a1dd8166182d2bcbcb6bbe73674181c3e78752399cec7aea27acf",
+          "bytes": 254670,
+          "duration": 4.0,
+          "focalX": 0.7,
+          "focalY": 0.5,
+          "cropMode": "cover",
+          "kenBurns": {
+            "dir": "in",
+            "zoom": 0.025
+          }
+        }
+      ],
+      "variantIndex": 33,
+      "signature": "acd05468d22b30b23858adc9f0067c5db948807515150b4f07b36b231fb96ec3"
+    },
+    "pageId": "acct:pen-pal3",
+    "masterPagesHash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "contentNiche": "slideshow",
+    "contentEngine": "sourced_slideshow",
+    "vaultUrl": "https://shipstream.risingtidesviral.com/vault/pen.pal3"
+  },
+  {
+    "schema": "content-lab.syzygy-slideshow-source.v1",
+    "kind": "syzygy_slideshow",
+    "recipeId": "single-image-video:master",
+    "recipeVersion": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "sourceLibraryId": "syzygy:interiors:twin47996",
+    "librarySnapshotHash": "8cdf45eab3578d4e314a8d294b378905e66f6ba1b8e2c489899c43889b3b87d8",
+    "templateSlug": "page-photo-hold",
+    "planSignature": "d65c9f465a6af985195ebf25462405a2bae8665b0fa5f65470ce5d1cbde322ac",
+    "rendererRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "renderJobId": "render-twin47996-0000",
+    "media": [
+      {
+        "objectKey": "interiors/twin47996/photos/pinterest_784681935144259920.jpg",
+        "bytes": 130640,
+        "sha256": "cf5cafb364516ea0e2e333f9a7379bbb6b6be76e08e8fd6976ae73c8fd44d85f",
+        "etag": "\"pinned\""
+      }
+    ],
+    "photoPlan": {
+      "planSlug": "page-photo-hold",
+      "pageId": "acct:twin47996",
+      "libraryId": "syzygy:interiors:twin47996",
+      "lane": "interiors",
+      "subject": "twin47996",
+      "totalDurationSeconds": 12.0,
+      "brightnessGainFromOriginals": 0.85,
+      "media": [
+        {
+          "key": "interiors/twin47996/photos/pinterest_784681935144259920.jpg",
+          "sourceKey": "interiors/lamplit-apartment/photos/pinterest_784681935144259920.jpg",
+          "sha256": "cf5cafb364516ea0e2e333f9a7379bbb6b6be76e08e8fd6976ae73c8fd44d85f",
+          "bytes": 130640,
+          "duration": 12.0,
+          "focalX": 0.5,
+          "focalY": 0.5,
+          "cropMode": "cover",
+          "kenBurns": {
+            "dir": "none",
+            "zoom": 0.0
+          }
+        }
+      ],
+      "signature": "d65c9f465a6af985195ebf25462405a2bae8665b0fa5f65470ce5d1cbde322ac"
+    },
+    "pageId": "acct:twin47996",
+    "masterPagesHash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "contentNiche": "POV",
+    "contentEngine": "sourced_image",
+    "vaultUrl": "https://shipstream.risingtidesviral.com/vault/twin47996"
+  },
+  {
+    "schema": "content-lab.syzygy-slideshow-source.v1",
+    "kind": "syzygy_slideshow",
+    "recipeId": "single-image-video:master",
+    "recipeVersion": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "sourceLibraryId": "syzygy:interiors:twin47996",
+    "librarySnapshotHash": "8cdf45eab3578d4e314a8d294b378905e66f6ba1b8e2c489899c43889b3b87d8",
+    "templateSlug": "page-photo-hold",
+    "planSignature": "5d6acc19b0711de25628fd26a3423d311ce4645a26cdc53d89f32c42c78acb69",
+    "rendererRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "renderJobId": "render-twin47996-0001",
+    "media": [
+      {
+        "objectKey": "interiors/twin47996/photos/pexels_10217037_614cc14f1c7e5e4ccad9daad0034ffedf6ab2965a8a16784b9880cc66c158946.jpg",
+        "bytes": 48787,
+        "sha256": "614cc14f1c7e5e4ccad9daad0034ffedf6ab2965a8a16784b9880cc66c158946",
+        "etag": "\"pinned\""
+      }
+    ],
+    "photoPlan": {
+      "planSlug": "page-photo-hold",
+      "pageId": "acct:twin47996",
+      "libraryId": "syzygy:interiors:twin47996",
+      "lane": "interiors",
+      "subject": "twin47996",
+      "totalDurationSeconds": 12.0,
+      "brightnessGainFromOriginals": 0.85,
+      "media": [
+        {
+          "key": "interiors/twin47996/photos/pexels_10217037_614cc14f1c7e5e4ccad9daad0034ffedf6ab2965a8a16784b9880cc66c158946.jpg",
+          "sourceKey": "interiors/twin47996/photos/pexels_10217037_614cc14f1c7e5e4ccad9daad0034ffedf6ab2965a8a16784b9880cc66c158946.jpg",
+          "sha256": "614cc14f1c7e5e4ccad9daad0034ffedf6ab2965a8a16784b9880cc66c158946",
+          "bytes": 48787,
+          "duration": 12.0,
+          "focalX": 0.5,
+          "focalY": 0.5,
+          "cropMode": "cover",
+          "kenBurns": {
+            "dir": "none",
+            "zoom": 0.0
+          }
+        }
+      ],
+      "variantIndex": 1,
+      "signature": "5d6acc19b0711de25628fd26a3423d311ce4645a26cdc53d89f32c42c78acb69"
+    },
+    "pageId": "acct:twin47996",
+    "masterPagesHash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "contentNiche": "POV",
+    "contentEngine": "sourced_image",
+    "vaultUrl": "https://shipstream.risingtidesviral.com/vault/twin47996"
+  },
+  {
+    "schema": "content-lab.syzygy-slideshow-source.v1",
+    "kind": "syzygy_slideshow",
+    "recipeId": "single-image-video:master",
+    "recipeVersion": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "sourceLibraryId": "syzygy:interiors:twin47996",
+    "librarySnapshotHash": "8cdf45eab3578d4e314a8d294b378905e66f6ba1b8e2c489899c43889b3b87d8",
+    "templateSlug": "page-photo-hold",
+    "planSignature": "af03c1927b8fe3d97246eb82185131ba83f23ee9d29c98fd9fd274161721fffb",
+    "rendererRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "renderJobId": "render-twin47996-0002",
+    "media": [
+      {
+        "objectKey": "interiors/twin47996/photos/pexels_11687657_8b14a95fbd359735153b45b60eec34fc3175bcdc2aa994c5030d1e2feb6c0dfd.jpg",
+        "bytes": 142511,
+        "sha256": "8b14a95fbd359735153b45b60eec34fc3175bcdc2aa994c5030d1e2feb6c0dfd",
+        "etag": "\"pinned\""
+      }
+    ],
+    "photoPlan": {
+      "planSlug": "page-photo-hold",
+      "pageId": "acct:twin47996",
+      "libraryId": "syzygy:interiors:twin47996",
+      "lane": "interiors",
+      "subject": "twin47996",
+      "totalDurationSeconds": 12.0,
+      "brightnessGainFromOriginals": 0.85,
+      "media": [
+        {
+          "key": "interiors/twin47996/photos/pexels_11687657_8b14a95fbd359735153b45b60eec34fc3175bcdc2aa994c5030d1e2feb6c0dfd.jpg",
+          "sourceKey": "interiors/twin47996/photos/pexels_11687657_8b14a95fbd359735153b45b60eec34fc3175bcdc2aa994c5030d1e2feb6c0dfd.jpg",
+          "sha256": "8b14a95fbd359735153b45b60eec34fc3175bcdc2aa994c5030d1e2feb6c0dfd",
+          "bytes": 142511,
+          "duration": 12.0,
+          "focalX": 0.5,
+          "focalY": 0.5,
+          "cropMode": "cover",
+          "kenBurns": {
+            "dir": "none",
+            "zoom": 0.0
+          }
+        }
+      ],
+      "variantIndex": 2,
+      "signature": "af03c1927b8fe3d97246eb82185131ba83f23ee9d29c98fd9fd274161721fffb"
+    },
+    "pageId": "acct:twin47996",
+    "masterPagesHash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "contentNiche": "POV",
+    "contentEngine": "sourced_image",
+    "vaultUrl": "https://shipstream.risingtidesviral.com/vault/twin47996"
+  },
+  {
+    "schema": "content-lab.syzygy-slideshow-source.v1",
+    "kind": "syzygy_slideshow",
+    "recipeId": "single-image-video:master",
+    "recipeVersion": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "sourceLibraryId": "syzygy:interiors:twin47996",
+    "librarySnapshotHash": "8cdf45eab3578d4e314a8d294b378905e66f6ba1b8e2c489899c43889b3b87d8",
+    "templateSlug": "page-photo-hold",
+    "planSignature": "76a21f3194eaae98aa599b2ffdd0f0a516b01f72f506ad4589c40d02d4d62059",
+    "rendererRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "renderJobId": "render-twin47996-0003",
+    "media": [
+      {
+        "objectKey": "interiors/twin47996/photos/pexels_12195833_be763ba778d1a667e7f0e3845dfb4989b76e650bef4def3bfad2c0597d8c71c8.jpg",
+        "bytes": 178622,
+        "sha256": "be763ba778d1a667e7f0e3845dfb4989b76e650bef4def3bfad2c0597d8c71c8",
+        "etag": "\"pinned\""
+      }
+    ],
+    "photoPlan": {
+      "planSlug": "page-photo-hold",
+      "pageId": "acct:twin47996",
+      "libraryId": "syzygy:interiors:twin47996",
+      "lane": "interiors",
+      "subject": "twin47996",
+      "totalDurationSeconds": 12.0,
+      "brightnessGainFromOriginals": 0.85,
+      "media": [
+        {
+          "key": "interiors/twin47996/photos/pexels_12195833_be763ba778d1a667e7f0e3845dfb4989b76e650bef4def3bfad2c0597d8c71c8.jpg",
+          "sourceKey": "interiors/twin47996/photos/pexels_12195833_be763ba778d1a667e7f0e3845dfb4989b76e650bef4def3bfad2c0597d8c71c8.jpg",
+          "sha256": "be763ba778d1a667e7f0e3845dfb4989b76e650bef4def3bfad2c0597d8c71c8",
+          "bytes": 178622,
+          "duration": 12.0,
+          "focalX": 0.5,
+          "focalY": 0.5,
+          "cropMode": "cover",
+          "kenBurns": {
+            "dir": "none",
+            "zoom": 0.0
+          }
+        }
+      ],
+      "variantIndex": 3,
+      "signature": "76a21f3194eaae98aa599b2ffdd0f0a516b01f72f506ad4589c40d02d4d62059"
+    },
+    "pageId": "acct:twin47996",
+    "masterPagesHash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "contentNiche": "POV",
+    "contentEngine": "sourced_image",
+    "vaultUrl": "https://shipstream.risingtidesviral.com/vault/twin47996"
+  },
+  {
+    "schema": "content-lab.syzygy-slideshow-source.v1",
+    "kind": "syzygy_slideshow",
+    "recipeId": "single-image-video:master",
+    "recipeVersion": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "sourceLibraryId": "syzygy:interiors:twin47996",
+    "librarySnapshotHash": "8cdf45eab3578d4e314a8d294b378905e66f6ba1b8e2c489899c43889b3b87d8",
+    "templateSlug": "page-photo-hold",
+    "planSignature": "48e9d5ebd761615a4ad905268799502cfc0a587539b29875fe68e6c101dcc1ae",
+    "rendererRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "renderJobId": "render-twin47996-0004",
+    "media": [
+      {
+        "objectKey": "interiors/twin47996/photos/pexels_13581754_3128bffde79fe80ac026584a1caa08d6d9eeee093e655c60897d7608f9856520.jpg",
+        "bytes": 88623,
+        "sha256": "3128bffde79fe80ac026584a1caa08d6d9eeee093e655c60897d7608f9856520",
+        "etag": "\"pinned\""
+      }
+    ],
+    "photoPlan": {
+      "planSlug": "page-photo-hold",
+      "pageId": "acct:twin47996",
+      "libraryId": "syzygy:interiors:twin47996",
+      "lane": "interiors",
+      "subject": "twin47996",
+      "totalDurationSeconds": 12.0,
+      "brightnessGainFromOriginals": 0.85,
+      "media": [
+        {
+          "key": "interiors/twin47996/photos/pexels_13581754_3128bffde79fe80ac026584a1caa08d6d9eeee093e655c60897d7608f9856520.jpg",
+          "sourceKey": "interiors/twin47996/photos/pexels_13581754_3128bffde79fe80ac026584a1caa08d6d9eeee093e655c60897d7608f9856520.jpg",
+          "sha256": "3128bffde79fe80ac026584a1caa08d6d9eeee093e655c60897d7608f9856520",
+          "bytes": 88623,
+          "duration": 12.0,
+          "focalX": 0.5,
+          "focalY": 0.5,
+          "cropMode": "cover",
+          "kenBurns": {
+            "dir": "none",
+            "zoom": 0.0
+          }
+        }
+      ],
+      "variantIndex": 4,
+      "signature": "48e9d5ebd761615a4ad905268799502cfc0a587539b29875fe68e6c101dcc1ae"
+    },
+    "pageId": "acct:twin47996",
+    "masterPagesHash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "contentNiche": "POV",
+    "contentEngine": "sourced_image",
+    "vaultUrl": "https://shipstream.risingtidesviral.com/vault/twin47996"
+  },
+  {
+    "schema": "content-lab.syzygy-slideshow-source.v1",
+    "kind": "syzygy_slideshow",
+    "recipeId": "single-image-video:master",
+    "recipeVersion": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "sourceLibraryId": "syzygy:interiors:twin47996",
+    "librarySnapshotHash": "8cdf45eab3578d4e314a8d294b378905e66f6ba1b8e2c489899c43889b3b87d8",
+    "templateSlug": "page-photo-hold",
+    "planSignature": "7f6a02a102f82982819389e0e927a50d86dc5e4d2832dd3a9275eeb2f038e75f",
+    "rendererRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "renderJobId": "render-twin47996-0005",
+    "media": [
+      {
+        "objectKey": "interiors/twin47996/photos/pexels_13806238_922d76b588afccae4994f5fef08558943e464d73b473c42adb9685f5cc137bd3.jpg",
+        "bytes": 66197,
+        "sha256": "922d76b588afccae4994f5fef08558943e464d73b473c42adb9685f5cc137bd3",
+        "etag": "\"pinned\""
+      }
+    ],
+    "photoPlan": {
+      "planSlug": "page-photo-hold",
+      "pageId": "acct:twin47996",
+      "libraryId": "syzygy:interiors:twin47996",
+      "lane": "interiors",
+      "subject": "twin47996",
+      "totalDurationSeconds": 12.0,
+      "brightnessGainFromOriginals": 0.85,
+      "media": [
+        {
+          "key": "interiors/twin47996/photos/pexels_13806238_922d76b588afccae4994f5fef08558943e464d73b473c42adb9685f5cc137bd3.jpg",
+          "sourceKey": "interiors/twin47996/photos/pexels_13806238_922d76b588afccae4994f5fef08558943e464d73b473c42adb9685f5cc137bd3.jpg",
+          "sha256": "922d76b588afccae4994f5fef08558943e464d73b473c42adb9685f5cc137bd3",
+          "bytes": 66197,
+          "duration": 12.0,
+          "focalX": 0.5,
+          "focalY": 0.5,
+          "cropMode": "cover",
+          "kenBurns": {
+            "dir": "none",
+            "zoom": 0.0
+          }
+        }
+      ],
+      "variantIndex": 5,
+      "signature": "7f6a02a102f82982819389e0e927a50d86dc5e4d2832dd3a9275eeb2f038e75f"
+    },
+    "pageId": "acct:twin47996",
+    "masterPagesHash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "contentNiche": "POV",
+    "contentEngine": "sourced_image",
+    "vaultUrl": "https://shipstream.risingtidesviral.com/vault/twin47996"
+  },
+  {
+    "schema": "content-lab.syzygy-slideshow-source.v1",
+    "kind": "syzygy_slideshow",
+    "recipeId": "single-image-video:master",
+    "recipeVersion": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "sourceLibraryId": "syzygy:interiors:twin47996",
+    "librarySnapshotHash": "8cdf45eab3578d4e314a8d294b378905e66f6ba1b8e2c489899c43889b3b87d8",
+    "templateSlug": "page-photo-hold",
+    "planSignature": "8d57199051db37f601924e24f88baadc7ccbec89e6223fd385cd20d631af4db6",
+    "rendererRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "renderJobId": "render-twin47996-0006",
+    "media": [
+      {
+        "objectKey": "interiors/twin47996/photos/pexels_1612726_c01ac84972b3def5480cb1dcb71c424faa5f0e263c12db4f5231da25c27afbb8.jpg",
+        "bytes": 131072,
+        "sha256": "c01ac84972b3def5480cb1dcb71c424faa5f0e263c12db4f5231da25c27afbb8",
+        "etag": "\"pinned\""
+      }
+    ],
+    "photoPlan": {
+      "planSlug": "page-photo-hold",
+      "pageId": "acct:twin47996",
+      "libraryId": "syzygy:interiors:twin47996",
+      "lane": "interiors",
+      "subject": "twin47996",
+      "totalDurationSeconds": 12.0,
+      "brightnessGainFromOriginals": 0.85,
+      "media": [
+        {
+          "key": "interiors/twin47996/photos/pexels_1612726_c01ac84972b3def5480cb1dcb71c424faa5f0e263c12db4f5231da25c27afbb8.jpg",
+          "sourceKey": "interiors/twin47996/photos/pexels_1612726_c01ac84972b3def5480cb1dcb71c424faa5f0e263c12db4f5231da25c27afbb8.jpg",
+          "sha256": "c01ac84972b3def5480cb1dcb71c424faa5f0e263c12db4f5231da25c27afbb8",
+          "bytes": 131072,
+          "duration": 12.0,
+          "focalX": 0.5,
+          "focalY": 0.5,
+          "cropMode": "cover",
+          "kenBurns": {
+            "dir": "none",
+            "zoom": 0.0
+          }
+        }
+      ],
+      "variantIndex": 6,
+      "signature": "8d57199051db37f601924e24f88baadc7ccbec89e6223fd385cd20d631af4db6"
+    },
+    "pageId": "acct:twin47996",
+    "masterPagesHash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "contentNiche": "POV",
+    "contentEngine": "sourced_image",
+    "vaultUrl": "https://shipstream.risingtidesviral.com/vault/twin47996"
+  },
+  {
+    "schema": "content-lab.syzygy-slideshow-source.v1",
+    "kind": "syzygy_slideshow",
+    "recipeId": "single-image-video:master",
+    "recipeVersion": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "sourceLibraryId": "syzygy:interiors:twin47996",
+    "librarySnapshotHash": "8cdf45eab3578d4e314a8d294b378905e66f6ba1b8e2c489899c43889b3b87d8",
+    "templateSlug": "page-photo-hold",
+    "planSignature": "59a5f0f0a033676bce51f1d2984bcb972f12e350c77186471fbd84a709e90013",
+    "rendererRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "renderJobId": "render-twin47996-0007",
+    "media": [
+      {
+        "objectKey": "interiors/twin47996/photos/pexels_26546535_98d0e05c7d4abb1942701b1a3d68eec1692d57723ace9b400690425fe9c15a8f.jpg",
+        "bytes": 87608,
+        "sha256": "98d0e05c7d4abb1942701b1a3d68eec1692d57723ace9b400690425fe9c15a8f",
+        "etag": "\"pinned\""
+      }
+    ],
+    "photoPlan": {
+      "planSlug": "page-photo-hold",
+      "pageId": "acct:twin47996",
+      "libraryId": "syzygy:interiors:twin47996",
+      "lane": "interiors",
+      "subject": "twin47996",
+      "totalDurationSeconds": 12.0,
+      "brightnessGainFromOriginals": 0.85,
+      "media": [
+        {
+          "key": "interiors/twin47996/photos/pexels_26546535_98d0e05c7d4abb1942701b1a3d68eec1692d57723ace9b400690425fe9c15a8f.jpg",
+          "sourceKey": "interiors/twin47996/photos/pexels_26546535_98d0e05c7d4abb1942701b1a3d68eec1692d57723ace9b400690425fe9c15a8f.jpg",
+          "sha256": "98d0e05c7d4abb1942701b1a3d68eec1692d57723ace9b400690425fe9c15a8f",
+          "bytes": 87608,
+          "duration": 12.0,
+          "focalX": 0.5,
+          "focalY": 0.5,
+          "cropMode": "cover",
+          "kenBurns": {
+            "dir": "none",
+            "zoom": 0.0
+          }
+        }
+      ],
+      "variantIndex": 7,
+      "signature": "59a5f0f0a033676bce51f1d2984bcb972f12e350c77186471fbd84a709e90013"
+    },
+    "pageId": "acct:twin47996",
+    "masterPagesHash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "contentNiche": "POV",
+    "contentEngine": "sourced_image",
+    "vaultUrl": "https://shipstream.risingtidesviral.com/vault/twin47996"
+  },
+  {
+    "schema": "content-lab.syzygy-slideshow-source.v1",
+    "kind": "syzygy_slideshow",
+    "recipeId": "single-image-video:master",
+    "recipeVersion": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "sourceLibraryId": "syzygy:interiors:twin47996",
+    "librarySnapshotHash": "8cdf45eab3578d4e314a8d294b378905e66f6ba1b8e2c489899c43889b3b87d8",
+    "templateSlug": "page-photo-hold",
+    "planSignature": "d9412a438565489427ecf169d95bc473bfa9a5b5c90d7ce0c2a6daa6db15824a",
+    "rendererRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "renderJobId": "render-twin47996-0008",
+    "media": [
+      {
+        "objectKey": "interiors/twin47996/photos/pexels_27076715_19297e4cee852bbdccf12bfdf47c832e73739d278b6a5b06e014c945705f2b02.jpg",
+        "bytes": 133885,
+        "sha256": "19297e4cee852bbdccf12bfdf47c832e73739d278b6a5b06e014c945705f2b02",
+        "etag": "\"pinned\""
+      }
+    ],
+    "photoPlan": {
+      "planSlug": "page-photo-hold",
+      "pageId": "acct:twin47996",
+      "libraryId": "syzygy:interiors:twin47996",
+      "lane": "interiors",
+      "subject": "twin47996",
+      "totalDurationSeconds": 12.0,
+      "brightnessGainFromOriginals": 0.85,
+      "media": [
+        {
+          "key": "interiors/twin47996/photos/pexels_27076715_19297e4cee852bbdccf12bfdf47c832e73739d278b6a5b06e014c945705f2b02.jpg",
+          "sourceKey": "interiors/twin47996/photos/pexels_27076715_19297e4cee852bbdccf12bfdf47c832e73739d278b6a5b06e014c945705f2b02.jpg",
+          "sha256": "19297e4cee852bbdccf12bfdf47c832e73739d278b6a5b06e014c945705f2b02",
+          "bytes": 133885,
+          "duration": 12.0,
+          "focalX": 0.5,
+          "focalY": 0.5,
+          "cropMode": "cover",
+          "kenBurns": {
+            "dir": "none",
+            "zoom": 0.0
+          }
+        }
+      ],
+      "variantIndex": 8,
+      "signature": "d9412a438565489427ecf169d95bc473bfa9a5b5c90d7ce0c2a6daa6db15824a"
+    },
+    "pageId": "acct:twin47996",
+    "masterPagesHash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "contentNiche": "POV",
+    "contentEngine": "sourced_image",
+    "vaultUrl": "https://shipstream.risingtidesviral.com/vault/twin47996"
+  },
+  {
+    "schema": "content-lab.syzygy-slideshow-source.v1",
+    "kind": "syzygy_slideshow",
+    "recipeId": "single-image-video:master",
+    "recipeVersion": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "sourceLibraryId": "syzygy:interiors:twin47996",
+    "librarySnapshotHash": "8cdf45eab3578d4e314a8d294b378905e66f6ba1b8e2c489899c43889b3b87d8",
+    "templateSlug": "page-photo-hold",
+    "planSignature": "47b7efa50cf5c39440c93bf16d09d06fe0c19d2b19e6c0eb9a6b94829102da8e",
+    "rendererRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "renderJobId": "render-twin47996-0009",
+    "media": [
+      {
+        "objectKey": "interiors/twin47996/photos/pexels_28703872_cc5441d7c56ffdea63a23cae9e38dd4486d8e58ac074e4108e855a8081ae48b2.jpg",
+        "bytes": 126333,
+        "sha256": "cc5441d7c56ffdea63a23cae9e38dd4486d8e58ac074e4108e855a8081ae48b2",
+        "etag": "\"pinned\""
+      }
+    ],
+    "photoPlan": {
+      "planSlug": "page-photo-hold",
+      "pageId": "acct:twin47996",
+      "libraryId": "syzygy:interiors:twin47996",
+      "lane": "interiors",
+      "subject": "twin47996",
+      "totalDurationSeconds": 12.0,
+      "brightnessGainFromOriginals": 0.85,
+      "media": [
+        {
+          "key": "interiors/twin47996/photos/pexels_28703872_cc5441d7c56ffdea63a23cae9e38dd4486d8e58ac074e4108e855a8081ae48b2.jpg",
+          "sourceKey": "interiors/twin47996/photos/pexels_28703872_cc5441d7c56ffdea63a23cae9e38dd4486d8e58ac074e4108e855a8081ae48b2.jpg",
+          "sha256": "cc5441d7c56ffdea63a23cae9e38dd4486d8e58ac074e4108e855a8081ae48b2",
+          "bytes": 126333,
+          "duration": 12.0,
+          "focalX": 0.5,
+          "focalY": 0.5,
+          "cropMode": "cover",
+          "kenBurns": {
+            "dir": "none",
+            "zoom": 0.0
+          }
+        }
+      ],
+      "variantIndex": 9,
+      "signature": "47b7efa50cf5c39440c93bf16d09d06fe0c19d2b19e6c0eb9a6b94829102da8e"
+    },
+    "pageId": "acct:twin47996",
+    "masterPagesHash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "contentNiche": "POV",
+    "contentEngine": "sourced_image",
+    "vaultUrl": "https://shipstream.risingtidesviral.com/vault/twin47996"
+  },
+  {
+    "schema": "content-lab.syzygy-slideshow-source.v1",
+    "kind": "syzygy_slideshow",
+    "recipeId": "single-image-video:master",
+    "recipeVersion": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "sourceLibraryId": "syzygy:interiors:twin47996",
+    "librarySnapshotHash": "8cdf45eab3578d4e314a8d294b378905e66f6ba1b8e2c489899c43889b3b87d8",
+    "templateSlug": "page-photo-hold",
+    "planSignature": "e0343dc3329b004c88d7106c1aa088a3d107f35e0ea8073ed12f62c50548403f",
+    "rendererRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "renderJobId": "render-twin47996-0010",
+    "media": [
+      {
+        "objectKey": "interiors/twin47996/photos/pexels_29100031_6ab04bd6f31bb9b03977209d87351c6827a1b60ae28285114abe79c8d649ccb5.jpg",
+        "bytes": 100427,
+        "sha256": "6ab04bd6f31bb9b03977209d87351c6827a1b60ae28285114abe79c8d649ccb5",
+        "etag": "\"pinned\""
+      }
+    ],
+    "photoPlan": {
+      "planSlug": "page-photo-hold",
+      "pageId": "acct:twin47996",
+      "libraryId": "syzygy:interiors:twin47996",
+      "lane": "interiors",
+      "subject": "twin47996",
+      "totalDurationSeconds": 12.0,
+      "brightnessGainFromOriginals": 0.85,
+      "media": [
+        {
+          "key": "interiors/twin47996/photos/pexels_29100031_6ab04bd6f31bb9b03977209d87351c6827a1b60ae28285114abe79c8d649ccb5.jpg",
+          "sourceKey": "interiors/twin47996/photos/pexels_29100031_6ab04bd6f31bb9b03977209d87351c6827a1b60ae28285114abe79c8d649ccb5.jpg",
+          "sha256": "6ab04bd6f31bb9b03977209d87351c6827a1b60ae28285114abe79c8d649ccb5",
+          "bytes": 100427,
+          "duration": 12.0,
+          "focalX": 0.5,
+          "focalY": 0.5,
+          "cropMode": "cover",
+          "kenBurns": {
+            "dir": "none",
+            "zoom": 0.0
+          }
+        }
+      ],
+      "variantIndex": 10,
+      "signature": "e0343dc3329b004c88d7106c1aa088a3d107f35e0ea8073ed12f62c50548403f"
+    },
+    "pageId": "acct:twin47996",
+    "masterPagesHash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "contentNiche": "POV",
+    "contentEngine": "sourced_image",
+    "vaultUrl": "https://shipstream.risingtidesviral.com/vault/twin47996"
+  },
+  {
+    "schema": "content-lab.syzygy-slideshow-source.v1",
+    "kind": "syzygy_slideshow",
+    "recipeId": "single-image-video:master",
+    "recipeVersion": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "sourceLibraryId": "syzygy:interiors:twin47996",
+    "librarySnapshotHash": "8cdf45eab3578d4e314a8d294b378905e66f6ba1b8e2c489899c43889b3b87d8",
+    "templateSlug": "page-photo-hold",
+    "planSignature": "3d48e3278778758bf1c20e7e0e28a6522db0a048dff4881a3525891f48217c6e",
+    "rendererRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "renderJobId": "render-twin47996-0011",
+    "media": [
+      {
+        "objectKey": "interiors/twin47996/photos/pexels_33661398_690f25343e8f8cd1d1244f516dc85a9e3c5a13269358f7541d47a614a96db797.jpg",
+        "bytes": 117622,
+        "sha256": "690f25343e8f8cd1d1244f516dc85a9e3c5a13269358f7541d47a614a96db797",
+        "etag": "\"pinned\""
+      }
+    ],
+    "photoPlan": {
+      "planSlug": "page-photo-hold",
+      "pageId": "acct:twin47996",
+      "libraryId": "syzygy:interiors:twin47996",
+      "lane": "interiors",
+      "subject": "twin47996",
+      "totalDurationSeconds": 12.0,
+      "brightnessGainFromOriginals": 0.85,
+      "media": [
+        {
+          "key": "interiors/twin47996/photos/pexels_33661398_690f25343e8f8cd1d1244f516dc85a9e3c5a13269358f7541d47a614a96db797.jpg",
+          "sourceKey": "interiors/twin47996/photos/pexels_33661398_690f25343e8f8cd1d1244f516dc85a9e3c5a13269358f7541d47a614a96db797.jpg",
+          "sha256": "690f25343e8f8cd1d1244f516dc85a9e3c5a13269358f7541d47a614a96db797",
+          "bytes": 117622,
+          "duration": 12.0,
+          "focalX": 0.5,
+          "focalY": 0.5,
+          "cropMode": "cover",
+          "kenBurns": {
+            "dir": "none",
+            "zoom": 0.0
+          }
+        }
+      ],
+      "variantIndex": 11,
+      "signature": "3d48e3278778758bf1c20e7e0e28a6522db0a048dff4881a3525891f48217c6e"
+    },
+    "pageId": "acct:twin47996",
+    "masterPagesHash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "contentNiche": "POV",
+    "contentEngine": "sourced_image",
+    "vaultUrl": "https://shipstream.risingtidesviral.com/vault/twin47996"
+  },
+  {
+    "schema": "content-lab.syzygy-slideshow-source.v1",
+    "kind": "syzygy_slideshow",
+    "recipeId": "single-image-video:master",
+    "recipeVersion": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "sourceLibraryId": "syzygy:interiors:twin47996",
+    "librarySnapshotHash": "8cdf45eab3578d4e314a8d294b378905e66f6ba1b8e2c489899c43889b3b87d8",
+    "templateSlug": "page-photo-hold",
+    "planSignature": "4b8811adef558370790c979c74b711d183fcd0b8d65b4d3c2b4872e84ba68c8c",
+    "rendererRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "renderJobId": "render-twin47996-0012",
+    "media": [
+      {
+        "objectKey": "interiors/twin47996/photos/pexels_34036477_cb0280e2471e3528c5247b8f9ef3742d0c55742477cffff67abce038bbd63909.jpg",
+        "bytes": 211180,
+        "sha256": "cb0280e2471e3528c5247b8f9ef3742d0c55742477cffff67abce038bbd63909",
+        "etag": "\"pinned\""
+      }
+    ],
+    "photoPlan": {
+      "planSlug": "page-photo-hold",
+      "pageId": "acct:twin47996",
+      "libraryId": "syzygy:interiors:twin47996",
+      "lane": "interiors",
+      "subject": "twin47996",
+      "totalDurationSeconds": 12.0,
+      "brightnessGainFromOriginals": 0.85,
+      "media": [
+        {
+          "key": "interiors/twin47996/photos/pexels_34036477_cb0280e2471e3528c5247b8f9ef3742d0c55742477cffff67abce038bbd63909.jpg",
+          "sourceKey": "interiors/twin47996/photos/pexels_34036477_cb0280e2471e3528c5247b8f9ef3742d0c55742477cffff67abce038bbd63909.jpg",
+          "sha256": "cb0280e2471e3528c5247b8f9ef3742d0c55742477cffff67abce038bbd63909",
+          "bytes": 211180,
+          "duration": 12.0,
+          "focalX": 0.5,
+          "focalY": 0.5,
+          "cropMode": "cover",
+          "kenBurns": {
+            "dir": "none",
+            "zoom": 0.0
+          }
+        }
+      ],
+      "variantIndex": 12,
+      "signature": "4b8811adef558370790c979c74b711d183fcd0b8d65b4d3c2b4872e84ba68c8c"
+    },
+    "pageId": "acct:twin47996",
+    "masterPagesHash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "contentNiche": "POV",
+    "contentEngine": "sourced_image",
+    "vaultUrl": "https://shipstream.risingtidesviral.com/vault/twin47996"
+  },
+  {
+    "schema": "content-lab.syzygy-slideshow-source.v1",
+    "kind": "syzygy_slideshow",
+    "recipeId": "single-image-video:master",
+    "recipeVersion": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "sourceLibraryId": "syzygy:interiors:twin47996",
+    "librarySnapshotHash": "8cdf45eab3578d4e314a8d294b378905e66f6ba1b8e2c489899c43889b3b87d8",
+    "templateSlug": "page-photo-hold",
+    "planSignature": "4cbb000d220e6d30821128696674cb56aa2153746b60a5a7d297598c2ec5a7d9",
+    "rendererRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "renderJobId": "render-twin47996-0013",
+    "media": [
+      {
+        "objectKey": "interiors/twin47996/photos/pexels_34282678_cee271e2097a3eb97ef5c3ef10e6c01ad87b76fa36064ff1d4de6b85fa075c2f.jpg",
+        "bytes": 126821,
+        "sha256": "cee271e2097a3eb97ef5c3ef10e6c01ad87b76fa36064ff1d4de6b85fa075c2f",
+        "etag": "\"pinned\""
+      }
+    ],
+    "photoPlan": {
+      "planSlug": "page-photo-hold",
+      "pageId": "acct:twin47996",
+      "libraryId": "syzygy:interiors:twin47996",
+      "lane": "interiors",
+      "subject": "twin47996",
+      "totalDurationSeconds": 12.0,
+      "brightnessGainFromOriginals": 0.85,
+      "media": [
+        {
+          "key": "interiors/twin47996/photos/pexels_34282678_cee271e2097a3eb97ef5c3ef10e6c01ad87b76fa36064ff1d4de6b85fa075c2f.jpg",
+          "sourceKey": "interiors/twin47996/photos/pexels_34282678_cee271e2097a3eb97ef5c3ef10e6c01ad87b76fa36064ff1d4de6b85fa075c2f.jpg",
+          "sha256": "cee271e2097a3eb97ef5c3ef10e6c01ad87b76fa36064ff1d4de6b85fa075c2f",
+          "bytes": 126821,
+          "duration": 12.0,
+          "focalX": 0.5,
+          "focalY": 0.5,
+          "cropMode": "cover",
+          "kenBurns": {
+            "dir": "none",
+            "zoom": 0.0
+          }
+        }
+      ],
+      "variantIndex": 13,
+      "signature": "4cbb000d220e6d30821128696674cb56aa2153746b60a5a7d297598c2ec5a7d9"
+    },
+    "pageId": "acct:twin47996",
+    "masterPagesHash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "contentNiche": "POV",
+    "contentEngine": "sourced_image",
+    "vaultUrl": "https://shipstream.risingtidesviral.com/vault/twin47996"
+  },
+  {
+    "schema": "content-lab.syzygy-slideshow-source.v1",
+    "kind": "syzygy_slideshow",
+    "recipeId": "single-image-video:master",
+    "recipeVersion": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "sourceLibraryId": "syzygy:interiors:twin47996",
+    "librarySnapshotHash": "8cdf45eab3578d4e314a8d294b378905e66f6ba1b8e2c489899c43889b3b87d8",
+    "templateSlug": "page-photo-hold",
+    "planSignature": "1c20beb016fa910e5cc149644e13142816f77b9bd46f3be4e66d178ee5929c9f",
+    "rendererRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "renderJobId": "render-twin47996-0014",
+    "media": [
+      {
+        "objectKey": "interiors/twin47996/photos/pexels_36363110_d17c4a3375304d137e4551da37b1fc6f18806ec859817db4a68f69c57a902c34.jpg",
+        "bytes": 376509,
+        "sha256": "d17c4a3375304d137e4551da37b1fc6f18806ec859817db4a68f69c57a902c34",
+        "etag": "\"pinned\""
+      }
+    ],
+    "photoPlan": {
+      "planSlug": "page-photo-hold",
+      "pageId": "acct:twin47996",
+      "libraryId": "syzygy:interiors:twin47996",
+      "lane": "interiors",
+      "subject": "twin47996",
+      "totalDurationSeconds": 12.0,
+      "brightnessGainFromOriginals": 0.85,
+      "media": [
+        {
+          "key": "interiors/twin47996/photos/pexels_36363110_d17c4a3375304d137e4551da37b1fc6f18806ec859817db4a68f69c57a902c34.jpg",
+          "sourceKey": "interiors/twin47996/photos/pexels_36363110_d17c4a3375304d137e4551da37b1fc6f18806ec859817db4a68f69c57a902c34.jpg",
+          "sha256": "d17c4a3375304d137e4551da37b1fc6f18806ec859817db4a68f69c57a902c34",
+          "bytes": 376509,
+          "duration": 12.0,
+          "focalX": 0.5,
+          "focalY": 0.5,
+          "cropMode": "cover",
+          "kenBurns": {
+            "dir": "none",
+            "zoom": 0.0
+          }
+        }
+      ],
+      "variantIndex": 14,
+      "signature": "1c20beb016fa910e5cc149644e13142816f77b9bd46f3be4e66d178ee5929c9f"
+    },
+    "pageId": "acct:twin47996",
+    "masterPagesHash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "contentNiche": "POV",
+    "contentEngine": "sourced_image",
+    "vaultUrl": "https://shipstream.risingtidesviral.com/vault/twin47996"
+  },
+  {
+    "schema": "content-lab.syzygy-slideshow-source.v1",
+    "kind": "syzygy_slideshow",
+    "recipeId": "single-image-video:master",
+    "recipeVersion": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "sourceLibraryId": "syzygy:interiors:twin47996",
+    "librarySnapshotHash": "8cdf45eab3578d4e314a8d294b378905e66f6ba1b8e2c489899c43889b3b87d8",
+    "templateSlug": "page-photo-hold",
+    "planSignature": "5b34e9eabb56cd3c35e73ccb522a9ab158b40866bf636100aa9753dcfea71877",
+    "rendererRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "renderJobId": "render-twin47996-0015",
+    "media": [
+      {
+        "objectKey": "interiors/twin47996/photos/pexels_36363112_90704e933d8ca87bfe040a47a3f9eff7da529a8fa836a085625b8b7639126354.jpg",
+        "bytes": 289627,
+        "sha256": "90704e933d8ca87bfe040a47a3f9eff7da529a8fa836a085625b8b7639126354",
+        "etag": "\"pinned\""
+      }
+    ],
+    "photoPlan": {
+      "planSlug": "page-photo-hold",
+      "pageId": "acct:twin47996",
+      "libraryId": "syzygy:interiors:twin47996",
+      "lane": "interiors",
+      "subject": "twin47996",
+      "totalDurationSeconds": 12.0,
+      "brightnessGainFromOriginals": 0.85,
+      "media": [
+        {
+          "key": "interiors/twin47996/photos/pexels_36363112_90704e933d8ca87bfe040a47a3f9eff7da529a8fa836a085625b8b7639126354.jpg",
+          "sourceKey": "interiors/twin47996/photos/pexels_36363112_90704e933d8ca87bfe040a47a3f9eff7da529a8fa836a085625b8b7639126354.jpg",
+          "sha256": "90704e933d8ca87bfe040a47a3f9eff7da529a8fa836a085625b8b7639126354",
+          "bytes": 289627,
+          "duration": 12.0,
+          "focalX": 0.5,
+          "focalY": 0.5,
+          "cropMode": "cover",
+          "kenBurns": {
+            "dir": "none",
+            "zoom": 0.0
+          }
+        }
+      ],
+      "variantIndex": 15,
+      "signature": "5b34e9eabb56cd3c35e73ccb522a9ab158b40866bf636100aa9753dcfea71877"
+    },
+    "pageId": "acct:twin47996",
+    "masterPagesHash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "contentNiche": "POV",
+    "contentEngine": "sourced_image",
+    "vaultUrl": "https://shipstream.risingtidesviral.com/vault/twin47996"
+  },
+  {
+    "schema": "content-lab.syzygy-slideshow-source.v1",
+    "kind": "syzygy_slideshow",
+    "recipeId": "single-image-video:master",
+    "recipeVersion": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "sourceLibraryId": "syzygy:interiors:twin47996",
+    "librarySnapshotHash": "8cdf45eab3578d4e314a8d294b378905e66f6ba1b8e2c489899c43889b3b87d8",
+    "templateSlug": "page-photo-hold",
+    "planSignature": "f31664501557acc3f5b7f1bfd91d27e808d6f2c97b0268454f0140b8fd9c515d",
+    "rendererRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "renderJobId": "render-twin47996-0016",
+    "media": [
+      {
+        "objectKey": "interiors/twin47996/photos/pexels_36639777_7c6d88464772a023aa6d79f15e4491a66e9f241716f80553ef7d36fb2cc70bae.jpg",
+        "bytes": 89076,
+        "sha256": "7c6d88464772a023aa6d79f15e4491a66e9f241716f80553ef7d36fb2cc70bae",
+        "etag": "\"pinned\""
+      }
+    ],
+    "photoPlan": {
+      "planSlug": "page-photo-hold",
+      "pageId": "acct:twin47996",
+      "libraryId": "syzygy:interiors:twin47996",
+      "lane": "interiors",
+      "subject": "twin47996",
+      "totalDurationSeconds": 12.0,
+      "brightnessGainFromOriginals": 0.85,
+      "media": [
+        {
+          "key": "interiors/twin47996/photos/pexels_36639777_7c6d88464772a023aa6d79f15e4491a66e9f241716f80553ef7d36fb2cc70bae.jpg",
+          "sourceKey": "interiors/twin47996/photos/pexels_36639777_7c6d88464772a023aa6d79f15e4491a66e9f241716f80553ef7d36fb2cc70bae.jpg",
+          "sha256": "7c6d88464772a023aa6d79f15e4491a66e9f241716f80553ef7d36fb2cc70bae",
+          "bytes": 89076,
+          "duration": 12.0,
+          "focalX": 0.5,
+          "focalY": 0.5,
+          "cropMode": "cover",
+          "kenBurns": {
+            "dir": "none",
+            "zoom": 0.0
+          }
+        }
+      ],
+      "variantIndex": 16,
+      "signature": "f31664501557acc3f5b7f1bfd91d27e808d6f2c97b0268454f0140b8fd9c515d"
+    },
+    "pageId": "acct:twin47996",
+    "masterPagesHash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "contentNiche": "POV",
+    "contentEngine": "sourced_image",
+    "vaultUrl": "https://shipstream.risingtidesviral.com/vault/twin47996"
+  },
+  {
+    "schema": "content-lab.syzygy-slideshow-source.v1",
+    "kind": "syzygy_slideshow",
+    "recipeId": "single-image-video:master",
+    "recipeVersion": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "sourceLibraryId": "syzygy:interiors:twin47996",
+    "librarySnapshotHash": "8cdf45eab3578d4e314a8d294b378905e66f6ba1b8e2c489899c43889b3b87d8",
+    "templateSlug": "page-photo-hold",
+    "planSignature": "7c300829f21283422574299f15623c72907e7968e6e27425ecbcc65b3a0f39d9",
+    "rendererRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "renderJobId": "render-twin47996-0017",
+    "media": [
+      {
+        "objectKey": "interiors/twin47996/photos/pexels_39584894_65935d17cac8c7614c8ede0e8c0c81465fa3ce3ec0e3274b4c516d01d62171c3.jpg",
+        "bytes": 94004,
+        "sha256": "65935d17cac8c7614c8ede0e8c0c81465fa3ce3ec0e3274b4c516d01d62171c3",
+        "etag": "\"pinned\""
+      }
+    ],
+    "photoPlan": {
+      "planSlug": "page-photo-hold",
+      "pageId": "acct:twin47996",
+      "libraryId": "syzygy:interiors:twin47996",
+      "lane": "interiors",
+      "subject": "twin47996",
+      "totalDurationSeconds": 12.0,
+      "brightnessGainFromOriginals": 0.85,
+      "media": [
+        {
+          "key": "interiors/twin47996/photos/pexels_39584894_65935d17cac8c7614c8ede0e8c0c81465fa3ce3ec0e3274b4c516d01d62171c3.jpg",
+          "sourceKey": "interiors/twin47996/photos/pexels_39584894_65935d17cac8c7614c8ede0e8c0c81465fa3ce3ec0e3274b4c516d01d62171c3.jpg",
+          "sha256": "65935d17cac8c7614c8ede0e8c0c81465fa3ce3ec0e3274b4c516d01d62171c3",
+          "bytes": 94004,
+          "duration": 12.0,
+          "focalX": 0.5,
+          "focalY": 0.5,
+          "cropMode": "cover",
+          "kenBurns": {
+            "dir": "none",
+            "zoom": 0.0
+          }
+        }
+      ],
+      "variantIndex": 17,
+      "signature": "7c300829f21283422574299f15623c72907e7968e6e27425ecbcc65b3a0f39d9"
+    },
+    "pageId": "acct:twin47996",
+    "masterPagesHash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "contentNiche": "POV",
+    "contentEngine": "sourced_image",
+    "vaultUrl": "https://shipstream.risingtidesviral.com/vault/twin47996"
+  },
+  {
+    "schema": "content-lab.syzygy-slideshow-source.v1",
+    "kind": "syzygy_slideshow",
+    "recipeId": "single-image-video:master",
+    "recipeVersion": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "sourceLibraryId": "syzygy:interiors:twin47996",
+    "librarySnapshotHash": "8cdf45eab3578d4e314a8d294b378905e66f6ba1b8e2c489899c43889b3b87d8",
+    "templateSlug": "page-photo-hold",
+    "planSignature": "d02e38b9979d42baf6dda75484b05334070614f569eda9a548d5a73745da369a",
+    "rendererRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "renderJobId": "render-twin47996-0018",
+    "media": [
+      {
+        "objectKey": "interiors/twin47996/photos/pexels_40317537_7a0a8842865277afce403142f70227174693a1b54aa9725f2a71bf6b2c7094de.jpg",
+        "bytes": 134812,
+        "sha256": "7a0a8842865277afce403142f70227174693a1b54aa9725f2a71bf6b2c7094de",
+        "etag": "\"pinned\""
+      }
+    ],
+    "photoPlan": {
+      "planSlug": "page-photo-hold",
+      "pageId": "acct:twin47996",
+      "libraryId": "syzygy:interiors:twin47996",
+      "lane": "interiors",
+      "subject": "twin47996",
+      "totalDurationSeconds": 12.0,
+      "brightnessGainFromOriginals": 0.85,
+      "media": [
+        {
+          "key": "interiors/twin47996/photos/pexels_40317537_7a0a8842865277afce403142f70227174693a1b54aa9725f2a71bf6b2c7094de.jpg",
+          "sourceKey": "interiors/twin47996/photos/pexels_40317537_7a0a8842865277afce403142f70227174693a1b54aa9725f2a71bf6b2c7094de.jpg",
+          "sha256": "7a0a8842865277afce403142f70227174693a1b54aa9725f2a71bf6b2c7094de",
+          "bytes": 134812,
+          "duration": 12.0,
+          "focalX": 0.5,
+          "focalY": 0.5,
+          "cropMode": "cover",
+          "kenBurns": {
+            "dir": "none",
+            "zoom": 0.0
+          }
+        }
+      ],
+      "variantIndex": 18,
+      "signature": "d02e38b9979d42baf6dda75484b05334070614f569eda9a548d5a73745da369a"
+    },
+    "pageId": "acct:twin47996",
+    "masterPagesHash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "contentNiche": "POV",
+    "contentEngine": "sourced_image",
+    "vaultUrl": "https://shipstream.risingtidesviral.com/vault/twin47996"
+  },
+  {
+    "schema": "content-lab.syzygy-slideshow-source.v1",
+    "kind": "syzygy_slideshow",
+    "recipeId": "single-image-video:master",
+    "recipeVersion": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "sourceLibraryId": "syzygy:interiors:twin47996",
+    "librarySnapshotHash": "8cdf45eab3578d4e314a8d294b378905e66f6ba1b8e2c489899c43889b3b87d8",
+    "templateSlug": "page-photo-hold",
+    "planSignature": "dcea1732d6e54a56d7d792389f565b86b8a7bd6883f1eae1de476af37c40da91",
+    "rendererRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "renderJobId": "render-twin47996-0019",
+    "media": [
+      {
+        "objectKey": "interiors/twin47996/photos/pexels_5390122_70918a1af58d119af5c1de062cc05d0b05e849427ac84ec85c64134c94ab3870.jpg",
+        "bytes": 316763,
+        "sha256": "70918a1af58d119af5c1de062cc05d0b05e849427ac84ec85c64134c94ab3870",
+        "etag": "\"pinned\""
+      }
+    ],
+    "photoPlan": {
+      "planSlug": "page-photo-hold",
+      "pageId": "acct:twin47996",
+      "libraryId": "syzygy:interiors:twin47996",
+      "lane": "interiors",
+      "subject": "twin47996",
+      "totalDurationSeconds": 12.0,
+      "brightnessGainFromOriginals": 0.85,
+      "media": [
+        {
+          "key": "interiors/twin47996/photos/pexels_5390122_70918a1af58d119af5c1de062cc05d0b05e849427ac84ec85c64134c94ab3870.jpg",
+          "sourceKey": "interiors/twin47996/photos/pexels_5390122_70918a1af58d119af5c1de062cc05d0b05e849427ac84ec85c64134c94ab3870.jpg",
+          "sha256": "70918a1af58d119af5c1de062cc05d0b05e849427ac84ec85c64134c94ab3870",
+          "bytes": 316763,
+          "duration": 12.0,
+          "focalX": 0.5,
+          "focalY": 0.5,
+          "cropMode": "cover",
+          "kenBurns": {
+            "dir": "none",
+            "zoom": 0.0
+          }
+        }
+      ],
+      "variantIndex": 19,
+      "signature": "dcea1732d6e54a56d7d792389f565b86b8a7bd6883f1eae1de476af37c40da91"
+    },
+    "pageId": "acct:twin47996",
+    "masterPagesHash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "contentNiche": "POV",
+    "contentEngine": "sourced_image",
+    "vaultUrl": "https://shipstream.risingtidesviral.com/vault/twin47996"
+  },
+  {
+    "schema": "content-lab.syzygy-slideshow-source.v1",
+    "kind": "syzygy_slideshow",
+    "recipeId": "single-image-video:master",
+    "recipeVersion": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "sourceLibraryId": "syzygy:interiors:twin47996",
+    "librarySnapshotHash": "8cdf45eab3578d4e314a8d294b378905e66f6ba1b8e2c489899c43889b3b87d8",
+    "templateSlug": "page-photo-hold",
+    "planSignature": "ad584431c6684cd1184553aef6d409c1b0905261d60b033144f61a60a4b4f8a8",
+    "rendererRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "renderJobId": "render-twin47996-0020",
+    "media": [
+      {
+        "objectKey": "interiors/twin47996/photos/pexels_5490723_ac69a263dba81b50c60bc4a8a53150c3fe8c8e43449946277c255a20c51c397f.jpg",
+        "bytes": 175329,
+        "sha256": "ac69a263dba81b50c60bc4a8a53150c3fe8c8e43449946277c255a20c51c397f",
+        "etag": "\"pinned\""
+      }
+    ],
+    "photoPlan": {
+      "planSlug": "page-photo-hold",
+      "pageId": "acct:twin47996",
+      "libraryId": "syzygy:interiors:twin47996",
+      "lane": "interiors",
+      "subject": "twin47996",
+      "totalDurationSeconds": 12.0,
+      "brightnessGainFromOriginals": 0.85,
+      "media": [
+        {
+          "key": "interiors/twin47996/photos/pexels_5490723_ac69a263dba81b50c60bc4a8a53150c3fe8c8e43449946277c255a20c51c397f.jpg",
+          "sourceKey": "interiors/twin47996/photos/pexels_5490723_ac69a263dba81b50c60bc4a8a53150c3fe8c8e43449946277c255a20c51c397f.jpg",
+          "sha256": "ac69a263dba81b50c60bc4a8a53150c3fe8c8e43449946277c255a20c51c397f",
+          "bytes": 175329,
+          "duration": 12.0,
+          "focalX": 0.5,
+          "focalY": 0.5,
+          "cropMode": "cover",
+          "kenBurns": {
+            "dir": "none",
+            "zoom": 0.0
+          }
+        }
+      ],
+      "variantIndex": 20,
+      "signature": "ad584431c6684cd1184553aef6d409c1b0905261d60b033144f61a60a4b4f8a8"
+    },
+    "pageId": "acct:twin47996",
+    "masterPagesHash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "contentNiche": "POV",
+    "contentEngine": "sourced_image",
+    "vaultUrl": "https://shipstream.risingtidesviral.com/vault/twin47996"
+  },
+  {
+    "schema": "content-lab.syzygy-slideshow-source.v1",
+    "kind": "syzygy_slideshow",
+    "recipeId": "single-image-video:master",
+    "recipeVersion": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "sourceLibraryId": "syzygy:interiors:twin47996",
+    "librarySnapshotHash": "8cdf45eab3578d4e314a8d294b378905e66f6ba1b8e2c489899c43889b3b87d8",
+    "templateSlug": "page-photo-hold",
+    "planSignature": "ef3cc5cbce59dfa61224b47c7e0c9cd1dd79da8077bce40e0c13c39923e514f8",
+    "rendererRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "renderJobId": "render-twin47996-0021",
+    "media": [
+      {
+        "objectKey": "interiors/twin47996/photos/pexels_6207308_72d07704ca48de7e66c2e9fa621a949e155ac5a0fb6428c4b05e800708f76d1d.jpg",
+        "bytes": 198871,
+        "sha256": "72d07704ca48de7e66c2e9fa621a949e155ac5a0fb6428c4b05e800708f76d1d",
+        "etag": "\"pinned\""
+      }
+    ],
+    "photoPlan": {
+      "planSlug": "page-photo-hold",
+      "pageId": "acct:twin47996",
+      "libraryId": "syzygy:interiors:twin47996",
+      "lane": "interiors",
+      "subject": "twin47996",
+      "totalDurationSeconds": 12.0,
+      "brightnessGainFromOriginals": 0.85,
+      "media": [
+        {
+          "key": "interiors/twin47996/photos/pexels_6207308_72d07704ca48de7e66c2e9fa621a949e155ac5a0fb6428c4b05e800708f76d1d.jpg",
+          "sourceKey": "interiors/twin47996/photos/pexels_6207308_72d07704ca48de7e66c2e9fa621a949e155ac5a0fb6428c4b05e800708f76d1d.jpg",
+          "sha256": "72d07704ca48de7e66c2e9fa621a949e155ac5a0fb6428c4b05e800708f76d1d",
+          "bytes": 198871,
+          "duration": 12.0,
+          "focalX": 0.5,
+          "focalY": 0.5,
+          "cropMode": "cover",
+          "kenBurns": {
+            "dir": "none",
+            "zoom": 0.0
+          }
+        }
+      ],
+      "variantIndex": 21,
+      "signature": "ef3cc5cbce59dfa61224b47c7e0c9cd1dd79da8077bce40e0c13c39923e514f8"
+    },
+    "pageId": "acct:twin47996",
+    "masterPagesHash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "contentNiche": "POV",
+    "contentEngine": "sourced_image",
+    "vaultUrl": "https://shipstream.risingtidesviral.com/vault/twin47996"
+  },
+  {
+    "schema": "content-lab.syzygy-slideshow-source.v1",
+    "kind": "syzygy_slideshow",
+    "recipeId": "single-image-video:master",
+    "recipeVersion": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "sourceLibraryId": "syzygy:interiors:twin47996",
+    "librarySnapshotHash": "8cdf45eab3578d4e314a8d294b378905e66f6ba1b8e2c489899c43889b3b87d8",
+    "templateSlug": "page-photo-hold",
+    "planSignature": "4672902ba79fb662f9ecb4f783af56011a9a3c97dd2ff4e009484f63ccf6b7ab",
+    "rendererRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "renderJobId": "render-twin47996-0022",
+    "media": [
+      {
+        "objectKey": "interiors/twin47996/photos/pexels_6641820_ef1716577999c57dd8685d8ddaf4e8dc1c19199d003e6ef74dab0322cdab0804.jpg",
+        "bytes": 135985,
+        "sha256": "ef1716577999c57dd8685d8ddaf4e8dc1c19199d003e6ef74dab0322cdab0804",
+        "etag": "\"pinned\""
+      }
+    ],
+    "photoPlan": {
+      "planSlug": "page-photo-hold",
+      "pageId": "acct:twin47996",
+      "libraryId": "syzygy:interiors:twin47996",
+      "lane": "interiors",
+      "subject": "twin47996",
+      "totalDurationSeconds": 12.0,
+      "brightnessGainFromOriginals": 0.85,
+      "media": [
+        {
+          "key": "interiors/twin47996/photos/pexels_6641820_ef1716577999c57dd8685d8ddaf4e8dc1c19199d003e6ef74dab0322cdab0804.jpg",
+          "sourceKey": "interiors/twin47996/photos/pexels_6641820_ef1716577999c57dd8685d8ddaf4e8dc1c19199d003e6ef74dab0322cdab0804.jpg",
+          "sha256": "ef1716577999c57dd8685d8ddaf4e8dc1c19199d003e6ef74dab0322cdab0804",
+          "bytes": 135985,
+          "duration": 12.0,
+          "focalX": 0.5,
+          "focalY": 0.5,
+          "cropMode": "cover",
+          "kenBurns": {
+            "dir": "none",
+            "zoom": 0.0
+          }
+        }
+      ],
+      "variantIndex": 22,
+      "signature": "4672902ba79fb662f9ecb4f783af56011a9a3c97dd2ff4e009484f63ccf6b7ab"
+    },
+    "pageId": "acct:twin47996",
+    "masterPagesHash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "contentNiche": "POV",
+    "contentEngine": "sourced_image",
+    "vaultUrl": "https://shipstream.risingtidesviral.com/vault/twin47996"
+  },
+  {
+    "schema": "content-lab.syzygy-slideshow-source.v1",
+    "kind": "syzygy_slideshow",
+    "recipeId": "single-image-video:master",
+    "recipeVersion": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "sourceLibraryId": "syzygy:interiors:twin47996",
+    "librarySnapshotHash": "8cdf45eab3578d4e314a8d294b378905e66f6ba1b8e2c489899c43889b3b87d8",
+    "templateSlug": "page-photo-hold",
+    "planSignature": "70d7f4745f52e4cdb1592512e1ac7937518e3206eb1e3fe7164a11e0d9a22524",
+    "rendererRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "renderJobId": "render-twin47996-0023",
+    "media": [
+      {
+        "objectKey": "interiors/twin47996/photos/pexels_6943990_975d67327e61ec22d1fb90803fbae08a4c27132ff0f194e6f98c1e522c0a279c.jpg",
+        "bytes": 127346,
+        "sha256": "975d67327e61ec22d1fb90803fbae08a4c27132ff0f194e6f98c1e522c0a279c",
+        "etag": "\"pinned\""
+      }
+    ],
+    "photoPlan": {
+      "planSlug": "page-photo-hold",
+      "pageId": "acct:twin47996",
+      "libraryId": "syzygy:interiors:twin47996",
+      "lane": "interiors",
+      "subject": "twin47996",
+      "totalDurationSeconds": 12.0,
+      "brightnessGainFromOriginals": 0.85,
+      "media": [
+        {
+          "key": "interiors/twin47996/photos/pexels_6943990_975d67327e61ec22d1fb90803fbae08a4c27132ff0f194e6f98c1e522c0a279c.jpg",
+          "sourceKey": "interiors/twin47996/photos/pexels_6943990_975d67327e61ec22d1fb90803fbae08a4c27132ff0f194e6f98c1e522c0a279c.jpg",
+          "sha256": "975d67327e61ec22d1fb90803fbae08a4c27132ff0f194e6f98c1e522c0a279c",
+          "bytes": 127346,
+          "duration": 12.0,
+          "focalX": 0.5,
+          "focalY": 0.5,
+          "cropMode": "cover",
+          "kenBurns": {
+            "dir": "none",
+            "zoom": 0.0
+          }
+        }
+      ],
+      "variantIndex": 23,
+      "signature": "70d7f4745f52e4cdb1592512e1ac7937518e3206eb1e3fe7164a11e0d9a22524"
+    },
+    "pageId": "acct:twin47996",
+    "masterPagesHash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "contentNiche": "POV",
+    "contentEngine": "sourced_image",
+    "vaultUrl": "https://shipstream.risingtidesviral.com/vault/twin47996"
+  }
+]
