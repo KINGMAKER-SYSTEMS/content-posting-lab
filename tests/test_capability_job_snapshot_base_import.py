@@ -36,6 +36,13 @@ import pytest
 from routers import control_plane as cp
 from services.json_store import atomic_save
 
+
+@pytest.fixture(autouse=True)
+def _advertise_zero_reasons(monkeypatch):
+    """These tests check the zero-plan reason fields, which the Lab sends
+    only when CONTENT_LAB_ADVERTISE_ZERO_REASONS is on."""
+    monkeypatch.setenv("CONTENT_LAB_ADVERTISE_ZERO_REASONS", "1")
+
 BASE_SHA = "8ad9ab32f3804cc98e50384571ee648f978437b6"
 NUM_STATES = 200
 PAGES = [f"page-{i}" for i in range(8)]

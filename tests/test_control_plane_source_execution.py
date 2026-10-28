@@ -30,6 +30,13 @@ from services.dossier_ingredients import (
 from tests.master_pages_fixtures import bind_current_intent, master_pages
 
 
+@pytest.fixture(autouse=True)
+def _advertise_zero_reasons(monkeypatch):
+    """These tests check the zero-plan reason fields, which the Lab sends
+    only when CONTENT_LAB_ADVERTISE_ZERO_REASONS is on."""
+    monkeypatch.setenv("CONTENT_LAB_ADVERTISE_ZERO_REASONS", "1")
+
+
 TOKEN = "test-control-plane-token"
 PAGE_ID = "tt-chase-miles-4l"
 LIBRARY_ID = "pov-dirt-bike-chase-miles-4l-v1"

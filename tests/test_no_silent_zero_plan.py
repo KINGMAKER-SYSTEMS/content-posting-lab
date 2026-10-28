@@ -52,6 +52,13 @@ from tests.test_image_video_variants import (
 from tests.test_curated_variants import BURNT_CANONICAL, CULTURE_CANONICAL
 
 
+@pytest.fixture(autouse=True)
+def _advertise_zero_reasons(monkeypatch):
+    """These tests check the zero-plan reason fields, which the Lab sends
+    only when CONTENT_LAB_ADVERTISE_ZERO_REASONS is on."""
+    monkeypatch.setenv("CONTENT_LAB_ADVERTISE_ZERO_REASONS", "1")
+
+
 # ── Sweep table: every format slug the planners dispatch on, its family,
 #    whether a zero is terminal by design (fresh media cannot refill it), and
 #    the reason code the explain path must return. A new format slug with no
@@ -720,3 +727,39 @@ def test_generated_prompt_space_zero_refills_when_inflight_jobs_finish():
     assert cp._generated_capability_quantity(store, recipe, page_id, {"contentNiche": "OTHER"}) == 0
     store["jobs"]["inflight"]["status"] = "completed"
     assert cp._generated_capability_quantity(store, recipe, page_id, {"contentNiche": "OTHER"}) > 0
+
+
+# ── Wire contract: by default the response fits the deployed Worker ──────────
+# The Worker (contentLabClient.js) rejects any capability entry field and any
+# top-level field it does not allow-list, and then fails the whole page. These
+# are the allow-lists it enforces today. Widen them here only after the Worker
+# ships the same change.
+WORKER_CAPABILITY_ENTRY_FIELDS = {"recipeId", "engine", "recipeVersion", "maxQuantity", "sourceIdentities"}
+WORKER_CAPABILITIES_TOP_LEVEL_FIELDS = {"schema", "capabilities", "degraded"}
+
+
+def test_default_capabilities_response_fits_the_worker_allow_lists(monkeypatch):
+    monkeypatch.delenv(cp.ADVERTISE_ZERO_REASONS_ENV, raising=False)
+    monkeypatch.delenv(cp.ADVERTISE_CONSTRAINTS_ENV, raising=False)
+    entries = [
+        {"recipeId": "r-zero", "engine": "slideshow", "recipeVersion": "v1", "maxQuantity": 0,
+         "zeroReason": reasons.LIBRARY_BELOW_MINIMUM},
+        {"recipeId": "r-ok", "engine": "slideshow", "recipeVersion": "v1", "maxQuantity": 3},
+    ]
+    zero_rows = [{"engine": "slideshow", "zeroReason": reasons.LIBRARY_LOAD_FAILED}]
+    response = cp._capabilities_response(entries, zero_rows)
+    assert set(response) <= WORKER_CAPABILITIES_TOP_LEVEL_FIELDS, response
+    for entry in response["capabilities"]:
+        assert set(entry) <= WORKER_CAPABILITY_ENTRY_FIELDS, entry
+    # the caller's (cached) entries are not mutated
+    assert entries[0]["zeroReason"] == reasons.LIBRARY_BELOW_MINIMUM
+
+
+def test_zero_reason_fields_go_on_the_wire_only_with_the_flag(monkeypatch):
+    monkeypatch.setenv(cp.ADVERTISE_ZERO_REASONS_ENV, "1")
+    entries = [{"recipeId": "r-zero", "engine": "slideshow", "recipeVersion": "v1", "maxQuantity": 0,
+                "zeroReason": reasons.LIBRARY_BELOW_MINIMUM}]
+    zero_rows = [{"engine": "slideshow", "zeroReason": reasons.LIBRARY_LOAD_FAILED}]
+    response = cp._capabilities_response(entries, zero_rows)
+    assert response["capabilities"][0]["zeroReason"] == reasons.LIBRARY_BELOW_MINIMUM
+    assert response["zeroPlanRecipes"] == zero_rows
