@@ -229,7 +229,7 @@ def test_generic_clean_video_exhaustion_names_code_and_fresh_photos_refill():
     assert reasons.explain_empty_slideshow_plan(
         recipe, library, 1, {chunk0["signature"]},
     ) == reasons.GENERIC_MEDIA_EXHAUSTED
-    # A full fresh chunk (media_count keys) makes the next disjoint chunk live.
+    # A full fresh chunk (media_count keys) makes the next unreserved chunk live.
     fresh = tuple(
         ss.SyzygyObject(
             f"ugc/french-core/photos/img-fresh-{index:02d}.jpg",
@@ -244,7 +244,7 @@ def test_generic_clean_video_exhaustion_names_code_and_fresh_photos_refill():
         library.snapshot_hash,
     )
     assert ss.plan_slideshows(recipe, grown, 1, {chunk0["signature"]}, "run"), (
-        "a fresh disjoint chunk must produce a new generic clean-video plan"
+        "a fresh unreserved chunk must produce a new generic clean-video plan"
     )
 
 
@@ -260,7 +260,7 @@ def test_generic_clean_video_insertion_never_reuses_reserved_media():
     assert ss.plan_slideshows(
         recipe, grown, 1, {first["signature"]}, "run",
         reserved_media_keys=set(first["mediaKeys"]),
-    ) == []  # one fresh key is insufficient for a disjoint three-photo plan
+    ) == []  # one fresh key is insufficient for the next unreserved three-photo plan
     more = tuple(ss.SyzygyObject(
         f"ugc/french-core/photos/img-00-{index}.jpg", 1000,
         f"https://r2.example/ugc/french-core/photos/img-00-{index}.jpg",
@@ -270,6 +270,8 @@ def test_generic_clean_video_insertion_never_reuses_reserved_media():
         recipe, grown, 1, {first["signature"]}, "run",
         reserved_media_keys=set(first["mediaKeys"]),
     )[0]
+    # Disjointness holds here only because the fresh keys sort before the
+    # reserved chunk, so the next unreserved chunk skips the reserved media.
     assert set(next_plan["mediaKeys"]).isdisjoint(first["mediaKeys"])
     assert ss.plan_slideshows(
         recipe, grown, 1, {first["signature"]}, "run",
@@ -359,6 +361,32 @@ def test_permutation_exhaustion_names_code_and_fresh_key_refills():
     )
 
 
+def test_permutation_exhaustion_explain_stays_under_generous_perf_bound():
+    """LOW-R2-6: explain_empty_slideshow_plan deliberately re-runs the stride/
+    start candidate scan that plan_slideshows just ran (no shared cache — a
+    process-wide cache would hand every request the same plan dicts, which
+    create_job then mutates in place). This bounds the double scan on a
+    realistic library with every plan reserved, so a future accidental
+    blow-up of the empty path is caught."""
+    import time
+
+    recipe, library = _permutation_recipe_and_library()
+    everything = {
+        plan["signature"]
+        for plan in ss.plan_slideshows(recipe, library, 10_000, set(), "run")
+    }
+    assert everything, "a 5-object permutation library must offer candidates"
+    assert ss.plan_slideshows(recipe, library, 1, everything, "run") == []
+    started = time.monotonic()
+    assert reasons.explain_empty_slideshow_plan(recipe, library, 1, everything) \
+        == reasons.SLIDESHOW_PERMUTATIONS_EXHAUSTED
+    elapsed = time.monotonic() - started
+    assert elapsed < 2.0, (
+        f"explain_empty_slideshow_plan took {elapsed:.3f}s on a reserved-out "
+        "realistic permutation library; the empty path must stay cheap"
+    )
+
+
 @pytest.mark.parametrize(
     "page", ["culture", "burnt"], ids=["culture", "burnt"],
 )
@@ -408,7 +436,7 @@ def _capability_scaffold(
     monkeypatch, tmp_path, *, recipe, library, load_error=None,
     publication_engine=None, publication_recipe_id=None,
     resolve_slideshow=None, resolve_generation=None, resolve_source=None,
-    generation_reason=None, runtime_available=True,
+    generation_reason=None, runtime_available=True, real_generation=False,
 ):
     monkeypatch.setattr(cp, "_jobs_path", lambda: tmp_path / "jobs.json")
     cp._jobs_snapshot = None
@@ -431,19 +459,17 @@ def _capability_scaffold(
         cp, "resolve_slideshow_recipe",
         resolve_slideshow if resolve_slideshow is not None else (lambda publication: recipe),
     )
-    monkeypatch.setattr(
-        cp, "resolve_generation_recipe",
-        resolve_generation if resolve_generation is not None else (lambda publication: None),
-    )
+    if not real_generation:
+        monkeypatch.setattr(
+            cp, "resolve_generation_recipe_with_reason",
+            lambda publication: (
+                resolve_generation(publication) if resolve_generation is not None else None,
+                generation_reason,
+            ),
+        )
     monkeypatch.setattr(
         cp, "_dossier_source_recipe",
         resolve_source if resolve_source is not None else (lambda publication: None),
-    )
-    monkeypatch.setattr(
-        cp, "generation_recipe_unavailable_reason",
-        (lambda publication: generation_reason)
-        if generation_reason is not None
-        else (lambda publication: None),
     )
     monkeypatch.setattr(cp, "syzygy_runtime_available", lambda: runtime_available)
     monkeypatch.setattr(cp, "resolve_material_profile", lambda publication, spec: object())
@@ -551,6 +577,32 @@ def test_generation_recipe_unresolved_carries_detail_and_survives_the_cache(monk
     assert second["zeroPlanRecipes"] == expected
 
 
+def test_failing_ai_video_binding_resolves_once(monkeypatch, tmp_path, caplog):
+    """LOW-R2-1: one failing ai_video binding runs the resolver (and logs the
+    'registered dossier recipe unavailable' warning) exactly once per uncached
+    poll, instead of once for resolve_generation_recipe and again for
+    generation_recipe_unavailable_reason."""
+    recipe, library = _permutation_recipe_and_library()
+    _capability_scaffold(
+        monkeypatch, tmp_path, recipe=recipe, library=library,
+        publication_engine="ai_video", publication_recipe_id="boat-lake:master",
+        real_generation=True,
+    )
+    import logging
+    caplog.set_level(logging.WARNING)
+    response = cp.capabilities(x_rt_page_id="acct:guard-page", x_page_id=None)
+    warnings = [
+        r.getMessage() for r in caplog.records
+        if "registered dossier recipe unavailable" in r.getMessage()
+    ]
+    assert len(warnings) == 1, warnings
+    assert response["zeroPlanRecipes"] == [{
+        "recipeId": "boat-lake:master", "engine": "ai_video",
+        "recipeVersion": "v1", "zeroReason": reasons.RECIPE_UNRESOLVED,
+        "detail": "typed_recipe_spec",
+    }]
+
+
 def test_source_identity_missing_lands_in_zero_plan_recipes(monkeypatch, tmp_path):
     recipe, library = _permutation_recipe_and_library()
     source_recipe = types.SimpleNamespace(
@@ -611,17 +663,53 @@ def _statement_blocks(stmt):
     for handler in getattr(stmt, "handlers", None) or []:
         if isinstance(getattr(handler, "body", None), list):
             yield handler.body
+    for case in getattr(stmt, "cases", None) or []:
+        if isinstance(getattr(case, "body", None), list):
+            yield case.body
 
 
-def _continue_violations(loop):
+def _is_max_capabilities_cap_break(stmt):
+    """The one allowed break: ``if len(entries) >= MAX_CAPABILITIES: break``."""
+    if not (
+        isinstance(stmt, ast.If)
+        and isinstance(stmt.test, ast.Compare)
+        and len(stmt.test.ops) == 1
+        and len(stmt.test.comparators) == 1
+        and isinstance(stmt.test.ops[0], ast.GtE)
+        and isinstance(stmt.test.comparators[0], ast.Name)
+        and stmt.test.comparators[0].id == "MAX_CAPABILITIES"
+    ):
+        return False
+    left = stmt.test.left
+    return (
+        isinstance(left, ast.Call)
+        and isinstance(left.func, ast.Name)
+        and left.func.id == "len"
+        and [getattr(a, "id", None) for a in left.args] == ["entries"]
+    )
+
+
+def _bindings_loop_violations(loop):
+    """Violations inside the capabilities() bindings loop.
+
+    Every ``continue`` must be immediately preceded by a zero_plan_recipes
+    append; no ``break`` or ``return`` may appear except the MAX_CAPABILITIES
+    cap break, which is allow-listed by the comparison it guards. ``match``
+    case bodies are descended into so a case-level continue is caught.
+    """
     bad = []
 
     def check(block):
         for index, stmt in enumerate(block):
+            if isinstance(stmt, ast.If) and _is_max_capabilities_cap_break(stmt):
+                # Allow the cap break; do not descend into its body.
+                continue
             if isinstance(stmt, ast.Continue):
                 previous = block[index - 1] if index > 0 else None
                 if not _is_zero_plan_append(previous):
-                    bad.append(getattr(stmt, "lineno", "?"))
+                    bad.append(f"continue@{getattr(stmt, 'lineno', '?')}")
+            elif isinstance(stmt, (ast.Break, ast.Return)):
+                bad.append(f"{type(stmt).__name__}@{getattr(stmt, 'lineno', '?')}")
             for sub in _statement_blocks(stmt):
                 check(sub)
 
@@ -646,7 +734,10 @@ def test_every_continue_in_capabilities_loop_is_preceded_by_a_zero_plan_record()
     tree = ast.parse(inspect.getsource(cp))
     loop = _capabilities_bindings_loop(tree)
     assert loop is not None, "capabilities() registered_bindings loop not found"
-    assert _continue_violations(loop) == []
+    # Broadened from the original continue-only census: any break/return inside
+    # the bindings loop (except the MAX_CAPABILITIES cap break) is also a
+    # silent-zero hazard, and match-case bodies are descended into.
+    assert _bindings_loop_violations(loop) == []
 
 
 # ── MED-3d: executed zero -> refill for permutation, source-dna, generated
