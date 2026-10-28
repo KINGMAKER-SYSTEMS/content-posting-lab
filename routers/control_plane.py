@@ -186,6 +186,15 @@ SUPPORTED_CONSTRAINTS = ("sourceWindowExclusions", "priority")
 # `supportedConstraints` is advertised only once this flag is set (after the
 # Worker accepts the field).
 ADVERTISE_CONSTRAINTS_ENV = "CONTENT_LAB_ADVERTISE_SUPPORTED_CONSTRAINTS"
+# Same rule for the zero-plan reasons: `zeroReason` on capability entries and
+# the top-level `zeroPlanRecipes` list go on the wire only once this flag is
+# set (after the Worker allow-lists them). The reasons are still computed and
+# cached either way, and the X-RT-Zero-Reason header on 409s is unaffected.
+ADVERTISE_ZERO_REASONS_ENV = "CONTENT_LAB_ADVERTISE_ZERO_REASONS"
+
+
+def _env_flag(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _zero_plan_recipe(
@@ -206,10 +215,19 @@ def _capabilities_response(
     entries: list[dict[str, Any]],
     zero_plan_recipes: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    response: dict[str, Any] = {"schema": RESPONSE_SCHEMA, "capabilities": entries}
-    if zero_plan_recipes:
-        response["zeroPlanRecipes"] = zero_plan_recipes
-    if os.environ.get(ADVERTISE_CONSTRAINTS_ENV, "").strip().lower() in {"1", "true", "yes", "on"}:
+    if _env_flag(ADVERTISE_ZERO_REASONS_ENV):
+        response: dict[str, Any] = {"schema": RESPONSE_SCHEMA, "capabilities": entries}
+        if zero_plan_recipes:
+            response["zeroPlanRecipes"] = zero_plan_recipes
+    else:
+        response = {
+            "schema": RESPONSE_SCHEMA,
+            "capabilities": [
+                {key: value for key, value in entry.items() if key != "zeroReason"}
+                for entry in entries
+            ],
+        }
+    if _env_flag(ADVERTISE_CONSTRAINTS_ENV):
         response["supportedConstraints"] = list(SUPPORTED_CONSTRAINTS)
     return response
 ENGINE = "content_lab"
