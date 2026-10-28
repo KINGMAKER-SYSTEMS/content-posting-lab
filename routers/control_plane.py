@@ -197,6 +197,17 @@ def _env_flag(name: str) -> bool:
     return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
 
 
+# The live Worker's capability entry allow-list
+# (control-plane-worker/src/adapters/contentLabClient.js,
+# CAPABILITY_ENTRY_ALLOWED_FIELDS). Every entry is projected onto it, so a new
+# entry field never reaches the Worker by accident. Pinned by
+# tests/fixtures/worker_capabilities_contract.json: change both together, and
+# only after the Worker ships the same list.
+WORKER_CAPABILITY_ENTRY_FIELDS = frozenset(
+    {"recipeId", "engine", "recipeVersion", "maxQuantity", "sourceIdentities"}
+)
+
+
 def _zero_plan_recipe(
     publication: dict[str, Any], reason: str, detail: str | None = None,
 ) -> dict[str, Any]:
@@ -215,18 +226,22 @@ def _capabilities_response(
     entries: list[dict[str, Any]],
     zero_plan_recipes: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    if _env_flag(ADVERTISE_ZERO_REASONS_ENV):
-        response: dict[str, Any] = {"schema": RESPONSE_SCHEMA, "capabilities": entries}
-        if zero_plan_recipes:
-            response["zeroPlanRecipes"] = zero_plan_recipes
-    else:
-        response = {
-            "schema": RESPONSE_SCHEMA,
-            "capabilities": [
-                {key: value for key, value in entry.items() if key != "zeroReason"}
-                for entry in entries
-            ],
-        }
+    advertise_zero_reasons = _env_flag(ADVERTISE_ZERO_REASONS_ENV)
+    allowed = (
+        WORKER_CAPABILITY_ENTRY_FIELDS | {"zeroReason"}
+        if advertise_zero_reasons
+        else WORKER_CAPABILITY_ENTRY_FIELDS
+    )
+    # New dicts every time: the cached entries keep their zeroReason.
+    response: dict[str, Any] = {
+        "schema": RESPONSE_SCHEMA,
+        "capabilities": [
+            {key: value for key, value in entry.items() if key in allowed}
+            for entry in entries
+        ],
+    }
+    if advertise_zero_reasons and zero_plan_recipes:
+        response["zeroPlanRecipes"] = zero_plan_recipes
     if _env_flag(ADVERTISE_CONSTRAINTS_ENV):
         response["supportedConstraints"] = list(SUPPORTED_CONSTRAINTS)
     return response

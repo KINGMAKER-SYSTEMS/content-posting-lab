@@ -1,0 +1,16 @@
+{
+  "worker": "KINGMAKER-SYSTEMS/rotational-posting-agent control-plane-worker/src/adapters/contentLabClient.js",
+  "checked": "2026-10-28: main (RESPONSE_SCHEMAS.capabilities optional = {degraded}) and the J6-B build b2b8e875c2 (optional = {}). Top-level list is the overlap of both.",
+  "capabilityEntryAllowedFields": [
+    "engine",
+    "maxQuantity",
+    "recipeId",
+    "recipeVersion",
+    "sourceIdentities"
+  ],
+  "capabilitiesTopLevelAllowedFields": [
+    "capabilities",
+    "schema"
+  ],
+  "rule": "The Worker rejects any field not listed and fails the whole page. Widen these lists only in the same change that flips the matching Lab flag, after the Worker ships the same list."
+}
