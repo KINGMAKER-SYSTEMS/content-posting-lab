@@ -1,0 +1,105 @@
+{
+  "schema": "rt.source-bank.v1",
+  "role": "backup",
+  "source": {
+    "youtubeId": "rjuENv8oUV0",
+    "url": "https://www.youtube.com/watch?v=rjuENv8oUV0",
+    "title": "Salem, Massachusetts 3AM Rain Walk (4K)",
+    "channel": "New England Exploration",
+    "durationSec": 3476
+  },
+  "usableRangeSec": {
+    "start": 120,
+    "end": 3356,
+    "note": "first/last 2 min skipped"
+  },
+  "shares": [
+    {
+      "role": "backup",
+      "page": "lovenightwalks",
+      "shareStartSec": 120,
+      "shareEndSec": 1198,
+      "sourceFormat": "f401",
+      "sourceFile": "./rjuENv8oUV0.lovenightwalks.120-1198.f401.mp4",
+      "excludedRanges": [
+        {
+          "startSec": 1095,
+          "endSec": 1155,
+          "reason": "text detected in centre crop (OCR)"
+        }
+      ],
+      "masters": [
+        {
+          "name": "masters/rjuENv8oUV0-lovenightwalks-120-607.mp4",
+          "role": "backup",
+          "originSourceId": "rjuENv8oUV0",
+          "page": "lovenightwalks",
+          "originStartSec": 120,
+          "originEndSec": 607,
+          "durationSec": 487,
+          "originToleranceSec": 6,
+          "encoder": "videotoolbox",
+          "bytes": 168143225,
+          "sha256": "27fc23dd531001346ca5750fd48d69774ee3e9086c9177dc85492c369ad011d4",
+          "ocrFlaggedFrames": 0,
+          "r2Key": "youtube/rjuENv8oUV0/lovenightwalks/rjuENv8oUV0-lovenightwalks-120-607.mp4"
+        },
+        {
+          "name": "masters/rjuENv8oUV0-lovenightwalks-607-1095.mp4",
+          "role": "backup",
+          "originSourceId": "rjuENv8oUV0",
+          "page": "lovenightwalks",
+          "originStartSec": 607,
+          "originEndSec": 1095,
+          "durationSec": 488,
+          "originToleranceSec": 6,
+          "encoder": "videotoolbox",
+          "bytes": 171419723,
+          "sha256": "d35e00948b24428f16934ac6ae298ccc007c1dc7114120b45997e69810c7e860",
+          "ocrFlaggedFrames": 0,
+          "r2Key": "youtube/rjuENv8oUV0/lovenightwalks/rjuENv8oUV0-lovenightwalks-607-1095.mp4"
+        }
+      ]
+    }
+  ],
+  "masters": [
+    {
+      "name": "masters/rjuENv8oUV0-lovenightwalks-120-607.mp4",
+      "role": "backup",
+      "originSourceId": "rjuENv8oUV0",
+      "page": "lovenightwalks",
+      "originStartSec": 120,
+      "originEndSec": 607,
+      "durationSec": 487,
+      "originToleranceSec": 6,
+      "encoder": "videotoolbox",
+      "bytes": 168143225,
+      "sha256": "27fc23dd531001346ca5750fd48d69774ee3e9086c9177dc85492c369ad011d4",
+      "ocrFlaggedFrames": 0,
+      "r2Key": "youtube/rjuENv8oUV0/lovenightwalks/rjuENv8oUV0-lovenightwalks-120-607.mp4"
+    },
+    {
+      "name": "masters/rjuENv8oUV0-lovenightwalks-607-1095.mp4",
+      "role": "backup",
+      "originSourceId": "rjuENv8oUV0",
+      "page": "lovenightwalks",
+      "originStartSec": 607,
+      "originEndSec": 1095,
+      "durationSec": 488,
+      "originToleranceSec": 6,
+      "encoder": "videotoolbox",
+      "bytes": 171419723,
+      "sha256": "d35e00948b24428f16934ac6ae298ccc007c1dc7114120b45997e69810c7e860",
+      "ocrFlaggedFrames": 0,
+      "r2Key": "youtube/rjuENv8oUV0/lovenightwalks/rjuENv8oUV0-lovenightwalks-607-1095.mp4"
+    }
+  ],
+  "windows": [],
+  "pool": "shared-night-core",
+  "boundToPages": false,
+  "updatedAt": "2026-10-26T19:41:09Z",
+  "r2": {
+    "bucket": "rt-source-library",
+    "prefix": "youtube/rjuENv8oUV0/"
+  }
+}

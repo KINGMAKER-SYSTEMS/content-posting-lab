@@ -164,7 +164,7 @@ from services.page_frame import VERTICAL_FRAME, resolved_frame
 from services import generation_budget, moderation_retry
 from services.roster_public import require_roster_auth
 from services import clip_similarity
-from services.clip_transforms import apply_transforms, cut_transforms, transforms_from_manifest
+from services.clip_transforms import apply_transforms, cut_transforms, transforms_enabled, transforms_from_manifest
 from services.clip_variation import cut_grade, cut_variant, varies_clips
 from services.source_treatment import (
     derived_source_treatment,
@@ -3726,6 +3726,12 @@ def _latest_page_cut_transforms(page_id: str, job_id: str, jobs: dict | None = N
     return transforms_from_manifest(clip.get("clipTransforms")) if clip else None
 
 
+# Layer-B-only cuts whose delivered-duration probe could not read the file are
+# delivered after a warning (content_lab.layer_b_probe_unreadable); this counts
+# them so the gap-timed rollout can watch for a systematic probe failure.
+_layer_b_probe_unreadable_count = 0
+
+
 async def _run_dossier_source(job_id: str) -> None:
     """Cut unique windows from one page's immutable source DNA."""
     job = _get_job_or_404(job_id)
@@ -3791,22 +3797,31 @@ async def _run_dossier_source(job_id: str) -> None:
     manifests: list[dict[str, Any]] = []
     await asyncio.to_thread(_update_job,job_id, status="running", progress=0)
     # A page listed in services/clip_variation.py cuts every clip at its own
-    # speed and framing; every other page keeps the recipe's one look.
-    vary = varies_clips(job["pageId"])
+    # speed and framing (Layer A); sourced source-video cuts may also get
+    # mirror / motion / reverse transforms (Layer B). Layer B is wider than
+    # Layer A: every source-cut page gets fresh looks, but only a clip-varying
+    # page gets its own speed/crop/grade. Layer B transforms are recorded on
+    # the manifest only; they DO change the delivered bytes (sourceSha256
+    # follows them).
+    vary_look = varies_clips(job["pageId"])
+    vary_transforms = vary_look or transforms_enabled(job["pageId"], recipe.format_slug)
     previous_variant = previous_transforms = None
+    transforms = None
     recent_cuts: list = []
     skipped_backup_cuts: list = []
     try:
-        if vary:
+        if vary_look or vary_transforms:
             # One read of the job store, inside the try that terminalizes the
             # job: the page's latest cut seeds the "never the same look twice"
             # rule across jobs, and the TRIAL similarity gate compares against
             # the page's recent cuts (logged, never blocking).
             page_jobs = (await asyncio.to_thread(_load_jobs))["jobs"]
-            previous_variant = _latest_page_cut_look(job["pageId"], job_id, page_jobs)
-            previous_transforms = _latest_page_cut_transforms(job["pageId"], job_id, page_jobs)
-            recent_cuts = clip_similarity.recent_fingerprints(page_jobs, job["pageId"], job_id,
-                                                              clip_similarity.now_utc())
+            if vary_look:
+                previous_variant = _latest_page_cut_look(job["pageId"], job_id, page_jobs)
+                recent_cuts = clip_similarity.recent_fingerprints(page_jobs, job["pageId"], job_id,
+                                                                  clip_similarity.now_utc())
+            if vary_transforms:
+                previous_transforms = _latest_page_cut_transforms(job["pageId"], job_id, page_jobs)
         masters = {master.sha256: master for master in recipe.masters}
         for index, source_cut in enumerate(source_cuts):
             if not _job_matches_current_master_pages(job):
@@ -3842,14 +3857,19 @@ async def _run_dossier_source(job_id: str) -> None:
             )
             cut_speed, cut_crop = clip_speed, clip_crop
             cut_filters, cut_cc = None, color_correction
-            if vary:
-                # Seeded by the cut's own time frame, so a resumed job recuts it identically.
+            if vary_transforms:
+                # Layer B: draw the mirror / motion / reverse / loop-swap set,
+                # seeded by the cut's own time frame so a resumed job recuts it
+                # identically, and never the previous cut's combination.
                 transforms = cut_transforms(job["pageId"], f"{master.sha256}:{start_ms}:{duration_ms}",
                                             previous_transforms)
                 previous_transforms = transforms
-                # A loop-swapped cut re-orders but never lengthens the clip, so
-                # keep the delivered duration at or under 9.0 s when one is drawn
-                # (the Worker admits 5-10 s; slow speeds stay in the pool).
+            if vary_look:
+                # Layer A (a clip-varying page): the cut's own speed, crop and
+                # grade. A loop-swapped cut re-orders but never lengthens the
+                # clip, so keep the delivered duration at or under 9.0 s when
+                # one is drawn (the Worker admits 5-10 s; slow speeds stay in
+                # the pool).
                 cut_speed, cut_crop = cut_variant(job["pageId"], f"{master.sha256}:{start_ms}:{duration_ms}",
                                                   clip_speed, clip_crop, previous_variant,
                                                   duration_ms=duration_ms,
@@ -3871,7 +3891,7 @@ async def _run_dossier_source(job_id: str) -> None:
                 clip_duration_ms=duration_ms,
                 **frame_cut,
             )
-            if vary and transforms.any():
+            if vary_transforms and transforms.any():
                 # Mirror, camera move, reverse and loop-swap work on the finished
                 # short clip (services/clip_transforms.py). They are full 1080x1920
                 # x264 encodes (~0.9 GB each, measured), so they take the same
@@ -3880,21 +3900,38 @@ async def _run_dossier_source(job_id: str) -> None:
                 async with _COLOR_CORRECT_GATE:
                     await asyncio.to_thread(apply_transforms, destination, transforms,
                                             delivery_encode_args(recipe.encode_preset))
-            if recipe.format_slug == "pov-club" or vary:
+            if vary_look or recipe.format_slug == "pov-club" or (vary_transforms and transforms.any()):
                 measured_duration = await asyncio.to_thread(
                     probe_source_output_duration_seconds, str(destination),
                 )
-                # A varied cut is bounded by what the Worker admits (5-10 s),
-                # and a loop-swapped cut (like pov-club) must land at or under
-                # 9.0 s after the swap re-encode.
-                maximum = 9.0 if recipe.format_slug == "pov-club" or (vary and transforms.loop_swap) else 10.0
-                if measured_duration is None or not 5.0 <= measured_duration <= maximum:
+                # A delivered cut is bounded by what the Worker admits (5-10 s),
+                # and a loop-swapped cut must land at or under 9.0 s after the
+                # swap re-encode. Layer B probes the delivered duration too, so
+                # a transform that lands outside the format's bounds fails the
+                # job here rather than shipping to the Worker.
+                maximum = 9.0 if recipe.format_slug == "pov-club" or transforms.loop_swap else 10.0
+                if measured_duration is None:
+                    if vary_look or recipe.format_slug == "pov-club":
+                        # Main's strict behaviour: a clip-varying (Layer A) or
+                        # pov-club cut whose delivered duration cannot be read is
+                        # not admissible, so the job fails here.
+                        raise RuntimeError("source_output_duration_unsupported")
+                    # Layer-B-only page: the probe could not read the file. Warn
+                    # and deliver the already-encoded cut; an out-of-bounds value
+                    # is still rejected below on the next read, and the Worker
+                    # re-probes before admitting anything.
+                    log.warning("content_lab.layer_b_probe_unreadable page=%s job=%s",
+                                job["pageId"], job_id)
+                    global _layer_b_probe_unreadable_count
+                    _layer_b_probe_unreadable_count += 1
+                elif not 5.0 <= measured_duration <= maximum:
                     raise RuntimeError("source_output_duration_unsupported")
             manifest = _generated_manifest(job_root, destination)
             manifest["clipSpeed"] = cut_speed
             manifest["clipCrop"] = cut_crop
-            if vary:
+            if vary_transforms:
                 manifest["clipTransforms"] = transforms.manifest()
+            if vary_look:
                 manifest["similarity"] = await _similarity_trial(
                     job, destination, measured_duration, transforms, recent_cuts,
                     [(f"{job_id}/{done}", (clip.get("similarity") or {}).get("fingerprint"))

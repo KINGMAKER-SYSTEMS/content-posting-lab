@@ -1,9 +1,10 @@
-"""Creative per-cut transforms for clip-varying pages (Eric 2026-10-22).
+"""Creative per-cut transforms for source-cut pages (Eric 2026-10-22).
 
 "The footage can be iterated with the reverse etc to make it fresh and new."
-After a varied cut is made (services/clip_variation.py: speed, crop, grade),
-a cut may also be mirrored, given a slow camera move, played backwards, and
-loop-swapped (second half moved to the front, Eric 2026-10-28).
+After a source-cut clip is made (and, on a clip-varying page,
+services/clip_variation.py has drawn its speed, crop and grade), a cut may
+also be mirrored, given a slow camera move, played backwards, and loop-swapped
+(second half moved to the front, Eric 2026-10-28).
 Each is drawn per cut from the cut's own time frame, so a resumed job makes
 the same choice, and a cut never repeats the previous cut's combination.
 
@@ -29,7 +30,7 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
-REVERSE_SHARE = 1 / 4
+REVERSE_SHARE = 1 / 15
 MIRROR_SHARE = 1 / 3
 MOTION_SHARE = 1 / 3
 # Eric's loop recipe (2026-10-28): "split it in half n move the second half to
@@ -62,6 +63,64 @@ def loop_swap_enabled(page_id: str) -> bool:
     return page_id in LOOP_SWAP_PAGES
 
 
+# Sourced source-video cut formats (content_engine=sourced_video,
+# material_source=source_library, executor=source_dna_recut). These are the
+# only formats whose finished clips may get the mirror / motion / reverse
+# transforms; every other format's clips are left exactly as delivered.
+SOURCE_CUT_FORMATS = frozenset({
+    "meme", "pov-club", "pov-dirt-bike", "pov-dusk-core", "pov-night-core", "pov-scenic",
+})
+
+# Pages whose clips must stay exactly as delivered, even on a source-cut format
+# (a client floor / campaign-final lane). No such lane exists in this build, so
+# the code constant is empty; TRANSFORM_DENY_PAGES is also read from env (a
+# comma list) so a page can be deny-listed without shipping new code. Like the
+# other env switches here, it is read once at service start, so a change takes
+# effect on the Railway service restart after the variable change — set it in a
+# Lab gap.
+CODE_TRANSFORM_DENY_PAGES: frozenset[str] = frozenset()
+
+
+def _transforms_deny_pages() -> frozenset[str]:
+    raw = os.environ.get("TRANSFORM_DENY_PAGES", "")
+    env = frozenset(page.strip() for page in raw.split(",") if page.strip())
+    return CODE_TRANSFORM_DENY_PAGES | env
+
+
+TRANSFORM_DENY_PAGES: frozenset[str] = _transforms_deny_pages()
+
+
+def _transforms_all() -> bool:
+    # Layer B is ON unless TRANSFORMS_ALL names an off value ("0", "false",
+    # "off" or "no", case-insensitive and stripped). The switch is read once at
+    # service start, so a change takes effect on the Railway service restart
+    # after the variable change — set it in a Lab gap, not mid-lane.
+    value = os.environ.get("TRANSFORMS_ALL", "").strip().lower()
+    return value not in {"0", "false", "off", "no"}
+
+
+TRANSFORMS_ALL: bool = _transforms_all()
+
+# Reverse is chunked (bounded memory) and not the cost outlier: measured on a
+# 1080x1920 30fps 9s cut at ~701 MB peak / +0.44s wall, lighter than motion.
+# Flip this one line to False to drop reverse to mirror+motion only, without
+# touching the draw's seed scheme.
+TRANSFORMS_REVERSE_ENABLED = True
+
+
+def transforms_enabled(page_id: str, format_slug: str) -> bool:
+    """Whether ``page_id``'s cut may get mirror / motion / reverse transforms.
+
+    True only for sourced source-video cut formats (the source DNA recut
+    pipeline), unless the page is deny-listed so its clips stay as delivered.
+    TRANSFORMS_ALL off turns Layer B off everywhere; a variable change takes
+    effect on the Railway service restart after the change (do it in a Lab gap).
+    """
+    if not TRANSFORMS_ALL:
+        return False
+    return format_slug in SOURCE_CUT_FORMATS and page_id not in TRANSFORM_DENY_PAGES
+
+
 @dataclass(frozen=True)
 class CutTransforms:
     mirror: bool = False
@@ -89,7 +148,7 @@ def _draw(seed: str, loop_swap: bool = False) -> CutTransforms:
     return CutTransforms(
         mirror=_unit(seed, "mirror") < MIRROR_SHARE,
         motion=motion,
-        reverse=_unit(seed, "reverse") < REVERSE_SHARE,
+        reverse=TRANSFORMS_REVERSE_ENABLED and _unit(seed, "reverse") < REVERSE_SHARE,
         loop_swap=loop_swap and _unit(seed, "loop_swap") < LOOP_SWAP_SHARE,
     )
 
@@ -98,8 +157,9 @@ def cut_transforms(page_id: str, cut_slot_id: str, previous: CutTransforms | Non
     """The transforms for one cut; never the same combination as ``previous``.
 
     loop_swap is drawn only for pages on LOOP_SWAP_PAGES; for every other page
-    the draw is byte-identical to the pre-loop-swap build (mirror, motion and
-    reverse are seeded by their own parts and loop_swap stays off).
+    the draw keeps loop_swap off. Mirror, motion and reverse are each seeded
+    by their own parts, so loop_swap does not move them; the reverse share is
+    a separate compose-time knob (REVERSE_SHARE), not a loop-swap effect.
     """
     loop_swap = loop_swap_enabled(page_id)
     seed = f"{page_id}\0{cut_slot_id}\0transforms"

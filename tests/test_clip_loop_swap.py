@@ -222,12 +222,12 @@ def test_loop_swap_is_off_unless_the_page_is_allow_listed(monkeypatch):
     assert drawn_count > 0, "loop_swap is drawn once the page is allow-listed"
 
 
-def test_non_varied_page_is_byte_identical_to_base(tmp_path):
-    # varies_clips gates every transform, and loop_swap is additionally gated
-    # by its own allow-list: a non-listed page never draws loop_swap, and
-    # apply_transforms with the all-off combination is a strict no-op (the file
-    # bytes are untouched, no re-encode), so a non-listed page's clip is
-    # byte-identical to base.
+def test_all_off_transforms_are_a_strict_no_op(tmp_path):
+    # apply_transforms with the all-off combination is a strict no-op: the
+    # file bytes are untouched and no work dir is created. The caller's gate
+    # (varies_clips / transforms_enabled / LOOP_SWAP_PAGES / TRANSFORMS_ALL)
+    # decides whether a transform is drawn; this test pins only that an
+    # all-off draw never touches the delivered bytes.
     assert not varies_clips("acct:codyjames6-7")
     assert not loop_swap_enabled("acct:codyjames6-7")
     source = tmp_path / "plain.mp4"

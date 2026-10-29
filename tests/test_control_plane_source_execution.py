@@ -1143,6 +1143,11 @@ async def test_queued_source_runner_accepts_unrelated_registry_digest_drift_and_
 
     monkeypatch.setattr(cp, "_cached_source_master", cached_source)
     monkeypatch.setattr(cp, "run_color_correct", render)
+    # These tests stub the cut encode with a non-video file; Layer B transforms
+    # (now on for every sourced page) would re-probe it, and Layer B also
+    # probes the delivered duration. Neutralize both here.
+    monkeypatch.setattr(cp, "apply_transforms", lambda *a, **k: None)
+    monkeypatch.setattr(cp, "probe_source_output_duration_seconds", lambda path: 8.0)
     await cp._run_dossier_source(job_id)
     assert calls[0][3] == {
         "scale": None,
@@ -1198,6 +1203,11 @@ async def test_runner_enforces_neutral_vertical_delivery_without_custom_crop(
 
     monkeypatch.setattr(cp, "_cached_source_master", cached_source)
     monkeypatch.setattr(cp, "run_color_correct", render)
+    # These tests stub the cut encode with a non-video file; Layer B transforms
+    # (now on for every sourced page) would re-probe it, and Layer B also
+    # probes the delivered duration. Neutralize both here.
+    monkeypatch.setattr(cp, "apply_transforms", lambda *a, **k: None)
+    monkeypatch.setattr(cp, "probe_source_output_duration_seconds", lambda path: 8.0)
     await cp._run_dossier_source(response.json()["jobId"])
     checked = cp._load_jobs()["jobs"][response.json()["jobId"]]
     assert checked["status"] == "completed", checked.get("error")
@@ -1641,6 +1651,9 @@ async def test_pov_club_measures_output_before_admitting_manifest(lab, monkeypat
 
     monkeypatch.setattr(cp, "_cached_source_master", cached_source)
     monkeypatch.setattr(cp, "run_color_correct", render)
+    # These tests stub the cut encode with a non-video file; Layer B transforms
+    # (now on for every sourced page) would re-probe it. Neutralize them here.
+    monkeypatch.setattr(cp, "apply_transforms", lambda *a, **k: None)
     monkeypatch.setattr(cp, "probe_source_output_duration_seconds", probe)
     await cp._run_dossier_source(job_id)
     job = cp._load_jobs()["jobs"][job_id]
@@ -1700,6 +1713,9 @@ async def test_runner_cuts_a_framed_page_into_its_band(lab, monkeypatch, frame, 
 
     monkeypatch.setattr(cp, "_cached_source_master", cached_source)
     monkeypatch.setattr(cp, "run_color_correct", render)
+    # These tests stub the cut encode with a non-video file; Layer B transforms
+    # (now on for every sourced page) would re-probe it. Neutralize them here.
+    monkeypatch.setattr(cp, "apply_transforms", lambda *a, **k: None)
     monkeypatch.setattr(cp, "probe_display_size", probe)
     await cp._run_dossier_source(job_id)
     job = cp._load_jobs()["jobs"][job_id]
@@ -1758,6 +1774,11 @@ async def test_runner_passes_no_frame_arguments_for_a_vertical_page(lab, monkeyp
 
     monkeypatch.setattr(cp, "_cached_source_master", cached_source)
     monkeypatch.setattr(cp, "run_color_correct", render)
+    # These tests stub the cut encode with a non-video file; Layer B transforms
+    # (now on for every sourced page) would re-probe it, and Layer B also
+    # probes the delivered duration. Neutralize both here.
+    monkeypatch.setattr(cp, "apply_transforms", lambda *a, **k: None)
+    monkeypatch.setattr(cp, "probe_source_output_duration_seconds", lambda path: 8.0)
     monkeypatch.setattr(cp, "probe_display_size", probe)
     await cp._run_dossier_source(response.json()["jobId"])
     job = cp._load_jobs()["jobs"][response.json()["jobId"]]
@@ -1795,6 +1816,11 @@ async def test_runner_cuts_fill_when_the_master_display_size_is_unprovable(lab, 
 
     monkeypatch.setattr(cp, "_cached_source_master", cached_source)
     monkeypatch.setattr(cp, "run_color_correct", render)
+    # These tests stub the cut encode with a non-video file; Layer B transforms
+    # (now on for every sourced page) would re-probe it, and Layer B also
+    # probes the delivered duration. Neutralize both here.
+    monkeypatch.setattr(cp, "apply_transforms", lambda *a, **k: None)
+    monkeypatch.setattr(cp, "probe_source_output_duration_seconds", lambda path: 8.0)
     monkeypatch.setattr(cp, "probe_display_size", probe)
     with caplog.at_level("WARNING", logger="control_plane"):
         await cp._run_dossier_source(job_id)
@@ -1854,6 +1880,267 @@ async def test_a_clip_varying_page_cuts_each_window_at_its_own_speed_and_records
             assert abs(visual["filters"][name] - (1.0 if name != "warmth" else 0.0)) <= band
     assert looks[0] != looks[1]
     assert job["clips"][1]["similarity"]["nearestClip"] == f"{response.json()['jobId']}/0"
+
+
+@pytest.mark.asyncio
+async def test_a_non_varying_sourced_page_gets_transforms_and_an_unchanged_receipt(
+    lab, monkeypatch,
+):
+    # Layer B is wider than Layer A: a non-BTL sourced source-video page gets
+    # mirror/motion/reverse on the manifest, while its cut keeps the recipe's
+    # one speed/crop/filters. The receipt schema and visualTreatment stay
+    # identical to today; sourceSha256 follows the (possibly transformed)
+    # delivered bytes.
+    client, tmp_path, _ = lab
+    response = client.post(
+        "/api/control-plane/v1/jobs", json=job_body(1),
+        headers=headers("source-job-nonvarying-transforms"),
+    )
+    job_id = response.json()["jobId"]
+    _pin_cuts_to_first_frame(job_id)
+    source = tmp_path / "master.mp4"
+    _write_av_test_clip(source, duration=40.0)
+
+    async def cached_source(*_):
+        return source
+
+    monkeypatch.setattr(cp, "_cached_source_master", cached_source)
+    await cp._run_dossier_source(job_id)
+    job = cp._load_jobs()["jobs"][job_id]
+    assert job["status"] == "completed", job.get("error")
+    clip = job["clips"][0]
+    # Layer B rides on the manifest, never in the receipt.
+    assert set(clip["clipTransforms"]) == {"mirror", "motion", "reverse", "loop_swap"}
+    # Layer A is untouched: the recipe's one look is what the bytes carry and
+    # what the receipt says.
+    receipt = clip["sourceTreatment"]
+    assert set(receipt["visualTreatment"]) == {"filters", "clipSpeed", "clipCrop"}
+    assert receipt["visualTreatment"]["clipSpeed"] == 1.0
+    assert receipt["visualTreatment"]["clipCrop"] == {"zoom": 1.0, "focusX": 0.5, "focusY": 0.5}
+    assert clip["clipSpeed"] == 1.0
+    assert clip["clipCrop"] == {"zoom": 1.0, "focusX": 0.5, "focusY": 0.5}
+    assert "clipTransforms" not in receipt
+    # The similarity TRIAL is a Layer A (clip-varying) instrument only.
+    assert "similarity" not in clip
+
+
+@pytest.mark.asyncio
+async def test_a_denied_sourced_page_gets_no_transforms(lab, monkeypatch):
+    # A page on TRANSFORM_DENY_PAGES keeps its clips exactly as delivered: no
+    # manifest transforms and no per-cut look.
+    client, tmp_path, _ = lab
+    monkeypatch.setattr(cp, "transforms_enabled", lambda page_id, slug: False)
+    response = client.post(
+        "/api/control-plane/v1/jobs", json=job_body(1),
+        headers=headers("source-job-denied-transforms"),
+    )
+    job_id = response.json()["jobId"]
+    _pin_cuts_to_first_frame(job_id)
+    source = tmp_path / "master.mp4"
+    _write_av_test_clip(source, duration=40.0)
+
+    async def cached_source(*_):
+        return source
+
+    monkeypatch.setattr(cp, "_cached_source_master", cached_source)
+    await cp._run_dossier_source(job_id)
+    job = cp._load_jobs()["jobs"][job_id]
+    assert job["status"] == "completed", job.get("error")
+    clip = job["clips"][0]
+    assert "clipTransforms" not in clip
+    assert "similarity" not in clip
+    assert clip["clipSpeed"] == 1.0
+    receipt = clip["sourceTreatment"]
+    assert set(receipt["visualTreatment"]) == {"filters", "clipSpeed", "clipCrop"}
+
+
+@pytest.mark.asyncio
+async def test_transforms_all_off_makes_a_non_varying_page_match_main(lab, monkeypatch):
+    import services.clip_transforms as ct
+
+    # TRANSFORMS_ALL off is the kill switch: a non-vary_look sourced page draws
+    # no Layer B transforms, so its clips are main's clips (no clipTransforms,
+    # the recipe's one speed/crop/filters). A switch change takes effect on the
+    # Railway service restart after the variable change (do it in a Lab gap).
+    client, tmp_path, _ = lab
+    monkeypatch.setattr(ct, "TRANSFORMS_ALL", False)
+    response = client.post(
+        "/api/control-plane/v1/jobs", json=job_body(1),
+        headers=headers("source-job-transforms-all-off"),
+    )
+    job_id = response.json()["jobId"]
+    _pin_cuts_to_first_frame(job_id)
+    source = tmp_path / "master.mp4"
+    _write_av_test_clip(source, duration=40.0)
+
+    async def cached_source(*_):
+        return source
+
+    monkeypatch.setattr(cp, "_cached_source_master", cached_source)
+    await cp._run_dossier_source(job_id)
+    job = cp._load_jobs()["jobs"][job_id]
+    assert job["status"] == "completed", job.get("error")
+    clip = job["clips"][0]
+    assert "clipTransforms" not in clip
+    assert "similarity" not in clip
+    assert clip["clipSpeed"] == 1.0
+    receipt = clip["sourceTreatment"]
+    assert set(receipt["visualTreatment"]) == {"filters", "clipSpeed", "clipCrop"}
+    assert receipt["visualTreatment"]["clipSpeed"] == 1.0
+
+
+@pytest.mark.asyncio
+async def test_a_transformed_sourced_cut_outside_the_format_bounds_is_rejected(lab, monkeypatch):
+    from services.clip_transforms import CutTransforms
+
+    # Layer B now probes the delivered duration whenever transforms were
+    # applied, not only for pov-club / Layer A. A non-vary_look sourced cut
+    # that lands outside the Worker's 5-10 s window must fail the job here.
+    client, tmp_path, _ = lab
+    monkeypatch.setattr(cp, "varies_clips", lambda page_id: False)
+    monkeypatch.setattr(cp, "cut_transforms", lambda *a, **k: CutTransforms(mirror=True))
+    # Keep the transform encode out of this test: the probe is what is pinned.
+    monkeypatch.setattr(cp, "apply_transforms", lambda path, transforms, encode_args: None)
+    monkeypatch.setattr(cp, "probe_source_output_duration_seconds", lambda path: 4.5)
+    response = client.post(
+        "/api/control-plane/v1/jobs", json=job_body(1),
+        headers=headers("source-job-transform-under-five"),
+    )
+    job_id = response.json()["jobId"]
+    _pin_cuts_to_first_frame(job_id)
+    source = tmp_path / "master.mp4"
+    _write_av_test_clip(source, duration=40.0)
+
+    async def cached_source(*_):
+        return source
+
+    monkeypatch.setattr(cp, "_cached_source_master", cached_source)
+    await cp._run_dossier_source(job_id)
+    job = cp._load_jobs()["jobs"][job_id]
+    assert job["status"] == "failed", job.get("error")
+    assert "source_output_duration_unsupported" in job["error"]
+
+
+@pytest.mark.asyncio
+async def test_a_layer_b_only_page_delivers_an_unreadable_probe(lab, monkeypatch, caplog):
+    from services.clip_transforms import CutTransforms
+
+    # MED-1 (lead review): for a Layer-B-only page (not vary_look and not
+    # pov-club), a probe that cannot read the delivered file must NOT fail the
+    # job. It logs a warning keyed content_lab.layer_b_probe_unreadable (with
+    # job and page), bumps the counter, and delivers the already-encoded cut.
+    # main's strict behaviour stays only where main had it: vary_look and
+    # pov-club still raise on None (pinned separately).
+    client, tmp_path, _ = lab
+    monkeypatch.setattr(cp, "varies_clips", lambda page_id: False)
+    monkeypatch.setattr(cp, "cut_transforms", lambda *a, **k: CutTransforms(mirror=True))
+    monkeypatch.setattr(cp, "apply_transforms", lambda path, transforms, encode_args: None)
+    monkeypatch.setattr(cp, "probe_source_output_duration_seconds", lambda path: None)
+    cp._layer_b_probe_unreadable_count = 0
+    response = client.post(
+        "/api/control-plane/v1/jobs", json=job_body(1),
+        headers=headers("source-job-layer-b-probe-unreadable"),
+    )
+    job_id = response.json()["jobId"]
+    _pin_cuts_to_first_frame(job_id)
+    source = tmp_path / "master.mp4"
+    _write_av_test_clip(source, duration=40.0)
+
+    async def cached_source(*_):
+        return source
+
+    monkeypatch.setattr(cp, "_cached_source_master", cached_source)
+    with caplog.at_level("WARNING", logger="control_plane"):
+        await cp._run_dossier_source(job_id)
+    job = cp._load_jobs()["jobs"][job_id]
+    assert job["status"] == "completed", job.get("error")
+    clip = job["clips"][0]
+    assert set(clip["clipTransforms"]) == {"mirror", "motion", "reverse", "loop_swap"}
+    assert cp._layer_b_probe_unreadable_count == 1
+    assert any("content_lab.layer_b_probe_unreadable" in record.message for record in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_transforms_all_off_cut_bytes_match_main(lab, monkeypatch):
+    import services.clip_transforms as ct
+
+    # DS r- MED-1 (byte-vs-base): with the TRANSFORMS_ALL kill switch off, a
+    # non-varying sourced page must deliver the exact bytes (sha256) and
+    # manifest that Lab main 60db4247 delivers for the same job. The pre-change
+    # (main) path is reproduced by forcing transforms_enabled False — the only
+    # head gate main lacks for a non-varying page, which makes head behaviorally
+    # identical to main here. TRANSFORMS_ALL off reaches that same gate through
+    # the real function. Both runs use the real cut encode, so the sha pins real
+    # delivered bytes rather than a stub.
+    client, tmp_path, _ = lab
+
+    async def run_job(use_kill_switch):
+        if use_kill_switch:
+            monkeypatch.setattr(ct, "TRANSFORMS_ALL", False)
+            monkeypatch.setattr(cp, "transforms_enabled", ct.transforms_enabled)
+        else:
+            monkeypatch.setattr(cp, "transforms_enabled", lambda page_id, slug: False)
+        response = client.post(
+            "/api/control-plane/v1/jobs", json=job_body(1),
+            headers=headers("source-job-byte-base"),
+        )
+        job_id = response.json()["jobId"]
+        _pin_cuts_to_first_frame(job_id)
+        source = tmp_path / "master.mp4"
+        _write_av_test_clip(source, duration=40.0)
+
+        async def cached_source(*_):
+            return source
+
+        monkeypatch.setattr(cp, "_cached_source_master", cached_source)
+        await cp._run_dossier_source(job_id)
+        job = cp._load_jobs()["jobs"][job_id]
+        assert job["status"] == "completed", job.get("error")
+        return job["clips"][0]
+
+    main_clip = await run_job(False)
+    head_clip = await run_job(True)
+    assert main_clip["sha256"] == head_clip["sha256"]
+    assert main_clip["bytes"] == head_clip["bytes"]
+    assert main_clip["name"] == head_clip["name"]
+    assert main_clip["path"] == head_clip["path"]
+    assert main_clip["clipSpeed"] == head_clip["clipSpeed"] == 1.0
+    assert main_clip["clipCrop"] == head_clip["clipCrop"]
+    assert "clipTransforms" not in main_clip and "clipTransforms" not in head_clip
+    assert "similarity" not in main_clip and "similarity" not in head_clip
+
+
+@pytest.mark.asyncio
+async def test_a_denied_sourced_page_gets_zero_transforms_and_no_extra_encode(lab, monkeypatch):
+    import services.clip_transforms as ct
+
+    # TRANSFORM_DENY_PAGES: a denied page keeps its clips exactly as delivered —
+    # zero transforms on the manifest and no extra transform encode pass.
+    client, tmp_path, _ = lab
+    monkeypatch.setattr(ct, "TRANSFORM_DENY_PAGES", frozenset({PAGE_ID}))
+    encoded = []
+    monkeypatch.setattr(cp, "apply_transforms", lambda path, transforms, encode_args: encoded.append(transforms))
+    response = client.post(
+        "/api/control-plane/v1/jobs", json=job_body(1),
+        headers=headers("source-job-denied-zero-encode"),
+    )
+    job_id = response.json()["jobId"]
+    _pin_cuts_to_first_frame(job_id)
+    source = tmp_path / "master.mp4"
+    _write_av_test_clip(source, duration=40.0)
+
+    async def cached_source(*_):
+        return source
+
+    monkeypatch.setattr(cp, "_cached_source_master", cached_source)
+    await cp._run_dossier_source(job_id)
+    job = cp._load_jobs()["jobs"][job_id]
+    assert job["status"] == "completed", job.get("error")
+    clip = job["clips"][0]
+    assert "clipTransforms" not in clip
+    assert "similarity" not in clip
+    assert encoded == [], "a denied page must never run the transform encode pass"
+    assert clip["clipSpeed"] == 1.0
 
 
 @pytest.mark.asyncio
