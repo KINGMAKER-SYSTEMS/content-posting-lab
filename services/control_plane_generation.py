@@ -784,6 +784,18 @@ def generation_options(recipe: GenerationRecipe) -> dict[str, Any]:
     return options
 
 
+def new_generation_options(recipe: GenerationRecipe) -> dict[str, Any]:
+    """Pin the economical Hailuo tier for newly admitted automation jobs.
+
+    Keep the catalog and saved publication bytes intact: existing paid jobs
+    must still reconstruct their original input hash when resumed.
+    """
+    options = generation_options(recipe)
+    if recipe.engine == "hailuo" and recipe.provider_model == "minimax/hailuo-2.3":
+        options.update(resolution="768p", duration=6)
+    return options
+
+
 def dossier_filters_to_color_correction(recipe: GenerationRecipe) -> dict[str, float]:
     return filters_to_color_correction(recipe.recipe_spec["renderTreatment"]["filters"])
 

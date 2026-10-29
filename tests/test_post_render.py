@@ -49,9 +49,9 @@ def request(source_sha="a" * 64, frame=_NO_FRAME, frame_fit=_NO_FRAME, caption_d
 
 @pytest.fixture(scope="module", params=[
     ("1080x1920", "1"), ("606x1080", "1"), ("606x1080", "0"), ("1080x1920", "0"),
-    ("704x1280", "1"),
+    ("704x1280", "1"), ("432x768", "1"), ("432x768", "0"),
 ], ids=["full", "provider-crop", "provider-crop-unspecified-sar", "full-unspecified-sar",
-        "wan-near-vertical"])
+        "wan-near-vertical", "hailuo-768p", "hailuo-768p-unspecified-sar"])
 def actual_source(tmp_path_factory, request):
     if not shutil.which("ffmpeg") or not shutil.which("ffprobe"):
         pytest.skip("ffmpeg/ffprobe are required for actual render proof")
@@ -217,6 +217,7 @@ def test_size_retry_changes_encoding_only_and_is_bounded_to_two_attempts(monkeyp
     (1920, 1080, "1:1", 0), (560, 1080, "1:1", 0),
     (606, 1080, "2:1", 0), (1080, 1920, "1:1", 90),
     (304, 540, "1:1", 0),
+    (430, 766, "1:1", 0),
 ])
 def test_wrong_source_geometry_fails_without_compositing(monkeypatch, tmp_path, geometry):
     source = tmp_path / "source"
