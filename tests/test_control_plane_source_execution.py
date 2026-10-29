@@ -1843,7 +1843,7 @@ async def test_a_clip_varying_page_cuts_each_window_at_its_own_speed_and_records
         assert _probe_duration(output) == pytest.approx(cut["durationMs"] / 1000 / clip["clipSpeed"], abs=0.2)
         looks.append((visual["clipSpeed"], tuple(sorted(visual["clipCrop"].items()))))
         # The transforms ride on the manifest, never in the receipt.
-        assert set(clip["clipTransforms"]) == {"mirror", "motion", "reverse"}
+        assert set(clip["clipTransforms"]) == {"mirror", "motion", "reverse", "loop_swap"}
         assert "clipTransforms" not in clip["sourceTreatment"]
         # The trial similarity record never blocks; the second cut is compared with the first.
         assert clip["similarity"]["mode"] == "trial"
@@ -1853,6 +1853,94 @@ async def test_a_clip_varying_page_cuts_each_window_at_its_own_speed_and_records
             assert abs(visual["filters"][name] - (1.0 if name != "warmth" else 0.0)) <= band
     assert looks[0] != looks[1]
     assert job["clips"][1]["similarity"]["nearestClip"] == f"{response.json()['jobId']}/0"
+
+
+@pytest.mark.asyncio
+async def test_a_loop_swapped_cut_is_delivered_at_or_under_nine_seconds(
+    lab, monkeypatch,
+):
+    # routers/control_plane.py:3837 is the ONLY production enforcement of the
+    # <= 9.0 s cap for a loop-swapped cut. The unit test L2 drives
+    # services/clip_variation.py directly; this test drives the real call site
+    # (real cut + real loop_swap re-encode) with loop_swap forced, and asserts
+    # the delivered clip lands at or under 9.0 s. The cut's own seed draws a
+    # speed that would exceed 9.0 s without the cap (8500 ms / 0.92 = 9.24 s),
+    # so mutating line 3837 to `None` turns this test RED.
+    from services.clip_transforms import CutTransforms
+
+    client, tmp_path, _ = lab
+    monkeypatch.setattr(cp, "varies_clips", lambda page_id: page_id == PAGE_ID)
+    # Force the loop_swap transform so the cap path is exercised on every cut.
+    monkeypatch.setattr(cp, "cut_transforms", lambda *a, **k: CutTransforms(loop_swap=True))
+    response = client.post(
+        "/api/control-plane/v1/jobs", json=job_body(1),
+        headers=headers("source-job-loop-swap-cap"),
+    )
+    job_id = response.json()["jobId"]
+    store = cp._load_jobs()
+    store["jobs"][job_id]["sourceCuts"] = [{
+        "slotId": f"{MASTER_SHA}:0:8500",
+        "masterSha256": MASTER_SHA,
+        "libraryStartMs": 0,
+        "startMs": 0,
+        "durationMs": 8500,
+    }]
+    cp.atomic_save(cp._jobs_path(), store)
+    source = tmp_path / "master.mp4"
+    _write_av_test_clip(source, duration=40.0)
+
+    async def cached_source(*_):
+        return source
+
+    monkeypatch.setattr(cp, "_cached_source_master", cached_source)
+    await cp._run_dossier_source(job_id)
+    job = cp._load_jobs()["jobs"][job_id]
+    assert job["status"] == "completed", job.get("error")
+    clip = job["clips"][0]
+    assert clip["clipTransforms"]["loop_swap"] is True
+    output = Path(job["artifactRoot"]) / clip["path"]
+    delivered = _probe_duration(output)
+    assert delivered <= 9.0, (clip["clipSpeed"], delivered)
+
+
+@pytest.mark.asyncio
+async def test_a_loop_swapped_cut_over_nine_seconds_is_rejected(lab, monkeypatch):
+    # The post-encode check enforces 9.0 s (not 10.0) for loop-swapped cuts:
+    # a cut that lands over 9.0 s must fail the job, even if the speed cap is
+    # bypassed. Force a 0.92 speed on an 8500 ms window (8500/0.92 = 9.24 s);
+    # the pre-loop-swap head allowed 10.0 s and would ship this silently.
+    from services.clip_transforms import CutTransforms
+
+    client, tmp_path, _ = lab
+    monkeypatch.setattr(cp, "varies_clips", lambda page_id: page_id == PAGE_ID)
+    monkeypatch.setattr(cp, "cut_transforms", lambda *a, **k: CutTransforms(loop_swap=True))
+    # Ignore the call-site speed cap; deliver a speed that overshoots 9.0 s.
+    monkeypatch.setattr(cp, "cut_variant", lambda *a, **k: (0.92, {"zoom": 1.0, "focusX": 0.5, "focusY": 0.5}))
+    response = client.post(
+        "/api/control-plane/v1/jobs", json=job_body(1),
+        headers=headers("source-job-loop-swap-over-nine"),
+    )
+    job_id = response.json()["jobId"]
+    store = cp._load_jobs()
+    store["jobs"][job_id]["sourceCuts"] = [{
+        "slotId": f"{MASTER_SHA}:0:8500",
+        "masterSha256": MASTER_SHA,
+        "libraryStartMs": 0,
+        "startMs": 0,
+        "durationMs": 8500,
+    }]
+    cp.atomic_save(cp._jobs_path(), store)
+    source = tmp_path / "master.mp4"
+    _write_av_test_clip(source, duration=40.0)
+
+    async def cached_source(*_):
+        return source
+
+    monkeypatch.setattr(cp, "_cached_source_master", cached_source)
+    await cp._run_dossier_source(job_id)
+    job = cp._load_jobs()["jobs"][job_id]
+    assert job["status"] == "failed", job.get("error")
+    assert "source_output_duration_unsupported" in job["error"]
 
 
 def test_the_latest_page_cut_seeds_the_next_jobs_look(monkeypatch):

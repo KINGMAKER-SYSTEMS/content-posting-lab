@@ -55,13 +55,16 @@ def _clamp(value: float, low: float, high: float) -> float:
     return min(high, max(low, value))
 
 
-def allowed_speeds(speeds: tuple[float, ...], duration_ms: int) -> tuple[float, ...]:
+def allowed_speeds(speeds: tuple[float, ...], duration_ms: int, max_output_ms: int | None = None) -> tuple[float, ...]:
     """The speeds whose delivered length (window / speed) stays inside the bounds."""
-    return tuple(speed for speed in speeds if OUTPUT_MIN_MS <= duration_ms / speed <= OUTPUT_MAX_MS)
+    maximum = OUTPUT_MAX_MS if max_output_ms is None else max_output_ms
+    return tuple(speed for speed in speeds if OUTPUT_MIN_MS <= duration_ms / speed <= maximum)
 
 
-def _draw(seed: str, crop: dict[str, float], duration_ms: int, base_speed: float) -> tuple[float, dict[str, float]]:
-    slow, fast = allowed_speeds(SLOW_SPEEDS, duration_ms), allowed_speeds(FAST_SPEEDS, duration_ms)
+def _draw(seed: str, crop: dict[str, float], duration_ms: int, base_speed: float,
+          max_output_ms: int | None = None) -> tuple[float, dict[str, float]]:
+    slow = allowed_speeds(SLOW_SPEEDS, duration_ms, max_output_ms)
+    fast = allowed_speeds(FAST_SPEEDS, duration_ms, max_output_ms)
     # The recipe's own speed is always legal for a window the planner chose.
     speeds = (fast if fast and _unit(seed, "fast") < FAST_SHARE else slow or fast) or (base_speed,)
     speed = speeds[int(_unit(seed, "speed") * len(speeds))]
@@ -78,12 +81,14 @@ def _key(speed: float, crop: dict[str, float]) -> tuple[float, float, float, flo
 
 def cut_variant(page_id: str, cut_slot_id: str, base_speed: float, base_crop: dict[str, float],
                 previous: tuple[float, dict[str, float]] | None = None, *,
-                duration_ms: int) -> tuple[float, dict[str, float]]:
+                duration_ms: int, max_output_ms: int | None = None) -> tuple[float, dict[str, float]]:
     """The (speed, crop) one cut of ``duration_ms`` is made at.
 
     Never the recipe's own look and never the look of ``previous`` (the
     page's cut made just before it), so two cuts in a row never match, and
     never a speed that takes the delivered clip outside OUTPUT_MIN_MS..MAX_MS.
+    ``max_output_ms`` tightens the upper bound for a single cut (a loop-swapped
+    cut must land at or under 9.0 s so the Worker still admits it).
     """
     if not isinstance(cut_slot_id, str) or not cut_slot_id:
         raise ValueError("cut_variant requires the cut's slot id")
@@ -93,13 +98,14 @@ def cut_variant(page_id: str, cut_slot_id: str, base_speed: float, base_crop: di
         avoid.add(_key(*previous))
     seed = f"{page_id}\0{cut_slot_id}"
     for attempt in range(MAX_TRIES):
-        speed, varied = _draw(seed if attempt == 0 else f"{seed}#{attempt}", crop, duration_ms, base_speed)
+        speed, varied = _draw(seed if attempt == 0 else f"{seed}#{attempt}", crop, duration_ms,
+                              base_speed, max_output_ms)
         if _key(speed, varied) not in avoid:
             return speed, varied
     # Eight colliding draws is not reachable with these ranges; walk the slow
     # list so the result still differs from both.
-    speed, varied = _draw(seed, crop, duration_ms, base_speed)
-    for candidate in allowed_speeds(SLOW_SPEEDS + FAST_SPEEDS, duration_ms) or (base_speed,):
+    speed, varied = _draw(seed, crop, duration_ms, base_speed, max_output_ms)
+    for candidate in allowed_speeds(SLOW_SPEEDS + FAST_SPEEDS, duration_ms, max_output_ms) or (base_speed,):
         if _key(candidate, varied) not in avoid:
             return candidate, varied
     raise ValueError("no distinct cut variant")
