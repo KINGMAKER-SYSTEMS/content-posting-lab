@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import hashlib
 import json
+import logging
 import math
 import random
 import re
@@ -30,6 +31,7 @@ from services.control_plane_generation import (
     typed_recipe_spec,
 )
 from services.source_dna_registry import (
+    RETIRED_MASTER_SHAS,
     MasterSource,
     SourceDnaError,
     load_source_dna_library,
@@ -111,6 +113,9 @@ SOURCE_MASTER_TOO_SHORT = "source_master_too_short"
 SOURCE_WINDOWS_EXHAUSTED = "source_windows_exhausted"
 SOURCE_WINDOWS_RESERVED_ELSEWHERE = "source_windows_reserved_by_other_pages"
 SOURCE_SPEED_DURATION_UNSUPPORTED = "source_speed_duration_unsupported"
+# A publication names a registered library that still holds a retired master
+# (Rule #1): resolve fails with this named reason instead of silently.
+SOURCE_MASTER_RETIRED = "source_master_retired"
 # Retired 2026-09-30 (replaced by SOURCE_WINDOWS_EXHAUSTED, which is reached
 # only after every sub-second start is cut too). The name stays importable for
 # tests/test_capability_job_snapshot_base_import.py, which loads a historical
@@ -121,6 +126,8 @@ SHIPSTREAM_PAGE_MASTER_AUTHORITY = "ShipStream source-manifest.v1 exact page mas
 SHIPSTREAM_HISTORICAL_AUTHORITY_PREFIX = (
     "ShipStream source-manifest.v1 page-bound historical posted cut;"
 )
+
+log = logging.getLogger("content_lab.control_plane_sources")
 
 
 @dataclass(frozen=True)
@@ -317,6 +324,12 @@ def resolve_source_recipe(
             )
         except ShipStreamSourceError:
             return None
+    if any(master.sha256 in RETIRED_MASTER_SHAS for master in library.masters):
+        log.warning(
+            "%s library=%s page=%s format=%s: a publication named a library that still holds a retired master",
+            SOURCE_MASTER_RETIRED, library.library_id, library.page_id, library.format_slug,
+        )
+        return None
     try:
         contracts, _ = load_format_contracts()
     except (OSError, ValueError, json.JSONDecodeError):

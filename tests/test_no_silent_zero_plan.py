@@ -51,6 +51,7 @@ from tests.test_image_video_variants import (
     _recipe as _image_video_recipe,
 )
 from tests.test_curated_variants import BURNT_CANONICAL, CULTURE_CANONICAL
+from tests.source_dna_fixture import isolate_source_dna_registry
 
 
 @pytest.fixture(autouse=True)
@@ -58,6 +59,13 @@ def _advertise_zero_reasons(monkeypatch):
     """These tests check the zero-plan reason fields, which the Lab sends
     only when CONTENT_LAB_ADVERTISE_ZERO_REASONS is on."""
     monkeypatch.setenv("CONTENT_LAB_ADVERTISE_ZERO_REASONS", "1")
+
+
+@pytest.fixture(autouse=True)
+def _isolated_source_dna(monkeypatch, tmp_path):
+    """Retired chase/BTL libraries are deleted, so source-dna tests run against
+    an isolated copy of the registry plus the non-retired dirt-bike fixture."""
+    isolate_source_dna_registry(monkeypatch, tmp_path)
 
 
 # ── Sweep table: every format slug the planners dispatch on, its family,

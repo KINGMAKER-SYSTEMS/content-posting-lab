@@ -8,6 +8,8 @@ run must never spend renders re-cutting a time frame this page already has.
 
 from dataclasses import replace
 
+import pytest
+
 import routers.control_plane as cp
 from services.control_plane_sources import (
     SOURCE_MASTER_TOO_SHORT,
@@ -26,8 +28,16 @@ from tests.test_control_plane_source_execution import (  # noqa: F401 (fixture)
     offline_shipstream_manifest,
     publication,
 )
+from tests.source_dna_fixture import isolate_source_dna_registry
 
 PAGE_MASTER_AUTHORITY = "ShipStream source-manifest.v1 exact page master"
+
+
+@pytest.fixture(autouse=True)
+def _isolated_source_dna(monkeypatch, tmp_path):
+    """Retired chase/BTL libraries are deleted, so source-dna tests run against
+    an isolated copy of the registry plus the non-retired dirt-bike fixture."""
+    isolate_source_dna_registry(monkeypatch, tmp_path)
 
 
 def _long_page_master_recipe(duration_ms=600_000, floor_ms=210_000):

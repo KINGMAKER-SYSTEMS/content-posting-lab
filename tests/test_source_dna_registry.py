@@ -80,3 +80,36 @@ def test_night_core_masters_are_exactly_page_scoped_and_never_cross_offered():
     assert between[0]["masters"][0]["sourceOffsetMs"] == 0
     assert drive[0]["masters"][0]["sourceOffsetMs"] == 850_000
     assert _master_source_options("pov-night-core", "tt-warner-other") == []
+
+
+def test_a_retired_master_is_refused_when_re_added_as_backup_or_extra_primary():
+    """Rule #1: a retired master may remain ONLY as a library's single original
+    primary (immutable history). Re-adding it as a backup, or beside a new
+    primary, must fail closed at parse time so it never becomes cuttable again."""
+    import services.source_dna_registry as registry
+
+    v2 = (registry.MANIFEST_DIR / "pov-night-core-between-the-lines66-automation-v2.json").read_bytes()
+    base = json.loads(v2)
+
+    def add_retired(role):
+        value = json.loads(json.dumps(base))
+        row = {**value["masters"][0], "sourceId": f"zz-retired-{role}", "role": role,
+               "sha256": "3816ff5c4c79d73eff1694cc21f3644aff18bb68c3a97ca5b8306316feda1314",
+               "storageKey": "source-dna/pov-night-core/retired/3816ff5c4c79d73eff1694cc21f3644aff18bb68c3a97ca5b8306316feda1314.mp4"}
+        value["masters"].append(row)
+        return (json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n").encode()
+
+    for role in ("backup", "primary"):
+        with pytest.raises(SourceDnaError, match="retired"):
+            parse_source_dna_manifest(add_retired(role), "pov-night-core-between-the-lines66-automation-v2")
+
+
+def test_a_retired_master_may_remain_as_a_librarys_single_original_primary():
+    """The retired old-tt library still parses: its 3816ff5c primary is history,
+    never cuttable, because nothing offers or resolves that library any more."""
+    from services.source_dna_registry import MANIFEST_DIR, parse_source_dna_manifest
+    raw = (MANIFEST_DIR / "pov-night-core-between-the-lines66-v1.json").read_bytes()
+    library = parse_source_dna_manifest(raw, "pov-night-core-between-the-lines66-v1")
+    assert [m.sha256 for m in library.masters] == [
+        "3816ff5c4c79d73eff1694cc21f3644aff18bb68c3a97ca5b8306316feda1314"
+    ]

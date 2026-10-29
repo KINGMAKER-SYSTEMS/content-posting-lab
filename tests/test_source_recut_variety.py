@@ -31,8 +31,14 @@ from tests.test_control_plane_source_execution import (  # noqa: F401 (fixture)
     offline_shipstream_manifest,
     publication,
 )
+from tests.source_dna_fixture import isolate_source_dna_registry
 
 PAGE_MASTER_AUTHORITY = "ShipStream source-manifest.v1 exact page master"
+
+
+@pytest.fixture(autouse=True)
+def _isolated_source_dna(monkeypatch, tmp_path):
+    isolate_source_dna_registry(monkeypatch, tmp_path)
 
 
 def _recipe(duration_ms=600_000, floor_ms=0, cut_duration_ms=7_000, clip_speed=None):

@@ -4,6 +4,7 @@ import asyncio
 from dataclasses import replace
 import hashlib
 import json
+import logging
 from pathlib import Path
 import shutil
 import subprocess
@@ -28,6 +29,14 @@ from services.dossier_ingredients import (
     catalog_selection_version,
 )
 from tests.master_pages_fixtures import bind_current_intent, master_pages
+from tests.source_dna_fixture import isolate_source_dna_registry
+
+
+@pytest.fixture(autouse=True)
+def _isolated_source_dna(monkeypatch, tmp_path):
+    """Retired chase/BTL libraries are deleted, so source-dna tests run against
+    an isolated copy of the registry plus the non-retired dirt-bike fixture."""
+    isolate_source_dna_registry(monkeypatch, tmp_path)
 
 
 @pytest.fixture(autouse=True)
@@ -38,9 +47,9 @@ def _advertise_zero_reasons(monkeypatch):
 
 
 TOKEN = "test-control-plane-token"
-PAGE_ID = "tt-chase-miles-4l"
-LIBRARY_ID = "pov-dirt-bike-chase-miles-4l-v1"
-MASTER_SHA = "c434bf9678fbaa20b9b081c68260cca75eb3dd109ddc1cb82df556ec59ae5bd5"
+PAGE_ID = "tt-fixture-dirt-bike"
+LIBRARY_ID = "pov-dirt-bike-fixture-v1"
+MASTER_SHA = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
 SOURCE_IDENTITY = "https://www.youtube.com/watch?v=vt5im2TRAKw"
 _start_source_runner = cp._start_dossier_source
 
@@ -2316,3 +2325,80 @@ async def test_a_cut_on_a_backup_whose_file_is_missing_is_skipped_and_the_job_go
         assert len(job["clips"]) == 1
     else:
         assert job["error"] == "source_dna_master_unavailable"
+
+
+def test_resolve_refuses_a_library_that_still_holds_a_retired_master(caplog):
+    """Rule #1: a stale publication naming a library that still holds a retired
+    master fails with a named, logged reason instead of resolving the retired
+    footage again. The library is a single-primary historical record, so it
+    parses; the executor is what refuses it."""
+    import services.source_dna_registry as registry
+
+    retired_page = "tt-retired-dirt-bike"
+    retired_lib = "pov-dirt-bike-retired-v1"
+    retired_sha = "c434bf9678fbaa20b9b081c68260cca75eb3dd109ddc1cb82df556ec59ae5bd5"
+    manifest = {
+        "schema": "content-lab.source-dna-library.v2",
+        "libraryId": retired_lib,
+        "format": "pov-dirt-bike",
+        "pageId": retired_page,
+        "masters": [{
+            "sourceId": "youtube-retired-120-300",
+            "sha256": retired_sha,
+            "bytes": 414027449,
+            "filename": "retired_master.mp4",
+            "mimeType": "video/mp4",
+            "storageKey": f"source-dna/pov-dirt-bike/{retired_page}/{retired_sha}.mp4",
+            "durationMs": 180000,
+            "sourceOffsetMs": 120000,
+            "provenance": {
+                "sourceUrl": "https://www.youtube.com/watch?v=vt5im2TRAKw",
+                "acquiredAt": "2026-07-29T17:37:41Z",
+                "authority": "test fixture: retired footage",
+            },
+        }],
+    }
+    (registry.MANIFEST_DIR / f"{retired_lib}.json").write_bytes(
+        (json.dumps(manifest, sort_keys=True, separators=(",", ":")) + "\n").encode()
+    )
+
+    intent, revision = master_pages(
+        retired_page, handle="retired.dirt.bike",
+        content_niche="POV - Dirtbike", content_engine="sourced_video",
+        vault_url="https://shipstream.test/vault/retired.dirt.bike",
+    )
+    spec = {
+        "schema": "dossier.recipe-spec.v4",
+        "masterPages": intent,
+        "masterPagesHash": revision,
+        "production": {
+            "catalogVersion": "sha256:" + "f" * 64,
+            "providerId": None, "modelId": None, "promptModuleId": None, "referenceSetId": None,
+            "sourceLibraryId": retired_lib,
+            "variationValues": {},
+            "controls": {"cutDurationMs": 6_000},
+        },
+        "renderTreatment": {
+            "stylePreset": None, "filters": {}, "captionStyle": {},
+            "clipSpeed": 1.0, "clipCrop": {"zoom": 1.0, "focusX": 0.5, "focusY": 0.5},
+        },
+        "captionDiscipline": {
+            "captionSet": "dirt-bike", "register": ["relatable_meme"], "slingshotShare": None,
+        },
+        "demand": {"formatMix": {"pov-dirt-bike": 1.0}},
+    }
+    canonical = json.dumps(spec, sort_keys=True, separators=(",", ":"))
+    payload = {
+        "schema": recipes.REQUEST_SCHEMA,
+        "pageId": retired_page,
+        "lane": recipes.LANE,
+        "recipeId": "pov-dirt-bike:master",
+        "engine": "sourced_video",
+        "recipeVersion": "dossier-retired000000",
+        "dossierRevision": "rev-retired-source",
+        "recipeSpecHash": "sha256:" + hashlib.sha256(canonical.encode()).hexdigest(),
+        "recipeSpecCanonical": canonical,
+    }
+    with caplog.at_level(logging.WARNING, logger="content_lab.control_plane_sources"):
+        assert resolve_source_recipe(payload) is None
+    assert any("source_master_retired" in record.message for record in caplog.records)

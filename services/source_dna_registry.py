@@ -45,6 +45,22 @@ MAX_MASTERS = 500
 MAX_SOURCE_BYTES = 20_000_000_000
 MAX_DURATION_MS = 86_400_000
 
+# Retired masters (Rule #1): footage retired network-wide must never come back
+# into a source-DNA library as a fresh primary or a backup. A retired SHA may
+# remain ONLY as a library's single original primary (the immutable historical
+# library of a page that has since moved on, e.g. the retired old-tt library),
+# so history stays pinned without making the retired footage cuttable again.
+# The canonical list = control-plane tools/originality/origguard/retired-origins.json
+# (origin-keyed; originality runs `origguard lab-check --registry <lab>/recipes/source-dna`
+# before each Lab gap that touches source-dna, which fails on drift either way).
+RETIRED_MASTER_SHAS = frozenset({
+    # 3816ff5c = IMG_4962 family (BTL v1 + automation-v1).
+    "3816ff5c4c79d73eff1694cc21f3644aff18bb68c3a97ca5b8306316feda1314",
+    # c434bf96 = pov-dirt-bike footage shared between chase.miles.4l and
+    # soul.revival83 (sibling 9ff3fe74, ~103 s overlap).
+    "c434bf9678fbaa20b9b081c68260cca75eb3dd109ddc1cb82df556ec59ae5bd5",
+})
+
 
 class SourceDnaError(ValueError):
     pass
@@ -173,6 +189,12 @@ def parse_source_dna_manifest(raw: bytes, expected_library_id: str | None = None
         raise SourceDnaError("source DNA masters must be sorted by sourceId")
     if not any(item.role == "primary" for item in masters):
         raise SourceDnaError("source DNA library needs at least one primary master")
+    for master in masters:
+        if master.sha256 in RETIRED_MASTER_SHAS and (master.role == "backup" or len(masters) != 1):
+            raise SourceDnaError(
+                f"source DNA master {master.sha256} is retired; it may only remain as a "
+                "library's single original primary, never as a backup or an added master"
+            )
     return SourceDnaLibrary(
         library_id=library_id,
         format_slug=format_slug,
