@@ -123,8 +123,13 @@ def test_transforms_are_drawn_at_their_shares_and_never_repeat_the_previous_comb
         counts["motion"] += drawn.motion is not None
         counts["reverse"] += drawn.reverse
         previous = drawn
-    assert 0.25 < counts["mirror"] / 600 < 0.42
-    assert 0.25 < counts["motion"] / 600 < 0.42
-    assert 0.17 < counts["reverse"] / 600 < 0.33
+    assert 0.25 < counts["mirror"] / 600 < 0.45
+    assert 0.25 < counts["motion"] / 600 < 0.50
+    # Reverse is the least-used treatment (Eric 2026-10-28): REVERSE_SHARE was
+    # cut 1/4 -> 1/15, so the delivered reverse rate is ~10% (the anti-repeat
+    # redraw nudges it up from the 1/15 per-draw share). A revert to 1/4 lands
+    # near ~28% and fails the upper bound; dropping reverse entirely fails the
+    # lower bound.
+    assert 0.04 < counts["reverse"] / 600 < 0.15
     same = CutTransforms(mirror=True)
     assert cut_transforms(BTL, "x", same) != same
