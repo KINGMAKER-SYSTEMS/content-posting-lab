@@ -86,6 +86,7 @@ from services.control_plane_generation import (
     dossier_clip_speed,
     dossier_filters_to_color_correction,
     generation_options,
+    new_generation_options,
     load_generation_anchor,
     plan_prompt_combinations,
     prompt_combination_space,
@@ -2916,7 +2917,10 @@ async def _run_owned_dossier_generation(job_id: str) -> None:
     render_root = job_root / ("renders-resume-" + _secrets.token_hex(6) if resuming else "renders")
     treated_root = job_root / "treated"
     render_root.mkdir(parents=True, exist_ok=True, mode=0o700)
-    options = generation_options(recipe)
+    # New jobs pin their effective provider options at admission. Legacy jobs
+    # retain their original inputs, including an already-paid 1080p prediction.
+    options = (dict(job["generationOptions"]) if "generationOptions" in job
+               else generation_options(recipe))
     duration = int(options.pop("duration", 6))
     resolution = str(options.pop("resolution", "1080p"))
     aspect_ratio = str(options.pop("aspect_ratio", "9:16"))
@@ -4952,11 +4956,12 @@ async def create_job(
             # submission. One clock sample feeds the admission decision, body
             # `resets_at` and `Retry-After` header. No job
             # row, no ghost state on refusal.
+            provider_options = new_generation_options(generation_recipe)
             first_call_cost = moderation_retry.attempt_cost_usd(
                 generation_recipe.provider_model,
-                int(generation_options(generation_recipe).get("duration", 6)),
-                resolution=str(generation_options(generation_recipe).get("resolution", "1080p")),
-                parameters=generation_options(generation_recipe),
+                int(provider_options.get("duration", 6)),
+                resolution=str(provider_options.get("resolution", "1080p")),
+                parameters=provider_options,
             )
             if first_call_cost is None:
                 first_call_cost = generation_budget.charged_cost_per_gen(
@@ -4999,6 +5004,7 @@ async def create_job(
                 "providerModel": generation_recipe.provider_model,
                 "providerCallsPlanned": provider_calls,
                 "providerCallsCompleted": 0,
+                "generationOptions": provider_options,
                 "promptPlan": prompt_plan,
                 "generationCheckpointVersion": 1 if PROVIDERS[generation_recipe.engine]["key_id"] == "replicate" else None,
                 "providerCheckpoints": {},

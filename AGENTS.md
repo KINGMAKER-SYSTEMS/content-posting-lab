@@ -145,6 +145,11 @@
   generation/source/recovery outputs through `routers/control_plane.py`.
 - `services/generation_recovery.py` owns private provider checkpoints and
   cross-process generation/store locks. Checkpoints are not admission authority.
+- New automated Hailuo 2.3 jobs use 768p, six-second provider runs, including
+  saved recipes with premium controls. Admission and execution use the same
+  private `generationOptions` snapshot; five-way cropping remains unchanged.
+  Existing jobs without that snapshot retain their original inputs and paid
+  prediction IDs. Keep historical catalog/publication bytes and hashes intact.
 - `services/generation_budget.py` owns the shared durable paid-generation ledger.
   The private `_generation_budget/<jobs-file>.sqlite3` beside the durable job
   JSON uses SQLite WAL/FULL transactions: an indexed exact-ID lookup and one
@@ -507,7 +512,7 @@
   The frame is not source treatment: existing sources stay reusable when a page changes frame
   (they post through the centre band); new cuts carry the page's frame and fit.
 - Prepared artifacts require source-byte verification and upright square-pixel
-  near-9:16 input at least 1080 pixels high. Exact and chroma-aligned frames
+  near-9:16 input at least 768 pixels high. Exact and chroma-aligned frames
   scale directly; native provider frames within three percent of 9:16 are
   center-cropped at the edge and scaled to 1080x1920 before caption composition
   so provider sizing cannot stretch or block otherwise usable vertical media.

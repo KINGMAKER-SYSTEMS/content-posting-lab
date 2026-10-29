@@ -411,16 +411,16 @@ def _render_post_single(source_path: Path, output_directory: Path, request: Post
         source = output_directory / "source.mp4"
         _copy_verified_source(source_path, source, request.source_sha256)
         source_probe = _probe(source, tools)
-        # A landscape 1080p provider master produces a 606x1080 9:16 crop
+        # Landscape 768p/1080p masters produce 432x768/606x1080 9:16 crops
         # after even-pixel alignment. Preserve that selected frame: delivery
         # scaling is not another creative crop, grade, or speed treatment.
         # Provider H.264 crops may omit SAR entirely. Keep their coded frame
         # and declare square pixels at encode; explicit non-square SAR refuses.
         target_width = source_probe.height * 9 / 16
         near_vertical = abs(source_probe.width - target_width) <= target_width * 0.03
-        if (source_probe.height < 1080 or source_probe.sample_aspect_ratio not in {"1:1", "", "N/A", "0:1"}
+        if (source_probe.height < 768 or source_probe.sample_aspect_ratio not in {"1:1", "", "N/A", "0:1"}
                 or source_probe.rotation != 0 or not near_vertical):
-            raise PostRenderError("regeneration_required", "source must be upright square-pixel near-9:16 video at least 1080 pixels high")
+            raise PostRenderError("regeneration_required", "source must be upright square-pixel near-9:16 video at least 768 pixels high")
         caption_request = _caption_request(request)
         band_height = _frame_band_height(request)
         if in_app:

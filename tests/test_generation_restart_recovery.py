@@ -275,6 +275,42 @@ async def test_restart_between_crop_claims_keeps_exact_claim_and_finishes_set(la
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("legacy", [False, True], ids=["new-768p", "existing-paid-1080p"])
+async def test_hailuo_options_and_debit_survive_restart_without_another_paid_post(lab, monkeypatch, legacy):
+    client, _, _ = lab
+    admission = []
+    monkeypatch.setattr(cp.generation_budget, "can_reserve_at",
+                        lambda _path, amount, **_kwargs: admission.append(amount) or True)
+    job_id = client.post("/api/control-plane/v1/jobs", json=job_body(quantity=5), headers=HEADERS).json()["jobId"]
+    assert admission == [pytest.approx(0.28)]
+    pinned = cp._get_job_or_404(job_id)["generationOptions"]
+    assert (pinned["resolution"], pinned["duration"]) == ("768p", 6)
+    if legacy:
+        # A job admitted before this release has no effective-options snapshot.
+        with store_lock(cp._jobs_path()):
+            store = cp._load_jobs()
+            del store["jobs"][job_id]["generationOptions"]
+            cp._save_jobs(store)
+    calls = install_journal_provider(monkeypatch, interrupt_poll="p1")
+    generate = cp.generate_one
+    observed = []
+    async def record(*args, **kwargs):
+        observed.append((args[5], args[6], kwargs["cost_usd"]))
+        return await generate(*args, **kwargs)
+    monkeypatch.setattr(cp, "generate_one", record)
+    with pytest.raises(asyncio.CancelledError):
+        await cp._run_dossier_generation(job_id)
+    assert cp._get_job_or_404(job_id)["providerCheckpoints"]["0"]["predictionId"] == "p1"
+    await cp._run_dossier_generation(job_id)
+    expected = ("1080p", 6, 0.49) if legacy else ("768p", 6, 0.28)
+    assert observed == [expected, expected]
+    completed = cp._get_job_or_404(job_id)
+    assert completed["status"] == "completed" and len(completed["clips"]) == 5
+    assert sum(method == "POST" for method, _ in calls) == 1
+    assert cp.generation_budget.spent_usd_at(cp.generation_budget.jobs_store_path()) == pytest.approx(expected[2])
+
+
+@pytest.mark.asyncio
 async def test_corrupt_preserved_bytes_fail_without_spending_or_deleting_evidence(lab, monkeypatch):
     job_id, _, _ = queue_silhouettes(lab, monkeypatch, 2)
     calls = install_journal_provider(monkeypatch, interrupt_poll="p2")
@@ -307,7 +343,7 @@ async def test_generation_setup_exception_terminalizes_not_ghosts(lab, monkeypat
     def boom(recipe):
         raise OSError("disk full")
 
-    monkeypatch.setattr(cp, "generation_options", boom)
+    monkeypatch.setattr(cp, "resolve_generation_recipe", boom)
     # Drive the REAL entrypoint (captured at import time, before `lab`
     # monkeypatched _start_dossier_generation to `started.append`), so this
     # proves the wiring, not just the guard helper in isolation.

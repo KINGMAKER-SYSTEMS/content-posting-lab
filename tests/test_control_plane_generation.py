@@ -14,6 +14,7 @@ from services.control_plane_generation import (
     dossier_clip_speed,
     dossier_filters_to_color_correction,
     generation_options,
+    new_generation_options,
     load_generation_anchor,
     load_prompt_catalog,
     plan_prompt_combinations,
@@ -338,6 +339,28 @@ def test_only_the_silhouette_flux_recipe_sends_a_raised_safety_tolerance():
         ))
         assert other is not None
         assert "safety_tolerance" not in generation_options(other)
+
+
+@pytest.mark.parametrize("format_slug", ["truck-scenic", "boat-lake"])
+def test_new_hailuo_jobs_use_768p_six_seconds_even_with_saved_premium_controls(format_slug):
+    recipe = resolve_generation_recipe(_format_publication(
+        format_slug, f"{format_slug}:master", "ai_video",
+    ))
+    recipe.recipe_spec["production"] = {"controls": {"resolution": "1080p", "duration": 10}}
+    original = generation_options(recipe)
+    economical = new_generation_options(recipe)
+    assert economical == {**original, "resolution": "768p", "duration": 6}
+    assert economical["crop_mode"] == "both"
+    # Old paid predictions can still reconstruct the identical original input.
+    assert generation_options(recipe) == original
+    assert original["resolution"] == "1080p" and original["duration"] == 10
+
+
+def test_new_job_economy_options_leave_other_models_unchanged():
+    recipe = resolve_generation_recipe(_format_publication(
+        "silhouette-truck", "silhouette-truck:master", "ai_video",
+    ))
+    assert new_generation_options(recipe) == generation_options(recipe)
 
 
 def test_safety_tolerance_leaves_the_silhouette_catalog_and_prompt_plan_unchanged():
