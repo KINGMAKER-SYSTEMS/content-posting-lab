@@ -3840,18 +3840,22 @@ async def _run_dossier_source(job_id: str) -> None:
             cut_filters, cut_cc = None, color_correction
             if vary:
                 # Seeded by the cut's own time frame, so a resumed job recuts it identically.
+                transforms = cut_transforms(job["pageId"], f"{master.sha256}:{start_ms}:{duration_ms}",
+                                            previous_transforms)
+                previous_transforms = transforms
+                # A loop-swapped cut re-orders but never lengthens the clip, so
+                # keep the delivered duration at or under 9.0 s when one is drawn
+                # (the Worker admits 5-10 s; slow speeds stay in the pool).
                 cut_speed, cut_crop = cut_variant(job["pageId"], f"{master.sha256}:{start_ms}:{duration_ms}",
                                                   clip_speed, clip_crop, previous_variant,
-                                                  duration_ms=duration_ms)
+                                                  duration_ms=duration_ms,
+                                                  max_output_ms=9_000 if transforms.loop_swap else None)
                 previous_variant = (cut_speed, cut_crop)
                 # A backup master's declared brightness replaces the recipe's
                 # before the jitter (source_dna_registry.GRADE_OVERRIDE_BOUNDS).
                 cut_filters = cut_grade(job["pageId"], f"{master.sha256}:{start_ms}:{duration_ms}",
                                         {**recipe.recipe_spec["renderTreatment"]["filters"],
                                          **(master.grade_override or {})})
-                transforms = cut_transforms(job["pageId"], f"{master.sha256}:{start_ms}:{duration_ms}",
-                                            previous_transforms)
-                previous_transforms = transforms
                 cut_cc = filters_to_color_correction(cut_filters)
             await run_color_correct(
                 str(source), str(destination), cut_cc, scale=None,
@@ -3864,8 +3868,8 @@ async def _run_dossier_source(job_id: str) -> None:
                 **frame_cut,
             )
             if vary and transforms.any():
-                # Mirror, camera move and reverse work on the finished short
-                # clip (services/clip_transforms.py). They are full 1080x1920
+                # Mirror, camera move, reverse and loop-swap work on the finished
+                # short clip (services/clip_transforms.py). They are full 1080x1920
                 # x264 encodes (~0.9 GB each, measured), so they take the same
                 # process-wide one-encode gate as run_color_correct: without it
                 # a transform could overlap another job's cut encode.
@@ -3876,8 +3880,10 @@ async def _run_dossier_source(job_id: str) -> None:
                 measured_duration = await asyncio.to_thread(
                     probe_source_output_duration_seconds, str(destination),
                 )
-                # A varied cut is bounded by what the Worker admits (5-10 s).
-                maximum = 10.0 if vary and recipe.format_slug != "pov-club" else 9.0
+                # A varied cut is bounded by what the Worker admits (5-10 s),
+                # and a loop-swapped cut (like pov-club) must land at or under
+                # 9.0 s after the swap re-encode.
+                maximum = 9.0 if recipe.format_slug == "pov-club" or (vary and transforms.loop_swap) else 10.0
                 if measured_duration is None or not 5.0 <= measured_duration <= maximum:
                     raise RuntimeError("source_output_duration_unsupported")
             manifest = _generated_manifest(job_root, destination)
