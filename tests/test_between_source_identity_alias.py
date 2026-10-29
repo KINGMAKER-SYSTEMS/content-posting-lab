@@ -83,8 +83,10 @@ def test_alias_exposes_new_page_and_original_exposes_old_tt_not_wrong_page():
     alias_rows = _master_source_options("pov-night-core", ALIAS_PAGE_ID)
     original_rows = _master_source_options("pov-night-core", ORIGINAL_PAGE_ID)
 
-    assert [row["libraryId"] for row in alias_rows] == [ALIAS_LIBRARY_ID]
-    assert [row["pageId"] for row in alias_rows] == [ALIAS_PAGE_ID]
+    # BTL's new primary lives in automation-v2 (tests/test_btl_new_primary_v2.py); v1 stays
+    # registered until BTL's Dossier is re-published onto v2, so both are offered meanwhile.
+    assert [row["libraryId"] for row in alias_rows] == [ALIAS_LIBRARY_ID, "pov-night-core-between-the-lines66-automation-v2"]
+    assert [row["pageId"] for row in alias_rows] == [ALIAS_PAGE_ID, ALIAS_PAGE_ID]
     assert [row["libraryId"] for row in original_rows] == [ORIGINAL_LIBRARY_ID]
     assert [row["pageId"] for row in original_rows] == [ORIGINAL_PAGE_ID]
 
