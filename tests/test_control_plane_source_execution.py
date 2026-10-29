@@ -756,6 +756,7 @@ def test_sourced_paths_never_probe_the_ai_video_resolver(lab, monkeypatch):
         raise AssertionError("sourced_video must not probe the ai_video resolver")
 
     monkeypatch.setattr(cp, "resolve_generation_recipe", unexpected_generation_probe)
+    monkeypatch.setattr(cp, "resolve_generation_recipe_with_reason", unexpected_generation_probe)
     capabilities = client.get(
         "/api/control-plane/v1/capabilities",
         headers={"X-RT-Page-Id": PAGE_ID, "Authorization": f"Bearer {TOKEN}"},

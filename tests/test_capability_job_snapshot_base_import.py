@@ -207,6 +207,14 @@ def _wire(module, monkeypatch, *, job_path, master_pages, bindings_present):
     monkeypatch.setattr(module, "load_engine_registry", lambda: ({"truck-scenic": bootstrap_profile}, "hash"))
 
     monkeypatch.setattr(module, "resolve_generation_recipe", lambda publication: _stub_generation_recipe())
+    # head's capabilities() resolves the recipe and its failure reason in one
+    # call; base has no such symbol, so create it identically on both sides
+    # (raising=False) with the same stub recipe and no reason.
+    monkeypatch.setattr(
+        module, "resolve_generation_recipe_with_reason",
+        lambda publication: (_stub_generation_recipe(), None),
+        raising=False,
+    )
     monkeypatch.setattr(module, "_dossier_source_recipe", lambda publication: _stub_source_recipe())
     # sourced_slideshow/lyrics_slideshows are not in the field list this
     # file is scoped to (per the ruling); force that branch off identically

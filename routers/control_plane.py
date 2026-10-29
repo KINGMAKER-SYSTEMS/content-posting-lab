@@ -91,8 +91,8 @@ from services.control_plane_generation import (
     plan_prompt_combinations,
     prompt_combination_space,
     prompt_sha256,
-    generation_recipe_unavailable_reason,
     resolve_generation_recipe,
+    resolve_generation_recipe_with_reason,
     typed_recipe_spec,
 )
 from services.control_plane_sources import (
@@ -759,13 +759,13 @@ def capabilities(
     # all available. Registration alone never becomes a capability.
     for _, publication in registered_bindings:
         publication_engine = publication.get("engine")
-        generation_unavailable_reason = None
         if publication_engine == "ai_video":
-            generation_recipe = resolve_generation_recipe(publication)
-            if generation_recipe is None:
-                generation_unavailable_reason = generation_recipe_unavailable_reason(publication)
+            generation_recipe, generation_unavailable_reason = (
+                resolve_generation_recipe_with_reason(publication)
+            )
         else:
             generation_recipe = None
+            generation_unavailable_reason = None
         source_recipe = (
             _dossier_source_recipe(publication)
             if publication_engine == "sourced_video"

@@ -586,7 +586,10 @@ def _logged_reason(caplog):
 
 def test_unavailable_reason_returns_the_exact_logged_reason(monkeypatch, caplog):
     """zeroPlanRecipes ``detail`` is the resolver's own logged reason= string,
-    exercised through the REAL function (no stub), for three different failures."""
+    exercised through the REAL function (no stub), for three failure cases;
+    each case must equal its own logged reason, and the two causes the test
+    compares as distinct (engine mismatch vs generation mode off) are asserted
+    non-equal."""
     from services.control_plane_generation import generation_recipe_unavailable_reason
     import logging
 

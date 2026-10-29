@@ -327,13 +327,31 @@ def _unavailable(publication: dict[str, Any], reason: str) -> None:
     raise _GenerationUnavailable(reason)
 
 
+def resolve_generation_recipe_with_reason(
+    publication: dict[str, Any], *, require_runtime: bool = True,
+) -> tuple[GenerationRecipe | None, str | None]:
+    """Run the resolver once and return ``(recipe, reason)``.
+
+    ``reason`` is the resolver's exact loggable ``reason=`` string on failure
+    and None otherwise. This is the single resolver call behind both public
+    functions below, so a caller that needs both the recipe and the failure
+    reason (capabilities() zero-plan ``detail``) does not run the resolver —
+    and the catalog load and warning log — twice per binding.
+    """
+    try:
+        recipe = _resolve_generation_recipe(publication, require_runtime=require_runtime)
+    except _GenerationUnavailable as exc:
+        return None, exc.reason
+    return recipe, None
+
+
 def resolve_generation_recipe(
     publication: dict[str, Any], *, require_runtime: bool = True,
 ) -> GenerationRecipe | None:
-    try:
-        return _resolve_generation_recipe(publication, require_runtime=require_runtime)
-    except _GenerationUnavailable:
-        return None
+    recipe, _reason = resolve_generation_recipe_with_reason(
+        publication, require_runtime=require_runtime,
+    )
+    return recipe
 
 
 def generation_recipe_unavailable_reason(
@@ -346,11 +364,10 @@ def generation_recipe_unavailable_reason(
     the resolver writes to the log line, so zeroPlanRecipes can name the cause
     without re-deriving the decision tree.
     """
-    try:
-        _resolve_generation_recipe(publication, require_runtime=require_runtime)
-    except _GenerationUnavailable as exc:
-        return exc.reason
-    return None
+    _recipe, reason = resolve_generation_recipe_with_reason(
+        publication, require_runtime=require_runtime,
+    )
+    return reason
 
 
 def _resolve_generation_recipe(

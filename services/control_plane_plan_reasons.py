@@ -47,8 +47,8 @@ PLAN_AVAILABLE = "plan_available"
 # The closed photo-hold page's pinned base photos are gone from the live
 # library (bytes changed or missing): restore them, not "re-point the recipe".
 PINNED_PHOTOS_MISSING = "pinned_photos_missing"
-# The Syzygy slideshow runtime is not configured: an outage, not a registry
-# or recipe problem.
+# The Syzygy slideshow runtime is not configured, or generation mode is
+# deliberately off: an outage or an off mode, not a registry or recipe problem.
 SLIDESHOW_RUNTIME_UNAVAILABLE = "slideshow_runtime_unavailable"
 # The binding did not resolve to a runnable recipe for any other reason
 # (contract drift / generation resolve failures). Carries the Lab's exact
@@ -119,7 +119,7 @@ REASONS: dict[str, tuple[str, bool, str]] = {
     ),
     SLIDESHOW_RUNTIME_UNAVAILABLE: (
         "library", False,
-        "The Syzygy slideshow runtime is not configured; restore it.",
+        "The Syzygy slideshow runtime is not configured, or generation mode is off; turn it on when the page should make slideshows.",
     ),
     RECIPE_UNRESOLVED: (
         "registry", False,
@@ -237,6 +237,13 @@ def explain_empty_slideshow_plan(
     objects = list(library.objects)
     if not any(template.media_count <= len(objects) for template in recipe.templates):
         return TEMPLATE_MEDIA_EXCEEDS_LIBRARY
+    # This call re-runs the candidate scan plan_slideshows just performed for
+    # the same (recipe, library, unavailable) inputs — on purpose. The empty
+    # path is the only caller that pays the second scan, and no shared
+    # process-wide cache sits under it: plan_slideshows hands these candidate
+    # dicts to callers (create_job mutates them in place), so a shared cache
+    # would leak one request's writes into another. The double scan is bounded
+    # by test_permutation_exhaustion_explain_stays_under_generous_perf_bound.
     if _permutation_plan_candidates(recipe, library, unavailable_signatures):
         return PLAN_AVAILABLE
     return SLIDESHOW_PERMUTATIONS_EXHAUSTED

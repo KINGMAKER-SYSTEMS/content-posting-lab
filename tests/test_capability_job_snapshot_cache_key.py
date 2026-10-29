@@ -112,7 +112,7 @@ def test_prompt_catalog_only_change_is_reflected(job_path, tmp_path, monkeypatch
         prompt_catalog_hash="h", family_name="f", provider_model="m",
         clips_per_generation=1, planned_provider_calls=lambda n: min(n, 10),
     )
-    monkeypatch.setattr(cp, "resolve_generation_recipe", lambda publication: stub_recipe)
+    monkeypatch.setattr(cp, "resolve_generation_recipe_with_reason", lambda publication: (stub_recipe, None))
 
     state = {"count": 3}
     monkeypatch.setattr(
@@ -203,7 +203,7 @@ def test_binding_switch_from_ai_video_to_slideshow_same_generation_not_stale(
         prompt_catalog_hash="h", family_name="f", provider_model="m",
         clips_per_generation=1, planned_provider_calls=lambda n: min(n, 10),
     )
-    monkeypatch.setattr(cp, "resolve_generation_recipe", lambda publication: stub_generation_recipe)
+    monkeypatch.setattr(cp, "resolve_generation_recipe_with_reason", lambda publication: (stub_generation_recipe, None))
     monkeypatch.setattr(
         cp, "plan_prompt_combinations",
         lambda recipe, run_id, count, hashes, slots=None: list(range(4)),
