@@ -153,6 +153,11 @@ def test_source_import_cancellation_kills_the_complete_process_group(
             self.returncode = -9
             return b"", b""
 
+        async def wait(self):
+            assert killed == [(self.pid, fe.signal.SIGKILL)]
+            self.returncode = -9
+            return self.returncode
+
     process = BlockingProc()
 
     async def _exec(*_cmd, **_kwargs):
@@ -464,6 +469,11 @@ def test_cookie_attempt_cleanup_preserves_original_on_failure(monkeypatch, tmp_p
                 raise asyncio.CancelledError()
             self.returncode = -9
             return b"", b""
+
+        async def wait(self):
+            assert killed == [(self.pid, fe.signal.SIGKILL)]
+            self.returncode = -9
+            return self.returncode
 
     async def execute(*cmd, **kwargs):
         if "--cookies" not in cmd:
