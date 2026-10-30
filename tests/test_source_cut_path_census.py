@@ -243,9 +243,16 @@ def test_completed_source_subset_is_the_only_safe_cut_rewrite():
     assert violations == []
     # The runtime-claim follow-up drains this same conditional update before
     # releasing its claim; it must pass the identical subset proof.
-    drained = source.replace("await asyncio.to_thread(_update_job,\n        job_id,",
-                             "await _settle_source_update(\n        job_id,", 1)
-    assert drained != source
+    threaded_call = "await asyncio.to_thread(_update_job,\n        job_id,"
+    drained_call = "await _settle_source_update(\n        job_id,"
+    if drained_call in source:
+        drained = source
+        alternate = source.replace(drained_call, threaded_call, 1)
+    else:
+        drained = source.replace(threaded_call, drained_call, 1)
+        alternate = drained
+    assert alternate != source
+    assert census(alternate, filename)[1] == []
     assert census(drained, filename)[1] == []
     wrong_job = drained.replace("await _settle_source_update(\n        job_id,",
                                 "await _settle_source_update(\n        other_job,", 1)
