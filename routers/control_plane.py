@@ -37,6 +37,8 @@ should fail, and how it did.
 from __future__ import annotations
 
 import asyncio
+import contextvars
+import functools
 from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import hmac
@@ -2439,6 +2441,24 @@ def _update_job(job_id: str, **fields: Any) -> dict[str, Any] | None:
         return dict(job)
 
 
+def _update_source_job(job_id: str, **fields: Any) -> dict[str, Any] | None:
+    """A late source worker may never revive a terminal job's windows."""
+    with lock_for(_jobs_path()):
+        store = _load_jobs()
+        job = store["jobs"].get(job_id)
+        if (not isinstance(job, dict) or job.get("sourceKind") != "dossier_source_dna"
+                or job.get("status") not in GENERATION_ACTIVE_STATUSES):
+            return None
+        job.update(fields)
+        _save_jobs(store)
+        return dict(job)
+
+
+def _has_source_runner_claim(job: dict[str, Any]) -> bool:
+    version = job.get("sourceClaimVersion")
+    return type(version) is int and version == 1
+
+
 def _checkpointed_generation(job: dict[str, Any]) -> bool:
     return job.get("sourceKind") == "generated" and job.get("generationCheckpointVersion") == 1
 
@@ -3738,10 +3758,22 @@ _layer_b_probe_unreadable_count = 0
 
 
 async def _run_dossier_source(job_id: str) -> None:
+    """Hold the source job claim until its reserved cuts are terminal."""
+    _get_job_or_404(job_id)  # Validate before deriving a lock filename.
+    with runner_lock(_jobs_path(), job_id) as acquired:
+        if not acquired:
+            return
+        job = _get_job_or_404(job_id)
+        if job.get("status") not in GENERATION_ACTIVE_STATUSES:
+            return
+        await _run_owned_dossier_source(job_id)
+
+
+async def _run_owned_dossier_source(job_id: str) -> None:
     """Cut unique windows from one page's immutable source DNA."""
     job = _get_job_or_404(job_id)
     if not _job_matches_current_master_pages(job):
-        await asyncio.to_thread(_update_job,
+        await _settle_source_update(
             job_id,
             status="failed",
             error="master_pages_strategy_changed",
@@ -3772,7 +3804,7 @@ async def _run_dossier_source(job_id: str) -> None:
         or job.get("materialSource") != recipe.material_source
         or job.get("assetType") != recipe.asset_type
     ):
-        await asyncio.to_thread(_update_job,
+        await _settle_source_update(
             job_id,
             status="failed",
             error="source_recipe_executor_unavailable",
@@ -3792,7 +3824,7 @@ async def _run_dossier_source(job_id: str) -> None:
     }
     source_cuts = job.get("sourceCuts")
     if not isinstance(source_cuts, list) or not source_cuts:
-        await asyncio.to_thread(_update_job,
+        await _settle_source_update(
             job_id,
             status="failed",
             error="source_recipe_selection_missing",
@@ -3801,7 +3833,8 @@ async def _run_dossier_source(job_id: str) -> None:
         return
     manifests: list[dict[str, Any]] = []
     delivered_cuts: list[dict[str, Any]] = []
-    await asyncio.to_thread(_update_job,job_id, status="running", progress=0)
+    if await _settle_source_update(job_id, status="running", progress=0) is None:
+        return
     # A page listed in services/clip_variation.py cuts every clip at its own
     # speed and framing (Layer A); sourced source-video cuts may also get
     # mirror / motion / reverse transforms (Layer B). Layer B is wider than
@@ -4006,7 +4039,7 @@ async def _run_dossier_source(job_id: str) -> None:
             )
             manifests.append(manifest)
             delivered_cuts.append(source_cut)
-            await asyncio.to_thread(_update_job,
+            await _settle_source_update(
                 job_id,
                 progress=int(((index + 1) / len(source_cuts)) * 100),
             )
@@ -4014,7 +4047,7 @@ async def _run_dossier_source(job_id: str) -> None:
             raise RuntimeError("source_dna_master_unavailable")
     except asyncio.CancelledError:
         shutil.rmtree(job_root, ignore_errors=True)
-        await asyncio.to_thread(_update_job,
+        await _settle_source_update(
             job_id,
             status="failed",
             error="generation_cancelled",
@@ -4023,7 +4056,7 @@ async def _run_dossier_source(job_id: str) -> None:
         raise
     except Exception as error:
         shutil.rmtree(job_root, ignore_errors=True)
-        await asyncio.to_thread(_update_job,
+        await _settle_source_update(
             job_id,
             status="failed",
             error=str(error)[:300],
@@ -4031,14 +4064,14 @@ async def _run_dossier_source(job_id: str) -> None:
         )
         return
     if not _job_matches_current_master_pages(job):
-        await asyncio.to_thread(_update_job,
+        await _settle_source_update(
             job_id,
             status="failed",
             error="master_pages_strategy_changed",
             completedAt=datetime.now(timezone.utc).isoformat(),
         )
         return
-    await asyncio.to_thread(_update_job,
+    await _settle_source_update(
         job_id,
         status="completed",
         progress=100,
@@ -4460,6 +4493,27 @@ _source_import_tasks: dict[str, asyncio.Task] = {}
 _syzygy_slideshow_tasks: dict[str, asyncio.Task] = {}
 
 
+async def _settle_source_update(job_id: str, **fields: Any) -> dict[str, Any] | None:
+    """Do not drop a held claim while its persistence thread is still live."""
+    # A bare executor Future is not a Task, so event-loop shutdown's
+    # cancel-all sweep cannot cancel the handle before the thread settles.
+    context = contextvars.copy_context()
+    call = functools.partial(context.run, _update_source_job, job_id, **fields)
+    worker = asyncio.get_running_loop().run_in_executor(None, call)
+    cancelled = False
+    while not worker.done():
+        try:
+            await asyncio.shield(worker)
+        except asyncio.CancelledError:
+            cancelled = True
+    try:
+        result = worker.result()
+    finally:
+        if cancelled:
+            raise asyncio.CancelledError
+    return result
+
+
 async def _guarded_job_runner(runner, job_id: str, setup_error: str) -> None:
     """Terminalize a runner whose setup raised before its own try block.
 
@@ -4478,12 +4532,18 @@ async def _guarded_job_runner(runner, job_id: str, setup_error: str) -> None:
         raise
     except Exception as error:
         log.exception("%s runner failed outside its guarded body", setup_error)
-        await asyncio.to_thread(_update_job,
-            job_id,
-            status="failed",
-            error=f"{setup_error}:{str(error)[:300]}",
-            completedAt=datetime.now(timezone.utc).isoformat(),
-        )
+        failure = {
+            "status": "failed", "error": f"{setup_error}:{str(error)[:300]}",
+            "completedAt": datetime.now(timezone.utc).isoformat(),
+        }
+        if setup_error == "source_setup_failed":
+            # Setup raised after the runner claim was released. Another live
+            # runner may have acquired it in the meantime; never fail its job.
+            with runner_lock(_jobs_path(), job_id) as acquired:
+                if acquired:
+                    await _settle_source_update(job_id, **failure)
+        else:
+            await asyncio.to_thread(_update_job, job_id, **failure)
 
 
 def _start_dossier_generation(job_id: str) -> None:
@@ -4919,12 +4979,28 @@ async def create_job(
                 and existing.get("status") in GENERATION_ACTIVE_STATUSES
                 and existing.get("runtimeId") != _GENERATION_RUNTIME_ID
             ):
-                existing.update({
-                    "status": "failed",
-                    "error": "generation_runtime_restarted",
-                    "completedAt": datetime.now(timezone.utc).isoformat(),
-                })
-                _save_jobs(store)
+                if existing.get("sourceKind") == "dossier_source_dna" and not _has_source_runner_claim(existing):
+                    # A legacy runner never took the claim; its liveness is
+                    # unknown, so its windows must remain reserved.
+                    pass
+                elif existing.get("sourceKind") == "dossier_source_dna":
+                    # A different runtime may still be cutting these windows.
+                    # A claim acquired first also fences a queued runner, which
+                    # rechecks the terminal state after it acquires the claim.
+                    with runner_lock(_jobs_path(), existing["jobId"]) as acquired:
+                        if acquired:
+                            existing.update({
+                                "status": "failed", "error": "generation_runtime_restarted",
+                                "completedAt": datetime.now(timezone.utc).isoformat(),
+                            })
+                            _save_jobs(store)
+                else:
+                    existing.update({
+                        "status": "failed",
+                        "error": "generation_runtime_restarted",
+                        "completedAt": datetime.now(timezone.utc).isoformat(),
+                    })
+                    _save_jobs(store)
             return {"schema": RESPONSE_SCHEMA, "jobId": existing["jobId"], "status": existing["status"]}
 
         job_id = JOB_ID_PREFIX + _secrets.token_hex(8)
@@ -5131,6 +5207,7 @@ async def create_job(
             job = {
                 **common,
                 "sourceKind": "dossier_source_dna",
+                "sourceClaimVersion": 1,
                 "status": "queued",
                 "progress": 0,
                 "clips": [],
@@ -5293,18 +5370,30 @@ async def job_status(
         cancelled_local_runner = False
         if job.get("sourceKind") == "page_source_import":
             cancelled_local_runner = await _cancel_page_source_import(job_id)
-        current = _get_job_or_404(job_id)
-        if cancelled_local_runner or current.get("status") in GENERATION_ACTIVE_STATUSES:
-            _update_job(
-                job_id,
-                status="failed",
-                error=(
-                    "source_import_runtime_restarted"
-                    if job.get("sourceKind") == "page_source_import"
-                    else "generation_runtime_restarted"
-                ),
-                completedAt=datetime.now(timezone.utc).isoformat(),
-            )
+        def expire_if_active():
+            current = _get_job_or_404(job_id)
+            if cancelled_local_runner or current.get("status") in GENERATION_ACTIVE_STATUSES:
+                update = _update_source_job if job.get("sourceKind") == "dossier_source_dna" else _update_job
+                update(
+                    job_id,
+                    status="failed",
+                    error=(
+                        "source_import_runtime_restarted"
+                        if job.get("sourceKind") == "page_source_import"
+                        else "generation_runtime_restarted"
+                    ),
+                    completedAt=datetime.now(timezone.utc).isoformat(),
+                )
+
+        if job.get("sourceKind") == "dossier_source_dna":
+            # A pre-claim runtime can still be cutting without holding a lock.
+            # Its windows stay reserved until that legacy job is reconciled.
+            if _has_source_runner_claim(job):
+                with runner_lock(_jobs_path(), job_id) as acquired:
+                    if acquired:
+                        expire_if_active()
+        else:
+            expire_if_active()
         job = _get_job_or_404(job_id)
     if job["pageId"] != x_rt_page_id:
         # A job answers only to the page it belongs to — cross-page status
