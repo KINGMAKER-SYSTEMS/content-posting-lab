@@ -229,6 +229,7 @@ def test_a_tiny_master_cuts_every_window_once_then_answers_source_windows_exhaus
         ))
 
     monkeypatch.setattr(cp, "_dossier_source_recipe", tiny)
+    monkeypatch.setattr(cp, "resolve_source_recipe_with_reason", lambda payload: (tiny(payload), None))
     frames = []
     for run in range(9):
         capability = client.get(
@@ -273,6 +274,7 @@ def test_a_master_shorter_than_any_cut_names_its_reason(lab, monkeypatch):
         ))
 
     monkeypatch.setattr(cp, "_dossier_source_recipe", too_short)
+    monkeypatch.setattr(cp, "resolve_source_recipe_with_reason", lambda payload: (too_short(payload), None))
     capability = client.get(
         "/api/control-plane/v1/capabilities", headers={"X-RT-Page-Id": PAGE_ID, "Authorization": f"Bearer {TOKEN}"},
     ).json()["capabilities"]

@@ -216,6 +216,13 @@ def _wire(module, monkeypatch, *, job_path, master_pages, bindings_present):
         raising=False,
     )
     monkeypatch.setattr(module, "_dossier_source_recipe", lambda publication: _stub_source_recipe())
+    # Capabilities now use the reason-bearing source resolver. Keep the same
+    # source recipe on both sides; the historical base has no such symbol.
+    monkeypatch.setattr(
+        module, "resolve_source_recipe_with_reason",
+        lambda publication: (_stub_source_recipe(), None),
+        raising=False,
+    )
     # sourced_slideshow/lyrics_slideshows are not in the field list this
     # file is scoped to (per the ruling); force that branch off identically
     # on both sides rather than wiring its own deep material-profile chain.
