@@ -198,3 +198,88 @@ async def test_failed_replay_terminal_write_never_releases_private_reservations(
     assert cp._load_jobs()["jobs"][job_id]["status"] == "queued"
     assert calls == []
     assert scrambler_history_rows(PAGE_ID)[0]["state"] == RESERVED
+
+
+@pytest.mark.asyncio
+async def test_page_claim_covers_final_cleanup_before_next_same_page_execution(lab, monkeypatch):
+    first = enqueue(lab, monkeypatch, key="page-cleanup-first")
+    second = enqueue(lab, monkeypatch, key="page-cleanup-second")
+    second_entered = asyncio.Event()
+    async def execution(job_id):
+        if job_id == second:
+            second_entered.set()
+        await cp._settle_source_update(job_id, status="completed")
+    monkeypatch.setattr(cp, "_run_dossier_source_inner", execution)
+    actual = cp.release_job_reservations
+    entered, release = threading.Event(), threading.Event()
+    def latched(page_id, job_id, **kwargs):
+        if job_id == first and kwargs.get("reason") == "execution_finished":
+            entered.set()
+            assert release.wait(10)
+        return actual(page_id, job_id, **kwargs)
+    monkeypatch.setattr(cp, "release_job_reservations", latched)
+    tasks = [asyncio.create_task(cp._run_dossier_source(first))]
+    try:
+        assert await asyncio.to_thread(entered.wait, 5)
+        tasks.append(asyncio.create_task(cp._run_dossier_source(second)))
+        await asyncio.sleep(0.05)
+        assert not second_entered.is_set(), "next execution entered before prior cleanup settled"
+        page_claim = "scrambler-page-" + hashlib.sha256(PAGE_ID.encode()).hexdigest()
+        with runner_lock(cp._jobs_path(), page_claim) as acquired:
+            assert not acquired
+    finally:
+        release.set()
+        await asyncio.gather(*tasks)
+    assert second_entered.is_set()
+    assert [row["state"] for row in scrambler_history_rows(PAGE_ID)] == [RELEASED, RELEASED]
+
+
+@pytest.mark.asyncio
+async def test_cancelled_page_waiter_terminalizes_only_its_own_reservations(lab, monkeypatch):
+    first = enqueue(lab, monkeypatch, key="page-wait-first")
+    second = enqueue(lab, monkeypatch, key="page-wait-cancel")
+    entered, release = asyncio.Event(), asyncio.Event()
+    async def execution(job_id):
+        assert job_id == first, "cancelled waiter must never enter render lane"
+        await cp._settle_source_update(job_id, status="running")
+        entered.set()
+        await release.wait()
+        await cp._settle_source_update(job_id, status="completed")
+    monkeypatch.setattr(cp, "_run_dossier_source_inner", execution)
+    task = asyncio.create_task(cp._run_dossier_source(first))
+    try:
+        await asyncio.wait_for(entered.wait(), 5)
+        waiter = asyncio.create_task(cp._run_dossier_source(second))
+        await asyncio.sleep(0.02)
+        waiter.cancel("waiting cancellation")
+        with pytest.raises(asyncio.CancelledError):
+            await waiter
+        jobs = cp._load_jobs()["jobs"]
+        assert jobs[first]["status"] == "running"
+        assert jobs[second]["status"] == "failed"
+        states = {row["jobId"]: row["state"] for row in scrambler_history_rows(PAGE_ID)}
+        assert states == {first: RESERVED, second: RELEASED}
+        with runner_lock(cp._jobs_path(), first) as acquired:
+            assert not acquired
+    finally:
+        release.set()
+        await task
+
+
+@pytest.mark.asyncio
+async def test_first_cancellation_survives_late_side_effect_error():
+    entered, release = threading.Event(), threading.Event()
+    def work():
+        entered.set()
+        assert release.wait(5)
+        raise RuntimeError("late side effect error")
+    task = asyncio.create_task(cp._settle_source_call(work))
+    try:
+        assert await asyncio.to_thread(entered.wait, 5)
+        task.cancel("original cancellation")
+        await asyncio.sleep(0.01)
+    finally:
+        release.set()
+    with pytest.raises(asyncio.CancelledError) as error:
+        await task
+    assert error.value.args == ("original cancellation",)
