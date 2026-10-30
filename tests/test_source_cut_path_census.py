@@ -123,14 +123,16 @@ def census(source, filename):
         index = append_indexes[0]
         if not append_of(loop.body[index - 1], "manifests", "manifest"):
             return False
-        # The cut vocabulary guard must precede the append and raise on the
-        # negated planner check; a merely decorative call is not sufficient.
+        # Pin the entire guard expression, not merely a decorative planner
+        # call hidden inside a different boolean expression.
+        expected = ast.parse(
+            "master is None or start_ms != source_cut.get('libraryStartMs') or "
+            "not source_cut_is_planned(recipe, master, start_ms, duration_ms, source_cut.get('slotId'))",
+            mode="eval",
+        ).body
         return any(isinstance(stmt, ast.If)
-                   and any(isinstance(n, ast.UnaryOp) and isinstance(n.op, ast.Not)
-                           and isinstance(n.operand, ast.Call)
-                           and isinstance(n.operand.func, ast.Name)
-                           and n.operand.func.id == "source_cut_is_planned" for n in ast.walk(stmt.test))
-                   and any(isinstance(n, ast.Raise) for n in stmt.body)
+                   and ast.dump(stmt.test, include_attributes=False) == ast.dump(expected, include_attributes=False)
+                   and len(stmt.body) == 1 and isinstance(stmt.body[0], ast.Raise)
                    for stmt in loop.body[:index])
 
     def check(node, kind, required):
@@ -238,6 +240,7 @@ def test_completed_source_subset_is_the_only_safe_cut_rewrite():
          'status="running",\n        progress=100,\n        clips=manifests,\n        sourceCuts=delivered_cuts,'),
         (f'async def {runner.name}(', 'async def unrelated_writer('),
         ('sourceCuts=delivered_cuts,', 'sourceCuts=source_cuts,'),
+        ('or not source_cut_is_planned(', 'or False and not source_cut_is_planned('),
         ('delivered_cuts.append(source_cut)', 'delivered_cuts.append({"slotId": "unplanned"})'),
         ('delivered_cuts.append(source_cut)', 'delivered_cuts.append(source_cut)\n            delivered_cuts.append({"slotId": "extra"})'),
     ]
