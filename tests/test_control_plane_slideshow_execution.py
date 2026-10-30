@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 import pytest
+import httpx
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -42,7 +43,7 @@ ENGINE = "sourced_slideshow"
 NICHE = "meme"
 LIBRARY_ID = f"syzygy:{LANE}:{SUBJECT}"
 RECIPE_ID = f"{FORMAT}:master"
-RENDERER_REVISION = "d" * 64
+RENDERER_REVISION = "d" * 40
 
 
 def _library(count: int = 5) -> SyzygyLibrary:
@@ -464,6 +465,90 @@ def _fake_syzygy_boundary(monkeypatch, library, *, mutate=False):
     monkeypatch.setattr(cp, "download_syzygy_artifact", fake_download)
     monkeypatch.setattr(cp, "run_color_correct", fake_render)
     return calls
+
+
+@pytest.mark.asyncio
+async def test_runner_uses_real_syzygy_http_adapter(lab, monkeypatch):
+    """Pin the service boundary that helper-only runner tests cannot exercise.
+
+    Responses follow Syzygy c7dd0fea render.rs public_render_job/done_result.
+    Only the network and local video encoding are replaced; no render helper
+    is stubbed, and the repository offline guard forbids provider requests.
+    """
+    client, _, _, library, payload = lab
+    queued = client.post(
+        "/api/control-plane/v1/jobs", json=job_body(1, payload),
+        headers=headers("slideshow-http-boundary-0001"),
+    )
+    assert queued.status_code == 200
+    job_id = queued.json()["jobId"]
+    plan = cp._load_jobs()["jobs"][job_id]["slideshowPlan"][0]
+    source_bytes = {item.key: b"x" * item.bytes for item in library.objects}
+    seen = []
+    polls = 0
+
+    def respond(request):
+        nonlocal polls
+        seen.append(request)
+        path = request.url.path
+        if request.url.host == "r2.example":
+            assert "authorization" not in request.headers
+            return httpx.Response(200, content=source_bytes[path.lstrip("/")],
+                                  headers={"etag": '"source-etag"'})
+        assert request.url.host == "syzygy.example"
+        assert request.headers["authorization"] == "Bearer syz_test_key"
+        if path == "/readyz":
+            return httpx.Response(200, json={"ok": True, "revision": RENDERER_REVISION})
+        if path == "/api/v1/render":
+            assert request.method == "POST"
+            spec = json.loads(request.content)["spec"]
+            assert spec["template_slug"] == plan["templateSlug"]
+            assert spec["media"] == [
+                {"type": "photo", "library": key} for key in plan["mediaKeys"]
+            ]
+            assert request.headers["idempotency-key"].startswith("cpl-syzygy-")
+            return httpx.Response(200, json={"job_id": "abc123def456", "quality": "full"})
+        if path == "/api/v1/render/abc123def456":
+            polls += 1
+            return httpx.Response(200, json={
+                "status": "rendering" if polls == 1 else "done",
+                "progress": 50 if polls == 1 else 100,
+                "result": None if polls == 1 else {
+                    "filename": "abc123def456.mp4",
+                    "play_url": "/render-file/abc123def456.mp4",
+                    "drive_uploaded": False,
+                },
+                "quality": "full", "error": None, "edit_id": None,
+            })
+        assert path == "/render-file/abc123def456.mp4"
+        return httpx.Response(200, content=b"synthetic-render-bytes")
+
+    from services import control_plane_slideshows as slideshows
+
+    client_type = httpx.AsyncClient
+    monkeypatch.setattr(slideshows.httpx, "AsyncClient", lambda **kwargs: client_type(
+        transport=httpx.MockTransport(respond), **kwargs,
+    ))
+    monkeypatch.setattr(slideshows, "POLL_SECONDS", 0)
+
+    async def encode(src, dst, *_args, **_kwargs):
+        assert Path(src).read_bytes() == b"synthetic-render-bytes"
+        Path(dst).write_bytes(b"synthetic-final-bytes")
+
+    monkeypatch.setattr(cp, "run_color_correct", encode)
+    await cp._run_syzygy_slideshow(job_id)
+    job = cp._load_jobs()["jobs"][job_id]
+    assert job["status"] == "completed", job.get("error")
+    source = job["clips"][0]["source"]
+    assert source["rendererRevision"] == RENDERER_REVISION
+    assert source["renderJobId"] == "abc123def456"
+    assert source["media"] == [{
+        "objectKey": key, "bytes": len(source_bytes[key]),
+        "etag": '"source-etag"', "sha256": hashlib.sha256(source_bytes[key]).hexdigest(),
+    } for key in plan["mediaKeys"]]
+    assert polls == 2
+    assert len([r for r in seen if r.method == "POST"]) == 1
+    assert len([r for r in seen if r.url.host == "r2.example"]) == 2 * len(plan["mediaKeys"])
 
 
 @pytest.mark.asyncio

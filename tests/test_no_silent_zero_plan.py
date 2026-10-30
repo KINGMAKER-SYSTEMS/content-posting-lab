@@ -477,7 +477,7 @@ def _capability_scaffold(
         )
     monkeypatch.setattr(
         cp, "_dossier_source_recipe",
-        resolve_source if resolve_source is not None else (lambda publication: None),
+        resolve_source if resolve_source is not None else (lambda publication, refusal_reasons=None: None),
     )
     monkeypatch.setattr(cp, "syzygy_runtime_available", lambda: runtime_available)
     monkeypatch.setattr(cp, "resolve_material_profile", lambda publication, spec: object())
@@ -620,7 +620,7 @@ def test_source_identity_missing_lands_in_zero_plan_recipes(monkeypatch, tmp_pat
     _capability_scaffold(
         monkeypatch, tmp_path, recipe=recipe, library=library,
         publication_engine="sourced_video", publication_recipe_id="pov-dirt-bike:master",
-        resolve_source=lambda publication: source_recipe,
+        resolve_source=lambda publication, refusal_reasons=None: source_recipe,
     )
     monkeypatch.setattr(cp, "_source_dna_cut_ledger", lambda *a, **k: ({}, {}))
     monkeypatch.setattr(cp, "plan_source_cuts", lambda *a, **k: [])
@@ -680,6 +680,9 @@ def _is_max_capabilities_cap_break(stmt):
     """The one allowed break: ``if len(entries) >= MAX_CAPABILITIES: break``."""
     if not (
         isinstance(stmt, ast.If)
+        and len(stmt.body) == 1
+        and isinstance(stmt.body[0], ast.Break)
+        and not stmt.orelse
         and isinstance(stmt.test, ast.Compare)
         and len(stmt.test.ops) == 1
         and len(stmt.test.comparators) == 1
@@ -723,6 +726,45 @@ def _bindings_loop_violations(loop):
 
     check(list(loop.body))
     return bad
+
+
+def test_guard_inspects_other_branches_of_the_cap_check():
+    # Only the exact one-line cap break is safe. An else branch can silently
+    # skip a binding even though the outer condition resembles that cap.
+    loop = ast.parse("""
+for _, publication in registered_bindings:
+    if len(entries) >= MAX_CAPABILITIES:
+        break
+    else:
+        continue
+""").body[0]
+    assert any(item.startswith("continue@") for item in _bindings_loop_violations(loop))
+    pure_cap = ast.parse("""
+for _, publication in registered_bindings:
+    if len(entries) >= MAX_CAPABILITIES:
+        break
+""").body[0]
+    assert _bindings_loop_violations(pure_cap) == []
+    extra_return = ast.parse("""
+for _, publication in registered_bindings:
+    if len(entries) >= MAX_CAPABILITIES:
+        return
+        break
+""").body[0]
+    assert any(item.startswith("Return@") for item in _bindings_loop_violations(extra_return))
+
+
+def test_guard_descends_into_match_cases():
+    loop = ast.parse("""
+for _, publication in registered_bindings:
+    match publication:
+        case {"engine": "sourced_video"}:
+            continue
+        case _:
+            zero_plan_recipes.append({})
+            continue
+""").body[0]
+    assert _bindings_loop_violations(loop) == ["continue@5"]
 
 
 def test_served_entry_never_carries_a_zero_reason(monkeypatch, tmp_path):

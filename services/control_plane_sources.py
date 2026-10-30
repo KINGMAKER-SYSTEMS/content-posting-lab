@@ -272,6 +272,7 @@ def resolve_source_recipe(
     publication: dict[str, Any],
     *,
     base_recipe_lookup: Callable[[str], dict[str, Any] | None] | None = None,
+    refusal_reasons: list[str] | None = None,
 ) -> SourceRecipe | None:
     del base_recipe_lookup  # old derivative-project lookup is not authority
     if not isinstance(publication, dict):
@@ -325,6 +326,8 @@ def resolve_source_recipe(
         except ShipStreamSourceError:
             return None
     if any(master.sha256 in RETIRED_MASTER_SHAS for master in library.masters):
+        if refusal_reasons is not None:
+            refusal_reasons.append(SOURCE_MASTER_RETIRED)
         log.warning(
             "%s library=%s page=%s format=%s: a publication named a library that still holds a retired master",
             SOURCE_MASTER_RETIRED, library.library_id, library.page_id, library.format_slug,

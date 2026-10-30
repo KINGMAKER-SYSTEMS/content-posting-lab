@@ -166,7 +166,7 @@ from services.page_frame import VERTICAL_FRAME, resolved_frame
 from services import generation_budget, moderation_retry
 from services.roster_public import require_roster_auth
 from services import clip_similarity
-from services.clip_transforms import apply_transforms, cut_transforms, transforms_enabled, transforms_from_manifest
+from services.clip_transforms import apply_transforms, cut_transforms, transforms_disabled_reason, transforms_enabled, transforms_from_manifest
 from services.clip_variation import cut_grade, cut_variant, varies_clips
 from services.source_treatment import (
     derived_source_treatment,
@@ -768,8 +768,9 @@ def capabilities(
         else:
             generation_recipe = None
             generation_unavailable_reason = None
+        source_refusal_reasons: list[str] = []
         source_recipe = (
-            _dossier_source_recipe(publication)
+            _dossier_source_recipe(publication, source_refusal_reasons)
             if publication_engine == "sourced_video"
             else None
         )
@@ -783,7 +784,10 @@ def capabilities(
             and source_recipe is None
             and slideshow_recipe is None
         ):
-            if publication_engine in _SLIDESHOW_ENGINES and not syzygy_runtime_available():
+            if source_refusal_reasons:
+                unresolved_reason = source_refusal_reasons[0]
+                unresolved_detail = None
+            elif publication_engine in _SLIDESHOW_ENGINES and not syzygy_runtime_available():
                 unresolved_reason = SLIDESHOW_RUNTIME_UNAVAILABLE
                 unresolved_detail = None
             else:
@@ -2181,7 +2185,7 @@ def _generated_capability_quantity(
             MAX_CAPABILITY_QUANTITY,
             len(_truck_master_candidates(
                 store, page_id, recovery_limit,
-                content_engine=recipe.engine,
+                content_engine="ai_video",
                 recipe_id=recipe.recipe_id,
                 generation_recipe=recipe,
             )) * recipe.clips_per_generation,
@@ -2375,12 +2379,13 @@ def _registered_recipe(project: str) -> dict[str, Any] | None:
     return None
 
 
-def _dossier_source_recipe(publication: dict[str, Any] | None):
+def _dossier_source_recipe(publication: dict[str, Any] | None, refusal_reasons: list[str] | None = None):
     if publication is None:
         return None
     return resolve_source_recipe(
         publication,
         base_recipe_lookup=_registered_recipe,
+        refusal_reasons=refusal_reasons,
     )
 
 
@@ -3827,6 +3832,7 @@ async def _run_owned_dossier_source(job_id: str) -> None:
         )
         return
     manifests: list[dict[str, Any]] = []
+    delivered_cuts: list[dict[str, Any]] = []
     if await _settle_source_update(job_id, status="running", progress=0) is None:
         return
     # A page listed in services/clip_variation.py cuts every clip at its own
@@ -3838,6 +3844,18 @@ async def _run_owned_dossier_source(job_id: str) -> None:
     # follows them).
     vary_look = varies_clips(job["pageId"])
     vary_transforms = vary_look or transforms_enabled(job["pageId"], recipe.format_slug)
+    layer = "A" if vary_look else "B" if vary_transforms else "none"
+    if not vary_transforms:
+        # Layer B is off for the whole job: one line up front names the first
+        # gate that turned it off (the kill-switch, the format allow-list or
+        # the page deny-list), so a log sweep can tell "off by design" from
+        # "on but nothing drawn" (the per-cut lines below). The reason can be
+        # None only when the gate itself was swapped out (tests do that); the
+        # helper answers through the gate's own checks, so in production it
+        # always names one of the three.
+        log.info("content_lab.source_cut_transforms_off job_id=%s page_id=%s format_slug=%s reason=%s",
+                 job_id, job["pageId"], recipe.format_slug,
+                 transforms_disabled_reason(job["pageId"], recipe.format_slug))
     previous_variant = previous_transforms = None
     transforms = None
     recent_cuts: list = []
@@ -3933,6 +3951,20 @@ async def _run_owned_dossier_source(job_id: str) -> None:
                 async with _COLOR_CORRECT_GATE:
                     await asyncio.to_thread(apply_transforms, destination, transforms,
                                             delivery_encode_args(recipe.encode_preset))
+            if vary_transforms:
+                # One INFO line per cut pins what Layer B did to it: the
+                # manifest records the drawn set, but Railway logs are what a
+                # release can grep to prove transforms apply (an 1182-line
+                # release check found zero transform lines). applied is True
+                # only when apply_transforms really re-encoded this cut, so a
+                # drawn-but-not-applied cut (none in this build) reads honestly.
+                log.info("content_lab.source_cut_transforms job_id=%s page_id=%s"
+                         " format_slug=%s cut_slot_id=%s mirror=%s motion=%s"
+                         " reverse=%s loop_swap=%s layer=%s applied=%s",
+                         job_id, job["pageId"], recipe.format_slug,
+                         f"{master.sha256}:{start_ms}:{duration_ms}",
+                         transforms.mirror, transforms.motion, transforms.reverse,
+                         transforms.loop_swap, layer, transforms.any())
             if vary_look or recipe.format_slug == "pov-club" or (vary_transforms and transforms.any()):
                 measured_duration = await asyncio.to_thread(
                     probe_source_output_duration_seconds, str(destination),
@@ -4006,6 +4038,7 @@ async def _run_owned_dossier_source(job_id: str) -> None:
                 job_root, destination, len(manifests),
             )
             manifests.append(manifest)
+            delivered_cuts.append(source_cut)
             await _settle_source_update(
                 job_id,
                 progress=int(((index + 1) / len(source_cuts)) * 100),
@@ -4043,6 +4076,7 @@ async def _run_owned_dossier_source(job_id: str) -> None:
         status="completed",
         progress=100,
         clips=manifests,
+        sourceCuts=delivered_cuts,
         completedAt=datetime.now(timezone.utc).isoformat(),
     )
 
