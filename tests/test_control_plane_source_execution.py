@@ -2087,7 +2087,10 @@ async def test_transforms_all_off_cut_bytes_match_main(lab, monkeypatch):
     source = tmp_path / "master.mp4"
     source.write_bytes(b"synthetic master")
 
+    encoder_calls = []
+
     async def deterministic_encoder(_source, destination, *args, **kwargs):
+        encoder_calls.append({"source": Path(_source).name, "destination": Path(destination).name, "args": args, "kwargs": kwargs})
         Path(destination).write_bytes(b"deterministic encoded clip")
 
     monkeypatch.setattr(cp, "run_color_correct", deterministic_encoder)
@@ -2101,6 +2104,8 @@ async def test_transforms_all_off_cut_bytes_match_main(lab, monkeypatch):
     assert job["status"] == "completed", job.get("error")
     recorded = json.loads((Path(__file__).parent / "fixtures" / "transforms_all_off_main_60db4247.json").read_text())
     assert job["clips"][0] == recorded
+    encoder_fixture = Path(__file__).parent / "fixtures" / "transforms_all_off_main_60db4247_encoder.json"
+    assert json.loads(json.dumps(encoder_calls)) == [json.loads(encoder_fixture.read_text())]
 
 
 @pytest.mark.asyncio
@@ -2394,3 +2399,5 @@ def test_main_transform_off_recording_is_pinned():
     recorded = json.loads(fixture.read_text())
     assert recorded["sourceTreatment"]["generationJobId"] == "cpl-aaaaaaaaaaaaaaaa"
     assert len(recorded["sha256"]) == 64
+    encoder_fixture = Path(__file__).parent / "fixtures" / "transforms_all_off_main_60db4247_encoder.json"
+    assert hashlib.sha256(encoder_fixture.read_bytes()).hexdigest() == "489e9b5a03b233643c85166368c1d4fc9d5214df959cb0590d3c80072671cad0"
