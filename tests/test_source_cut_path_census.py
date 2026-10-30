@@ -18,9 +18,10 @@ A site is any of:
 * a call passing ``clip_start_ms=`` (the cut executor renders a window).
 
 Rules: ``SourceCut`` is constructed only inside plan_source_cuts; a job/cut
-site's enclosing function calls plan_source_cuts; an executor site's
-enclosing function re-derives each cut with source_cut_is_planned (the
-planner's own vocabulary check) before rendering it.
+site's enclosing function calls plan_source_cuts. The sole exception is the
+source runner atomically narrowing a completed job to validated cuts that made
+manifested outputs. An executor site's enclosing function re-derives each cut
+with source_cut_is_planned (the planner's vocabulary check) before rendering it.
 """
 
 import ast
@@ -76,10 +77,68 @@ def census(source, filename):
 
     sites, violations = [], []
 
+    def delivered_subset_completion(node, functions):
+        # One exception: a source runner may atomically replace the planned
+        # list with only cuts that actually made a completed manifest. Keep
+        # this structural check narrow; every other rewrite still needs the
+        # planner. Runtime tests separately verify active and archived claims.
+        if filename != "routers/control_plane.py" or not functions:
+            return False
+        fn = functions[0]
+        if fn.name not in {"_run_dossier_source", "_run_owned_dossier_source"}:
+            return False
+        if not (isinstance(node.func, ast.Attribute) and node.func.attr == "to_thread"
+                and isinstance(node.func.value, ast.Name) and node.func.value.id == "asyncio"
+                and node.args and isinstance(node.args[0], ast.Name) and node.args[0].id == "_update_job"):
+            return False
+        keywords = {kw.arg: kw.value for kw in node.keywords}
+        if not (_string(keywords.get("status"), "completed")
+                and isinstance(keywords.get("clips"), ast.Name) and keywords["clips"].id == "manifests"
+                and isinstance(keywords.get("sourceCuts"), ast.Name) and keywords["sourceCuts"].id == "delivered_cuts"):
+            return False
+        names = [n for n in ast.walk(fn) if isinstance(n, ast.Name) and n.id == "delivered_cuts"]
+        if len(names) != 3:  # empty initialization, one append, completed update
+            return False
+        initializers = [n for n in ast.walk(fn) if isinstance(n, ast.AnnAssign)
+                        and isinstance(n.target, ast.Name) and n.target.id == "delivered_cuts"
+                        and isinstance(n.value, ast.List) and not n.value.elts]
+        loops = [n for n in ast.walk(fn) if isinstance(n, ast.For)
+                 and isinstance(n.target, ast.Tuple)
+                 and [getattr(e, "id", None) for e in n.target.elts] == ["index", "source_cut"]
+                 and isinstance(n.iter, ast.Call) and isinstance(n.iter.func, ast.Name)
+                 and n.iter.func.id == "enumerate" and len(n.iter.args) == 1
+                 and isinstance(n.iter.args[0], ast.Name) and n.iter.args[0].id == "source_cuts"]
+        if len(initializers) != 1 or len(loops) != 1:
+            return False
+        loop = loops[0]
+        def append_of(stmt, target, argument):
+            return (isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Call)
+                    and isinstance(stmt.value.func, ast.Attribute) and stmt.value.func.attr == "append"
+                    and isinstance(stmt.value.func.value, ast.Name) and stmt.value.func.value.id == target
+                    and len(stmt.value.args) == 1 and isinstance(stmt.value.args[0], ast.Name)
+                    and stmt.value.args[0].id == argument and not stmt.value.keywords)
+        append_indexes = [i for i, stmt in enumerate(loop.body) if append_of(stmt, "delivered_cuts", "source_cut")]
+        if len(append_indexes) != 1 or append_indexes[0] == 0:
+            return False
+        index = append_indexes[0]
+        if not append_of(loop.body[index - 1], "manifests", "manifest"):
+            return False
+        # The cut vocabulary guard must precede the append and raise on the
+        # negated planner check; a merely decorative call is not sufficient.
+        return any(isinstance(stmt, ast.If)
+                   and any(isinstance(n, ast.UnaryOp) and isinstance(n.op, ast.Not)
+                           and isinstance(n.operand, ast.Call)
+                           and isinstance(n.operand.func, ast.Name)
+                           and n.operand.func.id == "source_cut_is_planned" for n in ast.walk(stmt.test))
+                   and any(isinstance(n, ast.Raise) for n in stmt.body)
+                   for stmt in loop.body[:index])
+
     def check(node, kind, required):
         where = f"{filename}:{node.lineno} {kind}"
         sites.append(where)
         functions = enclosing_functions(node)
+        if kind == "sourceCuts= keyword" and delivered_subset_completion(node, functions):
+            return
         if not functions or not _calls_named(functions[0], required):
             violations.append(f"{where} (enclosing function does not call {required})")
 
@@ -162,3 +221,27 @@ def refill(recipe, served):
 '''
     sites, violations = census(planned, "services/fake_refill.py")
     assert sites and violations == []
+
+
+def test_completed_source_subset_is_the_only_safe_cut_rewrite():
+    source = (ROOT / "routers/control_plane.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    runner = next(node for node in tree.body if isinstance(node, ast.AsyncFunctionDef)
+                  and node.name in {"_run_dossier_source", "_run_owned_dossier_source"}
+                  and _calls_named(node, "source_cut_is_planned"))
+    source = ast.get_source_segment(source, runner)
+    filename = "routers/control_plane.py"
+    _, violations = census(source, filename)
+    assert violations == []
+    mutations = [
+        ('status="completed",\n        progress=100,\n        clips=manifests,\n        sourceCuts=delivered_cuts,',
+         'status="running",\n        progress=100,\n        clips=manifests,\n        sourceCuts=delivered_cuts,'),
+        (f'async def {runner.name}(', 'async def unrelated_writer('),
+        ('sourceCuts=delivered_cuts,', 'sourceCuts=source_cuts,'),
+        ('delivered_cuts.append(source_cut)', 'delivered_cuts.append({"slotId": "unplanned"})'),
+        ('delivered_cuts.append(source_cut)', 'delivered_cuts.append(source_cut)\n            delivered_cuts.append({"slotId": "extra"})'),
+    ]
+    for old, new in mutations:
+        assert old in source
+        _, violations = census(source.replace(old, new, 1), filename)
+        assert any('sourceCuts= keyword' in item for item in violations), (old, violations)
