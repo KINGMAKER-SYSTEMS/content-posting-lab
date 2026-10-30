@@ -804,3 +804,10 @@
   rules.
 
 ## Child devlog Index
+
+The additive `/api/control-plane/v1/job-receipts/by-idempotency-key` route
+must remain an authenticated read-only exact request lookup; never start or
+rewrite a job while reconciling its durable receipt. `/api/burn/import-tos`
+requires its machine bearer before network/filesystem effects and uses only
+SUPABASE_SERVICE_KEY, never the public-key fallback. The safety-controls
+snapshot is default off and observes only bounded effective process settings.

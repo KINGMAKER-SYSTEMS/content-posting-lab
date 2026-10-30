@@ -298,6 +298,10 @@ _AUTH_SKIP = ("/api/health", "/api/miniapp/")
 
 @app.middleware("http")
 async def check_api_key(request: Request, call_next):
+    # This exact write route checks the private machine bearer itself. The
+    # browser API key must not block a valid machine request or authorize one.
+    if request.method == "POST" and request.url.path == "/api/burn/import-tos":
+        return await call_next(request)
     if _APP_API_KEY and request.url.path.startswith("/api/"):
         if not any(request.url.path.startswith(s) for s in _AUTH_SKIP):
             token = request.headers.get("authorization", "").removeprefix("Bearer ").strip()

@@ -1719,3 +1719,102 @@ async def test_generation_cuts_fill_when_a_candidate_size_is_unprovable(lab, mon
                             "page_frame": "16:9", "frame_fit": "fill"}] * 5
     assert caplog.text.count("its display size is unavailable (timeout)") == 5
     assert all(clip["frameCut"] == {"frame": "16:9", "frameFit": "fill"} for clip in stored["clips"])
+
+
+def test_numeric_policy_hash_create_and_lost_ack_lookup_agree(lab):
+    client, _, started = lab
+    body = job_body(quantity=1, policyHash=123)
+    created = client.post(
+        "/api/control-plane/v1/jobs", json=body, headers=HEADERS,
+    )
+    assert created.status_code == 200
+    job_id = created.json()["jobId"]
+    assert cp._load_jobs()["jobs"][job_id]["policyHash"] == "123"
+    before_lookup = cp._jobs_path().read_bytes()
+
+    recovered = client.post(
+        "/api/control-plane/v1/job-receipts/by-idempotency-key",
+        json=body,
+        headers=HEADERS,
+    )
+
+    assert recovered.status_code == 200
+    assert recovered.json() == {
+        "schema": cp.RESPONSE_SCHEMA,
+        "jobId": job_id,
+        "status": "queued",
+    }
+    assert cp._jobs_path().read_bytes() == before_lookup
+    assert started == [job_id]
+
+
+def test_numeric_page_id_create_and_lost_ack_lookup_agree(lab, monkeypatch):
+    client, _, started = lab
+    intent, revision = master_pages("123", handle="tucker.reeves")
+    bind_current_intent(monkeypatch, cp, intent, revision)
+    headers = {**HEADERS, "X-RT-Page-Id": "123", "Idempotency-Key": "123:policy:source"}
+    publication = recipe_publication()
+    spec = json.loads(publication["recipeSpecCanonical"])
+    spec.update(masterPages=intent, masterPagesHash=revision)
+    canonical = json.dumps(spec, sort_keys=True, separators=(",", ":"))
+    publication.update(
+        pageId="123", recipeSpecCanonical=canonical,
+        recipeSpecHash="sha256:" + hashlib.sha256(canonical.encode()).hexdigest(),
+    )
+    registered = client.post(
+        "/api/control-plane/v1/recipes", json=publication, headers=headers,
+    )
+    assert registered.status_code == 200
+    body = job_body(
+        quantity=1, pageId=123, masterPages=intent, masterPagesHash=revision,
+        sourceIsolation={"partitionKey": "page:123"},
+    )
+    created = client.post("/api/control-plane/v1/jobs", json=body, headers=headers)
+    assert created.status_code == 200
+    job_id = created.json()["jobId"]
+    assert cp._load_jobs()["jobs"][job_id]["pageId"] == "123"
+    before_lookup = cp._jobs_path().read_bytes()
+
+    recovered = client.post(
+        "/api/control-plane/v1/job-receipts/by-idempotency-key", json=body, headers=headers,
+    )
+
+    assert recovered.status_code == 200
+    assert recovered.json() == {"schema": cp.RESPONSE_SCHEMA, "jobId": job_id, "status": "queued"}
+    assert cp._jobs_path().read_bytes() == before_lookup
+    assert started == [job_id]
+
+
+@pytest.mark.parametrize("field", ["engine", "lockedRecipeId", "recipeVersion", "policyHash"])
+def test_trimmed_job_identity_create_and_lost_ack_lookup_agree(lab, field):
+    client, _, started = lab
+    body = job_body(quantity=1)
+    body[field] = f" {body[field]} "
+    created = client.post("/api/control-plane/v1/jobs", json=body, headers=HEADERS)
+    assert created.status_code == 200
+    before_lookup = cp._jobs_path().read_bytes()
+
+    recovered = client.post(
+        "/api/control-plane/v1/job-receipts/by-idempotency-key", json=body, headers=HEADERS,
+    )
+
+    assert recovered.status_code == 200
+    assert recovered.json() == created.json()
+    assert cp._jobs_path().read_bytes() == before_lookup
+    assert started == [created.json()["jobId"]]
+
+
+@pytest.mark.parametrize("overrides", [
+    {"pageId": f" {PAGE_ID} "},
+    {"lane": 123},
+    {"lane": f" {recipes.LANE} "},
+    {"policyHash": False},
+])
+def test_create_and_lookup_preserve_invalid_identity_refusals(lab, overrides):
+    client, _, started = lab
+    body = job_body(quantity=1, **overrides)
+    for route in ("jobs", "job-receipts/by-idempotency-key"):
+        response = client.post(f"/api/control-plane/v1/{route}", json=body, headers=HEADERS)
+        assert response.status_code == 400
+    assert not cp._jobs_path().exists()
+    assert started == []

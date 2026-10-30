@@ -1758,7 +1758,3 @@ own admission acknowledgement before automatic retirement; another caption's
 shared clean object is insufficient proof. Focused jobs tests cover real render
 pairs, concurrent duplicate claims, restart, retirement and cross-mode repeats;
 local-history reservation costs are recorded in docs/post-render-setup.md.
-
-## 04:43 — Safety controls view
-
-Added a default-off, Control Plane bearer-only safety-controls view of bounded process settings. The view separates the started render manager worker snapshot from current configuration, reports invalid settings explicitly, and avoids starting services or exposing raw environment values.
