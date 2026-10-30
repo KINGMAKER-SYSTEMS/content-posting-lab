@@ -3766,7 +3766,7 @@ async def _run_owned_dossier_source(job_id: str) -> None:
     """Cut unique windows from one page's immutable source DNA."""
     job = _get_job_or_404(job_id)
     if not _job_matches_current_master_pages(job):
-        await asyncio.to_thread(_update_source_job,
+        await _settle_source_update(
             job_id,
             status="failed",
             error="master_pages_strategy_changed",
@@ -3797,7 +3797,7 @@ async def _run_owned_dossier_source(job_id: str) -> None:
         or job.get("materialSource") != recipe.material_source
         or job.get("assetType") != recipe.asset_type
     ):
-        await asyncio.to_thread(_update_source_job,
+        await _settle_source_update(
             job_id,
             status="failed",
             error="source_recipe_executor_unavailable",
@@ -3817,7 +3817,7 @@ async def _run_owned_dossier_source(job_id: str) -> None:
     }
     source_cuts = job.get("sourceCuts")
     if not isinstance(source_cuts, list) or not source_cuts:
-        await asyncio.to_thread(_update_source_job,
+        await _settle_source_update(
             job_id,
             status="failed",
             error="source_recipe_selection_missing",
@@ -3825,7 +3825,7 @@ async def _run_owned_dossier_source(job_id: str) -> None:
         )
         return
     manifests: list[dict[str, Any]] = []
-    if await asyncio.to_thread(_update_source_job, job_id, status="running", progress=0) is None:
+    if await _settle_source_update(job_id, status="running", progress=0) is None:
         return
     # A page listed in services/clip_variation.py cuts every clip at its own
     # speed and framing (Layer A); sourced source-video cuts may also get
@@ -4004,7 +4004,7 @@ async def _run_owned_dossier_source(job_id: str) -> None:
                 job_root, destination, len(manifests),
             )
             manifests.append(manifest)
-            await asyncio.to_thread(_update_source_job,
+            await _settle_source_update(
                 job_id,
                 progress=int(((index + 1) / len(source_cuts)) * 100),
             )
@@ -4012,7 +4012,7 @@ async def _run_owned_dossier_source(job_id: str) -> None:
             raise RuntimeError("source_dna_master_unavailable")
     except asyncio.CancelledError:
         shutil.rmtree(job_root, ignore_errors=True)
-        await asyncio.to_thread(_update_source_job,
+        await _settle_source_update(
             job_id,
             status="failed",
             error="generation_cancelled",
@@ -4021,7 +4021,7 @@ async def _run_owned_dossier_source(job_id: str) -> None:
         raise
     except Exception as error:
         shutil.rmtree(job_root, ignore_errors=True)
-        await asyncio.to_thread(_update_source_job,
+        await _settle_source_update(
             job_id,
             status="failed",
             error=str(error)[:300],
@@ -4029,14 +4029,14 @@ async def _run_owned_dossier_source(job_id: str) -> None:
         )
         return
     if not _job_matches_current_master_pages(job):
-        await asyncio.to_thread(_update_source_job,
+        await _settle_source_update(
             job_id,
             status="failed",
             error="master_pages_strategy_changed",
             completedAt=datetime.now(timezone.utc).isoformat(),
         )
         return
-    await asyncio.to_thread(_update_source_job,
+    await _settle_source_update(
         job_id,
         status="completed",
         progress=100,
@@ -4457,7 +4457,7 @@ _source_import_tasks: dict[str, asyncio.Task] = {}
 _syzygy_slideshow_tasks: dict[str, asyncio.Task] = {}
 
 
-async def _settle_source_update(job_id: str, **fields: Any) -> None:
+async def _settle_source_update(job_id: str, **fields: Any) -> dict[str, Any] | None:
     """Do not drop a held claim while its persistence thread is still live."""
     worker = asyncio.create_task(asyncio.to_thread(_update_source_job, job_id, **fields))
     cancelled = False
@@ -4467,10 +4467,11 @@ async def _settle_source_update(job_id: str, **fields: Any) -> None:
         except asyncio.CancelledError:
             cancelled = True
     try:
-        worker.result()
+        result = worker.result()
     finally:
         if cancelled:
             raise asyncio.CancelledError
+    return result
 
 
 async def _guarded_job_runner(runner, job_id: str, setup_error: str) -> None:

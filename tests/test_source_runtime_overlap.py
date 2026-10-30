@@ -151,6 +151,11 @@ async def test_cancelled_late_completion_cannot_revive_a_reassigned_window(lab, 
                 finished.set()
         return persist(job_id, **fields)
     monkeypatch.setattr(cp, '_update_source_job', blocked)
+    # Model a persistence thread already orphaned by a pre-drain runtime;
+    # the conditional store update remains a second fence.
+    async def undrained(target, **fields):
+        return await asyncio.to_thread(cp._update_source_job, target, **fields)
+    monkeypatch.setattr(cp, '_settle_source_update', undrained)
     runner = asyncio.create_task(cp._run_dossier_source(old_id))
     try:
         assert await asyncio.to_thread(entered.wait, 5), 'completion reached the durable write'
@@ -217,6 +222,9 @@ async def test_cancelled_late_source_updates_cannot_revive_failed_job(lab, monke
                 finished.set()
         return persist(target, **fields)
     monkeypatch.setattr(cp, '_update_source_job', blocked)
+    async def undrained(target, **fields):
+        return await asyncio.to_thread(cp._update_source_job, target, **fields)
+    monkeypatch.setattr(cp, '_settle_source_update', undrained)
     runner = asyncio.create_task(cp._run_dossier_source(job_id))
     try:
         assert await asyncio.to_thread(entered.wait, 5)
@@ -339,3 +347,78 @@ async def test_cancelled_setup_failure_keeps_claim_until_write_settles(lab, monk
     assert cp._load_jobs()['jobs'][job_id]['status'] == 'failed'
     with cp.runner_lock(cp._jobs_path(), job_id) as acquired:
         assert acquired, 'the claim is released once the write settles'
+
+
+@pytest.mark.parametrize('stage', ['initial', 'progress', 'completion'])
+@pytest.mark.asyncio
+async def test_source_runner_holds_claim_until_cancelled_write_settles(lab, monkeypatch, tmp_path, stage):
+    import threading
+    from pathlib import Path
+
+    client, _, _ = lab
+    key = 'source-drain-' + stage
+    response = client.post('/api/control-plane/v1/jobs', json=job_body(1), headers=headers(key))
+    job_id = response.json()['jobId']
+    original = cp._load_jobs()['jobs'][job_id]
+    cut = original['sourceCuts'][0]['slotId']
+    recipe = cp._dossier_source_recipe(publication())
+    source = tmp_path / 'source.mp4'
+    source.write_bytes(b'fixture')
+    async def cached(*_):
+        return source
+    async def encode(_source, destination, *_args, **_kwargs):
+        Path(destination).write_bytes(b'fixture output')
+    monkeypatch.setattr(cp, '_cached_source_master', cached)
+    monkeypatch.setattr(cp, 'run_color_correct', encode)
+    monkeypatch.setattr(cp, 'transforms_enabled', lambda *_: False)
+    monkeypatch.setattr(cp, 'varies_clips', lambda *_: False)
+    entered, release, finished = threading.Event(), threading.Event(), threading.Event()
+    persist = cp._update_source_job
+    def blocked(target, **fields):
+        hit = ((stage == 'initial' and fields.get('status') == 'running')
+               or (stage == 'progress' and 'progress' in fields and 'status' not in fields)
+               or (stage == 'completion' and fields.get('status') == 'completed'))
+        if target == job_id and hit:
+            entered.set()
+            if not release.wait(10):
+                raise RuntimeError('test barrier timed out')
+            try:
+                return persist(target, **fields)
+            finally:
+                finished.set()
+        return persist(target, **fields)
+    monkeypatch.setattr(cp, '_update_source_job', blocked)
+    runner = asyncio.create_task(cp._run_dossier_source(job_id))
+    try:
+        assert await asyncio.to_thread(entered.wait, 5)
+        runner.cancel()
+        await asyncio.sleep(0)
+        runner.cancel()
+        await asyncio.sleep(0)
+        assert not runner.done(), 'the claim stays held until the persistence thread settles'
+        monkeypatch.setattr(cp, '_GENERATION_RUNTIME_ID', 'another-runtime')
+        status = await cp.job_status(job_id, x_rt_page_id=PAGE_ID, authorization=f'Bearer {TOKEN}')
+        replay = await asyncio.to_thread(client.post, '/api/control-plane/v1/jobs',
+            json=job_body(1), headers=headers(key))
+        assert status['status'] in {'queued', 'running'}
+        assert replay.json()['status'] == status['status']
+        reserved, _ = cp._source_dna_cut_ledger(cp._load_jobs(), recipe, original['recipeVersion'])
+        assert cut in reserved
+        new = await asyncio.to_thread(client.post, '/api/control-plane/v1/jobs',
+            json=job_body(1), headers=headers(key + '-new'))
+        assert new.status_code == 200
+        assert cp._load_jobs()['jobs'][new.json()['jobId']]['sourceCuts'][0]['slotId'] != cut
+    finally:
+        release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await runner
+    assert finished.is_set()
+    final = cp._load_jobs()['jobs'][job_id]
+    if stage == 'completion':
+        assert final['status'] == 'completed'
+        reserved, _ = cp._source_dna_cut_ledger(cp._load_jobs(), recipe, original['recipeVersion'])
+        assert cut in reserved
+    elif stage == 'progress':
+        assert final['status'] == 'failed'
+    else:
+        assert (await cp.job_status(job_id, x_rt_page_id=PAGE_ID, authorization=f'Bearer {TOKEN}'))['status'] == 'failed'
