@@ -123,6 +123,42 @@ def _source_import_attempt_dirs(root: Path, job_id: str, job: dict[str, Any]) ->
     return path.parent, path
 
 
+def _completed_flat_import_dir(root: Path, job_id: str, job: dict[str, Any]) -> Path | None:
+    """Recognize completed phase-A ownership without broad private fallback."""
+    page, value = job.get("pageId"), job.get("artifactRoot")
+    if (job.get("sourceKind") != "page_source_import" or job.get("status") != "completed"
+            or job.get("jobId") != job_id or not re.fullmatch(r"cpl-[0-9a-f]{16}", job_id)
+            or not isinstance(page, str) or not re.fullmatch(r"[A-Za-z0-9._:-]{1,128}", page)
+            or type(job.get("sourceImportClaimVersion")) is not int or job["sourceImportClaimVersion"] != 1
+            or not isinstance(job.get("sourceImportAttemptId"), str)
+            or not re.fullmatch(r"[0-9a-f]{32}", job["sourceImportAttemptId"])
+            or not isinstance(job.get("runtimeId"), str) or not re.fullmatch(r"[0-9a-f]{32}", job["runtimeId"])
+            or not isinstance(value, str) or not Path(value).is_absolute()):
+        return None
+    expected = root / page / "source-imports" / job_id
+    if Path(value) != expected or expected.resolve() != expected:
+        return None
+    current = root
+    for part in expected.relative_to(root).parts:
+        current /= part
+        if current.is_symlink():
+            return None
+    return expected
+
+
+def _flat_import_file(directory: Path, relative: Any) -> Path | None:
+    """Only direct source/thumbnail files; never a private attempt or alias."""
+    if not isinstance(relative, str):
+        return None
+    parts = Path(relative).parts
+    if len(parts) != 2 or parts[0] not in {"source", "thumbnails"}:
+        return None
+    path = directory / relative
+    if path.parent.is_symlink() or path.is_symlink() or path.resolve().parent != directory / parts[0]:
+        return None
+    return path
+
+
 def _inside(directory: Path, relative: Any) -> Path | None:
     if not isinstance(relative, str) or not relative:
         return None
@@ -189,11 +225,15 @@ class GeneratedMediaRetention:
             if not isinstance(job, dict) or job.get("status") not in TERMINAL_STATUSES:
                 continue
             finished = terminal_timestamp(job)
-            if job.get("sourceKind") == "page_source_import" and "sourceImportClaimVersion" in job:
+            flat_import = False
+            if "sourceImportClaimVersion" in job or "sourceImportAttemptId" in job:
                 # New-layout metadata must prove the exact attempt path; a
                 # malformed marker cannot fall back to a broader job root.
                 attempt_dirs = _source_import_attempt_dirs(root, str(job_id), job)
                 directory, artifact_directory = attempt_dirs if attempt_dirs is not None else (None, None)
+                if attempt_dirs is None:
+                    directory = artifact_directory = _completed_flat_import_dir(root, str(job_id), job)
+                    flat_import = directory is not None
                 # A failed snapshot can be retried after it was read.  Never
                 # scan sibling attempts from that snapshot: a sibling may be
                 # the live retry, even if it appears while planning a sweep.
@@ -207,23 +247,24 @@ class GeneratedMediaRetention:
                     or any(path == directory or directory in path.parents for path in protected)
                     or _holds_truck_pool(job) or not directory.is_dir()):
                 continue
-            candidates.append((finished, str(job_id), directory, artifact_directory, job))
+            candidates.append((finished, str(job_id), directory, artifact_directory, job, flat_import))
         candidates.sort(key=lambda item: (item[0], item[1]))
 
         plan = Plan()
         started = self.monotonic()
         stray_cutoff = now - STRAY_RETENTION[pressure]
-        for finished, _job_id, directory, artifact_directory, job in candidates:
+        for finished, _job_id, directory, artifact_directory, job, flat_import in candidates:
             if plan.jobs >= job_limit or self.monotonic() - started > time_budget:
                 break
             clip_paths: set[Path] = set()
+            inside = _flat_import_file if flat_import else _inside
             work = False
             for clip in job.get("clips", []) or []:
                 if not isinstance(clip, dict):
                     continue
                 files = [path for path in (
-                    _inside(artifact_directory, clip.get("path")),
-                    _inside(artifact_directory, (clip.get("thumbnail") or {}).get("path")
+                    inside(artifact_directory, clip.get("path")),
+                    inside(artifact_directory, (clip.get("thumbnail") or {}).get("path")
                             if isinstance(clip.get("thumbnail"), dict) else None),
                 ) if path is not None]
                 clip_paths.update(files)
@@ -244,12 +285,25 @@ class GeneratedMediaRetention:
                     plan.unconfirmed_bytes += sum(_size(path) for path in present)
                     self._recheck_after[sha] = self.monotonic() + UNCONFIRMED_RECHECK_SECONDS
             if finished <= stray_cutoff:
-                for current, _subdirs, names in os.walk(directory):
-                    for name in names:
-                        path = Path(current, name)
-                        if path.resolve() not in clip_paths:
-                            plan.stray_files.append(path)
-                            work = True
+                if flat_import:
+                    # A flat group can gain a private retry at any point. Never
+                    # walk that group (or recurse under its known media dirs).
+                    paths = []
+                    for namespace in ("source", "thumbnails"):
+                        media_dir = directory / namespace
+                        if media_dir.is_symlink() or not media_dir.is_dir():
+                            continue
+                        for child in media_dir.iterdir():
+                            path = _flat_import_file(directory, f"{namespace}/{child.name}")
+                            if path is not None and path.is_file():
+                                paths.append(path)
+                else:
+                    paths = (Path(current, name) for current, _subdirs, names in os.walk(directory)
+                             for name in names)
+                for path in paths:
+                    if path.resolve() not in clip_paths:
+                        plan.stray_files.append(path)
+                        work = True
             plan.jobs += work
         return plan
 
