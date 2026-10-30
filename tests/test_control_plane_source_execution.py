@@ -2318,6 +2318,11 @@ async def test_a_cut_on_a_backup_whose_file_is_missing_is_skipped_and_the_job_go
             active = cp._load_jobs()["jobs"][job_id]
             assert active["status"] == "running"
             assert active["sourceCuts"] == planned, "all cuts remain reserved while the job runs"
+            active_recipe = pooled(publication())
+            active_reserved, _ = cp._source_dna_cut_ledger(
+                {"jobs": {job_id: active}}, active_recipe, active["recipeVersion"]
+            )
+            assert {cut["slotId"] for cut in planned} <= active_reserved
             raise RuntimeError("source_dna_master_unavailable")
         return source
 
