@@ -299,3 +299,43 @@ async def test_setup_failure_does_not_fail_another_live_source_runner(lab):
         assert acquired
         await cp._guarded_job_runner(failed_setup, job_id, 'source_setup_failed')
         assert cp._load_jobs()['jobs'][job_id]['status'] == 'running'
+
+
+@pytest.mark.asyncio
+async def test_cancelled_setup_failure_keeps_claim_until_write_settles(lab, monkeypatch):
+    import threading
+
+    client, _, _ = lab
+    response = client.post('/api/control-plane/v1/jobs', json=job_body(1), headers=headers('source-fallback-cancel'))
+    job_id = response.json()['jobId']
+    entered, release, finished = threading.Event(), threading.Event(), threading.Event()
+    persist = cp._update_source_job
+    def blocked(target, **fields):
+        entered.set()
+        if not release.wait(10):
+            raise RuntimeError('test barrier timed out')
+        try:
+            return persist(target, **fields)
+        finally:
+            finished.set()
+    monkeypatch.setattr(cp, '_update_source_job', blocked)
+    async def failed_setup(_):
+        raise RuntimeError('fixture setup failure')
+    task = asyncio.create_task(cp._guarded_job_runner(failed_setup, job_id, 'source_setup_failed'))
+    try:
+        assert await asyncio.to_thread(entered.wait, 5)
+        task.cancel()
+        await asyncio.sleep(0)
+        task.cancel()
+        await asyncio.sleep(0)
+        with cp.runner_lock(cp._jobs_path(), job_id) as acquired:
+            assert not acquired, 'the failure write still owns the source claim'
+        assert not task.done()
+    finally:
+        release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert finished.is_set()
+    assert cp._load_jobs()['jobs'][job_id]['status'] == 'failed'
+    with cp.runner_lock(cp._jobs_path(), job_id) as acquired:
+        assert acquired, 'the claim is released once the write settles'

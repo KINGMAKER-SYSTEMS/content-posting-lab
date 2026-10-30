@@ -4457,6 +4457,22 @@ _source_import_tasks: dict[str, asyncio.Task] = {}
 _syzygy_slideshow_tasks: dict[str, asyncio.Task] = {}
 
 
+async def _settle_source_update(job_id: str, **fields: Any) -> None:
+    """Do not drop a held claim while its persistence thread is still live."""
+    worker = asyncio.create_task(asyncio.to_thread(_update_source_job, job_id, **fields))
+    cancelled = False
+    while not worker.done():
+        try:
+            await asyncio.shield(worker)
+        except asyncio.CancelledError:
+            cancelled = True
+    try:
+        worker.result()
+    finally:
+        if cancelled:
+            raise asyncio.CancelledError
+
+
 async def _guarded_job_runner(runner, job_id: str, setup_error: str) -> None:
     """Terminalize a runner whose setup raised before its own try block.
 
@@ -4484,7 +4500,7 @@ async def _guarded_job_runner(runner, job_id: str, setup_error: str) -> None:
             # runner may have acquired it in the meantime; never fail its job.
             with runner_lock(_jobs_path(), job_id) as acquired:
                 if acquired:
-                    await asyncio.to_thread(_update_source_job, job_id, **failure)
+                    await _settle_source_update(job_id, **failure)
         else:
             await asyncio.to_thread(_update_job, job_id, **failure)
 
