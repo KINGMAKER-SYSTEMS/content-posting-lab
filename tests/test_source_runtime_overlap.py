@@ -84,3 +84,29 @@ async def test_foreign_reader_fences_a_queued_runner_before_expiring_it(lab, mon
     await cp._run_dossier_source(job_id)
     assert calls == [], 'a fenced job must never begin cutting'
     assert cp._load_jobs()['jobs'][job_id]['status'] == 'failed'
+
+
+@pytest.mark.parametrize("door", ["status", "replay"])
+@pytest.mark.asyncio
+async def test_legacy_foreign_source_without_a_claim_keeps_its_reservations(lab, monkeypatch, door):
+    client, _, _ = lab
+    response = client.post('/api/control-plane/v1/jobs', json=job_body(1), headers=headers('source-legacy-overlap'))
+    job_id = response.json()['jobId']
+    store = cp._load_jobs()
+    job = store['jobs'][job_id]
+    job.pop('sourceClaimVersion')
+    job['status'] = 'running'
+    planned = job['sourceCuts'][0]['slotId']
+    cp.atomic_save(cp._jobs_path(), store)
+    recipe = cp._dossier_source_recipe(publication())
+    monkeypatch.setattr(cp, '_GENERATION_RUNTIME_ID', 'another-runtime')
+    if door == 'status':
+        result = await cp.job_status(job_id, x_rt_page_id=PAGE_ID, authorization=f'Bearer {TOKEN}')
+    else:
+        replay = await asyncio.to_thread(client.post, '/api/control-plane/v1/jobs',
+            json=job_body(1), headers=headers('source-legacy-overlap'))
+        assert replay.status_code == 200
+        result = replay.json()
+    reserved, _ = cp._source_dna_cut_ledger(cp._load_jobs(), recipe, job['recipeVersion'])
+    assert result['status'] == 'running'
+    assert planned in reserved

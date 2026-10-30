@@ -4897,7 +4897,11 @@ async def create_job(
                 and existing.get("status") in GENERATION_ACTIVE_STATUSES
                 and existing.get("runtimeId") != _GENERATION_RUNTIME_ID
             ):
-                if existing.get("sourceKind") == "dossier_source_dna":
+                if existing.get("sourceKind") == "dossier_source_dna" and existing.get("sourceClaimVersion") != 1:
+                    # A legacy runner never took the claim; its liveness is
+                    # unknown, so its windows must remain reserved.
+                    pass
+                elif existing.get("sourceKind") == "dossier_source_dna":
                     # A different runtime may still be cutting these windows.
                     # A claim acquired first also fences a queued runner, which
                     # rechecks the terminal state after it acquires the claim.
@@ -5121,6 +5125,7 @@ async def create_job(
             job = {
                 **common,
                 "sourceKind": "dossier_source_dna",
+                "sourceClaimVersion": 1,
                 "status": "queued",
                 "progress": 0,
                 "clips": [],
@@ -5298,9 +5303,12 @@ async def job_status(
                 )
 
         if job.get("sourceKind") == "dossier_source_dna":
-            with runner_lock(_jobs_path(), job_id) as acquired:
-                if acquired:
-                    expire_if_active()
+            # A pre-claim runtime can still be cutting without holding a lock.
+            # Its windows stay reserved until that legacy job is reconciled.
+            if job.get("sourceClaimVersion") == 1:
+                with runner_lock(_jobs_path(), job_id) as acquired:
+                    if acquired:
+                        expire_if_active()
         else:
             expire_if_active()
         job = _get_job_or_404(job_id)
