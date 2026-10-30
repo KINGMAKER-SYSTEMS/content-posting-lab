@@ -2073,51 +2073,49 @@ async def test_a_layer_b_only_page_delivers_an_unreadable_probe(lab, monkeypatch
 async def test_transforms_all_off_cut_bytes_match_main(lab, monkeypatch):
     import services.clip_transforms as ct
 
-    # DS r- MED-1 (byte-vs-base): with the TRANSFORMS_ALL kill switch off, a
-    # non-varying sourced page must deliver the exact bytes (sha256) and
-    # manifest that Lab main 60db4247 delivers for the same job. The pre-change
-    # (main) path is reproduced by forcing transforms_enabled False — the only
-    # head gate main lacks for a non-varying page, which makes head behaviorally
-    # identical to main here. TRANSFORMS_ALL off reaches that same gate through
-    # the real function. Both runs use the real cut encode, so the sha pins real
-    # delivered bytes rather than a stub.
+    # Recorded by running the same synthetic job on actual main commit 60db4247.
+    # Fixed encoder bytes make the complete manifest and its SHA reproducible.
     client, tmp_path, _ = lab
+    monkeypatch.setattr(cp._secrets, "token_hex", lambda n: "a" * (n * 2))
+    monkeypatch.setattr(ct, "TRANSFORMS_ALL", False)
+    response = client.post(
+        "/api/control-plane/v1/jobs", json=job_body(1),
+        headers=headers("source-job-byte-base"),
+    )
+    job_id = response.json()["jobId"]
+    _pin_cuts_to_first_frame(job_id)
+    source = tmp_path / "master.mp4"
+    source.write_bytes(b"synthetic master")
 
-    async def run_job(use_kill_switch):
-        if use_kill_switch:
-            monkeypatch.setattr(ct, "TRANSFORMS_ALL", False)
-            monkeypatch.setattr(cp, "transforms_enabled", ct.transforms_enabled)
-        else:
-            monkeypatch.setattr(cp, "transforms_enabled", lambda page_id, slug: False)
-        response = client.post(
-            "/api/control-plane/v1/jobs", json=job_body(1),
-            headers=headers("source-job-byte-base"),
-        )
-        job_id = response.json()["jobId"]
-        _pin_cuts_to_first_frame(job_id)
-        source = tmp_path / "master.mp4"
-        _write_av_test_clip(source, duration=40.0)
+    encoder_calls = []
 
-        async def cached_source(*_):
-            return source
+    async def deterministic_encoder(_source, destination, *args, **kwargs):
+        encoder_calls.append({"source": Path(_source).name, "destination": Path(destination).name, "args": args, "kwargs": kwargs})
+        Path(destination).write_bytes(b"deterministic encoded clip")
 
-        monkeypatch.setattr(cp, "_cached_source_master", cached_source)
-        await cp._run_dossier_source(job_id)
-        job = cp._load_jobs()["jobs"][job_id]
-        assert job["status"] == "completed", job.get("error")
-        return job["clips"][0]
+    monkeypatch.setattr(cp, "run_color_correct", deterministic_encoder)
 
-    main_clip = await run_job(False)
-    head_clip = await run_job(True)
-    assert main_clip["sha256"] == head_clip["sha256"]
-    assert main_clip["bytes"] == head_clip["bytes"]
-    assert main_clip["name"] == head_clip["name"]
-    assert main_clip["path"] == head_clip["path"]
-    assert main_clip["clipSpeed"] == head_clip["clipSpeed"] == 1.0
-    assert main_clip["clipCrop"] == head_clip["clipCrop"]
-    assert "clipTransforms" not in main_clip and "clipTransforms" not in head_clip
-    assert "similarity" not in main_clip and "similarity" not in head_clip
+    async def cached_source(*_):
+        return source
 
+    monkeypatch.setattr(cp, "_cached_source_master", cached_source)
+    await cp._run_dossier_source(job_id)
+    job = cp._load_jobs()["jobs"][job_id]
+    assert job["status"] == "completed", job.get("error")
+    recorded = json.loads((Path(__file__).parent / "fixtures" / "transforms_all_off_main_60db4247.json").read_text())
+    assert job["clips"][0] == recorded
+    encoder_fixture = Path(__file__).parent / "fixtures" / "transforms_all_off_main_60db4247_encoder.json"
+    assert json.loads(json.dumps(encoder_calls)) == [json.loads(encoder_fixture.read_text())]
+
+
+def test_main_transform_off_recording_is_pinned():
+    fixture = Path(__file__).parent / "fixtures" / "transforms_all_off_main_60db4247.json"
+    assert hashlib.sha256(fixture.read_bytes()).hexdigest() == "a4a401afd85c024c728358156aacf0381ffae240899761d9b8670872aad056d3"
+    recorded = json.loads(fixture.read_text())
+    assert recorded["sourceTreatment"]["generationJobId"] == "cpl-aaaaaaaaaaaaaaaa"
+    assert len(recorded["sha256"]) == 64
+    encoder_fixture = Path(__file__).parent / "fixtures" / "transforms_all_off_main_60db4247_encoder.json"
+    assert hashlib.sha256(encoder_fixture.read_bytes()).hexdigest() == "489e9b5a03b233643c85166368c1d4fc9d5214df959cb0590d3c80072671cad0"
 
 @pytest.mark.asyncio
 async def test_a_denied_sourced_page_gets_zero_transforms_and_no_extra_encode(lab, monkeypatch):
