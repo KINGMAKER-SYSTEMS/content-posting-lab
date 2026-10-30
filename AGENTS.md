@@ -211,10 +211,19 @@
   namespace) are refused, as are ids or handles another roster row holds;
   DELETE removes only external-source rows. Notion sync and the fleet roster
   projection keep their `source == "notion"` filters, so such a row is never
-  overwritten, pruned or published to the fleet. See `docs/external-pages.md`.
-  The closed `EXTERNAL_PAGE_SOURCES` set lives in
-  `services/master_pages_contract.py`, shared with the ShipStream manifest
-  parser's null-Notion-id exception.
+  overwritten, pruned or published to the fleet. Registration also refuses,
+  naming the subject and the page, a Syzygy slideshow library subject any
+  other roster page already derives. See `docs/external-pages.md`.
+- `services/control_plane_slideshows.py` owns the Syzygy/R2 slideshow library
+  address `syzygy:<lane>:<subject>` for both the Dossier ingredients read and
+  the job path. `library_subject` is the one derivation: a Rising Tides page
+  slugs its handle (unchanged, byte for byte); a page whose `source` is in
+  `services.master_pages_contract.EXTERNAL_PAGE_SOURCES` (`northstar`) slugs
+  its page id and never its handle, so the library follows the page, not
+  whoever shares its handle. The closed external-owner set lives in the
+  contract module so the router and the service read one definition.
+  The shared external-owner constant also governs the exact ShipStream
+  null-Notion-id manifest exception.
 - `services/control_plane_source_imports.py` owns bounded public-HTTPS download,
   exact-byte hashing, media probing, and refillable-master normalization for
   page-scoped source-link intake.
@@ -797,6 +806,11 @@
 - Run `pytest -q tests/test_shipstream_source_manifest.py` for exact page-source
   projection, including the external-page null-Notion-id exception and every
   shape it still refuses.
+- Run `pytest -q tests/test_northstar_slideshow_library.py tests/test_control_plane_slideshow_execution.py`
+  for page-owned Syzygy library subjects: an external page's ingredients and
+  jobs address `syzygy:<lane>:<page id slug>` on both commissioned lanes, a
+  Rising Tides page keeps its handle subject, and registration refuses a
+  subject another roster page derives.
 - Run `pytest -q tests/test_production_image_imports.py` for isolated imports from
   the Dockerfile's backend file selection. Build the Docker image for release;
   its app-import smoke check must pass before deployment. Confirm TgCrypto can
