@@ -2554,3 +2554,51 @@ def test_capabilities_names_retired_source_only_when_enabled(lab, monkeypatch):
     monkeypatch.delenv(cp.ADVERTISE_ZERO_REASONS_ENV)
     disabled = client.get("/api/control-plane/v1/capabilities", headers=headers_for_page)
     assert disabled.content == json.dumps({"schema": cp.RESPONSE_SCHEMA, "capabilities": []}, separators=(",", ":")).encode()
+
+
+@pytest.mark.asyncio
+async def test_source_receipt_carries_master_origin_into_clip_lineage(lab, monkeypatch):
+    """The terminal durability goal: the post receipt must carry master.origin.
+
+    A silent regression dropping `origin` from the emitted receipt would ship
+    green otherwise (the planner never reads it), so this asserts the receipt
+    actually carries the master's origin id + window. The G39 wire gate
+    applies (routers/control_plane.py): origin reaches the receipt only
+    behind CONTENT_LAB_ADVERTISE_ORIGIN, so this flag-on test sets it; the
+    flag-off side is pinned by tests/test_cut_window_recipe.py
+    (test_flag_off_receipt_keeps_exactly_the_base_keys).
+    """
+    monkeypatch.setenv(cp.ADVERTISE_ORIGIN_ENV, "1")
+    client, tmp_path, _ = lab
+    origin = {
+        "originSourceId": "vt5im2TRAKw",
+        "originStartMs": 120_000,
+        "originEndMs": 300_000,
+    }
+    resolve = cp._dossier_source_recipe
+
+    def with_origin(payload):
+        recipe = resolve(payload)
+        return replace(recipe, masters=tuple(
+            replace(master, origin=dict(origin)) for master in recipe.masters
+        ))
+
+    response = client.post(
+        "/api/control-plane/v1/jobs", json=job_body(1),
+        headers=headers("source-job-origin-receipt"),
+    )
+    assert response.status_code == 200, response.text
+    job_id = response.json()["jobId"]
+    _pin_cuts_to_first_frame(job_id)
+    monkeypatch.setattr(cp, "_dossier_source_recipe", with_origin)
+    source = tmp_path / "master.mp4"
+    _write_av_test_clip(source)
+
+    async def cached_source(*_):
+        return source
+
+    monkeypatch.setattr(cp, "_cached_source_master", cached_source)
+    await cp._run_dossier_source(job_id)
+    job = cp._load_jobs()["jobs"][job_id]
+    assert job["status"] == "completed", job.get("error")
+    assert job["clips"][0]["source"]["master"]["origin"] == origin
