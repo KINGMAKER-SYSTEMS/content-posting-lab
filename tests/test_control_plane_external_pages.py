@@ -484,3 +484,50 @@ def test_app_serves_the_external_page_routes(lab, monkeypatch):
     assert registered.status_code == 200 and registered.json()["status"] == "created"
     removed = client.delete(URL, headers=AUTH)
     assert removed.status_code == 200 and removed.json()["status"] == "deleted"
+
+
+def test_registered_external_import_serializes_real_artifact_and_bound_download(lab, monkeypatch):
+    import asyncio
+    import hashlib
+    import os
+    from pathlib import Path
+    from services.control_plane_source_imports import SourceImportArtifact, SourceImportMedia
+
+    client, _ = lab
+    intent = northstar_intent()
+    assert client.put(URL, headers=AUTH, json=intent).status_code == 200
+    created = _source_import(client, intent)
+    assert created.status_code == 200
+    job_id = created.json()['jobId']
+    data = b'synthetic external page source'
+    digest = hashlib.sha256(data).hexdigest()
+    media = SourceImportMedia(42500, 1080, 1920, 'h264', 'yuv420p', 30.0, 0)
+    async def download(_url, destination):
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(data)
+        return SourceImportArtifact(destination, digest, len(data), media, digest, len(data), media)
+    async def thumbnail(root, _video, _index):
+        image = root / 'thumbnail.jpg'
+        image.write_bytes(b'synthetic jpg')
+        return cp._generated_manifest(root, image)
+    monkeypatch.setattr(cp, 'download_source_video', download)
+    monkeypatch.setattr(cp, '_thumbnail_manifest', thumbnail)
+    asyncio.run(cp._run_page_source_import(job_id))
+    headers = {**AUTH, 'X-RT-Page-Id': PAGE_ID}
+    status = client.get(f'/api/control-plane/v1/jobs/{job_id}', headers=headers)
+    artifacts = client.get(f'/api/control-plane/v1/jobs/{job_id}/artifacts', headers=headers)
+    assert status.status_code == artifacts.status_code == 200
+    assert status.json()['status'] == 'completed'
+    job = cp._load_jobs()['jobs'][job_id]
+    downloaded = client.get(f'/api/control-plane/v1/jobs/{job_id}/download/0', params={'token':job['token']})
+    assert downloaded.status_code == 200 and downloaded.content == data
+    assert client.get(f'/api/control-plane/v1/jobs/{job_id}/download/0', params={'token':'wrong'}).status_code == 403
+    assert 'artifactRoot' not in status.json() and 'sourceImportAttemptId' not in status.json()
+    source = artifacts.json()['artifacts'][0]['source']
+    assert source['pageId'] == PAGE_ID and source['masterPagesHash'] == intent_hash(intent)
+    assert source['contentEngine'] == intent['contentEngine']
+    assert cp._load_jobs()['jobs'][job_id]['masterPages'] == intent
+    destination = os.environ.get('LAB_NS_IMPORT_CONTRACT_RECEIPT')
+    if destination:
+        Path(destination).write_text(json.dumps({'pageId':PAGE_ID,'jobId':job_id,
+            'status':status.json(),'artifacts':artifacts.json()},indent=2)+'\n')
