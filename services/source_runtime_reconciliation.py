@@ -61,7 +61,10 @@ def _metadata(store, job_id, retired_runtime):
     marker = "sourceClaimVersion" if kind == "dossier_source_dna" else "sourceImportClaimVersion"
     if marker in job or (kind == "page_source_import" and "sourceImportAttemptId" in job):
         return {"status": "claimed_or_malformed_requires_normal_recovery", "jobId": job_id}
-    if job.get("clips") != []:
+    if (job.get("clips") != []
+            or job.get("scramblerRenderedClips", []) != []):
+        # Legacy Scrambler checkpoints are produced assets even before the
+        # public clips list is committed. Unknown/malformed values stay held.
         raise ReconciliationRefused("existing_artifacts_require_reconciliation")
     return {"status": "ready", "jobId": job_id, "sourceKind": kind,
             "jobStatus": job["status"], "jobRevisionSha256": _revision(job)}

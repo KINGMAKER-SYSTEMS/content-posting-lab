@@ -200,3 +200,40 @@ def test_real_application_lifespan_repairs_before_workers_or_keeps_serving_witho
     with TestClient(app_module.app) as client:
         assert client.get("/api/health").status_code == 200
     assert started == (["failed"] if qualified is True else ["running"])
+
+
+@pytest.mark.parametrize("checkpoint", [
+    [{"path": "treated/cut-0000.mp4", "sha256": "b" * 64, "bytes": 12}],
+    None, {}, "malformed", False, 0,
+])
+def test_legacy_private_checkpoint_never_terminal_rewritten(volume, monkeypatch, checkpoint):
+    _, generation, store, _, _ = volume
+    asset = generation / "retained-private.mp4"
+    asset.write_bytes(b"private produced media")
+    history(volume, scramblerRenderedClips=checkpoint)
+    before = store.read_bytes()
+    install_real_proof_fixture(volume, monkeypatch)
+    assert reconcile.railway_volume_proof(store, generation) == "verified_serial_railway_volume"
+    assert reconcile.list_legacy_jobs(store)["jobs"] == []
+    result = reconcile.reconcile_railway_startup(store, generation, CURRENT)
+    assert result["reconciled"] == 0
+    assert store.read_bytes() == before
+    assert asset.read_bytes() == b"private produced media"
+
+
+@pytest.mark.parametrize("present", [False, True])
+def test_legacy_absent_or_empty_private_checkpoint_still_reconciles(volume, monkeypatch, present):
+    _, generation, store, _, _ = volume
+    fields = {"scramblerRenderedClips": []} if present else {}
+    original = history(volume, **fields)
+    # Input/source references are not produced checkpoints.
+    original["sourceCuts"][0]["sourceUri"] = "https://fixture.invalid/input-master.mp4"
+    data = json.loads(store.read_text()); data["jobs"][JOB] = original
+    store.write_text(json.dumps(data))
+    install_real_proof_fixture(volume, monkeypatch)
+    assert len(reconcile.list_legacy_jobs(store)["jobs"]) == 1
+    result = reconcile.reconcile_railway_startup(store, generation, CURRENT)
+    assert result["reconciled"] == 1
+    row = json.loads(store.read_text())["jobs"][JOB]
+    assert row["status"] == "failed"
+    assert row["sourceCuts"] == original["sourceCuts"]
