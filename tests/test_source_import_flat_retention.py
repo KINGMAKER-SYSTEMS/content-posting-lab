@@ -137,3 +137,14 @@ def test_completed_flat_settles_before_any_confirmation(completed_flat):
     stamp = datetime.fromisoformat(store['jobs'][job_id]['completedAt'])
     worker.sweep(store, cp._generation_root(), stamp + timedelta(minutes=30))
     assert not asked and directory.exists()
+
+
+@pytest.mark.parametrize('page', ['.', '..'])
+def test_dot_page_cannot_normalize_away_exact_flat_owner_path(tmp_path, page):
+    root = (tmp_path / 'generated').resolve()
+    root.mkdir()
+    job_id = 'cpl-' + 'a' * 16
+    job = {'sourceKind':'page_source_import', 'status':'completed', 'jobId':job_id,
+           'pageId':page, 'artifactRoot':str((root / page / 'source-imports' / job_id).resolve()),
+           'sourceImportClaimVersion':1, 'sourceImportAttemptId':'b' * 32, 'runtimeId':'c' * 32}
+    assert retention._completed_flat_import_dir(root, job_id, job) is None
