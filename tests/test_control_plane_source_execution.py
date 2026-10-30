@@ -2276,7 +2276,7 @@ async def test_a_varied_job_whose_history_read_fails_ends_failed_not_running(lab
     assert "job store unreadable" in job["error"]
 
 
-@pytest.mark.parametrize("backup_cuts,status", [((1,), "completed"), ((0, 1), "failed")])
+@pytest.mark.parametrize("backup_cuts,status", [((1,), "completed"), ((0,), "completed"), ((0, 1), "failed")])
 @pytest.mark.asyncio
 async def test_a_cut_on_a_backup_whose_file_is_missing_is_skipped_and_the_job_goes_on(
     lab, monkeypatch, backup_cuts, status,
@@ -2308,12 +2308,16 @@ async def test_a_cut_on_a_backup_whose_file_is_missing_is_skipped_and_the_job_go
         sha = backup_sha if index in backup_cuts else primary_sha
         cut.update({"masterSha256": sha, "slotId": f"{sha}:{start}:{cut['durationMs']}",
                     "libraryStartMs": start, "startMs": start})
+    planned = list(store["jobs"][job_id]["sourceCuts"])
     cp.atomic_save(cp._jobs_path(), store)
     source = tmp_path / "master.mp4"
     _write_av_test_clip(source, duration=40.0)
 
     async def cached_source(page_id, master, job):
         if master.sha256 == backup_sha:
+            active = cp._load_jobs()["jobs"][job_id]
+            assert active["status"] == "running"
+            assert active["sourceCuts"] == planned, "all cuts remain reserved while the job runs"
             raise RuntimeError("source_dna_master_unavailable")
         return source
 
@@ -2323,6 +2327,21 @@ async def test_a_cut_on_a_backup_whose_file_is_missing_is_skipped_and_the_job_go
     assert job["status"] == status, job.get("error")
     if status == "completed":
         assert len(job["clips"]) == 1
+        delivered = [cut for i, cut in enumerate(planned) if i not in backup_cuts]
+        skipped = [cut for i, cut in enumerate(planned) if i in backup_cuts]
+        assert job["sourceCuts"] == delivered, "only the rendered cut remains reserved"
+        from services.job_store_compaction import extract_index_entries
+        archived = extract_index_entries(job)["sourceDnaCuts"]
+        assert [cut["slotId"] for cut in archived] == [delivered[0]["slotId"]]
+        recipe = pooled(publication())
+        reserved, _ = cp._source_dna_cut_ledger({"jobs": {job_id: job}}, recipe, job["recipeVersion"])
+        assert delivered[0]["slotId"] in reserved
+        assert skipped[0]["slotId"] not in reserved
+        archived_reserved, _ = cp._source_dna_cut_ledger(
+            {"jobs": {}, cp.compaction.ARCHIVE_INDEX_KEY: {"sourceDnaCuts": archived}}, recipe, job["recipeVersion"]
+        )
+        assert delivered[0]["slotId"] in archived_reserved
+        assert skipped[0]["slotId"] not in archived_reserved
     else:
         assert job["error"] == "source_dna_master_unavailable"
 
