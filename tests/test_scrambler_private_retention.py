@@ -100,7 +100,7 @@ def test_malformed_private_checkpoint_holds_whole_job(private_job, bad):
 
 @pytest.mark.parametrize("change", ["escape", "absolute", "dot", "double-slash", "bad-sha", "bool-size",
                                    "bad-thumbnail", "thumbnail-escape", "wrong-job", "wrong-page",
-                                   "wrong-kind", "duplicate-conflict", "public-conflict", "symlink"])
+                                   "wrong-kind", "duplicate-conflict", "public-conflict", "symlink", "directory", "size-mismatch"])
 def test_ambiguous_private_checkpoint_holds_whole_job(private_job, change):
     root, directory, job_id, job, now = private_job
     clip = job["scramblerRenderedClips"][0]
@@ -117,6 +117,8 @@ def test_ambiguous_private_checkpoint_holds_whole_job(private_job, change):
     elif change == "wrong-kind": job["sourceKind"] = "page_source_import"
     elif change == "duplicate-conflict": job["scramblerRenderedClips"].append({**clip, "sha256": "c" * 64})
     elif change == "public-conflict": job["clips"] = [{**clip, "sha256": "c" * 64}]
+    elif change == "directory": clip["path"] = "treated"
+    elif change == "size-mismatch": clip["bytes"] += 1
     elif change == "symlink":
         original = directory / clip["path"]; original.unlink(); original.symlink_to(directory / "true-stray.part")
     plan = retention.GeneratedMediaRetention(confirm=lambda *_: True).plan({"jobs": {job_id: job}}, root, now)
