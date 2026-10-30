@@ -91,3 +91,13 @@ def test_destination_symlink_never_overwrites_its_target(tmp_path):
         pull.pull_summary_once(objects.__getitem__, destination, now_epoch=NOW)
     assert destination.is_symlink()
     assert original.read_bytes() == b'preserved synthetic private data'
+
+
+@pytest.mark.parametrize('delta', [-26 * 3600, 120])
+def test_invalid_time_never_creates_a_first_reader_file(tmp_path, delta):
+    destination = tmp_path / 'summary.json'
+    objects, _ = generation(delta=delta)
+    with pytest.raises(pull.ScramblerFeedPullError, match='summary_invalid'):
+        pull.pull_summary_once(objects.__getitem__, destination, now_epoch=NOW)
+    assert not destination.exists()
+    assert not list(tmp_path.glob('.summary-*'))
