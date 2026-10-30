@@ -294,3 +294,127 @@ def test_the_scheduled_pass_reads_the_live_snapshot_and_generation_root(tmp_path
     summary = control_plane.run_generated_media_retention_once(NOW, pressure="normal")
 
     assert summary["clip_files"] == 2 and summary["stray_files"] == 1 and not directory.exists()
+
+
+def test_source_import_attempt_group_keeps_unconfirmed_current_clip_and_cleans_old_strays(tmp_path):
+    root = tmp_path / 'gen'
+    job_id = 'cpl-' + 'a' * 16
+    attempt = 'b' * 32
+    group = root / 'acct:page' / 'source-imports' / job_id
+    old = group / ('c' * 32) / 'source' / 'old.mp4'
+    current = group / attempt / 'source' / 'source.mp4'
+    thumbnail = group / attempt / 'thumbnails' / '0000.jpg'
+    for path, content in [(old, b'old'), (current, b'fresh'), (thumbnail, b'jpg')]:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+    stamp = (NOW - timedelta(days=3)).isoformat()
+    job = {'jobId': job_id, 'pageId': 'acct:page', 'sourceKind': 'page_source_import',
+           'sourceImportClaimVersion': 1, 'sourceImportAttemptId': attempt,
+           'artifactRoot': str(group / attempt), 'status': 'completed', 'completedAt': stamp,
+           'clips': [{'path': 'source/source.mp4', 'sha256': A, 'bytes': 5,
+                      'thumbnail': {'path': 'thumbnails/0000.jpg'}}]}
+    worker, asked = sweeper(False)
+    worker.sweep({'jobs': {job_id: job}}, root, NOW)
+    assert asked == [(A, 5)]
+    assert not old.exists(), 'the old attempt is a delayed stray'
+    assert current.read_bytes() == b'fresh' and thumbnail.read_bytes() == b'jpg'
+    confirmed, _ = sweeper(True)
+    confirmed.sweep({'jobs': {job_id: job}}, root, NOW)
+    assert not current.exists() and not thumbnail.exists()
+
+
+def test_source_import_group_with_active_descendant_is_not_cleaned(tmp_path):
+    root = tmp_path / 'gen'
+    job_id = 'cpl-' + 'a' * 16
+    attempt = 'b' * 32
+    group = root / 'acct:page' / 'source-imports' / job_id
+    stray = group / ('c' * 32) / 'old.bin'
+    stray.parent.mkdir(parents=True)
+    stray.write_bytes(b'keep')
+    current = group / attempt
+    current.mkdir()
+    stamp = (NOW - timedelta(days=3)).isoformat()
+    terminal = {'jobId': job_id, 'pageId': 'acct:page', 'sourceKind': 'page_source_import',
+                'sourceImportClaimVersion': 1, 'sourceImportAttemptId': attempt,
+                'artifactRoot': str(current), 'status': 'failed', 'completedAt': stamp, 'clips': []}
+    active = {'status': 'running', 'artifactRoot': str(current / 'still-active')}
+    worker, _ = sweeper(True)
+    worker.sweep({'jobs': {job_id: terminal, 'active': active}}, root, NOW)
+    assert stray.read_bytes() == b'keep'
+
+
+@pytest.mark.parametrize('malformed', ['boolean_version', 'wrong_attempt', 'parent_root'])
+def test_malformed_source_attempt_metadata_never_broadens_retention_scope(tmp_path, malformed):
+    root = tmp_path / 'gen'
+    job_id = 'cpl-' + 'a' * 16
+    attempt = 'b' * 32
+    group = root / 'acct:page' / 'source-imports' / job_id
+    current = group / attempt
+    protected = current / 'source' / 'source.mp4'
+    protected.parent.mkdir(parents=True)
+    protected.write_bytes(b'keep')
+    stamp = (NOW - timedelta(days=3)).isoformat()
+    job = {'jobId': job_id, 'pageId': 'acct:page', 'sourceKind': 'page_source_import',
+           'sourceImportClaimVersion': 1, 'sourceImportAttemptId': attempt,
+           'artifactRoot': str(current), 'status': 'completed', 'completedAt': stamp, 'clips': []}
+    if malformed == 'boolean_version':
+        job['sourceImportClaimVersion'] = True
+    elif malformed == 'wrong_attempt':
+        job['sourceImportAttemptId'] = 'c' * 32
+    else:
+        job['artifactRoot'] = str(group)
+    worker, _ = sweeper(True)
+    worker.sweep({'jobs': {job_id: job}}, root, NOW)
+    assert protected.read_bytes() == b'keep'
+
+@pytest.mark.parametrize('retry_timing', ['before_plan', 'after_plan'])
+def test_restartable_import_snapshot_never_deletes_a_new_retry(tmp_path, retry_timing):
+    root = tmp_path / 'gen'
+    job_id = 'cpl-' + 'a' * 16
+    group = root / 'acct:page' / 'source-imports' / job_id
+    old = group / ('b' * 32) / 'source' / 'old.mp4'
+    fresh = group / ('c' * 32) / 'source' / 'fresh.mp4'
+    old.parent.mkdir(parents=True)
+    old.write_bytes(b'old')
+    job = {'jobId': job_id, 'pageId': 'acct:page', 'sourceKind': 'page_source_import',
+           'sourceImportClaimVersion': 1, 'sourceImportAttemptId': 'b' * 32,
+           'artifactRoot': str(group / ('b' * 32)), 'status': 'failed',
+           'error': 'source_import_runtime_restarted',
+           'completedAt': (NOW - timedelta(days=3)).isoformat(), 'clips': []}
+    worker, _ = sweeper(True)
+    original_plan = worker.plan
+
+    def create_retry():
+        fresh.parent.mkdir(parents=True)
+        fresh.write_bytes(b'fresh retry media')
+
+    if retry_timing == 'before_plan':
+        create_retry()
+    else:
+        def plan_then_retry(*args, **kwargs):
+            plan = original_plan(*args, **kwargs)
+            create_retry()
+            return plan
+        worker.plan = plan_then_retry
+    worker.sweep({'jobs': {job_id: job}}, root, NOW)
+    assert fresh.read_bytes() == b'fresh retry media'
+    assert not old.exists()
+
+
+def test_definitively_failed_import_cleans_old_attempts(tmp_path):
+    root = tmp_path / 'gen'
+    job_id = 'cpl-' + 'a' * 16
+    group = root / 'acct:page' / 'source-imports' / job_id
+    old = group / ('b' * 32) / 'old.mp4'
+    current = group / ('c' * 32) / 'current.mp4'
+    for path in (old, current):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b'stray')
+    job = {'jobId': job_id, 'pageId': 'acct:page', 'sourceKind': 'page_source_import',
+           'sourceImportClaimVersion': 1, 'sourceImportAttemptId': 'c' * 32,
+           'artifactRoot': str(group / ('c' * 32)), 'status': 'failed',
+           'error': 'source_import_cancelled',
+           'completedAt': (NOW - timedelta(days=3)).isoformat(), 'clips': []}
+    worker, _ = sweeper(True)
+    worker.sweep({'jobs': {job_id: job}}, root, NOW)
+    assert not old.exists() and not current.exists()

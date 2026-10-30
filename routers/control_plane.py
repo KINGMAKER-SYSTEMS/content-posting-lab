@@ -149,6 +149,7 @@ from services.control_plane_source_imports import (
     SourceImportUnavailable,
     download_source_video,
     source_import_slot,
+    terminate_import_process_group,
     validate_source_url,
 )
 from services.content_engine_registry import (
@@ -2459,6 +2460,48 @@ def _has_source_runner_claim(job: dict[str, Any]) -> bool:
     return type(version) is int and version == 1
 
 
+def _update_source_import_attempt(job_id: str, attempt_id: str | None, **fields: Any) -> dict[str, Any] | None:
+    """A prior import attempt cannot write over a retry or a terminal result."""
+    with lock_for(_jobs_path()):
+        store = _load_jobs()
+        job = store["jobs"].get(job_id)
+        if (not isinstance(job, dict) or job.get("sourceKind") != "page_source_import"
+                or job.get("sourceImportAttemptId") != attempt_id
+                or job.get("status") not in GENERATION_ACTIVE_STATUSES):
+            return None
+        job.update(fields)
+        _save_jobs(store)
+        return dict(job)
+
+
+async def _settle_source_import_update(job_id: str, attempt_id: str | None, **fields: Any) -> dict[str, Any] | None:
+    """Keep the import claim until its actual persistence thread settles."""
+    import contextvars
+    import functools
+
+    context = contextvars.copy_context()
+    call = functools.partial(context.run, _update_source_import_attempt, job_id, attempt_id, **fields)
+    worker = asyncio.get_running_loop().run_in_executor(None, call)
+    cancelled = False
+    while not worker.done():
+        try:
+            await asyncio.shield(worker)
+        except asyncio.CancelledError:
+            cancelled = True
+    try:
+        result = worker.result()
+    finally:
+        if cancelled:
+            raise asyncio.CancelledError
+    return result
+
+
+def _has_source_import_claim(job: dict[str, Any]) -> bool:
+    version = job.get("sourceImportClaimVersion")
+    attempt = job.get("sourceImportAttemptId")
+    return type(version) is int and version == 1 and isinstance(attempt, str) and bool(re.fullmatch(r"[0-9a-f]{32}", attempt))
+
+
 def _checkpointed_generation(job: dict[str, Any]) -> bool:
     return job.get("sourceKind") == "generated" and job.get("generationCheckpointVersion") == 1
 
@@ -2830,8 +2873,13 @@ async def _thumbnail_manifest(job_root: Path, video: Path, index: int) -> dict[s
         "ffmpeg", "-y", "-loglevel", "error", "-ss", "0.25", "-i", str(video),
         "-frames:v", "1", "-vf", "scale=360:-2", str(target),
         stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
+        start_new_session=True,
     )
-    _, stderr = await asyncio.wait_for(process.communicate(), timeout=30)
+    try:
+        _, stderr = await asyncio.wait_for(process.communicate(), timeout=30)
+    except (asyncio.CancelledError, TimeoutError):
+        await terminate_import_process_group(process)
+        raise
     if process.returncode != 0 or not target.is_file() or target.stat().st_size <= 0:
         raise RuntimeError(f"thumbnail_generation_failed:{stderr.decode(errors='replace')[-120:]}")
     return _generated_manifest(job_root, target)
@@ -4404,11 +4452,28 @@ async def _run_syzygy_slideshow(job_id: str) -> None:
     )
 
 
-async def _run_page_source_import(job_id: str) -> None:
+_IMPORT_ATTEMPT_UNSET = object()
+
+
+async def _run_page_source_import(job_id: str, expected_attempt: Any = _IMPORT_ATTEMPT_UNSET) -> None:
+    job = _get_job_or_404(job_id)
+    attempt_id = job.get("sourceImportAttemptId") if expected_attempt is _IMPORT_ATTEMPT_UNSET else expected_attempt
+    with runner_lock(_jobs_path(), job_id) as acquired:
+        if not acquired:
+            return
+        job = _get_job_or_404(job_id)
+        if (job.get("status") not in GENERATION_ACTIVE_STATUSES
+                or job.get("sourceImportAttemptId") != attempt_id
+                or job.get("runtimeId") != _GENERATION_RUNTIME_ID):
+            return
+        await _run_owned_page_source_import(job_id, attempt_id)
+
+
+async def _run_owned_page_source_import(job_id: str, attempt_id: str | None) -> None:
     job = _get_job_or_404(job_id)
     if not _job_matches_current_master_pages(job):
-        await asyncio.to_thread(_update_job,
-            job_id,
+        await _settle_source_import_update(
+            job_id, attempt_id,
             status="failed",
             error="master_pages_strategy_changed",
             completedAt=datetime.now(timezone.utc).isoformat(),
@@ -4417,7 +4482,8 @@ async def _run_page_source_import(job_id: str) -> None:
     job_root = Path(job["artifactRoot"]).resolve()
     source_root = job_root / "source"
     destination = source_root / "source.mp4"
-    await asyncio.to_thread(_update_job,job_id, status="running", progress=5)
+    if await _settle_source_import_update(job_id, attempt_id, status="running", progress=5) is None:
+        return
     try:
         async with source_import_slot():
             if not _job_matches_current_master_pages(job):
@@ -4450,19 +4516,20 @@ async def _run_page_source_import(job_id: str) -> None:
             )
             if not _job_matches_current_master_pages(job):
                 raise RuntimeError("master_pages_strategy_changed")
-    except asyncio.CancelledError:
+    except asyncio.CancelledError as error:
         shutil.rmtree(job_root, ignore_errors=True)
-        await asyncio.to_thread(_update_job,
-            job_id,
+        reason = "source_import_runtime_restarted" if error.args == ("source_import_runtime_restarted",) else "source_import_cancelled"
+        await _settle_source_import_update(
+            job_id, attempt_id,
             status="failed",
-            error="source_import_cancelled",
+            error=reason,
             completedAt=datetime.now(timezone.utc).isoformat(),
         )
         raise
     except Exception as error:
         shutil.rmtree(job_root, ignore_errors=True)
-        await asyncio.to_thread(_update_job,
-            job_id,
+        await _settle_source_import_update(
+            job_id, attempt_id,
             status="failed",
             error=str(error)[:300],
             completedAt=datetime.now(timezone.utc).isoformat(),
@@ -4470,15 +4537,15 @@ async def _run_page_source_import(job_id: str) -> None:
         return
     if not _job_matches_current_master_pages(job):
         shutil.rmtree(job_root, ignore_errors=True)
-        await asyncio.to_thread(_update_job,
-            job_id,
+        await _settle_source_import_update(
+            job_id, attempt_id,
             status="failed",
             error="master_pages_strategy_changed",
             completedAt=datetime.now(timezone.utc).isoformat(),
         )
         return
-    await asyncio.to_thread(_update_job,
-        job_id,
+    await _settle_source_import_update(
+        job_id, attempt_id,
         status="completed",
         progress=100,
         clips=[manifest],
@@ -4581,8 +4648,26 @@ def _start_truck_master_recovery(job_id: str) -> None:
     task.add_done_callback(lambda _: _truck_recovery_tasks.pop(job_id, None))
 
 
+async def _guarded_page_source_import(job_id: str, attempt_id: str | None) -> None:
+    try:
+        await _run_page_source_import(job_id, attempt_id)
+    except asyncio.CancelledError:
+        raise
+    except Exception as error:
+        log.exception("source import runner failed outside its guarded body")
+        with runner_lock(_jobs_path(), job_id) as acquired:
+            if acquired:
+                await _settle_source_import_update(
+                    job_id, attempt_id, status="failed",
+                    error=f"source_import_setup_failed:{str(error)[:300]}",
+                    completedAt=datetime.now(timezone.utc).isoformat(),
+                )
+
+
 def _start_page_source_import(job_id: str) -> None:
-    task = asyncio.create_task(_run_page_source_import(job_id))
+    attempt_id = _get_job_or_404(job_id).get("sourceImportAttemptId")
+    task = asyncio.create_task(_guarded_page_source_import(job_id, attempt_id))
+    task._source_import_attempt_id = attempt_id
     _source_import_tasks[job_id] = task
     task.add_done_callback(
         lambda completed: (
@@ -4593,12 +4678,15 @@ def _start_page_source_import(job_id: str) -> None:
     )
 
 
-async def _cancel_page_source_import(job_id: str) -> bool:
+async def _cancel_page_source_import(job_id: str, expected_attempt: str | None = None) -> bool:
     """Cancel and join the owned runner before its artifact root can be reused."""
     task = _source_import_tasks.get(job_id)
     if task is None:
         return False
-    cancel_requested = task.cancel() if not task.done() else False
+    if (_get_job_or_404(job_id).get("sourceImportAttemptId") != expected_attempt
+            or getattr(task, "_source_import_attempt_id", expected_attempt) != expected_attempt):
+        return False
+    cancel_requested = task.cancel("source_import_runtime_restarted") if not task.done() else False
     try:
         await task
     except asyncio.CancelledError:
@@ -4698,12 +4786,17 @@ async def create_source_import(
     fingerprint = "sha256:" + hashlib.sha256(json.dumps(
         canonical_body, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
     ).encode()).hexdigest()
+    from contextlib import ExitStack
+
     restart_existing = False
-    with lock_for(_jobs_path()):
+    # Hold any acquired import claim through the retry transaction and root
+    # replacement. A queued old runner then sees the new attempt after locking.
+    with lock_for(_jobs_path()), ExitStack() as claim_stack:
         store = _load_jobs()
         existing_id = _idempotency_job_id(store, idempotency_key)
         if existing_id and existing_id in store["jobs"]:
             existing = store["jobs"][existing_id]
+            import_claimed = False
             if (
                 existing.get("sourceKind") != "page_source_import"
                 or existing.get("sourceImportRequestHash") != fingerprint
@@ -4713,6 +4806,11 @@ async def create_source_import(
                 existing.get("status") in GENERATION_ACTIVE_STATUSES
                 and existing.get("runtimeId") != _GENERATION_RUNTIME_ID
             ):
+                if not _has_source_import_claim(existing):
+                    return {"schema": RESPONSE_SCHEMA, "jobId": existing["jobId"], "status": existing["status"]}
+                import_claimed = claim_stack.enter_context(runner_lock(_jobs_path(), existing_id))
+                if not import_claimed:
+                    return {"schema": RESPONSE_SCHEMA, "jobId": existing["jobId"], "status": existing["status"]}
                 existing.update({
                     "status": "failed",
                     "error": "source_import_runtime_restarted",
@@ -4721,26 +4819,31 @@ async def create_source_import(
             if (
                 existing.get("status") == "failed"
                 and existing.get("error") == "source_import_runtime_restarted"
+                and _has_source_import_claim(existing)
             ):
+                if not import_claimed:
+                    import_claimed = claim_stack.enter_context(runner_lock(_jobs_path(), existing_id))
+                    if not import_claimed:
+                        raise HTTPException(status_code=409, detail="source import recovery is still finishing")
                 active_others = [
                     row for row_id, row in store["jobs"].items()
                     if row_id != existing_id
                     and isinstance(row, dict)
                     and row.get("sourceKind") == "page_source_import"
                     and row.get("status") in GENERATION_ACTIVE_STATUSES
-                    and row.get("runtimeId") == _GENERATION_RUNTIME_ID
                 ]
                 if any(row.get("pageId") == page_id for row in active_others):
                     raise HTTPException(status_code=409, detail="source import is already active for this page")
                 if len(active_others) >= MAX_CONCURRENT_SOURCE_IMPORTS:
                     raise HTTPException(status_code=409, detail="source import capacity is currently full")
                 job_id = existing["jobId"]
-                job_root = (
-                    _generation_root() / page_id / "source-imports" / job_id
-                ).resolve()
-                if Path(existing.get("artifactRoot", "")).resolve() != job_root:
+                parent = (_generation_root() / page_id / "source-imports" / job_id).resolve()
+                if Path(existing.get("artifactRoot", "")).resolve() != parent / existing["sourceImportAttemptId"]:
                     raise HTTPException(status_code=409, detail="source import artifact root is invalid")
-                shutil.rmtree(job_root, ignore_errors=True)
+                attempt_id = _secrets.token_hex(16)
+                job_root = parent / attempt_id
+                # Never reuse or remove the old attempt path here: an orphaned
+                # child from a crashed runtime may still open its old output.
                 job_root.mkdir(parents=True, exist_ok=False, mode=0o700)
                 existing.update({
                     "status": "queued",
@@ -4748,6 +4851,8 @@ async def create_source_import(
                     "clips": [],
                     "artifactRoot": str(job_root),
                     "runtimeId": _GENERATION_RUNTIME_ID,
+                    "sourceImportClaimVersion": 1,
+                    "sourceImportAttemptId": attempt_id,
                     "token": _secrets.token_urlsafe(JOB_TOKEN_BYTES),
                     "restartedAt": datetime.now(timezone.utc).isoformat(),
                 })
@@ -4768,7 +4873,6 @@ async def create_source_import(
                 if isinstance(row, dict)
                 and row.get("sourceKind") == "page_source_import"
                 and row.get("status") in GENERATION_ACTIVE_STATUSES
-                and row.get("runtimeId") == _GENERATION_RUNTIME_ID
             ]
             if any(row.get("pageId") == page_id for row in active_imports):
                 raise HTTPException(status_code=409, detail="source import is already active for this page")
@@ -4776,9 +4880,8 @@ async def create_source_import(
                 raise HTTPException(status_code=409, detail="source import capacity is currently full")
 
             job_id = JOB_ID_PREFIX + _secrets.token_hex(8)
-            job_root = (
-                _generation_root() / page_id / "source-imports" / job_id
-            ).resolve()
+            attempt_id = _secrets.token_hex(16)
+            job_root = (_generation_root() / page_id / "source-imports" / job_id / attempt_id).resolve()
             job_root.mkdir(parents=True, exist_ok=False, mode=0o700)
             now = datetime.now(timezone.utc).isoformat()
             job = {
@@ -4791,6 +4894,8 @@ async def create_source_import(
                 "format": format_slug,
                 "sourceUrl": source_url,
                 "sourceKind": "page_source_import",
+                "sourceImportClaimVersion": 1,
+                "sourceImportAttemptId": attempt_id,
                 "status": "queued",
                 "progress": 0,
                 "clips": [],
@@ -5367,33 +5472,36 @@ async def job_status(
         )
     )
     if should_expire:
-        cancelled_local_runner = False
         if job.get("sourceKind") == "page_source_import":
-            cancelled_local_runner = await _cancel_page_source_import(job_id)
-        def expire_if_active():
-            current = _get_job_or_404(job_id)
-            if cancelled_local_runner or current.get("status") in GENERATION_ACTIVE_STATUSES:
-                update = _update_source_job if job.get("sourceKind") == "dossier_source_dna" else _update_job
-                update(
-                    job_id,
-                    status="failed",
-                    error=(
-                        "source_import_runtime_restarted"
-                        if job.get("sourceKind") == "page_source_import"
-                        else "generation_runtime_restarted"
-                    ),
-                    completedAt=datetime.now(timezone.utc).isoformat(),
-                )
-
-        if job.get("sourceKind") == "dossier_source_dna":
-            # A pre-claim runtime can still be cutting without holding a lock.
-            # Its windows stay reserved until that legacy job is reconciled.
+            # Legacy runners do not hold the claim; a free lock alone does
+            # not prove they stopped. New attempts also bind exact identity.
+            if _has_source_import_claim(job):
+                attempt_id = job["sourceImportAttemptId"]
+                await _cancel_page_source_import(job_id, attempt_id)
+                with runner_lock(_jobs_path(), job_id) as acquired:
+                    if acquired:
+                        _update_source_import_attempt(
+                            job_id, attempt_id, status="failed",
+                            error="source_import_runtime_restarted",
+                            completedAt=datetime.now(timezone.utc).isoformat(),
+                        )
+        elif job.get("sourceKind") == "dossier_source_dna":
+            # Pre-claim owners stay reserved until explicitly reconciled.
             if _has_source_runner_claim(job):
                 with runner_lock(_jobs_path(), job_id) as acquired:
                     if acquired:
-                        expire_if_active()
+                        _update_source_job(
+                            job_id, status="failed",
+                            error="generation_runtime_restarted",
+                            completedAt=datetime.now(timezone.utc).isoformat(),
+                        )
         else:
-            expire_if_active()
+            current = _get_job_or_404(job_id)
+            if current.get("status") in GENERATION_ACTIVE_STATUSES:
+                _update_job(
+                    job_id, status="failed", error="generation_runtime_restarted",
+                    completedAt=datetime.now(timezone.utc).isoformat(),
+                )
         job = _get_job_or_404(job_id)
     if job["pageId"] != x_rt_page_id:
         # A job answers only to the page it belongs to — cross-page status

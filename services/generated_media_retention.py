@@ -101,6 +101,28 @@ def _job_dir(root: Path, value: Any) -> Path | None:
     return path if len(relative.parts) == JOB_DIR_DEPTH else None
 
 
+def _source_import_attempt_dirs(root: Path, job_id: str, job: dict[str, Any]) -> tuple[Path, Path] | None:
+    """Return job group and current attempt only for the exact private layout."""
+    attempt = job.get("sourceImportAttemptId")
+    version = job.get("sourceImportClaimVersion")
+    value = job.get("artifactRoot")
+    if (job.get("sourceKind") != "page_source_import" or job.get("jobId") != job_id
+            or type(version) is not int or version != 1
+            or not isinstance(attempt, str) or not re.fullmatch(r"[0-9a-f]{32}", attempt)
+            or not isinstance(value, str) or not value):
+        return None
+    path = Path(value).resolve()
+    try:
+        parts = path.relative_to(root).parts
+    except ValueError:
+        return None
+    if (len(parts) != JOB_DIR_DEPTH + 1 or parts[0] != job.get("pageId")
+            or parts[1] != "source-imports" or parts[2] != job_id or parts[3] != attempt
+            or not re.fullmatch(r"cpl-[0-9a-f]{16}", job_id)):
+        return None
+    return path.parent, path
+
+
 def _inside(directory: Path, relative: Any) -> Path | None:
     if not isinstance(relative, str) or not relative:
         return None
@@ -167,17 +189,31 @@ class GeneratedMediaRetention:
             if not isinstance(job, dict) or job.get("status") not in TERMINAL_STATUSES:
                 continue
             finished = terminal_timestamp(job)
-            directory = _job_dir(root, job.get("artifactRoot"))
+            if job.get("sourceKind") == "page_source_import" and "sourceImportClaimVersion" in job:
+                # New-layout metadata must prove the exact attempt path; a
+                # malformed marker cannot fall back to a broader job root.
+                attempt_dirs = _source_import_attempt_dirs(root, str(job_id), job)
+                directory, artifact_directory = attempt_dirs if attempt_dirs is not None else (None, None)
+                # A failed snapshot can be retried after it was read.  Never
+                # scan sibling attempts from that snapshot: a sibling may be
+                # the live retry, even if it appears while planning a sweep.
+                if (directory is not None and job.get("status") == "failed"
+                        and job.get("error") == "source_import_runtime_restarted"):
+                    directory = artifact_directory
+            else:
+                directory = _job_dir(root, job.get("artifactRoot"))
+                artifact_directory = directory
             if (finished is None or now - finished < CONFIRMED_SETTLE or directory is None
-                    or directory in protected or _holds_truck_pool(job) or not directory.is_dir()):
+                    or any(path == directory or directory in path.parents for path in protected)
+                    or _holds_truck_pool(job) or not directory.is_dir()):
                 continue
-            candidates.append((finished, str(job_id), directory, job))
+            candidates.append((finished, str(job_id), directory, artifact_directory, job))
         candidates.sort(key=lambda item: (item[0], item[1]))
 
         plan = Plan()
         started = self.monotonic()
         stray_cutoff = now - STRAY_RETENTION[pressure]
-        for finished, _job_id, directory, job in candidates:
+        for finished, _job_id, directory, artifact_directory, job in candidates:
             if plan.jobs >= job_limit or self.monotonic() - started > time_budget:
                 break
             clip_paths: set[Path] = set()
@@ -186,8 +222,8 @@ class GeneratedMediaRetention:
                 if not isinstance(clip, dict):
                     continue
                 files = [path for path in (
-                    _inside(directory, clip.get("path")),
-                    _inside(directory, (clip.get("thumbnail") or {}).get("path")
+                    _inside(artifact_directory, clip.get("path")),
+                    _inside(artifact_directory, (clip.get("thumbnail") or {}).get("path")
                             if isinstance(clip.get("thumbnail"), dict) else None),
                 ) if path is not None]
                 clip_paths.update(files)
