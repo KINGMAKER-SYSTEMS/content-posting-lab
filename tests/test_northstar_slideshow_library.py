@@ -150,6 +150,8 @@ def test_external_subjects_are_reserved_exact_page_hashes_and_ordinary_addresses
     assert library_subject(NS_PAGE_ID, None, "northstar") == NS_SUBJECT
     assert library_subject("NS.TT_6B3E9C1A:k7pq3m2x", HANDLE, "northstar") != NS_SUBJECT
     assert library_subject("ns-" + "x" * 126, HANDLE, "northstar") is None
+    assert library_subject("n" * 128, HANDLE, "northstar") == "external--" + hashlib.sha256(("n" * 128).encode()).hexdigest()
+    assert library_subject("acct:future", NS_SUBJECT, "notion") != NS_SUBJECT
     assert library_subject("...", HANDLE, "northstar") is None
     assert library_subject(None, HANDLE, "northstar") is None
     # Rising Tides (Notion, legacy, pipeline): the handle slug, never the id.

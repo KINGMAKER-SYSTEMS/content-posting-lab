@@ -566,7 +566,7 @@ def library_subject(page_id: Any, handle: Any, source: Any) -> str | None:
     if isinstance(source, str) and source in EXTERNAL_PAGE_SOURCES:
         if (not isinstance(page_id, str)
                 or not re.fullmatch(r"[A-Za-z0-9._:-]{1,128}", page_id)
-                or _subject(page_id) is None):
+                or not re.search(r"[A-Za-z0-9]", page_id)):
             return None
         return "external--" + hashlib.sha256(page_id.encode("utf-8")).hexdigest()
     return _subject(handle)
