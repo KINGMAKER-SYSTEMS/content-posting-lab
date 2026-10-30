@@ -87,9 +87,15 @@ def census(source, filename):
         fn = functions[0]
         if fn.name not in {"_run_dossier_source", "_run_owned_dossier_source"}:
             return False
-        if not (isinstance(node.func, ast.Attribute) and node.func.attr == "to_thread"
-                and isinstance(node.func.value, ast.Name) and node.func.value.id == "asyncio"
-                and node.args and isinstance(node.args[0], ast.Name) and node.args[0].id in {"_update_job", "_update_source_job"}):
+        threaded_update = (isinstance(node.func, ast.Attribute) and node.func.attr == "to_thread"
+                           and isinstance(node.func.value, ast.Name) and node.func.value.id == "asyncio"
+                           and len(node.args) == 2 and isinstance(node.args[0], ast.Name)
+                           and node.args[0].id in {"_update_job", "_update_source_job"}
+                           and isinstance(node.args[1], ast.Name) and node.args[1].id == "job_id")
+        drained_update = (isinstance(node.func, ast.Name) and node.func.id == "_settle_source_update"
+                          and len(node.args) == 1 and isinstance(node.args[0], ast.Name)
+                          and node.args[0].id == "job_id")
+        if not (threaded_update or drained_update):
             return False
         keywords = {kw.arg: kw.value for kw in node.keywords}
         if not (_string(keywords.get("status"), "completed")
@@ -235,6 +241,16 @@ def test_completed_source_subset_is_the_only_safe_cut_rewrite():
     filename = "routers/control_plane.py"
     _, violations = census(source, filename)
     assert violations == []
+    # The runtime-claim follow-up drains this same conditional update before
+    # releasing its claim; it must pass the identical subset proof.
+    drained = source.replace("await asyncio.to_thread(_update_job,\n        job_id,",
+                             "await _settle_source_update(\n        job_id,", 1)
+    assert drained != source
+    assert census(drained, filename)[1] == []
+    wrong_job = drained.replace("await _settle_source_update(\n        job_id,",
+                                "await _settle_source_update(\n        other_job,", 1)
+    assert wrong_job != drained
+    assert any("sourceCuts= keyword" in item for item in census(wrong_job, filename)[1])
     mutations = [
         ('status="completed",\n        progress=100,\n        clips=manifests,\n        sourceCuts=delivered_cuts,',
          'status="running",\n        progress=100,\n        clips=manifests,\n        sourceCuts=delivered_cuts,'),
