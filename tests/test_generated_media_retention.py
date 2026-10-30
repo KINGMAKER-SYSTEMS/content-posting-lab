@@ -366,3 +366,36 @@ def test_malformed_source_attempt_metadata_never_broadens_retention_scope(tmp_pa
     worker, _ = sweeper(True)
     worker.sweep({'jobs': {job_id: job}}, root, NOW)
     assert protected.read_bytes() == b'keep'
+
+@pytest.mark.parametrize('retry_timing', ['before_plan', 'after_plan'])
+def test_restartable_import_snapshot_never_deletes_a_new_retry(tmp_path, retry_timing):
+    root = tmp_path / 'gen'
+    job_id = 'cpl-' + 'a' * 16
+    group = root / 'acct:page' / 'source-imports' / job_id
+    old = group / ('b' * 32) / 'source' / 'old.mp4'
+    fresh = group / ('c' * 32) / 'source' / 'fresh.mp4'
+    old.parent.mkdir(parents=True)
+    old.write_bytes(b'old')
+    job = {'jobId': job_id, 'pageId': 'acct:page', 'sourceKind': 'page_source_import',
+           'sourceImportClaimVersion': 1, 'sourceImportAttemptId': 'b' * 32,
+           'artifactRoot': str(group / ('b' * 32)), 'status': 'failed',
+           'error': 'source_import_runtime_restarted',
+           'completedAt': (NOW - timedelta(days=3)).isoformat(), 'clips': []}
+    worker, _ = sweeper(True)
+    original_plan = worker.plan
+
+    def create_retry():
+        fresh.parent.mkdir(parents=True)
+        fresh.write_bytes(b'fresh retry media')
+
+    if retry_timing == 'before_plan':
+        create_retry()
+    else:
+        def plan_then_retry(*args, **kwargs):
+            plan = original_plan(*args, **kwargs)
+            create_retry()
+            return plan
+        worker.plan = plan_then_retry
+    worker.sweep({'jobs': {job_id: job}}, root, NOW)
+    assert fresh.read_bytes() == b'fresh retry media'
+    assert not old.exists()

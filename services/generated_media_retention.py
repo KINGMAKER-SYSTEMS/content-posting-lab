@@ -194,6 +194,11 @@ class GeneratedMediaRetention:
                 # malformed marker cannot fall back to a broader job root.
                 attempt_dirs = _source_import_attempt_dirs(root, str(job_id), job)
                 directory, artifact_directory = attempt_dirs if attempt_dirs is not None else (None, None)
+                # A failed snapshot can be retried after it was read.  Never
+                # scan sibling attempts from that snapshot: a sibling may be
+                # the live retry, even if it appears while planning a sweep.
+                if directory is not None and job.get("status") != "completed":
+                    directory = artifact_directory
             else:
                 directory = _job_dir(root, job.get("artifactRoot"))
                 artifact_directory = directory
