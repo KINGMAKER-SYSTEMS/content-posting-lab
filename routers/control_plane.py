@@ -4149,6 +4149,8 @@ async def _run_dossier_source_inner(job_id: str) -> None:
                 clip_duration_ms=render_duration_ms,
                 **frame_cut,
             )
+            applied_transforms: CutTransforms | None = None
+            applied_loop_split = False
             if vary_transforms and transforms.any():
                 # Mirror, camera move, reverse and loop-swap work on the finished
                 # short clip (services/clip_transforms.py). They are full 1080x1920
@@ -4158,6 +4160,8 @@ async def _run_dossier_source_inner(job_id: str) -> None:
                 async with _COLOR_CORRECT_GATE:
                     await asyncio.to_thread(apply_transforms, destination, transforms,
                                             delivery_encode_args(recipe.encode_preset))
+                applied_transforms = transforms
+                applied_loop_split = transforms.loop_swap
             if vary_transforms:
                 # One INFO line per cut pins what Layer B did to it: the
                 # manifest records the drawn set, but Railway logs are what a
@@ -4178,12 +4182,16 @@ async def _run_dossier_source_inner(job_id: str) -> None:
                 async with _COLOR_CORRECT_GATE:
                     await asyncio.to_thread(apply_transforms, destination, scram_transforms,
                                             delivery_encode_args(recipe.encode_preset))
+                # Scrambler jobs exclude Layer A/B above, so these passes do
+                # not stack with a legacy transform pass.
+                applied_transforms = scram_transforms
             if scram_split_swap:
                 # split_swap is the Scrambler's own LOOP9-style halves swap,
                 # one pass, audio swapped in lockstep when present.
                 async with _COLOR_CORRECT_GATE:
                     await asyncio.to_thread(apply_split_swap, destination,
                                             delivery_encode_args(recipe.encode_preset))
+                applied_loop_split = True
             if (vary_look or recipe.format_slug == "pov-club" or (vary_transforms and transforms.any())
                     or scram_record is not None):
                 measured_duration = await asyncio.to_thread(
@@ -4302,9 +4310,10 @@ async def _run_dossier_source_inner(job_id: str) -> None:
                 # g-worker-allow-origin-1028): cutWindow keeps exactly the
                 # Worker's five cut fields in every mode.
                 **({"recipe": cut_window_recipe(
-                    cut_speed, cut_crop,
-                    reverse=(transforms.reverse if vary_transforms else None),
-                    hflip=(transforms.mirror if vary_transforms else None),
+                    render_speed, cut_crop,
+                    reverse=(applied_transforms.reverse if applied_transforms else None),
+                    hflip=(applied_transforms.mirror if applied_transforms else None),
+                    loop_split=applied_loop_split,
                 )} if advertise_origin() else {}),
             })
             manifest["thumbnail"] = await _thumbnail_manifest(
