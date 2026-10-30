@@ -3733,6 +3733,18 @@ _layer_b_probe_unreadable_count = 0
 
 
 async def _run_dossier_source(job_id: str) -> None:
+    """Hold the source job claim until its reserved cuts are terminal."""
+    _get_job_or_404(job_id)  # Validate before deriving a lock filename.
+    with runner_lock(_jobs_path(), job_id) as acquired:
+        if not acquired:
+            return
+        job = _get_job_or_404(job_id)
+        if job.get("status") not in GENERATION_ACTIVE_STATUSES:
+            return
+        await _run_owned_dossier_source(job_id)
+
+
+async def _run_owned_dossier_source(job_id: str) -> None:
     """Cut unique windows from one page's immutable source DNA."""
     job = _get_job_or_404(job_id)
     if not _job_matches_current_master_pages(job):
@@ -4885,12 +4897,24 @@ async def create_job(
                 and existing.get("status") in GENERATION_ACTIVE_STATUSES
                 and existing.get("runtimeId") != _GENERATION_RUNTIME_ID
             ):
-                existing.update({
-                    "status": "failed",
-                    "error": "generation_runtime_restarted",
-                    "completedAt": datetime.now(timezone.utc).isoformat(),
-                })
-                _save_jobs(store)
+                if existing.get("sourceKind") == "dossier_source_dna":
+                    # A different runtime may still be cutting these windows.
+                    # A claim acquired first also fences a queued runner, which
+                    # rechecks the terminal state after it acquires the claim.
+                    with runner_lock(_jobs_path(), existing["jobId"]) as acquired:
+                        if acquired:
+                            existing.update({
+                                "status": "failed", "error": "generation_runtime_restarted",
+                                "completedAt": datetime.now(timezone.utc).isoformat(),
+                            })
+                            _save_jobs(store)
+                else:
+                    existing.update({
+                        "status": "failed",
+                        "error": "generation_runtime_restarted",
+                        "completedAt": datetime.now(timezone.utc).isoformat(),
+                    })
+                    _save_jobs(store)
             return {"schema": RESPONSE_SCHEMA, "jobId": existing["jobId"], "status": existing["status"]}
 
         job_id = JOB_ID_PREFIX + _secrets.token_hex(8)
@@ -5259,18 +5283,26 @@ async def job_status(
         cancelled_local_runner = False
         if job.get("sourceKind") == "page_source_import":
             cancelled_local_runner = await _cancel_page_source_import(job_id)
-        current = _get_job_or_404(job_id)
-        if cancelled_local_runner or current.get("status") in GENERATION_ACTIVE_STATUSES:
-            _update_job(
-                job_id,
-                status="failed",
-                error=(
-                    "source_import_runtime_restarted"
-                    if job.get("sourceKind") == "page_source_import"
-                    else "generation_runtime_restarted"
-                ),
-                completedAt=datetime.now(timezone.utc).isoformat(),
-            )
+        def expire_if_active():
+            current = _get_job_or_404(job_id)
+            if cancelled_local_runner or current.get("status") in GENERATION_ACTIVE_STATUSES:
+                _update_job(
+                    job_id,
+                    status="failed",
+                    error=(
+                        "source_import_runtime_restarted"
+                        if job.get("sourceKind") == "page_source_import"
+                        else "generation_runtime_restarted"
+                    ),
+                    completedAt=datetime.now(timezone.utc).isoformat(),
+                )
+
+        if job.get("sourceKind") == "dossier_source_dna":
+            with runner_lock(_jobs_path(), job_id) as acquired:
+                if acquired:
+                    expire_if_active()
+        else:
+            expire_if_active()
         job = _get_job_or_404(job_id)
     if job["pageId"] != x_rt_page_id:
         # A job answers only to the page it belongs to — cross-page status
