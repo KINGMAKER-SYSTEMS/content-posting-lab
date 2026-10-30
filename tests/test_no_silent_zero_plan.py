@@ -477,7 +477,7 @@ def _capability_scaffold(
         )
     monkeypatch.setattr(
         cp, "_dossier_source_recipe",
-        resolve_source if resolve_source is not None else (lambda publication: None),
+        resolve_source if resolve_source is not None else (lambda publication, refusal_reasons=None: None),
     )
     monkeypatch.setattr(cp, "syzygy_runtime_available", lambda: runtime_available)
     monkeypatch.setattr(cp, "resolve_material_profile", lambda publication, spec: object())
@@ -620,7 +620,7 @@ def test_source_identity_missing_lands_in_zero_plan_recipes(monkeypatch, tmp_pat
     _capability_scaffold(
         monkeypatch, tmp_path, recipe=recipe, library=library,
         publication_engine="sourced_video", publication_recipe_id="pov-dirt-bike:master",
-        resolve_source=lambda publication: source_recipe,
+        resolve_source=lambda publication, refusal_reasons=None: source_recipe,
     )
     monkeypatch.setattr(cp, "_source_dna_cut_ledger", lambda *a, **k: ({}, {}))
     monkeypatch.setattr(cp, "plan_source_cuts", lambda *a, **k: [])

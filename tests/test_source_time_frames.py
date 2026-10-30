@@ -222,7 +222,7 @@ def test_a_tiny_master_cuts_every_window_once_then_answers_source_windows_exhaus
     client, _, _ = lab
     resolve = cp._dossier_source_recipe
 
-    def tiny(payload):
+    def tiny(payload, refusal_reasons=None):
         recipe = resolve(payload)
         return replace(recipe, masters=tuple(
             replace(master, duration_ms=6_000) for master in recipe.masters
@@ -266,7 +266,7 @@ def test_a_master_shorter_than_any_cut_names_its_reason(lab, monkeypatch):
     client, _, _ = lab
     resolve = cp._dossier_source_recipe
 
-    def too_short(payload):
+    def too_short(payload, refusal_reasons=None):
         recipe = resolve(payload)
         return replace(recipe, masters=tuple(
             replace(master, duration_ms=4_900) for master in recipe.masters
