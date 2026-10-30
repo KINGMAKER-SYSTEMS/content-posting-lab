@@ -40,6 +40,7 @@ from services.dossier_catalog_version import dossier_catalog_version
 from services.master_pages_contract import exact_intent
 from services.source_dna_registry import (
     MANIFEST_DIR as SOURCE_DNA_MANIFEST_DIR,
+    RETIRED_MASTER_SHAS,
     SourceDnaLibrary,
     SourceDnaError,
     parse_source_dna_manifest,
@@ -773,6 +774,18 @@ def _sourced_ingredients(
         )
         options.append(projected_cuts)
     master_options = _master_source_options(format_slug, page_id, shipstream_library)
+    # Retired masters (Rule #1) are never offered as a Dossier option, even
+    # though the low-level _master_source_options still enumerates their
+    # registered library for history/provenance tests. A library that still
+    # holds a retired master (primary or backup) is dropped here so the editor
+    # can never Save & apply it again.
+    master_options = [
+        option for option in master_options
+        if not any(
+            master["sha256"] in RETIRED_MASTER_SHAS
+            for master in [*option.get("masters", []), *option.get("backupMasters", [])]
+        )
+    ]
     # A valid page manifest is ShipStream's current source authority. When it
     # supersedes a legacy source-dna registration, keep both choices visible but
     # bind the ShipStream library so replacement can proceed without an

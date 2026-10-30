@@ -15,8 +15,16 @@ from services.source_treatment import normalized_visual_treatment
 from tests.test_control_plane_source_execution import (  # noqa: F401  (pytest fixtures)
     PAGE_ID, _probe_duration, headers, job_body, lab, publication,
 )
+from tests.source_dna_fixture import isolate_source_dna_registry
 from tests.test_post_render import NOW, STYLE, request as render_request
 from tests.test_post_render_jobs import client_for, submission
+
+
+@pytest.fixture(autouse=True)
+def _isolated_source_dna(monkeypatch, tmp_path):
+    """Retired chase/BTL libraries are deleted, so source-dna tests run against
+    an isolated copy of the registry plus the non-retired dirt-bike fixture."""
+    isolate_source_dna_registry(monkeypatch, tmp_path)
 
 TOKEN = "only-this-test-service-token"
 PARENT_GRADE = {"brightness": 0.7}

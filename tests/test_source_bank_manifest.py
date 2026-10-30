@@ -211,13 +211,28 @@ def test_adapter_projects_into_a_real_registered_primary_library():
     # all-primary recipe) instead of a synthetic primary library.
     from services.source_dna_registry import load_source_dna_library
 
-    primary = load_source_dna_library("pov-night-core-between-the-lines66-v1")
+    # A registered all-primary library with no retired footage (the original
+    # Between the Lines library holds only the retired IMG_4962 master).
+    primary = load_source_dna_library("pov-night-core-drivetoclearmymind001-v1")
     assert all(master.role == "primary" for master in primary.masters)
     pooled = parse_source_bank_manifest(
         _complete_bank_raw(), page_handle=HANDLE, primary_library=primary,
     )
     assert [master.role for master in pooled.masters].count("backup") == 3
     assert pooled.sha256 == primary.sha256
+
+
+def test_adapter_never_pools_backups_onto_a_retired_primary():
+    # Rule #1: a retired master may stay only as a library's single original
+    # primary, so a bank must never add backups to that library.
+    from services.source_dna_registry import RETIRED_MASTER_SHAS, load_source_dna_library
+
+    retired = load_source_dna_library("pov-night-core-between-the-lines66-v1")
+    assert {master.sha256 for master in retired.masters} <= RETIRED_MASTER_SHAS
+    with pytest.raises(SourceBankError, match="is retired"):
+        parse_source_bank_manifest(
+            _complete_bank_raw(), page_handle=HANDLE, primary_library=retired,
+        )
 
 
 @pytest.mark.parametrize(
