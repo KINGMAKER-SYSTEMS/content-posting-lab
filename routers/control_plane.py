@@ -3822,9 +3822,10 @@ def _layer_b_probe_unreadable(page_id: str, job_id: str) -> None:
     times = _layer_b_probe_unreadable_times
     while times and times[0] <= horizon:
         times.popleft()
-    times.append(now)
     if len(times) < _layer_b_probe_unreadable_max():
         _layer_b_probe_unreadable_tripped = False
+    times.append(now)
+    if len(times) < _layer_b_probe_unreadable_max():
         log.warning("content_lab.layer_b_probe_unreadable page=%s job=%s",
                     page_id, job_id)
         _layer_b_probe_unreadable_count += 1

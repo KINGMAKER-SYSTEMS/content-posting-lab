@@ -2181,6 +2181,11 @@ def _reset_layer_b_probe_breaker():
     cp._layer_b_probe_unreadable_tripped = False
 
 
+@pytest.fixture(autouse=True)
+def _reset_layer_b_probe_breaker_between_tests():
+    _reset_layer_b_probe_breaker()
+
+
 def _layer_b_unreadable_patches(monkeypatch, tmp_path):
     """A Layer-B-only page whose delivered-duration probe never reads the file."""
     from services.clip_transforms import CutTransforms
@@ -2214,6 +2219,35 @@ async def _run_layer_b_unreadable_job(client, idempotency):
 def _tripped_records(caplog):
     return [record for record in caplog.records
             if record.message.startswith("content_lab.layer_b_probe_unreadable_tripped")]
+
+
+def test_layer_b_unreadable_max_one_retrips_after_the_window_drains(monkeypatch, caplog):
+    """A max-one incident logs again after its rolling window has drained."""
+    monkeypatch.setenv("LAYER_B_PROBE_UNREADABLE_MAX", "1")
+    readings = iter((100.0, 3_701.0))
+    monkeypatch.setattr(cp.time, "monotonic", lambda: next(readings))
+    with caplog.at_level("WARNING", logger="control_plane"):
+        with pytest.raises(RuntimeError, match="source_output_duration_unsupported"):
+            cp._layer_b_probe_unreadable(PAGE_ID, "layer-b-max-one-first")
+        with pytest.raises(RuntimeError, match="source_output_duration_unsupported"):
+            cp._layer_b_probe_unreadable(PAGE_ID, "layer-b-max-one-second")
+    assert len(_tripped_records(caplog)) == 2
+
+
+def test_layer_b_unreadable_window_samples_the_monotonic_clock(monkeypatch):
+    """The rolling window must use monotonic time, never the wall clock."""
+    monkeypatch.setenv("LAYER_B_PROBE_UNREADABLE_MAX", "3")
+    samples = []
+
+    def monotonic():
+        samples.append(10.0 + len(samples))
+        return samples[-1]
+
+    monkeypatch.setattr(cp.time, "monotonic", monotonic)
+    cp._layer_b_probe_unreadable(PAGE_ID, "layer-b-monotonic-first")
+    cp._layer_b_probe_unreadable(PAGE_ID, "layer-b-monotonic-second")
+    assert samples == [10.0, 11.0]
+    assert list(cp._layer_b_probe_unreadable_times) == [10.0, 11.0]
 
 
 @pytest.mark.asyncio
