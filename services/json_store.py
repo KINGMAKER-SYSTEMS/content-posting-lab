@@ -12,6 +12,8 @@ open('w')+dump left the upload-job queue truncated/wiped if the process
 crashed mid-write (a P0). Do not weaken it.
 """
 
+from __future__ import annotations
+
 import json
 import os
 import re

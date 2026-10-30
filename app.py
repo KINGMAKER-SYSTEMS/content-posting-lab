@@ -168,6 +168,14 @@ async def lifespan(app: FastAPI):
     # Initialize structured logging before anything else
     debug_logger.setup_logging()
 
+    # One line naming every missing Scrambler pilot setting (OFF logs "OFF").
+    try:
+        from services.scrambler_preflight import log_startup_preflight
+        log_startup_preflight()
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning(f"scrambler preflight failed: {e}")
+
     # main.py runs one process, and imports cannot start before this sweep.
     # Hard-killed imports skip finally; their private scratch copies are stale.
     # Keep this before imports, not in individual workers or request handlers.
@@ -253,9 +261,13 @@ async def lifespan(app: FastAPI):
     post_render_jobs = start_post_render_workers()
     from routers.control_plane import start_compaction_scheduler
     start_compaction_scheduler()
+    from services.scrambler_feed_pull import start_feed_pull_scheduler
+    start_feed_pull_scheduler()
     yield
     from routers.control_plane import shutdown_dossier_generation, stop_compaction_scheduler
     stop_compaction_scheduler()
+    from services.scrambler_feed_pull import stop_feed_pull_scheduler
+    stop_feed_pull_scheduler()
     await shutdown_dossier_generation()
     if post_render_jobs is not None:
         post_render_jobs.stop()
