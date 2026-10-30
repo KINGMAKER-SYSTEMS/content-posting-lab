@@ -42,6 +42,7 @@ from services import source_import_layout
 import asyncio
 import contextvars
 import functools
+import weakref
 from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import hmac
@@ -54,6 +55,7 @@ import shutil
 import subprocess
 import threading
 import time
+from decimal import Decimal, ROUND_FLOOR
 from datetime import datetime, timezone
 from pathlib import Path
 from threading import Event, Lock
@@ -103,6 +105,9 @@ from services.control_plane_generation import (
 from services.control_plane_sources import (
     CAPABILITY_PLAN_SEED,
     CutUse,
+    ScramblerPlan,
+    scrambler_pending_windows,
+    scrambler_recent_canonical_starts,
     canonical_source_identity,
     cut_use_time,
     explain_empty_source_plan,
@@ -170,8 +175,29 @@ from services.page_frame import VERTICAL_FRAME, resolved_frame
 from services import generation_budget, moderation_retry
 from services.roster_public import require_roster_auth
 from services import clip_similarity
-from services.clip_transforms import apply_transforms, cut_transforms, transforms_disabled_reason, transforms_enabled, transforms_from_manifest
+from services.clip_transforms import CutTransforms, apply_transforms, cut_transforms, transforms_disabled_reason, transforms_enabled, transforms_from_manifest
 from services.clip_variation import cut_grade, cut_variant, varies_clips
+from services.scrambler import (
+    GRADE_DELTA_MAX,
+    assert_existing_jobs,
+    assert_cut_renderable,
+    ScramblerExhausted,
+    ScramblerHistoryCorrupt,
+    ScramblerHistoryLost,
+    apply_split_swap,
+    enrich_job_reservations,
+    grade_allowed_for_look,
+    mark_cut_rendered,
+    live_reservation_rows,
+    release_job_reservations,
+    reserve_job_cuts,
+    scrambler_enabled,
+    scrambler_gate,
+)
+from services.scrambler_originality import (
+    ScramblerOriginalityUnavailable,
+    load_originality_index,
+)
 from services.source_treatment import (
     derived_source_treatment,
     recovery_treatment_matches,
@@ -3826,6 +3852,29 @@ def _latest_page_cut_transforms(page_id: str, job_id: str, jobs: dict | None = N
 _layer_b_probe_unreadable_count = 0
 
 
+from services.scrambler import release_undelivered_holds  # noqa: E402
+from services.scrambler_originality import load_originality_index_cached  # noqa: E402
+
+
+class _ScramblerCutRefused(RuntimeError):
+    """One Scrambler cut failed a per-cut check; skip it, keep the others."""
+
+
+async def _skip_refused_scrambler_cut(job: dict, job_id: str, record: dict,
+                                      error: BaseException, refused: list) -> None:
+    """Release the refused cut's own reservation and remember why (logged only)."""
+    reason = str(error)[:200] or type(error).__name__
+    log.warning("scrambler_cut_refused page=%s job=%s cut=%s reason=%s",
+                job["pageId"], job_id, record.get("cutIndex"), reason)
+    await _settle_source_call(release_job_reservations, job["pageId"], job_id,
+                            reason="cut_refused:" + reason,
+                            cut_index=int(record["cutIndex"]))
+    refused.append(reason)
+
+
+_scrambler_page_gates = weakref.WeakValueDictionary()
+
+
 async def _run_dossier_source(job_id: str) -> None:
     """Hold the source job claim until its reserved cuts are terminal."""
     _get_job_or_404(job_id)  # Validate before deriving a lock filename.
@@ -3839,6 +3888,46 @@ async def _run_dossier_source(job_id: str) -> None:
 
 
 async def _run_owned_dossier_source(job_id: str) -> None:
+    """Release private reservations even if execution fails before rendering."""
+    job = _get_job_or_404(job_id)
+    scramble = any(isinstance(cut, dict) and isinstance(cut.get("scrambler"), dict)
+                   for cut in job.get("sourceCuts", ()) or ())
+    if not scramble:
+        return await _run_dossier_source_inner(job_id)
+    try:
+        # One ON execution per page, across tasks and processes. Waiting is
+        # cooperative; no jobs-store or ledger lock spans an await.
+        gate = _scrambler_page_gates.setdefault(job["pageId"], asyncio.Lock())
+        async with gate:
+            lock_id = "scrambler-page-" + hashlib.sha256(job["pageId"].encode()).hexdigest()
+            while True:
+                with runner_lock(_jobs_path(), lock_id) as acquired:
+                    if acquired:
+                        await _run_dossier_source_inner(job_id)
+                        break
+                await asyncio.sleep(0.25)
+    except BaseException as error:
+        try:
+            await _settle_source_call(release_job_reservations, job["pageId"], job_id,
+                                    reason="execution_setup_failed")
+        finally:
+            # A second cancellation can arrive while release drains. Persist
+            # the terminal state before the outer job claim is allowed to drop.
+            await _settle_source_update(
+                job_id, status="failed",
+                error=("generation_cancelled" if isinstance(error, asyncio.CancelledError)
+                       else str(error)[:300]),
+                completedAt=datetime.now(timezone.utc).isoformat())
+        if isinstance(error, asyncio.CancelledError):
+            raise
+    finally:
+        # Covers early named returns as well as ordinary completion. Rendered
+        # rows are immutable; only remaining unrendered commitments release.
+        await _settle_source_call(release_job_reservations, job["pageId"], job_id,
+                                reason="execution_finished")
+
+
+async def _run_dossier_source_inner(job_id: str) -> None:
     """Cut unique windows from one page's immutable source DNA."""
     job = _get_job_or_404(job_id)
     if not _job_matches_current_master_pages(job):
@@ -3853,7 +3942,7 @@ async def _run_owned_dossier_source(job_id: str) -> None:
         job.get("recipePublicationPageId") or job["pageId"],
         job["recipeId"], job["engine"], job["recipeVersion"],
     )
-    recipe = await asyncio.to_thread(_dossier_source_recipe, publication)
+    recipe = await _settle_source_call(_dossier_source_recipe, publication)
     if (
         recipe is None
         or job.get("sourceLibraryId") != recipe.source_library_id
@@ -3904,6 +3993,42 @@ async def _run_owned_dossier_source(job_id: str) -> None:
     delivered_cuts: list[dict[str, Any]] = []
     if await _settle_source_update(job_id, status="running", progress=0) is None:
         return
+    # The Scrambler (services/scrambler.py) supersedes Layer A variety for a
+    # job that carries per-cut draw records: the speed/treatment/offset were
+    # drawn and reserved atomically at job creation, so this run never redraws
+    # (a restart or a switch change replays the committed job's own draws).
+    # Every job without records - every OFF page - runs exactly as before.
+    scramble = any(
+        isinstance(source_cut, dict) and isinstance(source_cut.get("scrambler"), dict)
+        for source_cut in source_cuts
+    )
+    if scramble and not scrambler_enabled(job["pageId"]):
+        # Execute-time kill switch: the switches are read per call, so turning
+        # the Scrambler off (or deny-listing the page) stops this queued job
+        # SAFELY - a reserved Scrambler span (origin window = length x drawn
+        # speed, up to 9.9 s) must never be rendered through the legacy
+        # duration/speed. The reverse direction needs no
+        # guard: execution keys off the job's own records, so a legacy job
+        # stays legacy even after the switches turn on. A dropped Worker
+        # source-window compat acknowledgment fails the same safe way under
+        # its own named reason.
+        _exec_on, _exec_reason = scrambler_gate(job["pageId"])
+        kill_error = (
+            "scrambler_worker_source_window_compat_required"
+            if _exec_reason == "scrambler_worker_source_window_compat_required"
+            else "scrambler_disabled_at_execution"
+        )
+        await _settle_source_update(
+            job_id,
+            status="failed",
+            error=kill_error,
+            completedAt=datetime.now(timezone.utc).isoformat(),
+        )
+        await _settle_source_call(
+            release_job_reservations, job["pageId"], job_id,
+            reason=kill_error,
+        )
+        return
     # A page listed in services/clip_variation.py cuts every clip at its own
     # speed and framing (Layer A); sourced source-video cuts may also get
     # mirror / motion / reverse transforms (Layer B). Layer B is wider than
@@ -3911,8 +4036,16 @@ async def _run_owned_dossier_source(job_id: str) -> None:
     # page gets its own speed/crop/grade. Layer B transforms are recorded on
     # the manifest only; they DO change the delivered bytes (sourceSha256
     # follows them).
-    vary_look = varies_clips(job["pageId"])
-    vary_transforms = vary_look or transforms_enabled(job["pageId"], recipe.format_slug)
+    #
+    # Scrambler precedence (PR #281 rebased onto #284): a job that carries
+    # Scrambler draw records (scramble=True, and the execute-time gate above
+    # has just passed) gets NEITHER Layer A NOR Layer B - the Scrambler owns
+    # all variation for its cuts, so transforms never stack on a Scrambler
+    # cut. Every job without records (Scrambler OFF, or any other page) takes
+    # exactly main's Layer A / Layer B path. Records are all-or-none per job
+    # (enqueue writes them on every cut or on none).
+    vary_look = varies_clips(job["pageId"]) and not scramble
+    vary_transforms = (vary_look or transforms_enabled(job["pageId"], recipe.format_slug)) and not scramble
     layer = "A" if vary_look else "B" if vary_transforms else "none"
     if not vary_transforms:
         # Layer B is off for the whole job: one line up front names the first
@@ -3921,21 +4054,25 @@ async def _run_owned_dossier_source(job_id: str) -> None:
         # "on but nothing drawn" (the per-cut lines below). The reason can be
         # None only when the gate itself was swapped out (tests do that); the
         # helper answers through the gate's own checks, so in production it
-        # always names one of the three.
+        # always names one of the three. A Scrambler job (records present)
+        # has Layer B off because the Scrambler owns its variation, so its
+        # reason is "scrambler" (Scrambler OFF: never this branch's value).
         log.info("content_lab.source_cut_transforms_off job_id=%s page_id=%s format_slug=%s reason=%s",
                  job_id, job["pageId"], recipe.format_slug,
+                 "scrambler" if scramble else
                  transforms_disabled_reason(job["pageId"], recipe.format_slug))
     previous_variant = previous_transforms = None
     transforms = None
     recent_cuts: list = []
     skipped_backup_cuts: list = []
+    refused_scrambler_cuts: list = []
     try:
         if vary_look or vary_transforms:
             # One read of the job store, inside the try that terminalizes the
             # job: the page's latest cut seeds the "never the same look twice"
             # rule across jobs, and the TRIAL similarity gate compares against
             # the page's recent cuts (logged, never blocking).
-            page_jobs = (await asyncio.to_thread(_load_jobs))["jobs"]
+            page_jobs = (await _settle_source_call(_load_jobs))["jobs"]
             if vary_look:
                 previous_variant = _latest_page_cut_look(job["pageId"], job_id, page_jobs)
                 recent_cuts = clip_similarity.recent_fingerprints(page_jobs, job["pageId"], job_id,
@@ -3951,20 +4088,67 @@ async def _run_owned_dossier_source(job_id: str) -> None:
             master = masters.get(source_cut.get("masterSha256"))
             start_ms = source_cut.get("startMs")
             duration_ms = source_cut.get("durationMs")
+            scram_record = source_cut.get("scrambler")
+            if not isinstance(scram_record, dict):
+                scram_record = None
             if (
                 master is None
                 or start_ms != source_cut.get("libraryStartMs")
                 or not source_cut_is_planned(
                     recipe, master, start_ms, duration_ms, source_cut.get("slotId"),
+                    scrambler=scram_record,
                 )
             ):
                 raise RuntimeError("source_recipe_cut_invalid")
+            if scram_record is not None:
+                # A refused cut is skipped and its own reservation released;
+                # the job's vetted cuts still deliver (MED-1).
+                try:
+                    # Recheck fresh producer authority after a queue delay. A
+                    # retirement or newly posted show must block before encoding.
+                    # The parse is shared while the feed files are unchanged.
+                    current_originality = await _settle_source_call(load_originality_index_cached)
+                    kind, oid, origin_start, origin_end = (
+                        current_originality.canonical_origin_window(
+                            master.sha256, start_ms + scram_record["offsetMs"],
+                            scram_record["windowMs"]))
+                    handles = recipe.recipe_spec.get("masterPages", {})
+                    handle = handles.get("handle") if isinstance(handles, dict) else None
+                    if not isinstance(handle, str) or not handle:
+                        raise _ScramblerCutRefused("scrambler_page_handle_missing")
+                    allowed, reason = current_originality.window_allowed(
+                        job["pageId"], master.sha256, origin_start, origin_end,
+                        page_handles=frozenset({handle}))
+                    if not allowed:
+                        raise _ScramblerCutRefused("scrambler_execution_originality_refused:" + reason)
+                    rows = await _settle_source_call(live_reservation_rows)
+                    commitment = next((row for row in rows
+                        if row["pageId"] == job["pageId"] and row["jobId"] == job_id
+                        and row["cutIndex"] == scram_record["cutIndex"]), None)
+                    keys = ("speed", "lengthMs", "treatment", "mirror", "offsetMs",
+                            "windowMs", "spanMs", "gradeBrightnessDelta")
+                    if (commitment is None or commitment["state"] != "reserved"
+                            or any(commitment.get(key) != scram_record.get(key) for key in keys)
+                            or commitment.get("masterSha256") != master.sha256
+                            or commitment.get("libraryStartMs") != start_ms
+                            or commitment.get("originStartMs") != origin_start
+                            or commitment.get("originEndMs") != origin_end):
+                        raise _ScramblerCutRefused("scrambler_execution_commitment_mismatch")
+                    # Frozen draws are never redrawn after a skipped/released
+                    # predecessor. Refuse a now-conflicting suffix before encoding.
+                    await _settle_source_call(assert_cut_renderable, job["pageId"], job_id,
+                                            int(scram_record["cutIndex"]))
+                except (_ScramblerCutRefused, ScramblerExhausted,
+                        ScramblerOriginalityUnavailable) as refusal:
+                    await _skip_refused_scrambler_cut(job, job_id, scram_record, refusal,
+                                                      refused_scrambler_cuts)
+                    continue
             try:
                 source = await _cached_source_master(job["pageId"], master, job_id)
             except RuntimeError as error:
-                # A backup master whose file is not in the store yet costs only
-                # its own cut; the job delivers the rest (primaries are never
-                # skipped: their failure still fails the job, as before).
+                # Missing backup footage may be skipped; primaries fail the
+                # job. A later frozen Scrambler cut must still pass actual
+                # render-order variety before it can encode.
                 if master.role != "backup" or not str(error).startswith("source_dna_master"):
                     raise
                 log.warning("source_cut_skipped_backup_unavailable page=%s job=%s master=%s error=%s",
@@ -4001,14 +4185,56 @@ async def _run_owned_dossier_source(job_id: str) -> None:
                                         {**recipe.recipe_spec["renderTreatment"]["filters"],
                                          **(master.grade_override or {})})
                 cut_cc = filters_to_color_correction(cut_filters)
+            # A scrambler cut renders the drawn sub-window (the offset head of
+            # the reserved span is skipped) at the drawn EFFECTIVE speed; the
+            # receipt below keeps the recipe's clipSpeed/clipCrop/filters
+            # unchanged (Worker admission), so the receipt stays byte-identical
+            # to OFF while the manifest-only record carries the truth.
+            scram_transforms: CutTransforms | None = None
+            scram_split_swap = False
+            scram_grade_brightness = None
+            if scram_record is not None:
+                render_start_ms = start_ms + int(scram_record["offsetMs"])
+                render_duration_ms = int(scram_record["windowMs"])
+                render_speed = float(scram_record["speed"])
+                scram_transforms = CutTransforms(
+                    mirror=bool(scram_record["mirror"]),
+                    motion="push_in" if scram_record.get("treatment") == "camera" else None,
+                    reverse=scram_record.get("treatment") == "reverse",
+                )
+                scram_split_swap = scram_record.get("treatment") == "split_swap"
+                if scram_record.get("treatment") == "grade":
+                    # The darker-only grade is REALLY applied to the pixels:
+                    # the drawn delta (0.004..0.040) darkens the page look for
+                    # this cut only, quantized down to 0.001 inside the same
+                    # 0.04 lower admission band the Worker already admits for
+                    # a per-cut brightness jitter. The receipt keeps the
+                    # recipe's exact filters (cut_filters stays None); the
+                    # applied value is a private manifest field.
+                    look_filters = recipe.recipe_spec["renderTreatment"]["filters"]
+                    try:
+                        look = float(look_filters["brightness"])
+                    except (KeyError, TypeError, ValueError):
+                        raise RuntimeError("scrambler_grade_look_unreadable")
+                    delta = float(scram_record.get("gradeBrightnessDelta") or 0.0)
+                    scram_grade_brightness = max(
+                        math.ceil(max(0.0, look - GRADE_DELTA_MAX) * 1000) / 1000,
+                        float((Decimal(str(look)) - Decimal(str(delta))).quantize(
+                            Decimal("0.001"), rounding=ROUND_FLOOR)),
+                    )
+                    cut_cc = filters_to_color_correction({
+                        **look_filters, "brightness": scram_grade_brightness,
+                    })
+            else:
+                render_start_ms, render_duration_ms, render_speed = start_ms, duration_ms, cut_speed
             await run_color_correct(
                 str(source), str(destination), cut_cc, scale=None,
                 encode_args=delivery_encode_args(recipe.encode_preset),
-                playback_speed=cut_speed,
+                playback_speed=render_speed,
                 clip_crop=cut_crop,
                 clip_crop_size=(recipe.output_width, recipe.output_height),
-                clip_start_ms=start_ms,
-                clip_duration_ms=duration_ms,
+                clip_start_ms=render_start_ms,
+                clip_duration_ms=render_duration_ms,
                 **frame_cut,
             )
             if vary_transforms and transforms.any():
@@ -4018,7 +4244,7 @@ async def _run_owned_dossier_source(job_id: str) -> None:
                 # process-wide one-encode gate as run_color_correct: without it
                 # a transform could overlap another job's cut encode.
                 async with _COLOR_CORRECT_GATE:
-                    await asyncio.to_thread(apply_transforms, destination, transforms,
+                    await _settle_source_call(apply_transforms, destination, transforms,
                                             delivery_encode_args(recipe.encode_preset))
             if vary_transforms:
                 # One INFO line per cut pins what Layer B did to it: the
@@ -4034,21 +4260,53 @@ async def _run_owned_dossier_source(job_id: str) -> None:
                          f"{master.sha256}:{start_ms}:{duration_ms}",
                          transforms.mirror, transforms.motion, transforms.reverse,
                          transforms.loop_swap, layer, transforms.any())
-            if vary_look or recipe.format_slug == "pov-club" or (vary_transforms and transforms.any()):
-                measured_duration = await asyncio.to_thread(
+            if scram_transforms is not None and scram_transforms.any():
+                # Same finished-clip transform lane as Layer B (full 1080x1920
+                # re-encode), under the same one-encode gate.
+                async with _COLOR_CORRECT_GATE:
+                    await _settle_source_call(apply_transforms, destination, scram_transforms,
+                                            delivery_encode_args(recipe.encode_preset))
+            if scram_split_swap:
+                # split_swap is the Scrambler's own LOOP9-style halves swap,
+                # one pass, audio swapped in lockstep when present.
+                async with _COLOR_CORRECT_GATE:
+                    await _settle_source_call(apply_split_swap, destination,
+                                            delivery_encode_args(recipe.encode_preset))
+            if (vary_look or recipe.format_slug == "pov-club" or (vary_transforms and transforms.any())
+                    or scram_record is not None):
+                measured_duration = await _settle_source_call(
                     probe_source_output_duration_seconds, str(destination),
                 )
-                # A delivered cut is bounded by what the Worker admits (5-10 s),
-                # and a loop-swapped cut must land at or under 9.0 s after the
-                # swap re-encode. Layer B probes the delivered duration too, so
-                # a transform that lands outside the format's bounds fails the
-                # job here rather than shipping to the Worker.
-                maximum = 9.0 if recipe.format_slug == "pov-club" or transforms.loop_swap else 10.0
+                # A delivered cut is bounded by what the Worker admits (5-10 s).
+                # Scrambler outputs, pov-club and loop-swapped cuts must land at
+                # or under 9.0 s after the final re-encode. Layer B probes the
+                # delivered duration too, so a transform that lands outside the
+                # format's bounds fails the job here rather than shipping to the
+                # Worker. (vary_transforms is False on a Scrambler job, so
+                # `transforms` is only read for a Layer B cut drawn this pass.)
+                maximum = (9.0 if scram_record is not None
+                           or recipe.format_slug == "pov-club"
+                           or (vary_transforms and transforms.loop_swap) else 10.0)
+                if scram_record is not None and (
+                        measured_duration is None
+                        or not 5.0 <= measured_duration <= maximum):
+                    # A Scrambler cut whose delivered duration is unreadable or
+                    # outside 5-9 s is refused on its own: its output is deleted,
+                    # only its reservation is released, and the job's other cuts
+                    # still deliver. If every cut is refused the job fails with
+                    # this reason (source_output_duration_unsupported), so a
+                    # Scrambler cut never takes the Layer B warn-and-deliver path.
+                    destination.unlink(missing_ok=True)
+                    await _skip_refused_scrambler_cut(
+                        job, job_id, scram_record,
+                        _ScramblerCutRefused("source_output_duration_unsupported"),
+                        refused_scrambler_cuts)
+                    continue
                 if measured_duration is None:
                     if vary_look or recipe.format_slug == "pov-club":
-                        # Main's strict behaviour: a clip-varying (Layer A) or
-                        # pov-club cut whose delivered duration cannot be read is
-                        # not admissible, so the job fails here.
+                        # Strict: a clip-varying (Layer A) cut or a pov-club cut
+                        # whose delivered duration cannot be read is not
+                        # admissible, so the job fails here.
                         raise RuntimeError("source_output_duration_unsupported")
                     # Layer-B-only page: the probe could not read the file. Warn
                     # and deliver the already-encoded cut; an out-of-bounds value
@@ -4070,6 +4328,22 @@ async def _run_owned_dossier_source(job_id: str) -> None:
                     job, destination, measured_duration, transforms, recent_cuts,
                     [(f"{job_id}/{done}", (clip.get("similarity") or {}).get("fingerprint"))
                      for done, clip in enumerate(manifests)])
+            if scram_record is not None:
+                # Lab-private manifest-only records: the drawn effective speed
+                # and transforms. Never a receipt or wire field, and never an
+                # input to any library-id/version/catalogVersion hash.
+                manifest["clipTransforms"] = {
+                    **(scram_transforms.manifest() if scram_transforms else {}),
+                    "split_swap": scram_split_swap,
+                }
+                manifest["scrambler"] = {
+                    **scram_record,
+                    "renderedStartMs": render_start_ms,
+                    "renderedDurationMs": render_duration_ms,
+                    "effectiveSpeed": render_speed,
+                    **({"gradeBrightness": scram_grade_brightness}
+                       if scram_grade_brightness is not None else {}),
+                }
             if frame_cut:
                 manifest["frameCut"] = {"frame": frame_cut["page_frame"], "frameFit": frame_cut["frame_fit"]}
             manifest["sourceTreatment"] = source_treatment_receipt(
@@ -4096,16 +4370,34 @@ async def _run_owned_dossier_source(job_id: str) -> None:
                     "provenance": master.provenance,
                 },
                 "cutWindow": {
-                    "libraryStartMs": start_ms,
-                    "libraryEndMs": start_ms + duration_ms,
-                    "durationMs": duration_ms,
-                    "originalStartMs": master.source_offset_ms + start_ms,
-                    "originalEndMs": master.source_offset_ms + start_ms + duration_ms,
+                    # The window actually rendered (a scrambler cut skips the
+                    # reserved span's offset head and cuts windowMs at the
+                    # effective speed), so the provenance never over- or
+                    # under-reports the origin seconds shown.
+                    "libraryStartMs": render_start_ms,
+                    "libraryEndMs": render_start_ms + render_duration_ms,
+                    "durationMs": render_duration_ms,
+                    "originalStartMs": master.source_offset_ms + render_start_ms,
+                    "originalEndMs": master.source_offset_ms + render_start_ms + render_duration_ms,
                 },
             })
             manifest["thumbnail"] = await _thumbnail_manifest(
                 job_root, destination, len(manifests),
             )
+            if scram_record is not None:
+                # Durable private recovery checkpoint precedes the ledger
+                # commit. A crash cannot leave a committed asset unlocated.
+                if await _settle_source_update(job_id,
+                        scramblerRenderedClips=[*manifests, manifest]) is None:
+                    return
+                # Rendered-state commit: the finished clip exists with this
+                # sha. A failure below or before never records a success; the
+                # job's failure path releases the reservation instead.
+                await _settle_source_call(
+                    mark_cut_rendered,
+                    job["pageId"], job_id, int(scram_record["cutIndex"]),
+                    asset_sha256=manifest["sha256"],
+                )
             manifests.append(manifest)
             delivered_cuts.append(source_cut)
             await _settle_source_update(
@@ -4114,8 +4406,14 @@ async def _run_owned_dossier_source(job_id: str) -> None:
             )
         if skipped_backup_cuts and not manifests:
             raise RuntimeError("source_dna_master_unavailable")
+        if refused_scrambler_cuts and not manifests:
+            raise RuntimeError(refused_scrambler_cuts[0])
     except asyncio.CancelledError:
-        shutil.rmtree(job_root, ignore_errors=True)
+        if not scramble:
+            shutil.rmtree(job_root, ignore_errors=True)
+        if scramble:
+            await _settle_source_call(release_job_reservations, job["pageId"], job_id,
+                                    reason="generation_cancelled")
         await _settle_source_update(
             job_id,
             status="failed",
@@ -4124,7 +4422,13 @@ async def _run_owned_dossier_source(job_id: str) -> None:
         )
         raise
     except Exception as error:
-        shutil.rmtree(job_root, ignore_errors=True)
+        if not scramble:
+            shutil.rmtree(job_root, ignore_errors=True)
+        if scramble:
+            # Release only unrendered commitments. Completed assets, variety
+            # and reverse credit remain durable for private recovery.
+            await _settle_source_call(release_job_reservations, job["pageId"], job_id,
+                                    reason="render_failed")
         await _settle_source_update(
             job_id,
             status="failed",
@@ -4133,6 +4437,9 @@ async def _run_owned_dossier_source(job_id: str) -> None:
         )
         return
     if not _job_matches_current_master_pages(job):
+        if scramble:
+            await _settle_source_call(release_job_reservations, job["pageId"], job_id,
+                                    reason="master_pages_strategy_changed")
         await _settle_source_update(
             job_id,
             status="failed",
@@ -4140,6 +4447,12 @@ async def _run_owned_dossier_source(job_id: str) -> None:
             completedAt=datetime.now(timezone.utc).isoformat(),
         )
         return
+    if skipped_backup_cuts and scramble:
+        # Backup-skipped cuts rendered nothing: at completion every rendered
+        # cut is already RENDERED, so a whole-job release tombstones exactly
+        # the skipped cuts' rows instead of stranding them as RESERVED.
+        await _settle_source_call(release_job_reservations, job["pageId"], job_id,
+                                reason="backup_cut_skipped")
     await _settle_source_update(
         job_id,
         status="completed",
@@ -4581,25 +4894,31 @@ _source_import_tasks: dict[str, asyncio.Task] = {}
 _syzygy_slideshow_tasks: dict[str, asyncio.Task] = {}
 
 
-async def _settle_source_update(job_id: str, **fields: Any) -> dict[str, Any] | None:
-    """Do not drop a held claim while its persistence thread is still live."""
-    # A bare executor Future is not a Task, so event-loop shutdown's
-    # cancel-all sweep cannot cancel the handle before the thread settles.
+async def _settle_source_call(operation, *args, **kwargs):
+    """Drain a source-owned thread before any job/page claim can unwind."""
     context = contextvars.copy_context()
-    call = functools.partial(context.run, _update_source_job, job_id, **fields)
+    call = functools.partial(context.run, operation, *args, **kwargs)
     worker = asyncio.get_running_loop().run_in_executor(None, call)
-    cancelled = False
+    cancellation = None
     while not worker.done():
         try:
             await asyncio.shield(worker)
-        except asyncio.CancelledError:
-            cancelled = True
+        except asyncio.CancelledError as error:
+            cancellation = cancellation or error
+        except BaseException:
+            # Retrieve the settled error below, preserving an earlier cancel.
+            break
     try:
         result = worker.result()
     finally:
-        if cancelled:
-            raise asyncio.CancelledError
+        if cancellation is not None:
+            raise cancellation
     return result
+
+
+async def _settle_source_update(job_id: str, **fields: Any) -> dict[str, Any] | None:
+    """Persist only while the source job is active, retaining the claim."""
+    return await _settle_source_call(_update_source_job, job_id, **fields)
 
 
 async def _guarded_job_runner(runner, job_id: str, setup_error: str) -> None:
@@ -5077,6 +5396,15 @@ async def create_job(
     start_source = False
     start_truck_recovery = False
     start_slideshow = False
+    scrambler_draws = None
+    # The originality feed parse (up to 64 MiB) runs off the event loop and
+    # outside the jobs lock; an ON page only (MED-2). Errors surface below.
+    preloaded_originality = None
+    if scrambler_gate(page_id)[0]:
+        try:
+            preloaded_originality = await asyncio.to_thread(load_originality_index_cached)
+        except ScramblerOriginalityUnavailable as error:
+            preloaded_originality = error
     with lock_for(_jobs_path()):
         store = _load_jobs()
         existing_id = _idempotency_job_id(store, idempotency_key)
@@ -5111,6 +5439,10 @@ async def create_job(
                                 "completedAt": datetime.now(timezone.utc).isoformat(),
                             })
                             _save_jobs(store)
+                            if any(isinstance(cut, dict) and "scrambler" in cut
+                                   for cut in existing.get("sourceCuts", ())):
+                                release_job_reservations(existing["pageId"], existing["jobId"],
+                                                         reason="generation_runtime_restarted")
                 else:
                     existing.update({
                         "status": "failed",
@@ -5292,23 +5624,166 @@ async def create_job(
             cut_plan_seed = hashlib.sha256(
                 f"{idempotency_key}\0{job_id}".encode(),
             ).hexdigest()[:16]
-            cuts = plan_source_cuts(
-                source_recipe, quantity, served_slots, excluded_windows,
-                seed=cut_plan_seed, history=cut_history,
-            )
-            if len(cuts) != quantity:
-                cut_plan_seed = CAPABILITY_PLAN_SEED
+            # The Scrambler (services/scrambler.py) is default OFF: only an
+            # enabled AND allow-listed AND not-denied page reserves per-cut
+            # draws here. Every OFF page plans exactly as before,
+            # byte-identically. ON reserves the FULL origin span (offset +
+            # length x effective speed) BEFORE the window is chosen - a 7.5 s
+            # output at 1.3x reserves 9.75 s - then hands the planner one
+            # drawn span per cut (draw-before-plan). Footage eligibility is
+            # the material contract (this whole branch IS a resolved
+            # source_library/source_dna_recut recipe): no account or
+            # storage-prefix exclusion exists - the BTL v2 library under a
+            # tt-warner- storage scope is Eric-approved sourced footage and is
+            # scrambled like any other source library.
+            scrambler_draws = None
+            originality_index = None
+            page_handles: frozenset[str] = frozenset()
+            _gate_on, _gate_reason = scrambler_gate(page_id)
+            if _gate_reason == "scrambler_worker_source_window_compat_required":
+                # Operator turned the switches on without acknowledging the
+                # Worker source-window release dependency. Refuse LOUDLY: a
+                # silent legacy fallback would hide the misconfiguration and
+                # the reserved spans could never deliver. Never falsify cut
+                # bounds to fit the Worker's current 5-10 s origin-span
+                # admission (proved in ../worker-admission-proof).
+                raise HTTPException(
+                    status_code=409,
+                    detail=("scrambler_unavailable: "
+                            "scrambler_worker_source_window_compat_required"),
+                )
+            if _gate_on:
+                master_pages = source_recipe.recipe_spec.get("masterPages")
+                handle = master_pages.get("handle") if isinstance(master_pages, dict) else None
+                if not isinstance(handle, str) or not handle.strip():
+                    # Ownership mapping is required: without the page's real
+                    # handle the usage ledger cannot tell this page's own
+                    # shows from another page's, and unknown ownership
+                    # refuses ON.
+                    raise HTTPException(
+                        status_code=409,
+                        detail="scrambler_unavailable: scrambler_page_handle_missing",
+                    )
+                page_handles = frozenset({handle})
+                look_filters = {}
+                render_treatment = source_recipe.recipe_spec.get("renderTreatment")
+                if isinstance(render_treatment, dict):
+                    filters = render_treatment.get("filters")
+                    if isinstance(filters, dict):
+                        look_filters = filters
+                # Real-ledger show limits, ON only: the authoritative
+                # usage/origins/retired feed is REQUIRED (unset raises and
+                # fails this job closed); the OFF path never reads it.
+                # Loading BEFORE the reserve means a feed failure can never
+                # leak a just-committed reservation.
+                try:
+                    if preloaded_originality is None:
+                        # Switch flipped ON after the preload: load here.
+                        preloaded_originality = load_originality_index_cached()
+                    if isinstance(preloaded_originality, BaseException):
+                        raise preloaded_originality
+                    originality_index = preloaded_originality
+                    assert_existing_jobs(
+                        old_id for old_id, old_job in store["jobs"].items()
+                        if any(isinstance(cut, dict) and "scrambler" in cut
+                               for cut in old_job.get("sourceCuts", ())))
+                    # The jobs lock serializes every enqueue. A RESERVED
+                    # operation absent from the durable job store never became
+                    # executable (e.g. crash between reserve and save).
+                    orphaned = {(row["pageId"], row["jobId"])
+                                for row in live_reservation_rows()
+                                if row["jobId"] not in store["jobs"]
+                                and row["state"] == "reserved"}
+                    for orphan_page, orphan_job in orphaned:
+                        release_job_reservations(orphan_page, orphan_job,
+                                                 reason="uncommitted_enqueue_recovered")
+                    # Rendered cuts whose job failed never deliver: release
+                    # their origin-window holds after the grace period.
+                    release_undelivered_holds(
+                        lambda held: (store["jobs"].get(held) or {}).get("status"))
+                    pending_windows = scrambler_pending_windows(originality_index, job_id)
+                    prior_canonical_starts = scrambler_recent_canonical_starts(
+                        originality_index, page_id, job_id)
+                except (ScramblerOriginalityUnavailable, ScramblerHistoryCorrupt,
+                        ScramblerHistoryLost) as error:
+                    raise HTTPException(
+                        status_code=409,
+                        detail=f"scrambler_unavailable: {error}",
+                    )
+                try:
+                    scrambler_draws = reserve_job_cuts(
+                        page_id, job_id, quantity,
+                        grade_allowed=grade_allowed_for_look(look_filters.get("brightness")),
+                    )
+                except ScramblerExhausted:
+                    raise HTTPException(
+                        status_code=409,
+                        detail="scrambler_combo_space_exhausted",
+                    )
+                except (
+                    ScramblerHistoryCorrupt, ScramblerHistoryLost,
+                    ScramblerOriginalityUnavailable, ValueError,
+                ) as error:
+                    raise HTTPException(
+                        status_code=409,
+                        detail=f"scrambler_unavailable: {error}",
+                    )
+            if scrambler_draws is not None:
+                scrambler_plan = ScramblerPlan(
+                    page_id=page_id,
+                    spans=tuple(draw.span_ms() for draw in scrambler_draws),
+                    originality=originality_index,
+                    page_handles=page_handles,
+                    pending_windows=pending_windows,
+                    prior_canonical_starts=prior_canonical_starts,
+                )
+                try:
+                    cuts = plan_source_cuts(
+                        source_recipe, quantity, served_slots, excluded_windows,
+                        seed=cut_plan_seed, history=cut_history,
+                        scrambler=scrambler_plan,
+                    )
+                    if len(cuts) != quantity:
+                        cut_plan_seed = CAPABILITY_PLAN_SEED
+                        cuts = plan_source_cuts(
+                            source_recipe, quantity, served_slots, excluded_windows,
+                            seed=cut_plan_seed, history=cut_history,
+                            scrambler=scrambler_plan,
+                        )
+                except BaseException as error:
+                    # A planner refusal (e.g. retired master) after a
+                    # committed reserve must not orphan the reservations.
+                    release_job_reservations(page_id, job_id, reason="source_plan_failed")
+                    if isinstance(error, (ScramblerOriginalityUnavailable,
+                                          ScramblerHistoryCorrupt, ScramblerHistoryLost)):
+                        raise HTTPException(status_code=409,
+                            detail=f"scrambler_unavailable: {error}")
+                    raise
+                if len(cuts) != quantity:
+                    # The drawn spans cannot be planned on this library:
+                    # release the reservations (named) and refuse through the
+                    # same paths as OFF below.
+                    release_job_reservations(page_id, job_id, reason="source_plan_short")
+            else:
                 cuts = plan_source_cuts(
                     source_recipe, quantity, served_slots, excluded_windows,
                     seed=cut_plan_seed, history=cut_history,
                 )
+                if len(cuts) != quantity:
+                    cut_plan_seed = CAPABILITY_PLAN_SEED
+                    cuts = plan_source_cuts(
+                        source_recipe, quantity, served_slots, excluded_windows,
+                        seed=cut_plan_seed, history=cut_history,
+                    )
             if not cuts:
                 # source_master_too_short, source_windows_exhausted (every
                 # window already cut: the page needs new footage) or
                 # source_windows_reserved_by_other_pages. The same code rides
                 # the X-RT-Zero-Reason header for a future Worker reader.
-                reason = explain_empty_source_plan(
-                    source_recipe, served_slots, excluded_windows,
+                reason = (
+                    "scrambler_source_windows_unavailable" if scrambler_draws is not None
+                    else explain_empty_source_plan(
+                        source_recipe, served_slots, excluded_windows)
                 )
                 raise HTTPException(
                     status_code=409,
@@ -5320,7 +5795,54 @@ async def create_job(
             job_root = (
                 _generation_root() / page_id / recipe_version / job_id
             ).resolve()
-            job_root.mkdir(parents=True, exist_ok=False, mode=0o700)
+            try:
+                job_root.mkdir(parents=True, exist_ok=False, mode=0o700)
+            except BaseException:
+                if scrambler_draws is not None:
+                    release_job_reservations(page_id, job_id, reason="job_root_unavailable")
+                raise
+            if scrambler_draws is not None:
+                # The Lab-private draw record rides the job's own cut entry
+                # (never a receipt, wire or identity-hash field); the executor
+                # keys off its presence, so a restart or a switch change never
+                # redraws a committed job.
+                try:
+                    enriched_rows = []
+                    for index, cut in enumerate(cuts):
+                        # KG-A: the ledger row stores the CANONICAL upstream
+                        # origin window (same private API the planner judged
+                        # the candidate with), not the descriptor's public
+                        # source offset. The descriptor is never rewritten.
+                        _kind, _oid, origin_start, origin_end = (
+                            originality_index.canonical_origin_window(
+                                cut.master.sha256,
+                                cut.start_ms + scrambler_draws[index].offset_ms,
+                                scrambler_draws[index].window_ms(),
+                            )
+                        )
+                        enriched_rows.append({
+                            "cutIndex": index,
+                            "masterSha256": cut.master.sha256,
+                            "masterSourceId": cut.master.source_id,
+                            "libraryStartMs": cut.start_ms,
+                            "originKind": _kind,
+                            "originId": _oid,
+                            "originStartMs": origin_start,
+                            "originEndMs": origin_end,
+                        })
+                    enrich_job_reservations(page_id, job_id, enriched_rows)
+                except BaseException as error:
+                    # Any enrich failure (corrupt ledger, mapping gap, I/O,
+                    # unexpected value) releases: the reservations must not
+                    # outlive the enqueue that created them.
+                    release_job_reservations(page_id, job_id, reason="enrich_failed")
+                    if isinstance(error, (ScramblerHistoryCorrupt, ScramblerHistoryLost,
+                                          ScramblerOriginalityUnavailable)):
+                        raise HTTPException(
+                            status_code=409,
+                            detail=f"scrambler_unavailable: {error}",
+                        )
+                    raise
             job = {
                 **common,
                 "sourceKind": "dossier_source_dna",
@@ -5335,7 +5857,14 @@ async def create_job(
                     "libraryStartMs": cut.start_ms,
                     "startMs": cut.start_ms,
                     "durationMs": cut.duration_ms,
-                } for cut in cuts],
+                    **({
+                        "scrambler": {
+                            **scrambler_draws[index].manifest(),
+                            "cutIndex": index,
+                            "slotId": f"{job_id}#cut-{index}",
+                        },
+                    } if scrambler_draws is not None else {}),
+                } for index, cut in enumerate(cuts)],
                 "cutPlanSeed": cut_plan_seed,
                 "sourceLibraryId": source_recipe.source_library_id,
                 "sourceLibraryHash": source_recipe.source_library_hash,
@@ -5419,7 +5948,14 @@ async def create_job(
             start_slideshow = True
         store["jobs"][job_id] = job
         store["byIdempotency"][idempotency_key] = job_id
-        _save_jobs(store)
+        try:
+            _save_jobs(store)
+        except BaseException:
+            # A failed durable save leaves no job, so the Scrambler
+            # reservations it reserved must not survive it.
+            if scrambler_draws is not None:
+                release_job_reservations(page_id, job_id, reason="enqueue_save_failed")
+            raise
 
     if start_generation:
         _start_dossier_generation(job_id)
@@ -5618,11 +6154,16 @@ async def job_status(
                     if acquired:
                         current = _get_job_or_404(job_id)
                         if current.get("status") in GENERATION_ACTIVE_STATUSES:
-                            _update_source_job(
+                            expired = _update_source_job(
                                 job_id, status="failed",
                                 error="generation_runtime_restarted",
                                 completedAt=datetime.now(timezone.utc).isoformat(),
                             )
+                            if expired is not None and any(
+                                    isinstance(cut, dict) and "scrambler" in cut
+                                    for cut in expired.get("sourceCuts", ())):
+                                release_job_reservations(expired["pageId"], job_id,
+                                                         reason="generation_runtime_restarted")
         else:
             current = _get_job_or_404(job_id)
             if current.get("status") in GENERATION_ACTIVE_STATUSES:
