@@ -1,0 +1,7 @@
+# Railway slash-redirect scheme proposal
+
+For F-LAB-SLASH-REDIRECT-HTTP-SCHEME-LOW, main.py explicitly enables Uvicorn proxy headers and uses a wildcard default only in a process with a nonblank Railway environment ID. An explicit FORWARDED_ALLOW_IPS, including an empty value, takes precedence; other processes keep Uvicorn's default. This assumes trusted ingress in that marked deployment and does not establish deployment isolation.
+
+Added 18 standalone unittest cases over the actual entrypoint options and in-memory Uvicorn/Starlette redirects: HTTPS slash redirect, other paths/query, canonical routes, synthetic private route, local/default/explicit trust behavior, forwarded host, and unchanged entrypoint settings/import behavior. The app import and server launch are replaced; no production app or server starts.
+
+Validation is pending. A normal Maj light-gate attempt stopped before any case at missing Uvicorn. The baseline has the same dependency failure, so it is not semantic RED. No dependencies were installed. An existing approved Seeno/Maj interpreter with Uvicorn and Starlette is needed to run both candidate and upstream baseline. Raw receipts and the precise dependency are in the control-plane coordination evidence. No image build, full pytest, deployment, restart, deletion or live route verification was performed. Keep this proposal in draft until acceptance and owner/Tides review.
