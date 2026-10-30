@@ -1,3 +1,4 @@
+import copy
 import json
 
 import pytest
@@ -113,3 +114,85 @@ def test_a_retired_master_may_remain_as_a_librarys_single_original_primary():
     assert [m.sha256 for m in library.masters] == [
         "3816ff5c4c79d73eff1694cc21f3644aff18bb68c3a97ca5b8306316feda1314"
     ]
+
+
+def test_master_origin_round_trips_when_window_matches_duration_and_offset():
+    value = _manifest()
+    value["masters"][0]["origin"] = {
+        "originSourceId": "1uMmco2zNZc",
+        "originStartMs": 120_000,
+        "originEndMs": 1_020_000,
+    }
+    parsed = parse_source_dna_manifest(_raw(value), "dirt-bike-masters-v1")
+    assert parsed.masters[0].origin == {
+        "originSourceId": "1uMmco2zNZc",
+        "originStartMs": 120_000,
+        "originEndMs": 1_020_000,
+    }
+
+
+@pytest.mark.parametrize("mutate", [
+    lambda o: o.update(originStartMs=0),
+    lambda o: o.update(originEndMs=1_200_000),
+    lambda o: o.pop("originSourceId"),
+])
+def test_master_origin_rejects_window_that_diverges_from_master(mutate):
+    value = _manifest()
+    origin = {
+        "originSourceId": "1uMmco2zNZc",
+        "originStartMs": 120_000,
+        "originEndMs": 1_020_000,
+    }
+    mutate(origin)
+    value["masters"][0]["origin"] = origin
+    with pytest.raises(SourceDnaError):
+        parse_source_dna_manifest(_raw(value), "dirt-bike-masters-v1")
+
+
+# ---------------------------------------------------------------------------
+# fix4: origin is recorded but must never move the primary library version.
+# ---------------------------------------------------------------------------
+
+def _with_origin(value):
+    value = copy.deepcopy(value)
+    value["masters"][0]["origin"] = {
+        "originSourceId": "1uMmco2zNZc",
+        "originStartMs": 120_000,
+        "originEndMs": 1_020_000,
+    }
+    return value
+
+
+def test_primary_version_is_origin_identity_free():
+    without = parse_source_dna_manifest(_raw(_manifest()), "dirt-bike-masters-v1")
+    with_origin = parse_source_dna_manifest(
+        _raw(_with_origin(_manifest())), "dirt-bike-masters-v1",
+    )
+    assert with_origin.masters[0].origin is not None
+    assert with_origin.sha256 == without.sha256
+
+
+def test_primary_version_origin_is_identity_free_with_a_backup_present():
+    value = _manifest()
+    value["masters"].append({
+        "sourceId": "ozark-master-backup",
+        "sha256": "b" * 64,
+        "bytes": 10,
+        "filename": "ozark-master-backup.mp4",
+        "mimeType": "video/mp4",
+        "storageKey": "source-dna/pov-dirt-bike/ozark-master-backup.mp4",
+        "durationMs": 30_000,
+        "sourceOffsetMs": 0,
+        "provenance": {
+            "sourceUrl": "https://source.example/watch/ozark-backup",
+            "acquiredAt": "2026-08-31T20:00:00Z",
+            "authority": "operator-reviewed original footage",
+        },
+        "role": "backup",
+    })
+    without = parse_source_dna_manifest(_raw(value), "dirt-bike-masters-v1")
+    with_origin = parse_source_dna_manifest(
+        _raw(_with_origin(value)), "dirt-bike-masters-v1",
+    )
+    assert with_origin.masters[0].origin is not None
+    assert with_origin.sha256 == without.sha256

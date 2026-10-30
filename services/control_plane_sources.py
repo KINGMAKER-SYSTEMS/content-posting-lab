@@ -32,6 +32,7 @@ from services.control_plane_generation import (
     render_treatment_capability,
     typed_recipe_spec,
 )
+from services import originality_shadow
 from services.source_dna_registry import (
     RETIRED_MASTER_SHAS,
     MasterSource,
@@ -502,6 +503,78 @@ def source_cut_durations(recipe: SourceRecipe) -> tuple[int, ...]:
     if recipe.format_slug == "pov-club":
         return ()
     return _legacy_source_cut_durations(recipe)
+
+
+# The recipe a delivered cut was actually made at, for the receipt's
+# source.recipe leg (gap G39; a SIBLING of source.master/source.cutWindow —
+# the contract agreed with originality and growth-brain's Worker allow-list
+# change g-worker-allow-origin-1028). The originality ledger reads these
+# EXACT names; every value is null when that treatment was not applied (a
+# plain cut is all null), and each is the ACTUAL render value
+# (services/clip_variation.py and services/clip_transforms.py draws), never
+# the planned one. The Worker allow-lists this object only once
+# CONTENT_LAB_ADVERTISE_ORIGIN is set, so routers/control_plane.py emits it
+# behind that flag.
+RECIPE_FIELDS = ("speed", "reverse", "loop_split", "crop", "hflip")
+NEUTRAL_CLIP_CROP = {"zoom": 1.0, "focusX": 0.5, "focusY": 0.5}
+
+
+def cut_window_recipe(
+    speed: float | None,
+    crop: dict[str, float] | None,
+    *,
+    reverse: bool | None = None,
+    hflip: bool | None = None,
+    loop_split: bool | None = None,
+) -> dict[str, Any]:
+    """The recipe leg of contentLabProvenance.source.recipe.
+
+    ``speed`` is the actual playback multiplier (null at 1.0: normal playback
+    applies no speed treatment). ``crop`` is the clipCrop shape
+    (routers/control_plane_recipes.py CLIP_CROP_FIELDS) actually rendered,
+    null when it is the neutral centered crop (not applied) or unknown.
+    ``reverse``/``hflip`` are true only when that transform ran
+    (services/clip_transforms.py CutTransforms.reverse/mirror). ``loop_split``
+    is true when the cut is a split-and-rotate loop (it covers the same
+    origin seconds); the Lab has no such cut path yet, so it stays null.
+    Anything outside the ledger's type bounds raises: these values come from
+    validated recipes and draws, so an out-of-domain input is a bug, not a
+    missing treatment.
+    """
+    if speed is None:
+        emitted_speed = None
+    else:
+        if isinstance(speed, bool) or not isinstance(speed, (int, float)) \
+                or not math.isfinite(float(speed)) or float(speed) <= 0:
+            raise ValueError("cut window recipe speed is invalid")
+        emitted_speed = float(speed) if float(speed) != 1.0 else None
+    emitted_crop: dict[str, float] | None = None
+    if crop is not None:
+        if not isinstance(crop, dict) or set(crop) != set(NEUTRAL_CLIP_CROP):
+            raise ValueError("cut window recipe crop is invalid")
+        values = {}
+        for name, value in crop.items():
+            if isinstance(value, bool) or not isinstance(value, (int, float)) \
+                    or not math.isfinite(float(value)):
+                raise ValueError("cut window recipe crop is invalid")
+            values[name] = float(value)
+        if not 1.0 <= values["zoom"] <= 3.0 \
+                or not 0.0 <= values["focusX"] <= 1.0 \
+                or not 0.0 <= values["focusY"] <= 1.0:
+            raise ValueError("cut window recipe crop is out of range")
+        if values != NEUTRAL_CLIP_CROP:
+            emitted_crop = values
+    for name, value in (("reverse", reverse), ("hflip", hflip),
+                        ("loop_split", loop_split)):
+        if value is not None and not isinstance(value, bool):
+            raise ValueError(f"cut window recipe {name} is invalid")
+    return {
+        "speed": emitted_speed,
+        "reverse": True if reverse else None,
+        "loop_split": True if loop_split else None,
+        "crop": emitted_crop,
+        "hflip": True if hflip else None,
+    }
 
 
 def _legacy_source_cut_durations(recipe: SourceRecipe) -> tuple[int, ...]:
@@ -1077,6 +1150,8 @@ def plan_source_cuts(
     seed: str = CAPABILITY_PLAN_SEED,
     history: dict[str, CutUse] | None = None,
     scrambler: ScramblerPlan | None = None,
+    shadow_page_id: str | None = None,
+    shadow_job_id: str | None = None,
 ) -> list[SourceCut]:
     """Plan up to ``quantity`` never-cut windows, as varied as possible.
 
@@ -1132,6 +1207,13 @@ def plan_source_cuts(
     SAMPLE_ROUNDS samples while none is usable), so a 24 h master stays cheap
     on every capability poll; a sample that finds nothing usable is confirmed
     by an exact pass over the level, so no never-cut window is passed over.
+
+    After the plan is final, the originality shadow (services/
+    originality_shadow.py, gap G39) LOGS every chosen window that would reuse
+    footage the network already showed. It never changes this plan, and it is
+    fully off unless CONTENT_LAB_ORIGINALITY_SUMMARY_PATH names the private
+    summary file (or a token-authenticated URL source is configured);
+    ``shadow_page_id``/``shadow_job_id`` only label its log lines.
     """
     if not isinstance(quantity, int) or isinstance(quantity, bool) or quantity <= 0:
         raise ValueError("quantity must be a positive integer")
@@ -1163,10 +1245,18 @@ def plan_source_cuts(
             recipe, quantity, served_slots, exclusions,
             seed=seed, history=history, scrambler=scrambler,
         )
-    return _plan_source_cuts_base(
+    chosen = _plan_source_cuts_base(
         recipe, quantity, served_slots, exclusions,
         seed=seed, history=history,
     )
+    # Originality shadow (gap G39): log-only, after the plan is final. It
+    # never touches the windows, the size or the order above; the page and
+    # job ids are context for the log line, nothing else. Scrambler plans
+    # (above) keep their own real-ledger limits and are not shadow-logged.
+    originality_shadow.observe_planned_cuts(
+        recipe, chosen, page_id=shadow_page_id, job_id=shadow_job_id,
+    )
+    return chosen
 
 
 def _plan_source_cuts_base(
