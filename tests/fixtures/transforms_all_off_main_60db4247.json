@@ -1,0 +1,84 @@
+{
+  "bytes": 26,
+  "clipCrop": {
+    "focusX": 0.5,
+    "focusY": 0.5,
+    "zoom": 1.0
+  },
+  "clipSpeed": 1.0,
+  "name": "source-0000.mp4",
+  "path": "treated/source-0000.mp4",
+  "sha256": "fb35878255d367241cc1aa44008002d1bb2a48d5a343300c27e0627e6c3ae2f8",
+  "source": {
+    "contentEngine": "sourced_video",
+    "contentNiche": "POV - Dirtbike",
+    "cutWindow": {
+      "durationMs": 6000,
+      "libraryEndMs": 6000,
+      "libraryStartMs": 0,
+      "originalEndMs": 126000,
+      "originalStartMs": 120000
+    },
+    "master": {
+      "bytes": 414027449,
+      "durationMs": 180000,
+      "filename": "fixture_master.mp4",
+      "mimeType": "video/mp4",
+      "provenance": {
+        "acquiredAt": "2026-07-29T17:37:41Z",
+        "authority": "test fixture: operator-reviewed original footage (non-retired)",
+        "sourceUrl": "https://www.youtube.com/watch?v=vt5im2TRAKw"
+      },
+      "sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "sourceId": "youtube-fixture-120-300",
+      "sourceOffsetMs": 120000,
+      "storageKey": "source-dna/pov-dirt-bike/tt-fixture-dirt-bike/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee.mp4"
+    },
+    "masterPagesHash": "sha256:06d7988c4495fbfbf866eff078c434d686fd85bbb30854fadab6fef7440f8530",
+    "pageId": "tt-fixture-dirt-bike",
+    "recipeId": "pov-dirt-bike:master",
+    "sourceLibraryId": "pov-dirt-bike-fixture-v1",
+    "sourceLibraryVersion": "sha256:db1247b9ee3366fd5488970947082cea84ba9474ad4d627203d3ba6f3901c746",
+    "vaultUrl": "https://shipstream.test/vault/chase.miles.4l"
+  },
+  "sourceTreatment": {
+    "generationJobId": "cpl-aaaaaaaaaaaaaaaa",
+    "recipeSpecHash": "sha256:5be10a893d55d9dcccf70b06083969fcc4f98cc8c5219959b1733c8cdd5d20bb",
+    "schema": "content-lab.source-treatment.v1",
+    "sourceRecipeTreatment": {
+      "captionStyle": {},
+      "clipCrop": {
+        "focusX": 0.5,
+        "focusY": 0.5,
+        "zoom": 1.0
+      },
+      "clipSpeed": 1.0,
+      "filters": {},
+      "stylePreset": null
+    },
+    "sourceSha256": "fb35878255d367241cc1aa44008002d1bb2a48d5a343300c27e0627e6c3ae2f8",
+    "visualTreatment": {
+      "clipCrop": {
+        "focusX": 0.5,
+        "focusY": 0.5,
+        "zoom": 1.0
+      },
+      "clipSpeed": 1.0,
+      "filters": {
+        "brightness": 1.0,
+        "contrast": 1.0,
+        "fade": 0.0,
+        "grain": 0.0,
+        "saturation": 1.0,
+        "vignette": 0.0,
+        "warmth": 0.0
+      }
+    }
+  },
+  "thumbnail": {
+    "bytes": 14,
+    "name": "0000.jpg",
+    "path": "thumbnails/0000.jpg",
+    "sha256": "a15e98193da4cce55486e251fb883417f02b0597cae7456f2a59b857a801d81b"
+  }
+}
