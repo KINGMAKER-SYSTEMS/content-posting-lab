@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import asyncio
 import weakref
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import hmac
@@ -3777,8 +3778,63 @@ def _latest_page_cut_transforms(page_id: str, job_id: str, jobs: dict | None = N
 
 # Layer-B-only cuts whose delivered-duration probe could not read the file are
 # delivered after a warning (content_lab.layer_b_probe_unreadable); this counts
-# them so the gap-timed rollout can watch for a systematic probe failure.
+# them so the gap-timed rollout can watch for a systematic probe failure. That
+# fallback is bounded, though: it was open-ended, so a systematically broken
+# ffprobe would have shipped every Layer-B cut unverified forever. The rolling
+# window below (monotonic clock, process-local, single event loop so no lock,
+# like the counter) trips once max unreadable probes sit inside it, and from
+# there Layer-B-only unreadable cuts fail exactly like the strict path until
+# the window drains below the max.
 _layer_b_probe_unreadable_count = 0
+_LAYER_B_PROBE_UNREADABLE_MAX_ENV = "LAYER_B_PROBE_UNREADABLE_MAX"
+_LAYER_B_PROBE_UNREADABLE_MAX_DEFAULT = 5
+_LAYER_B_PROBE_WINDOW_SECONDS = 60 * 60.0
+_layer_b_probe_unreadable_times: deque[float] = deque()
+_layer_b_probe_unreadable_tripped = False
+
+
+def _layer_b_probe_unreadable_max() -> int:
+    """Unreadable-probe budget per window. Env override, int >= 1, else default."""
+    raw = os.environ.get(_LAYER_B_PROBE_UNREADABLE_MAX_ENV, "").strip()
+    if raw:
+        try:
+            maximum = int(raw)
+        except ValueError:
+            return _LAYER_B_PROBE_UNREADABLE_MAX_DEFAULT
+        if maximum >= 1:
+            return maximum
+    return _LAYER_B_PROBE_UNREADABLE_MAX_DEFAULT
+
+
+def _layer_b_probe_unreadable(page_id: str, job_id: str) -> None:
+    """Warn-and-deliver one unreadable Layer-B probe, or trip and raise.
+
+    The window holds the monotonic timestamps of the latest unreadable probes,
+    delivered or tripped alike: they all say the probe could not read a file.
+    Under the max this keeps the warn-and-deliver fallback (and the rollout
+    counter); at the max it logs ONE error and raises
+    source_output_duration_unsupported so the job fails exactly like the
+    strict path, until the window drains below the max.
+    """
+    global _layer_b_probe_unreadable_count, _layer_b_probe_unreadable_tripped
+    now = time.monotonic()
+    horizon = now - _LAYER_B_PROBE_WINDOW_SECONDS
+    times = _layer_b_probe_unreadable_times
+    while times and times[0] <= horizon:
+        times.popleft()
+    if len(times) < _layer_b_probe_unreadable_max():
+        _layer_b_probe_unreadable_tripped = False
+    times.append(now)
+    if len(times) < _layer_b_probe_unreadable_max():
+        log.warning("content_lab.layer_b_probe_unreadable page=%s job=%s",
+                    page_id, job_id)
+        _layer_b_probe_unreadable_count += 1
+        return
+    if not _layer_b_probe_unreadable_tripped:
+        _layer_b_probe_unreadable_tripped = True
+        log.error("content_lab.layer_b_probe_unreadable_tripped page=%s job=%s count=%s",
+                  page_id, job_id, len(times))
+    raise RuntimeError("source_output_duration_unsupported")
 
 
 from services.scrambler import release_undelivered_holds  # noqa: E402
@@ -4223,11 +4279,11 @@ async def _run_dossier_source_inner(job_id: str) -> None:
                     # Layer-B-only page: the probe could not read the file. Warn
                     # and deliver the already-encoded cut; an out-of-bounds value
                     # is still rejected below on the next read, and the Worker
-                    # re-probes before admitting anything.
-                    log.warning("content_lab.layer_b_probe_unreadable page=%s job=%s",
-                                job["pageId"], job_id)
-                    global _layer_b_probe_unreadable_count
-                    _layer_b_probe_unreadable_count += 1
+                    # re-probes before admitting anything — but only while the
+                    # unreadable-probe window is under its max: at the max the
+                    # breaker trips (one error) and this cut fails like the
+                    # strict path above.
+                    _layer_b_probe_unreadable(job["pageId"], job_id)
                 elif not 5.0 <= measured_duration <= maximum:
                     raise RuntimeError("source_output_duration_unsupported")
             manifest = _generated_manifest(job_root, destination)
