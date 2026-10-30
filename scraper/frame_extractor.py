@@ -391,8 +391,10 @@ async def terminate_import_process_group(proc):
                 pass
     while proc.returncode is None:
         try:
-            await proc.wait()
-        except asyncio.CancelledError:
+            # Recheck returncode even if pipe transport shutdown is delayed by
+            # unread output; once the process exited it can no longer write.
+            await asyncio.wait_for(proc.wait(), timeout=0.1)
+        except (asyncio.CancelledError, TimeoutError):
             # The caller retains its import claim until the child exits, even
             # when shutdown or a second request cancels it again.
             continue

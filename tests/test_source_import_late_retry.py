@@ -381,3 +381,16 @@ async def test_old_child_late_open_cannot_touch_new_attempt_or_use_old_token(lab
         if child.poll() is None:
             child.kill()
             await asyncio.to_thread(child.wait)
+
+
+def test_foreign_active_import_still_occupies_page_capacity(lab):
+    client, intent, revision, _ = lab
+    first = client.post('/api/control-plane/v1/source-imports', headers=HEADERS, json=_body(intent, revision))
+    assert first.status_code == 200
+    job_id = first.json()['jobId']
+    cp._update_job(job_id, runtimeId='another-runtime')
+    second = client.post('/api/control-plane/v1/source-imports',
+        headers={**HEADERS, 'Idempotency-Key': 'source:intake:another-attempt'}, json=_body(intent, revision))
+    assert second.status_code == 409
+    assert second.json()['detail'] == 'source import is already active for this page'
+    assert cp._load_jobs()['jobs'][job_id]['status'] == 'queued'
