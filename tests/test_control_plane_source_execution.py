@@ -8,6 +8,7 @@ import logging
 from pathlib import Path
 import shutil
 import subprocess
+import time
 
 import pytest
 from services.clip_variation import GRADE_BANDS
@@ -2171,6 +2172,151 @@ async def test_a_layer_b_only_page_delivers_an_unreadable_probe(lab, monkeypatch
     assert set(clip["clipTransforms"]) == {"mirror", "motion", "reverse", "loop_swap"}
     assert cp._layer_b_probe_unreadable_count == 1
     assert any("content_lab.layer_b_probe_unreadable" in record.message for record in caplog.records)
+
+
+def _reset_layer_b_probe_breaker():
+    """The Layer-B unreadable breaker is process-local module state; start clean."""
+    cp._layer_b_probe_unreadable_count = 0
+    cp._layer_b_probe_unreadable_times.clear()
+    cp._layer_b_probe_unreadable_tripped = False
+
+
+def _layer_b_unreadable_patches(monkeypatch, tmp_path):
+    """A Layer-B-only page whose delivered-duration probe never reads the file."""
+    from services.clip_transforms import CutTransforms
+
+    monkeypatch.setattr(cp, "varies_clips", lambda page_id: False)
+    monkeypatch.setattr(cp, "cut_transforms", lambda *a, **k: CutTransforms(mirror=True))
+    monkeypatch.setattr(cp, "apply_transforms", lambda path, transforms, encode_args: None)
+    monkeypatch.setattr(cp, "probe_source_output_duration_seconds", lambda path: None)
+    _reset_layer_b_probe_breaker()
+    source = tmp_path / "master.mp4"
+    _write_av_test_clip(source, duration=40.0)
+
+    async def cached_source(*_):
+        return source
+
+    monkeypatch.setattr(cp, "_cached_source_master", cached_source)
+
+
+async def _run_layer_b_unreadable_job(client, idempotency):
+    """Post and run one one-cut Layer-B-only job; return its stored record."""
+    response = client.post(
+        "/api/control-plane/v1/jobs", json=job_body(1),
+        headers=headers(idempotency),
+    )
+    job_id = response.json()["jobId"]
+    _pin_cuts_to_first_frame(job_id)
+    await cp._run_dossier_source(job_id)
+    return cp._load_jobs()["jobs"][job_id]
+
+
+def _tripped_records(caplog):
+    return [record for record in caplog.records
+            if record.message.startswith("content_lab.layer_b_probe_unreadable_tripped")]
+
+
+@pytest.mark.asyncio
+async def test_layer_b_unreadable_under_the_max_still_delivers(lab, monkeypatch, caplog):
+    # F-LAB-LAYERB-PROBE-BOUND-1029: the warn-and-deliver fallback is now
+    # bounded by a rolling window. Two unreadable probes against a max of
+    # three stay under the budget: both jobs deliver with the warning, the
+    # counter moves, and nothing trips.
+    client, tmp_path, _ = lab
+    monkeypatch.setenv("LAYER_B_PROBE_UNREADABLE_MAX", "3")
+    _layer_b_unreadable_patches(monkeypatch, tmp_path)
+    with caplog.at_level("WARNING", logger="control_plane"):
+        first = await _run_layer_b_unreadable_job(client, "layer-b-under-max-1")
+        second = await _run_layer_b_unreadable_job(client, "layer-b-under-max-2")
+    assert first["status"] == "completed", first.get("error")
+    assert second["status"] == "completed", second.get("error")
+    assert len(second["clips"]) == 1
+    assert cp._layer_b_probe_unreadable_count == 2
+    warned = [record for record in caplog.records
+              if record.message.startswith("content_lab.layer_b_probe_unreadable ")]
+    assert len(warned) == 2
+    assert all(record.levelname == "WARNING" for record in warned)
+    assert _tripped_records(caplog) == []
+
+
+@pytest.mark.asyncio
+async def test_layer_b_unreadable_at_the_max_trips_one_error_and_fails(lab, monkeypatch, caplog):
+    # With a max of two, the second unreadable probe in the window trips the
+    # breaker: ONE error keyed content_lab.layer_b_probe_unreadable_tripped
+    # (page, job, count) and that job fails exactly like the strict path
+    # (source_output_duration_unsupported); a third unreadable cut keeps
+    # failing without a second trip error, and the delivered counter stops at
+    # the cut that shipped.
+    client, tmp_path, _ = lab
+    monkeypatch.setenv("LAYER_B_PROBE_UNREADABLE_MAX", "2")
+    _layer_b_unreadable_patches(monkeypatch, tmp_path)
+    with caplog.at_level("WARNING", logger="control_plane"):
+        first = await _run_layer_b_unreadable_job(client, "layer-b-at-max-1")
+        second = await _run_layer_b_unreadable_job(client, "layer-b-at-max-2")
+        third = await _run_layer_b_unreadable_job(client, "layer-b-at-max-3")
+    assert first["status"] == "completed", first.get("error")
+    assert second["status"] == "failed"
+    assert "source_output_duration_unsupported" in second["error"]
+    assert third["status"] == "failed"
+    assert "source_output_duration_unsupported" in third["error"]
+    assert cp._layer_b_probe_unreadable_count == 1
+    assert cp._layer_b_probe_unreadable_tripped is True
+    tripped = _tripped_records(caplog)
+    assert len(tripped) == 1
+    assert tripped[0].levelname == "ERROR"
+    fields = dict(token.split("=", 1) for token in tripped[0].message.split()[1:])
+    assert fields == {"page": PAGE_ID, "job": second["jobId"], "count": "2"}
+
+
+@pytest.mark.asyncio
+async def test_layer_b_unreadable_delivers_again_once_the_window_drains(lab, monkeypatch, caplog):
+    # The bound is a rolling window, not a latch: once the tripped
+    # timestamps age out of the 60-minute window, the next unreadable
+    # Layer-B cut delivers with the warning again (a later probe may have
+    # recovered), with no second trip error.
+    client, tmp_path, _ = lab
+    monkeypatch.setenv("LAYER_B_PROBE_UNREADABLE_MAX", "2")
+    _layer_b_unreadable_patches(monkeypatch, tmp_path)
+    with caplog.at_level("WARNING", logger="control_plane"):
+        first = await _run_layer_b_unreadable_job(client, "layer-b-drain-1")
+        second = await _run_layer_b_unreadable_job(client, "layer-b-drain-2")
+    assert first["status"] == "completed", first.get("error")
+    assert second["status"] == "failed"
+    # Age both window timestamps past the 60-minute horizon.
+    stale = time.monotonic() - (cp._LAYER_B_PROBE_WINDOW_SECONDS + 600)
+    cp._layer_b_probe_unreadable_times.clear()
+    cp._layer_b_probe_unreadable_times.extend([stale, stale])
+    with caplog.at_level("WARNING", logger="control_plane"):
+        third = await _run_layer_b_unreadable_job(client, "layer-b-drain-3")
+    assert third["status"] == "completed", third.get("error")
+    assert len(third["clips"]) == 1
+    assert cp._layer_b_probe_unreadable_count == 2
+    assert cp._layer_b_probe_unreadable_tripped is False
+    assert len(_tripped_records(caplog)) == 1
+
+
+@pytest.mark.asyncio
+async def test_layer_b_unreadable_bad_max_env_falls_back_to_the_default(lab, monkeypatch, caplog):
+    # LAYER_B_PROBE_UNREADABLE_MAX must be an int >= 1; anything else (empty,
+    # zero, negative, not a number) is the default 5. Pinned twice: the
+    # parsed budget, and behaviour — "0" is not a budget of zero unreadable
+    # cuts, so the first probe still delivers.
+    monkeypatch.delenv("LAYER_B_PROBE_UNREADABLE_MAX", raising=False)
+    assert cp._layer_b_probe_unreadable_max() == 5
+    for bad in ("", "0", "-3", "two", "2.5"):
+        monkeypatch.setenv("LAYER_B_PROBE_UNREADABLE_MAX", bad)
+        assert cp._layer_b_probe_unreadable_max() == 5, bad
+    monkeypatch.setenv("LAYER_B_PROBE_UNREADABLE_MAX", "3")
+    assert cp._layer_b_probe_unreadable_max() == 3
+
+    client, tmp_path, _ = lab
+    monkeypatch.setenv("LAYER_B_PROBE_UNREADABLE_MAX", "0")
+    _layer_b_unreadable_patches(monkeypatch, tmp_path)
+    with caplog.at_level("WARNING", logger="control_plane"):
+        job = await _run_layer_b_unreadable_job(client, "layer-b-bad-env-1")
+    assert job["status"] == "completed", job.get("error")
+    assert cp._layer_b_probe_unreadable_count == 1
+    assert _tripped_records(caplog) == []
 
 
 @pytest.mark.asyncio
