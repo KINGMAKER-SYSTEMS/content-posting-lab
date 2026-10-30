@@ -36,6 +36,7 @@ import logging
 import os
 import re
 import shutil
+import stat
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -202,6 +203,13 @@ def _private_scrambler_paths(root: Path, directory: Path, job_id: str,
             current /= part
             if current.is_symlink():
                 raise ValueError("private path alias")
+        try:
+            present = path.lstat()
+        except FileNotFoundError:
+            pass  # A matching public clip may already have been cleaned from R2 proof.
+        else:
+            if not stat.S_ISREG(present.st_mode) or present.st_size != size:
+                raise ValueError("private file identity conflict")
         identity = (digest, size)
         if path in identities and identities[path] != identity:
             raise ValueError("conflicting private identity")
