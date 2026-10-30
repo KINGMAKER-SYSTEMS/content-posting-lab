@@ -255,6 +255,12 @@
 
 ## Local Contracts
 
+- Provider artifact download deadlines accept only finite positive seconds.
+  Infinity and numeric overflow use the existing finite default, so a malformed
+  setting cannot remove the whole-download deadline. Positive fractional values
+  remain supported. Verify with `tests/test_provider_deadline_finite.py` and
+  `tests/test_provider_download_bounds.py` on the suite host.
+
 - Generic clean-video replenishment excludes every media key held by an active
   or archived slideshow reservation before forming the next complete chunk.
   The archive index retains each plan's template and media keys with its
@@ -821,3 +827,10 @@ Retries of existing private attempts must stay private regardless of the switch.
 Never restore asyncio child-watcher ownership for these process groups: retain
 the owned supervisor until bounded group cleanup and final reap. Run layout,
 owned-process, subprocess-cancel and source-import retry regressions for changes.
+
+The additive `/api/control-plane/v1/job-receipts/by-idempotency-key` route
+must remain an authenticated read-only exact request lookup; never start or
+rewrite a job while reconciling its durable receipt. `/api/burn/import-tos`
+requires its machine bearer before network/filesystem effects and uses only
+SUPABASE_SERVICE_KEY, never the public-key fallback. The safety-controls
+snapshot is default off and observes only bounded effective process settings.
