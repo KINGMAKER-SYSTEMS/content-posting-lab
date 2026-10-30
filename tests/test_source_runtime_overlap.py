@@ -114,3 +114,134 @@ async def test_legacy_foreign_source_without_a_claim_keeps_its_reservations(lab,
     reserved, _ = cp._source_dna_cut_ledger(cp._load_jobs(), recipe, job['recipeVersion'])
     assert result['status'] == 'running'
     assert planned in reserved
+
+
+@pytest.mark.asyncio
+async def test_cancelled_late_completion_cannot_revive_a_reassigned_window(lab, monkeypatch, tmp_path):
+    import threading
+    from pathlib import Path
+    from services.control_plane_sources import SourceCut
+
+    client, _, _ = lab
+    response = client.post('/api/control-plane/v1/jobs', json=job_body(1), headers=headers('source-late-old'))
+    old_id = response.json()['jobId']
+    original = cp._load_jobs()['jobs'][old_id]
+    cut = original['sourceCuts'][0]
+    recipe = cp._dossier_source_recipe(publication())
+    source = tmp_path / 'source.mp4'
+    source.write_bytes(b'fixture')
+    async def cached(*_):
+        return source
+    async def encode(_source, destination, *_args, **_kwargs):
+        Path(destination).write_bytes(b'fixture output')
+    monkeypatch.setattr(cp, '_cached_source_master', cached)
+    monkeypatch.setattr(cp, 'run_color_correct', encode)
+    monkeypatch.setattr(cp, 'transforms_enabled', lambda *_: False)
+    monkeypatch.setattr(cp, 'varies_clips', lambda *_: False)
+    entered, release, finished = threading.Event(), threading.Event(), threading.Event()
+    persist = cp._update_source_job
+    def blocked(job_id, **fields):
+        if job_id == old_id and fields.get('status') == 'completed':
+            entered.set()
+            if not release.wait(10):
+                raise RuntimeError('test barrier timed out')
+            try:
+                return persist(job_id, **fields)
+            finally:
+                finished.set()
+        return persist(job_id, **fields)
+    monkeypatch.setattr(cp, '_update_source_job', blocked)
+    runner = asyncio.create_task(cp._run_dossier_source(old_id))
+    try:
+        assert await asyncio.to_thread(entered.wait, 5), 'completion reached the durable write'
+        runner.cancel()
+        runner.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await runner
+        monkeypatch.setattr(cp, '_GENERATION_RUNTIME_ID', 'another-runtime')
+        status = await cp.job_status(old_id, x_rt_page_id=PAGE_ID, authorization=f'Bearer {TOKEN}')
+        assert status['status'] == 'failed'
+        reserved, _ = cp._source_dna_cut_ledger(cp._load_jobs(), recipe, original['recipeVersion'])
+        assert cut['slotId'] not in reserved
+        # Force the actual create door to choose that now-free, valid old
+        # window, demonstrating that an intervening job can own it.
+        def select_old(recipe, quantity, served, *_args, **_kwargs):
+            assert quantity == 1 and cut['slotId'] not in served
+            master = next(m for m in recipe.masters if m.sha256 == cut['masterSha256'])
+            return [SourceCut(master, cut['startMs'], cut['durationMs'], fixed_length=True)]
+        monkeypatch.setattr(cp, 'plan_source_cuts', select_old)
+        new = await asyncio.to_thread(client.post, '/api/control-plane/v1/jobs',
+            json=job_body(1), headers=headers('source-late-new'))
+        assert new.status_code == 200
+        new_id = new.json()['jobId']
+        assert cp._load_jobs()['jobs'][new_id]['sourceCuts'][0]['slotId'] == cut['slotId']
+    finally:
+        release.set()
+        assert await asyncio.to_thread(finished.wait, 5), 'the detached write settled'
+    final = cp._load_jobs()['jobs'][old_id]
+    assert final['status'] == 'failed', 'a late completion cannot revive the old job'
+    assert final['clips'] == [], 'the old output was never made servable'
+
+
+@pytest.mark.parametrize('stage', ['initial', 'progress'])
+@pytest.mark.asyncio
+async def test_cancelled_late_source_updates_cannot_revive_failed_job(lab, monkeypatch, tmp_path, stage):
+    import threading
+    from pathlib import Path
+
+    client, _, _ = lab
+    response = client.post('/api/control-plane/v1/jobs', json=job_body(1), headers=headers('source-late-' + stage))
+    job_id = response.json()['jobId']
+    source = tmp_path / 'source.mp4'
+    source.write_bytes(b'fixture')
+    async def cached(*_):
+        return source
+    async def encode(_source, destination, *_args, **_kwargs):
+        Path(destination).write_bytes(b'fixture output')
+    monkeypatch.setattr(cp, '_cached_source_master', cached)
+    monkeypatch.setattr(cp, 'run_color_correct', encode)
+    monkeypatch.setattr(cp, 'transforms_enabled', lambda *_: False)
+    monkeypatch.setattr(cp, 'varies_clips', lambda *_: False)
+    entered, release, finished = threading.Event(), threading.Event(), threading.Event()
+    persist = cp._update_source_job
+    def blocked(target, **fields):
+        is_initial = fields.get('status') == 'running'
+        is_progress = 'progress' in fields and 'status' not in fields
+        if target == job_id and ((stage == 'initial' and is_initial) or (stage == 'progress' and is_progress)):
+            entered.set()
+            if not release.wait(10):
+                raise RuntimeError('test barrier timed out')
+            try:
+                return persist(target, **fields)
+            finally:
+                finished.set()
+        return persist(target, **fields)
+    monkeypatch.setattr(cp, '_update_source_job', blocked)
+    runner = asyncio.create_task(cp._run_dossier_source(job_id))
+    try:
+        assert await asyncio.to_thread(entered.wait, 5)
+        runner.cancel()
+        runner.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await runner
+        monkeypatch.setattr(cp, '_GENERATION_RUNTIME_ID', 'another-runtime')
+        status = await cp.job_status(job_id, x_rt_page_id=PAGE_ID, authorization=f'Bearer {TOKEN}')
+        assert status['status'] == 'failed'
+    finally:
+        release.set()
+        assert await asyncio.to_thread(finished.wait, 5)
+    assert cp._load_jobs()['jobs'][job_id]['status'] == 'failed'
+
+
+@pytest.mark.asyncio
+async def test_source_setup_failure_handler_cannot_erase_completed_claim(lab):
+    client, _, _ = lab
+    response = client.post('/api/control-plane/v1/jobs', json=job_body(1), headers=headers('source-late-setup'))
+    job_id = response.json()['jobId']
+    async def raced(_job_id):
+        cp._update_job(job_id, status='completed', clips=[{'proof': 'delivered'}])
+        raise RuntimeError('late setup failure')
+    await cp._guarded_job_runner(raced, job_id, 'source_setup_failed')
+    job = cp._load_jobs()['jobs'][job_id]
+    assert job['status'] == 'completed'
+    assert job['clips'] == [{'proof': 'delivered'}]

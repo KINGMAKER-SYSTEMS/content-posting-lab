@@ -2434,6 +2434,19 @@ def _update_job(job_id: str, **fields: Any) -> dict[str, Any] | None:
         return dict(job)
 
 
+def _update_source_job(job_id: str, **fields: Any) -> dict[str, Any] | None:
+    """A late source worker may never revive a terminal job's windows."""
+    with lock_for(_jobs_path()):
+        store = _load_jobs()
+        job = store["jobs"].get(job_id)
+        if (not isinstance(job, dict) or job.get("sourceKind") != "dossier_source_dna"
+                or job.get("status") not in GENERATION_ACTIVE_STATUSES):
+            return None
+        job.update(fields)
+        _save_jobs(store)
+        return dict(job)
+
+
 def _has_source_runner_claim(job: dict[str, Any]) -> bool:
     version = job.get("sourceClaimVersion")
     return type(version) is int and version == 1
@@ -3753,7 +3766,7 @@ async def _run_owned_dossier_source(job_id: str) -> None:
     """Cut unique windows from one page's immutable source DNA."""
     job = _get_job_or_404(job_id)
     if not _job_matches_current_master_pages(job):
-        await asyncio.to_thread(_update_job,
+        await asyncio.to_thread(_update_source_job,
             job_id,
             status="failed",
             error="master_pages_strategy_changed",
@@ -3784,7 +3797,7 @@ async def _run_owned_dossier_source(job_id: str) -> None:
         or job.get("materialSource") != recipe.material_source
         or job.get("assetType") != recipe.asset_type
     ):
-        await asyncio.to_thread(_update_job,
+        await asyncio.to_thread(_update_source_job,
             job_id,
             status="failed",
             error="source_recipe_executor_unavailable",
@@ -3804,7 +3817,7 @@ async def _run_owned_dossier_source(job_id: str) -> None:
     }
     source_cuts = job.get("sourceCuts")
     if not isinstance(source_cuts, list) or not source_cuts:
-        await asyncio.to_thread(_update_job,
+        await asyncio.to_thread(_update_source_job,
             job_id,
             status="failed",
             error="source_recipe_selection_missing",
@@ -3812,7 +3825,8 @@ async def _run_owned_dossier_source(job_id: str) -> None:
         )
         return
     manifests: list[dict[str, Any]] = []
-    await asyncio.to_thread(_update_job,job_id, status="running", progress=0)
+    if await asyncio.to_thread(_update_source_job, job_id, status="running", progress=0) is None:
+        return
     # A page listed in services/clip_variation.py cuts every clip at its own
     # speed and framing (Layer A); sourced source-video cuts may also get
     # mirror / motion / reverse transforms (Layer B). Layer B is wider than
@@ -3990,7 +4004,7 @@ async def _run_owned_dossier_source(job_id: str) -> None:
                 job_root, destination, len(manifests),
             )
             manifests.append(manifest)
-            await asyncio.to_thread(_update_job,
+            await asyncio.to_thread(_update_source_job,
                 job_id,
                 progress=int(((index + 1) / len(source_cuts)) * 100),
             )
@@ -3998,7 +4012,7 @@ async def _run_owned_dossier_source(job_id: str) -> None:
             raise RuntimeError("source_dna_master_unavailable")
     except asyncio.CancelledError:
         shutil.rmtree(job_root, ignore_errors=True)
-        await asyncio.to_thread(_update_job,
+        await asyncio.to_thread(_update_source_job,
             job_id,
             status="failed",
             error="generation_cancelled",
@@ -4007,7 +4021,7 @@ async def _run_owned_dossier_source(job_id: str) -> None:
         raise
     except Exception as error:
         shutil.rmtree(job_root, ignore_errors=True)
-        await asyncio.to_thread(_update_job,
+        await asyncio.to_thread(_update_source_job,
             job_id,
             status="failed",
             error=str(error)[:300],
@@ -4015,14 +4029,14 @@ async def _run_owned_dossier_source(job_id: str) -> None:
         )
         return
     if not _job_matches_current_master_pages(job):
-        await asyncio.to_thread(_update_job,
+        await asyncio.to_thread(_update_source_job,
             job_id,
             status="failed",
             error="master_pages_strategy_changed",
             completedAt=datetime.now(timezone.utc).isoformat(),
         )
         return
-    await asyncio.to_thread(_update_job,
+    await asyncio.to_thread(_update_source_job,
         job_id,
         status="completed",
         progress=100,
@@ -4461,7 +4475,8 @@ async def _guarded_job_runner(runner, job_id: str, setup_error: str) -> None:
         raise
     except Exception as error:
         log.exception("%s runner failed outside its guarded body", setup_error)
-        await asyncio.to_thread(_update_job,
+        update = _update_source_job if setup_error == "source_setup_failed" else _update_job
+        await asyncio.to_thread(update,
             job_id,
             status="failed",
             error=f"{setup_error}:{str(error)[:300]}",
