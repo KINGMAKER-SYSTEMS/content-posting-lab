@@ -1143,3 +1143,94 @@ def test_parent_strategy_flip_after_queue_refuses_before_io(source_parent, tmp_p
     job = worker.status(prepared["id"])
     assert job["state"] == "failed"
     assert job["error_code"] == "source_regeneration_parent_changed"
+
+
+def test_master_origin_mismatch_refuses_regeneration_when_receipt_lacks_origin(
+    source_parent, monkeypatch,
+):
+    """`origin` participates in the master-mismatch check, not just the receipt.
+
+    The recipe's master now records an origin but the parent clip's stored
+    lineage does not carry it, so authority resolution must refuse. Deleting the
+    origin term from the `_equal_dict` comparison would let this resolve green.
+    The G39 gate applies (expected_master_lineage expects `origin` only
+    behind CONTENT_LAB_ADVERTISE_ORIGIN, the same gate that writes it into
+    receipts), so this flag-on test sets it.
+    """
+    from dataclasses import replace
+
+    monkeypatch.setenv(cp.ADVERTISE_ORIGIN_ENV, "1")
+    origin = {
+        "originSourceId": "vt5im2TRAKw",
+        "originStartMs": 120_000,
+        "originEndMs": 300_000,
+    }
+    resolve = cp._dossier_source_recipe
+
+    def with_origin(payload):
+        recipe = resolve(payload)
+        return replace(recipe, masters=tuple(
+            replace(master, origin=dict(origin)) for master in recipe.masters
+        ))
+
+    monkeypatch.setattr(cp, "_dossier_source_recipe", with_origin)
+    clip = source_parent["job"]["clips"][0]
+    request = _submission(clip["sha256"], PAGE_ID).request
+    with pytest.raises(regen.SourceRegenerationError) as refused:
+        regen.resolve_parent_authority(
+            page_id=PAGE_ID,
+            parent_generation_job_id=source_parent["job_id"],
+            request=request,
+        )
+    assert refused.value.code == "source_regeneration_master_mismatch"
+
+
+def test_legacy_receipt_without_origin_still_matches_a_master_without_origin(source_parent):
+    """A legacy receipt (no origin) still resolves against a no-origin master."""
+    clip = source_parent["job"]["clips"][0]
+    assert "origin" not in clip["source"]["master"]
+    request = _submission(clip["sha256"], PAGE_ID).request
+    command = regen.resolve_parent_authority(
+        page_id=PAGE_ID,
+        parent_generation_job_id=source_parent["job_id"],
+        request=request,
+    )
+    assert command["masterSha256"] == clip["source"]["master"]["sha256"]
+
+
+def test_flag_off_receipt_without_origin_matches_a_master_with_origin(
+    source_parent, monkeypatch,
+):
+    """Flag OFF, the other half of the G39 gate on the lineage comparison.
+
+    The recipe's master records an origin (o-origin-restore) while the flag
+    is off, so the stored receipt legitimately lacks it: resolution must NOT
+    refuse. Deleting the advertise_origin() term in expected_master_lineage
+    would raise source_regeneration_master_mismatch here.
+    """
+    from dataclasses import replace
+
+    monkeypatch.delenv(cp.ADVERTISE_ORIGIN_ENV, raising=False)
+    origin = {
+        "originSourceId": "vt5im2TRAKw",
+        "originStartMs": 120_000,
+        "originEndMs": 300_000,
+    }
+    resolve = cp._dossier_source_recipe
+
+    def with_origin(payload):
+        recipe = resolve(payload)
+        return replace(recipe, masters=tuple(
+            replace(master, origin=dict(origin)) for master in recipe.masters
+        ))
+
+    monkeypatch.setattr(cp, "_dossier_source_recipe", with_origin)
+    clip = source_parent["job"]["clips"][0]
+    assert "origin" not in clip["source"]["master"]
+    request = _submission(clip["sha256"], PAGE_ID).request
+    command = regen.resolve_parent_authority(
+        page_id=PAGE_ID,
+        parent_generation_job_id=source_parent["job_id"],
+        request=request,
+    )
+    assert command["masterSha256"] == clip["source"]["master"]["sha256"]

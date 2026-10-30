@@ -566,3 +566,135 @@ def test_http_fetch_stops_when_a_chunked_manifest_exceeds_the_cap(monkeypatch):
     monkeypatch.setattr(source_manifest.httpx, "stream", lambda *args, **kwargs: Stream())
     with pytest.raises(ShipStreamSourceError, match="too large"):
         source_manifest._fetch_manifest(source_manifest.source_manifest_url(HANDLE))
+
+def test_exact_master_carries_upstream_origin_id_into_source_dna():
+    intent, _ = _intent()
+    sha256 = "a" * 64
+    manifest = _historical_manifest()
+    manifest["sourceAuthority"] = {
+        "kind": "exact_page_binding",
+        "pageHandle": HANDLE,
+        "notionPageId": NOTION_PAGE_ID,
+        "replacementEligible": True,
+    }
+    manifest["notion"].pop("pageId")
+    manifest["master"] = {
+        "sha256": sha256,
+        "storageKey": f"vault/{HANDLE}/masters/{sha256}.mp4",
+        "bytes": 20_000_000,
+        "media": {"durationSeconds": 42.5},
+        "originSourceId": "1uMmco2zNZc",
+        "originSourceUrl": "https://www.youtube.com/watch?v=1uMmco2zNZc",
+        "originWindowSeconds": [120.0, 162.5],
+        "registeredAt": "2026-09-01T21:25:29Z",
+    }
+    manifest.pop("historicalPostedCuts")
+    projection = parse_shipstream_source_projection(
+        _raw(manifest), intent, page_id=PAGE_ID,
+    )
+    master = projection.source_library.masters[0]
+    assert master.origin == {
+        "originSourceId": "1uMmco2zNZc",
+        "originStartMs": 120_000,
+        "originEndMs": 162_500,
+    }
+
+
+def test_exact_master_omits_origin_when_id_is_a_content_lab_placeholder():
+    intent, _ = _intent()
+    sha256 = "b" * 64
+    manifest = _historical_manifest()
+    manifest["sourceAuthority"] = {
+        "kind": "content_lab_page_source_import",
+        "pageId": PAGE_ID,
+        "pageHandle": HANDLE,
+        "notionPageId": NOTION_PAGE_ID,
+        "replacementEligible": True,
+    }
+    manifest["master"] = {
+        "sha256": sha256,
+        "storageKey": f"vault/{HANDLE}/masters/{sha256}.mp4",
+        "bytes": 20_000_000,
+        "media": {"durationSeconds": 600.0},
+        "originSourceId": "content-lab:cpl-bd18e83b19077386",
+        "originSourceUrl": f"https://shipstream.test/assets/vault/{HANDLE}/intake/{sha256}.mp4",
+        "originWindowSeconds": [0.0, 600.0],
+        "registeredAt": "2026-10-06T20:08:47.031Z",
+    }
+    manifest.pop("historicalPostedCuts")
+    projection = parse_shipstream_source_projection(
+        _raw(manifest), intent, page_id=PAGE_ID,
+    )
+    master = projection.source_library.masters[0]
+    assert master.origin is None
+
+
+# ---------------------------------------------------------------------------
+# fix4: origin is recorded on the master but never moves the library identity.
+# ---------------------------------------------------------------------------
+
+def test_exact_master_origin_does_not_move_the_baa2106_library_id():
+    intent, _ = _intent()
+    sha256 = "a" * 64
+    manifest = _historical_manifest()
+    manifest["sourceAuthority"] = {
+        "kind": "exact_page_binding",
+        "pageHandle": HANDLE,
+        "notionPageId": NOTION_PAGE_ID,
+        "replacementEligible": True,
+    }
+    manifest["notion"].pop("pageId")
+    manifest["master"] = {
+        "sha256": sha256,
+        "storageKey": f"vault/{HANDLE}/masters/{sha256}.mp4",
+        "bytes": 20_000_000,
+        "media": {"durationSeconds": 42.5},
+        "originSourceId": "1uMmco2zNZc",
+        "originSourceUrl": "https://www.youtube.com/watch?v=1uMmco2zNZc",
+        "originWindowSeconds": [120.0, 162.5],
+        "registeredAt": "2026-09-01T21:25:29Z",
+    }
+    manifest.pop("historicalPostedCuts")
+    projection = parse_shipstream_source_projection(
+        _raw(manifest), intent, page_id=PAGE_ID,
+    )
+    library = projection.source_library
+    # The origin is still on the wire document / MasterSource...
+    assert library.masters[0].origin == {
+        "originSourceId": "1uMmco2zNZc",
+        "originStartMs": 120_000,
+        "originEndMs": 162_500,
+    }
+    # ...but CONTENT_LAB_ADVERTISE_ORIGIN-independent identity is exactly the
+    # baa2106 offset-aware value (verified against a baa2106 worktree).
+    assert library.library_id == "shipstream-lovenightwalks-20534ac020b7117e"
+
+
+def test_exact_master_origin_can_resolve_the_baa2106_expected_library_id():
+    intent, _ = _intent()
+    sha256 = "a" * 64
+    manifest = _historical_manifest()
+    manifest["sourceAuthority"] = {
+        "kind": "exact_page_binding",
+        "pageHandle": HANDLE,
+        "notionPageId": NOTION_PAGE_ID,
+        "replacementEligible": True,
+    }
+    manifest["notion"].pop("pageId")
+    manifest["master"] = {
+        "sha256": sha256,
+        "storageKey": f"vault/{HANDLE}/masters/{sha256}.mp4",
+        "bytes": 20_000_000,
+        "media": {"durationSeconds": 42.5},
+        "originSourceId": "1uMmco2zNZc",
+        "originSourceUrl": "https://www.youtube.com/watch?v=1uMmco2zNZc",
+        "originWindowSeconds": [120.0, 162.5],
+        "registeredAt": "2026-09-01T21:25:29Z",
+    }
+    manifest.pop("historicalPostedCuts")
+    library = parse_shipstream_source_manifest(
+        _raw(manifest), intent, page_id=PAGE_ID,
+        expected_library_id="shipstream-lovenightwalks-20534ac020b7117e",
+    )
+    assert library.library_id == "shipstream-lovenightwalks-20534ac020b7117e"
+    assert library.masters[0].origin is not None
