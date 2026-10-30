@@ -2108,6 +2108,15 @@ async def test_transforms_all_off_cut_bytes_match_main(lab, monkeypatch):
     assert json.loads(json.dumps(encoder_calls)) == [json.loads(encoder_fixture.read_text())]
 
 
+def test_main_transform_off_recording_is_pinned():
+    fixture = Path(__file__).parent / "fixtures" / "transforms_all_off_main_60db4247.json"
+    assert hashlib.sha256(fixture.read_bytes()).hexdigest() == "a4a401afd85c024c728358156aacf0381ffae240899761d9b8670872aad056d3"
+    recorded = json.loads(fixture.read_text())
+    assert recorded["sourceTreatment"]["generationJobId"] == "cpl-aaaaaaaaaaaaaaaa"
+    assert len(recorded["sha256"]) == 64
+    encoder_fixture = Path(__file__).parent / "fixtures" / "transforms_all_off_main_60db4247_encoder.json"
+    assert hashlib.sha256(encoder_fixture.read_bytes()).hexdigest() == "489e9b5a03b233643c85166368c1d4fc9d5214df959cb0590d3c80072671cad0"
+
 @pytest.mark.asyncio
 async def test_a_denied_sourced_page_gets_zero_transforms_and_no_extra_encode(lab, monkeypatch):
     import services.clip_transforms as ct
@@ -2391,13 +2400,3 @@ def test_resolve_refuses_a_library_that_still_holds_a_retired_master(caplog):
     with caplog.at_level(logging.WARNING, logger="content_lab.control_plane_sources"):
         assert resolve_source_recipe(payload) is None
     assert any("source_master_retired" in record.message for record in caplog.records)
-
-
-def test_main_transform_off_recording_is_pinned():
-    fixture = Path(__file__).parent / "fixtures" / "transforms_all_off_main_60db4247.json"
-    assert hashlib.sha256(fixture.read_bytes()).hexdigest() == "a4a401afd85c024c728358156aacf0381ffae240899761d9b8670872aad056d3"
-    recorded = json.loads(fixture.read_text())
-    assert recorded["sourceTreatment"]["generationJobId"] == "cpl-aaaaaaaaaaaaaaaa"
-    assert len(recorded["sha256"]) == 64
-    encoder_fixture = Path(__file__).parent / "fixtures" / "transforms_all_off_main_60db4247_encoder.json"
-    assert hashlib.sha256(encoder_fixture.read_bytes()).hexdigest() == "489e9b5a03b233643c85166368c1d4fc9d5214df959cb0590d3c80072671cad0"
