@@ -200,6 +200,18 @@
   budget/reset envelope as an outer planned-call refusal.
 - `services/caption_discipline.py` owns Content Lab's closed validation of the
   caption corpus/register selection already made by Dossier and Control Plane.
+- `routers/control_plane_external_pages.py` owns
+  `PUT|DELETE /api/control-plane/v1/external-pages/{pageId}`: the control
+  plane registers a page whose Master Pages intent is owned outside Notion
+  (`source: "northstar"`, `notionPageId: null`) as a non-Notion roster row via
+  `set_page`, so the existing exact-id intent resolver serves its source
+  imports, clip jobs and capabilities. Bearer plus `X-RT-Lane:
+  content-bucket-control-plane`; the full canonical intent must round-trip
+  through `_snapshot_page` unchanged. `acct:` ids (Notion and pipeline
+  namespace) are refused, as are ids or handles another roster row holds;
+  DELETE removes only external-source rows. Notion sync and the fleet roster
+  projection keep their `source == "notion"` filters, so such a row is never
+  overwritten, pruned or published to the fleet. See `docs/external-pages.md`.
 - `services/control_plane_source_imports.py` owns bounded public-HTTPS download,
   exact-byte hashing, media probing, and refillable-master normalization for
   page-scoped source-link intake.
@@ -762,6 +774,9 @@
   unavailable providers, exact-byte binding, and cached-decision behavior.
 
 - Run `pytest -q tests/test_control_plane_capability_auth.py` for the capability Bearer boundary and unchanged authorized response.
+- Run `pytest -q tests/test_control_plane_external_pages.py` for external-page
+  auth, refusals, real-roster resolution by source imports, clip jobs and
+  capabilities, Notion sync survival, fleet projection exclusion and DELETE scope.
 - Run `pytest -q tests/test_production_image_imports.py` for isolated imports from
   the Dockerfile's backend file selection. Build the Docker image for release;
   its app-import smoke check must pass before deployment. Confirm TgCrypto can
