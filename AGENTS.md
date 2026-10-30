@@ -200,6 +200,30 @@
   budget/reset envelope as an outer planned-call refusal.
 - `services/caption_discipline.py` owns Content Lab's closed validation of the
   caption corpus/register selection already made by Dossier and Control Plane.
+- `routers/control_plane_external_pages.py` owns
+  `PUT|DELETE /api/control-plane/v1/external-pages/{pageId}`: the control
+  plane registers a page whose Master Pages intent is owned outside Notion
+  (`source: "northstar"`, `notionPageId: null`) as a non-Notion roster row via
+  `set_page`, so the existing exact-id intent resolver serves its source
+  imports, clip jobs and capabilities. Bearer plus `X-RT-Lane:
+  content-bucket-control-plane`; the full canonical intent must round-trip
+  through `_snapshot_page` unchanged. `acct:` ids (Notion and pipeline
+  namespace) are refused, as are ids or handles another roster row holds;
+  DELETE removes only external-source rows. Notion sync and the fleet roster
+  projection keep their `source == "notion"` filters, so such a row is never
+  overwritten, pruned or published to the fleet. Registration also refuses,
+  naming the subject and the page, a Syzygy slideshow library subject any
+  other roster page already derives. See `docs/external-pages.md`.
+- `services/control_plane_slideshows.py` owns the Syzygy/R2 slideshow library
+  address `syzygy:<lane>:<subject>` for both the Dossier ingredients read and
+  the job path. `library_subject` is the one derivation: a Rising Tides page
+  slugs its handle (unchanged, byte for byte); a page whose `source` is in
+  `services.master_pages_contract.EXTERNAL_PAGE_SOURCES` (`northstar`) derives
+  `external--<sha256(exact pageId UTF-8)>`, never its handle. The double-hyphen
+  prefix cannot be produced by the unchanged ordinary handle slugger. The closed external-owner set lives in the
+  contract module so the router and the service read one definition.
+  The shared external-owner constant also governs the exact ShipStream
+  null-Notion-id manifest exception.
 - `services/control_plane_source_imports.py` owns bounded public-HTTPS download,
   exact-byte hashing, media probing, and refillable-master normalization for
   page-scoped source-link intake.
@@ -366,6 +390,19 @@
   Lab format must match the Master Pages niche before a source is displayed or
   executed. The Master Pages Notion page id itself must be nonblank; a null id
   never matches omitted manifest fields or establishes exact-page authority.
+  The one exception is a registered external page (`source` in
+  `EXTERNAL_PAGE_SOURCES` from `services/master_pages_contract.py`, today
+  `northstar`), whose intent has `notionPageId: null` because it has no Notion
+  row. Its manifest is executable only when `sourceAuthority.kind` is
+  `content_lab_page_source_import`, `sourceAuthority.pageId` is the
+  operational page id, `sourceAuthority.intentSource` repeats the intent's
+  `source`, and `notion.pageId` and `sourceAuthority.notionPageId` are both
+  present as explicit nulls. A blank string, an omitted key, a missing or
+  different `intentSource`, a Notion or null-source page, any other authority
+  kind (historical-posted-cut recovery included), or an authority naming
+  another page id is refused as before. ShipStream writes `intentSource` only
+  on an external page's manifest, so a Notion page's manifest that carries it
+  diverges.
 - Capability and job execution dispatch only to the resolver named by the
   publication's closed content engine. A sourced-video publication never probes
   the AI-video resolver, and an unknown engine exposes no executor.
@@ -457,7 +494,8 @@
 - ShipStream `content_lab_page_source_import` manifests are executable only
   when their authority repeats the exact Control Plane page id, page handle,
   Notion page id, and replacement eligibility required by the active Master
-  Pages projection.
+  Pages projection. For a registered external page the Notion page id it
+  repeats is an explicit null; see the sourced-video exception above.
 - Signed job download and thumbnail URLs use one per-job credential. The
   operator rotation CLI (`python -m services.job_token_rotation`, which is
   included in the production image) requires an explicit absolute existing job-store path,
@@ -783,6 +821,17 @@
   unavailable providers, exact-byte binding, and cached-decision behavior.
 
 - Run `pytest -q tests/test_control_plane_capability_auth.py` for the capability Bearer boundary and unchanged authorized response.
+- Run `pytest -q tests/test_control_plane_external_pages.py` for external-page
+  auth, refusals, real-roster resolution by source imports, clip jobs and
+  capabilities, Notion sync survival, fleet projection exclusion and DELETE scope.
+- Run `pytest -q tests/test_shipstream_source_manifest.py` for exact page-source
+  projection, including the external-page null-Notion-id exception and every
+  shape it still refuses.
+- Run `pytest -q tests/test_northstar_slideshow_library.py tests/test_control_plane_slideshow_execution.py`
+  for page-owned Syzygy library subjects: an external page's ingredients and
+  jobs address `syzygy:<lane>:<reserved exact-page subject>` on both commissioned lanes, a
+  Rising Tides page keeps its handle subject, and registration refuses a
+  subject another roster page derives.
 - Run `pytest -q tests/test_production_image_imports.py` for isolated imports from
   the Dockerfile's backend file selection. Build the Docker image for release;
   its app-import smoke check must pass before deployment. Confirm TgCrypto can
@@ -834,3 +883,8 @@ rewrite a job while reconciling its durable receipt. `/api/burn/import-tos`
 requires its machine bearer before network/filesystem effects and uses only
 SUPABASE_SERVICE_KEY, never the public-key fallback. The safety-controls
 snapshot is default off and observes only bounded effective process settings.
+
+Name-based roster dedup must skip externally owned rows and preserve their
+identity and inventory. External slideshow writers must use the advertised
+reserved catalog subject/libraryId; production activation requires verified
+producer/consumer agreement and must not reuse the old unlanded page-id slug.

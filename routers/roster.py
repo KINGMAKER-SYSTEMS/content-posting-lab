@@ -28,6 +28,7 @@ from services.roster import (
     save_roster,
     set_page,
 )
+from services.master_pages_contract import EXTERNAL_PAGE_SOURCES
 from services.roster_public import (
     CredentialGuardRoute,
     public_page,
@@ -227,6 +228,10 @@ async def dedup_roster():
 
     by_name: dict[str, list[str]] = defaultdict(list)
     for ig_id, page in pages.items():
+        # External rows are exact machine-owned identities, not alternate
+        # provider integrations. Never merge their assets or delete by name.
+        if page.get("source") in EXTERNAL_PAGE_SOURCES:
+            continue
         key = _normalize_name(page.get("name") or ig_id)
         by_name[key].append(ig_id)
 
