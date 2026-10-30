@@ -164,7 +164,7 @@ from services.page_frame import VERTICAL_FRAME, resolved_frame
 from services import generation_budget, moderation_retry
 from services.roster_public import require_roster_auth
 from services import clip_similarity
-from services.clip_transforms import apply_transforms, cut_transforms, transforms_enabled, transforms_from_manifest
+from services.clip_transforms import apply_transforms, cut_transforms, transforms_disabled_reason, transforms_enabled, transforms_from_manifest
 from services.clip_variation import cut_grade, cut_variant, varies_clips
 from services.source_treatment import (
     derived_source_treatment,
@@ -3810,6 +3810,18 @@ async def _run_dossier_source(job_id: str) -> None:
     # follows them).
     vary_look = varies_clips(job["pageId"])
     vary_transforms = vary_look or transforms_enabled(job["pageId"], recipe.format_slug)
+    layer = "A" if vary_look else "B" if vary_transforms else "none"
+    if not vary_transforms:
+        # Layer B is off for the whole job: one line up front names the first
+        # gate that turned it off (the kill-switch, the format allow-list or
+        # the page deny-list), so a log sweep can tell "off by design" from
+        # "on but nothing drawn" (the per-cut lines below). The reason can be
+        # None only when the gate itself was swapped out (tests do that); the
+        # helper answers through the gate's own checks, so in production it
+        # always names one of the three.
+        log.info("content_lab.source_cut_transforms_off job_id=%s page_id=%s format_slug=%s reason=%s",
+                 job_id, job["pageId"], recipe.format_slug,
+                 transforms_disabled_reason(job["pageId"], recipe.format_slug))
     previous_variant = previous_transforms = None
     transforms = None
     recent_cuts: list = []
@@ -3905,6 +3917,20 @@ async def _run_dossier_source(job_id: str) -> None:
                 async with _COLOR_CORRECT_GATE:
                     await asyncio.to_thread(apply_transforms, destination, transforms,
                                             delivery_encode_args(recipe.encode_preset))
+            if vary_transforms:
+                # One INFO line per cut pins what Layer B did to it: the
+                # manifest records the drawn set, but Railway logs are what a
+                # release can grep to prove transforms apply (an 1182-line
+                # release check found zero transform lines). applied is True
+                # only when apply_transforms really re-encoded this cut, so a
+                # drawn-but-not-applied cut (none in this build) reads honestly.
+                log.info("content_lab.source_cut_transforms job_id=%s page_id=%s"
+                         " format_slug=%s cut_slot_id=%s mirror=%s motion=%s"
+                         " reverse=%s loop_swap=%s layer=%s applied=%s",
+                         job_id, job["pageId"], recipe.format_slug,
+                         f"{master.sha256}:{start_ms}:{duration_ms}",
+                         transforms.mirror, transforms.motion, transforms.reverse,
+                         transforms.loop_swap, layer, transforms.any())
             if vary_look or recipe.format_slug == "pov-club" or (vary_transforms and transforms.any()):
                 measured_duration = await asyncio.to_thread(
                     probe_source_output_duration_seconds, str(destination),

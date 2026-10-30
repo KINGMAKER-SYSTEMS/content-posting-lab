@@ -108,6 +108,23 @@ TRANSFORMS_ALL: bool = _transforms_all()
 TRANSFORMS_REVERSE_ENABLED = True
 
 
+def transforms_disabled_reason(page_id: str, format_slug: str) -> str | None:
+    """Why Layer B is off for ``page_id``: None when it is on.
+
+    Names the first gate that turned it off, in the gate's own order: the
+    TRANSFORMS_ALL kill-switch, then the source-cut format allow-list, then the
+    page deny-list. transforms_enabled answers through this helper, so the
+    logged reason can never disagree with the gate.
+    """
+    if not TRANSFORMS_ALL:
+        return "transforms_all_off"
+    if format_slug not in SOURCE_CUT_FORMATS:
+        return "format_not_source_cut"
+    if page_id in TRANSFORM_DENY_PAGES:
+        return "page_denied"
+    return None
+
+
 def transforms_enabled(page_id: str, format_slug: str) -> bool:
     """Whether ``page_id``'s cut may get mirror / motion / reverse transforms.
 
@@ -116,9 +133,7 @@ def transforms_enabled(page_id: str, format_slug: str) -> bool:
     TRANSFORMS_ALL off turns Layer B off everywhere; a variable change takes
     effect on the Railway service restart after the change (do it in a Lab gap).
     """
-    if not TRANSFORMS_ALL:
-        return False
-    return format_slug in SOURCE_CUT_FORMATS and page_id not in TRANSFORM_DENY_PAGES
+    return transforms_disabled_reason(page_id, format_slug) is None
 
 
 @dataclass(frozen=True)
