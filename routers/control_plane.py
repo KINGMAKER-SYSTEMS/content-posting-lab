@@ -3800,6 +3800,7 @@ async def _run_dossier_source(job_id: str) -> None:
         )
         return
     manifests: list[dict[str, Any]] = []
+    delivered_cuts: list[dict[str, Any]] = []
     await asyncio.to_thread(_update_job,job_id, status="running", progress=0)
     # A page listed in services/clip_variation.py cuts every clip at its own
     # speed and framing (Layer A); sourced source-video cuts may also get
@@ -3978,6 +3979,7 @@ async def _run_dossier_source(job_id: str) -> None:
                 job_root, destination, len(manifests),
             )
             manifests.append(manifest)
+            delivered_cuts.append(source_cut)
             await asyncio.to_thread(_update_job,
                 job_id,
                 progress=int(((index + 1) / len(source_cuts)) * 100),
@@ -4015,6 +4017,7 @@ async def _run_dossier_source(job_id: str) -> None:
         status="completed",
         progress=100,
         clips=manifests,
+        sourceCuts=delivered_cuts,
         completedAt=datetime.now(timezone.utc).isoformat(),
     )
 
