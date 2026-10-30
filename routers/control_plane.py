@@ -4475,13 +4475,18 @@ async def _guarded_job_runner(runner, job_id: str, setup_error: str) -> None:
         raise
     except Exception as error:
         log.exception("%s runner failed outside its guarded body", setup_error)
-        update = _update_source_job if setup_error == "source_setup_failed" else _update_job
-        await asyncio.to_thread(update,
-            job_id,
-            status="failed",
-            error=f"{setup_error}:{str(error)[:300]}",
-            completedAt=datetime.now(timezone.utc).isoformat(),
-        )
+        failure = {
+            "status": "failed", "error": f"{setup_error}:{str(error)[:300]}",
+            "completedAt": datetime.now(timezone.utc).isoformat(),
+        }
+        if setup_error == "source_setup_failed":
+            # Setup raised after the runner claim was released. Another live
+            # runner may have acquired it in the meantime; never fail its job.
+            with runner_lock(_jobs_path(), job_id) as acquired:
+                if acquired:
+                    await asyncio.to_thread(_update_source_job, job_id, **failure)
+        else:
+            await asyncio.to_thread(_update_job, job_id, **failure)
 
 
 def _start_dossier_generation(job_id: str) -> None:
@@ -5311,7 +5316,8 @@ async def job_status(
         def expire_if_active():
             current = _get_job_or_404(job_id)
             if cancelled_local_runner or current.get("status") in GENERATION_ACTIVE_STATUSES:
-                _update_job(
+                update = _update_source_job if job.get("sourceKind") == "dossier_source_dna" else _update_job
+                update(
                     job_id,
                     status="failed",
                     error=(

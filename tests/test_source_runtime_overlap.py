@@ -245,3 +245,57 @@ async def test_source_setup_failure_handler_cannot_erase_completed_claim(lab):
     job = cp._load_jobs()['jobs'][job_id]
     assert job['status'] == 'completed'
     assert job['clips'] == [{'proof': 'delivered'}]
+
+
+@pytest.mark.asyncio
+async def test_late_completion_wins_before_foreign_expiry_write(lab, monkeypatch):
+    import threading
+
+    client, _, _ = lab
+    response = client.post('/api/control-plane/v1/jobs', json=job_body(1), headers=headers('source-expiry-race'))
+    job_id = response.json()['jobId']
+    original = cp._load_jobs()['jobs'][job_id]
+    cut = original['sourceCuts'][0]['slotId']
+    recipe = cp._dossier_source_recipe(publication())
+    monkeypatch.setattr(cp, '_GENERATION_RUNTIME_ID', 'another-runtime')
+    read, release = threading.Event(), threading.Event()
+    real_get = cp._get_job_or_404
+    calls = 0
+    def gated(target):
+        nonlocal calls
+        result = real_get(target)
+        calls += 1
+        if calls == 2:
+            read.set()
+            if not release.wait(10):
+                raise RuntimeError('test barrier timed out')
+        return result
+    monkeypatch.setattr(cp, '_get_job_or_404', gated)
+    def query():
+        return asyncio.run(cp.job_status(job_id, x_rt_page_id=PAGE_ID, authorization=f'Bearer {TOKEN}'))
+    task = asyncio.create_task(asyncio.to_thread(query))
+    try:
+        assert await asyncio.to_thread(read.wait, 5), 'expiry read the active state'
+        cp._update_source_job(job_id, status='completed', clips=[{'proof': 'delivered'}])
+    finally:
+        release.set()
+    result = await task
+    assert result['status'] == 'completed'
+    final = cp._load_jobs()['jobs'][job_id]
+    assert final['status'] == 'completed'
+    reserved, _ = cp._source_dna_cut_ledger(cp._load_jobs(), recipe, original['recipeVersion'])
+    assert cut in reserved, 'the delivered window remains reserved'
+
+
+@pytest.mark.asyncio
+async def test_setup_failure_does_not_fail_another_live_source_runner(lab):
+    client, _, _ = lab
+    response = client.post('/api/control-plane/v1/jobs', json=job_body(1), headers=headers('source-setup-claim'))
+    job_id = response.json()['jobId']
+    cp._update_job(job_id, status='running')
+    async def failed_setup(_):
+        raise RuntimeError('fixture setup failure')
+    with cp.runner_lock(cp._jobs_path(), job_id) as acquired:
+        assert acquired
+        await cp._guarded_job_runner(failed_setup, job_id, 'source_setup_failed')
+        assert cp._load_jobs()['jobs'][job_id]['status'] == 'running'
