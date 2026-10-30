@@ -27,6 +27,7 @@ MASTER_FIELDS = {
     "durationMs", "sourceOffsetMs", "provenance",
 }
 PROVENANCE_FIELDS = {"sourceUrl", "acquiredAt", "authority"}
+ORIGIN_FIELDS = {"originSourceId", "originStartMs", "originEndMs"}
 # A master's place in its page's pool (Eric 2026-10-22). Absent means primary:
 # the page's main footage, cut as much as possible. A backup is cut only when
 # the primaries have no fresh window, or as an occasional variety cut
@@ -77,6 +78,7 @@ class MasterSource:
     duration_ms: int
     source_offset_ms: int
     provenance: dict[str, str | None]
+    origin: dict[str, Any] | None = None
     role: str = "primary"
     grade_override: dict[str, float] | None = None
 
@@ -138,7 +140,7 @@ def parse_source_dna_manifest(raw: bytes, expected_library_id: str | None = None
     hashes: set[str] = set()
     storage_keys: set[str] = set()
     for index, row in enumerate(rows):
-        if not isinstance(row, dict) or set(row) - {"role", "gradeOverride"} != MASTER_FIELDS:
+        if not isinstance(row, dict) or set(row) - {"role", "gradeOverride", "origin"} != MASTER_FIELDS:
             raise SourceDnaError(f"source DNA masters[{index}] fields are invalid")
         role = row.get("role", "primary")
         if role not in MASTER_ROLES:
@@ -153,6 +155,7 @@ def parse_source_dna_manifest(raw: bytes, expected_library_id: str | None = None
         duration_ms = row.get("durationMs")
         source_offset_ms = row.get("sourceOffsetMs")
         provenance = row.get("provenance")
+        origin = row.get("origin")
         if not isinstance(source_id, str) or not TOKEN.fullmatch(source_id) or source_id in source_ids:
             raise SourceDnaError(f"source DNA masters[{index}].sourceId is invalid or duplicated")
         if not isinstance(sha256, str) or not SHA256.fullmatch(sha256) or sha256 in hashes:
@@ -178,12 +181,13 @@ def parse_source_dna_manifest(raw: bytes, expected_library_id: str | None = None
                 or not _nonblank(provenance.get("acquiredAt"), 100) \
                 or not _nonblank(provenance.get("authority"), 500):
             raise SourceDnaError(f"source DNA masters[{index}].provenance is incomplete")
+        origin = _origin(origin, duration_ms, source_offset_ms, index)
         source_ids.add(source_id)
         hashes.add(sha256)
         storage_keys.add(storage_key)
         masters.append(MasterSource(
             source_id, sha256, byte_count, filename, mime_type, storage_key,
-            duration_ms, source_offset_ms, dict(provenance), role, grade_override,
+            duration_ms, source_offset_ms, dict(provenance), origin, role, grade_override,
         ))
     if [item.source_id for item in masters] != sorted(source_ids):
         raise SourceDnaError("source DNA masters must be sorted by sourceId")
@@ -202,6 +206,39 @@ def parse_source_dna_manifest(raw: bytes, expected_library_id: str | None = None
         masters=tuple(masters),
         sha256=_primary_version(value, raw),
     )
+
+
+def _origin(
+    value: Any, duration_ms: int, source_offset_ms: int, index: int,
+) -> dict[str, Any] | None:
+    """The upstream origin of a master: its id and the window it claims on it.
+
+    Optional because legacy libraries predate origin recording; when present it
+    must name the origin id and a window whose length is the master duration and
+    whose start equals the already-projected ``sourceOffsetMs``.
+    """
+    if value is None:
+        return None
+    if not isinstance(value, dict) or set(value) != ORIGIN_FIELDS:
+        raise SourceDnaError(f"source DNA masters[{index}].origin fields are invalid")
+    origin_source_id = value.get("originSourceId")
+    start_ms = value.get("originStartMs")
+    end_ms = value.get("originEndMs")
+    if not _nonblank(origin_source_id, 100):
+        raise SourceDnaError(f"source DNA masters[{index}].origin.originSourceId is invalid")
+    if (
+        isinstance(start_ms, bool)
+        or not isinstance(start_ms, int)
+        or isinstance(end_ms, bool)
+        or not isinstance(end_ms, int)
+        or not 0 <= start_ms < end_ms <= MAX_DURATION_MS
+    ):
+        raise SourceDnaError(f"source DNA masters[{index}].origin window is invalid")
+    if end_ms - start_ms != duration_ms:
+        raise SourceDnaError(f"source DNA masters[{index}].origin window does not match media duration")
+    if start_ms != source_offset_ms:
+        raise SourceDnaError(f"source DNA masters[{index}].origin start does not match sourceOffsetMs")
+    return {"originSourceId": origin_source_id, "originStartMs": start_ms, "originEndMs": end_ms}
 
 
 def _grade_override(value: Any, role: str, index: int, page_id: str) -> dict[str, float] | None:
@@ -230,17 +267,28 @@ def _primary_version(value: dict, raw: bytes) -> str:
     backup hashes its exact bytes, as before; one with backups hashes the same
     canonical form (sorted keys, compact, trailing newline: the registry's own
     format) with the backups and every role key left out.
+
+    ``origin`` is likewise identity-free: it names upstream footage that does
+    not change which bytes a master is, so recording it (or dropping it) must
+    not move the version. An origin-bearing library with no role keys is the
+    ShipStream projection shape: hash its pre-origin compact byte identity so
+    the version is unchanged from before origin recording.
     """
     rows = value["masters"]
-    if all(row.get("role", "primary") == "primary" and "role" not in row for row in rows):
+    has_role_key = any("role" in row for row in rows)
+    has_origin = any("origin" in row for row in rows)
+    if not has_role_key and not has_origin:
         return hashlib.sha256(raw).hexdigest()
     primary = {**value, "masters": [
-        {key: item for key, item in row.items() if key != "role"}
+        {key: item for key, item in row.items() if key not in ("role", "origin")}
         for row in rows if row.get("role", "primary") == "primary"
     ]}
-    return hashlib.sha256(
-        (json.dumps(primary, sort_keys=True, separators=(",", ":"), ensure_ascii=False) + "\n").encode()
-    ).hexdigest()
+    canonical = json.dumps(
+        primary, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+    )
+    if has_role_key:
+        canonical += "\n"
+    return hashlib.sha256(canonical.encode()).hexdigest()
 
 
 def load_source_dna_library(library_id: str) -> SourceDnaLibrary:

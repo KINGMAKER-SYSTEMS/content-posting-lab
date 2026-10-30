@@ -111,6 +111,7 @@ from services.control_plane_sources import (
     scrambler_recent_canonical_starts,
     canonical_source_identity,
     cut_use_time,
+    cut_window_recipe,
     explain_empty_source_plan,
     plan_source_cuts,
     source_cut_is_planned,
@@ -225,10 +226,26 @@ ADVERTISE_CONSTRAINTS_ENV = "CONTENT_LAB_ADVERTISE_SUPPORTED_CONSTRAINTS"
 # set (after the Worker allow-lists them). The reasons are still computed and
 # cached either way, and the X-RT-Zero-Reason header on 409s is unaffected.
 ADVERTISE_ZERO_REASONS_ENV = "CONTENT_LAB_ADVERTISE_ZERO_REASONS"
+# Same rule for the originality provenance (gap G39): the Worker's artifact
+# source allow-list (contentLabClient.js ARTIFACT_SOURCE_DNA_FIELDS /
+# ARTIFACT_SOURCE_DNA_MASTER_FIELDS / ARTIFACT_SOURCE_DNA_CUT_FIELDS) does
+# not yet carry `source.master.origin` (o-origin-restore) or `source.recipe`
+# (a SIBLING of master/cutWindow, agreed with originality and growth-brain's
+# g-worker-allow-origin-1028 Worker train), so both go on the wire only once
+# this flag is set. Flag off, receipts keep exactly the base baa2106 key
+# sets — cutWindow keeps EXACTLY the Worker's five cut fields in every mode —
+# (tests/test_cut_window_recipe.py pins both sides), and slot-source
+# regeneration compares master lineage under the same gate.
+ADVERTISE_ORIGIN_ENV = "CONTENT_LAB_ADVERTISE_ORIGIN"
 
 
 def _env_flag(name: str) -> bool:
     return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def advertise_origin() -> bool:
+    """True only when the Worker accepts origin/recipe provenance fields."""
+    return _env_flag(ADVERTISE_ORIGIN_ENV)
 
 
 # The live Worker's capability entry allow-list
@@ -877,6 +894,7 @@ def capabilities(
             max_quantity = len(plan_source_cuts(
                 source_recipe, source_recipe.max_quantity, unavailable_slots,
                 history=cut_history,
+                shadow_page_id=page_id,
             ))
         else:
             if generation_related_jobs_view is None:
@@ -4386,6 +4404,11 @@ async def _run_dossier_source_inner(job_id: str) -> None:
                     "durationMs": master.duration_ms,
                     "sourceOffsetMs": master.source_offset_ms,
                     "provenance": master.provenance,
+                # The Worker allow-lists origin/recipe only once
+                # CONTENT_LAB_ADVERTISE_ORIGIN is set (see above); the
+                # values still come from this cut's ACTUAL render.
+                **({"origin": master.origin}
+                   if master.origin and advertise_origin() else {}),
                 },
                 "cutWindow": {
                     # The window actually rendered (a scrambler cut skips the
@@ -4398,6 +4421,15 @@ async def _run_dossier_source_inner(job_id: str) -> None:
                     "originalStartMs": master.source_offset_ms + render_start_ms,
                     "originalEndMs": master.source_offset_ms + render_start_ms + render_duration_ms,
                 },
+                # `recipe` is a SIBLING of master/cutWindow (the agreed
+                # originality/growth-brain contract, Worker allow-list change
+                # g-worker-allow-origin-1028): cutWindow keeps exactly the
+                # Worker's five cut fields in every mode.
+                **({"recipe": cut_window_recipe(
+                    cut_speed, cut_crop,
+                    reverse=(transforms.reverse if vary_transforms else None),
+                    hflip=(transforms.mirror if vary_transforms else None),
+                )} if advertise_origin() else {}),
             })
             manifest["thumbnail"] = await _thumbnail_manifest(
                 job_root, destination, len(manifests),
@@ -5786,12 +5818,14 @@ async def create_job(
                 cuts = plan_source_cuts(
                     source_recipe, quantity, served_slots, excluded_windows,
                     seed=cut_plan_seed, history=cut_history,
+                    shadow_page_id=page_id, shadow_job_id=job_id,
                 )
                 if len(cuts) != quantity:
                     cut_plan_seed = CAPABILITY_PLAN_SEED
                     cuts = plan_source_cuts(
                         source_recipe, quantity, served_slots, excluded_windows,
                         seed=cut_plan_seed, history=cut_history,
+                        shadow_page_id=page_id, shadow_job_id=job_id,
                     )
             if not cuts:
                 # source_master_too_short, source_windows_exhausted (every

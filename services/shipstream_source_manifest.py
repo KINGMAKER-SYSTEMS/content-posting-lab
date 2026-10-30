@@ -398,6 +398,28 @@ def _approved_cut_library(
     )
 
 
+def _origin_from_page_master(
+    origin_source_id: Any, origin_start_ms: int, origin_end_ms: int,
+) -> dict[str, Any] | None:
+    """Carry the manifest's upstream origin id + window into the projected master.
+
+    The manifest already exposes ``originSourceId`` and ``originWindowSeconds``;
+    the projection previously dropped the id. When the id is missing (or is only
+    the Content Lab job placeholder) nothing trustworthy is left to record, so
+    the origin is omitted rather than invented.
+    """
+    if not isinstance(origin_source_id, str) or not origin_source_id.strip():
+        return None
+    origin_source_id = origin_source_id.strip()
+    if len(origin_source_id) > 100 or origin_source_id.startswith("content-lab:"):
+        return None
+    return {
+        "originSourceId": origin_source_id,
+        "originStartMs": origin_start_ms,
+        "originEndMs": origin_end_ms,
+    }
+
+
 def _master_from_page_master(row: Any, handle: str, storage_handle: str | None = None) -> dict[str, Any]:
     if not isinstance(row, dict):
         raise ShipStreamSourceError("ShipStream page master is invalid")
@@ -406,6 +428,7 @@ def _master_from_page_master(row: Any, handle: str, storage_handle: str | None =
     byte_count = row.get("bytes")
     media = row.get("media")
     registered_at = row.get("registeredAt")
+    origin_source_id = row.get("originSourceId")
     origin_window = row.get("originWindowSeconds")
     if (
         not isinstance(sha256, str)
@@ -420,6 +443,7 @@ def _master_from_page_master(row: Any, handle: str, storage_handle: str | None =
         raise ShipStreamSourceError("ShipStream page master identity is invalid")
     duration_ms = _milliseconds(media.get("durationSeconds"), "ShipStream page master duration")
     source_offset_ms = 0
+    origin: dict[str, Any] | None = None
     if isinstance(origin_window, list) and len(origin_window) == 2:
         start, end = origin_window
         if (
@@ -443,6 +467,9 @@ def _master_from_page_master(row: Any, handle: str, storage_handle: str | None =
             raise ShipStreamSourceError(
                 "ShipStream page master origin window does not match media duration"
             )
+        origin = _origin_from_page_master(
+            origin_source_id, source_offset_ms, source_offset_ms + duration_ms,
+        )
     source_url = row.get("originSourceUrl")
     if source_url is not None and not _https(source_url):
         raise ShipStreamSourceError("ShipStream page master source URL is invalid")
@@ -458,6 +485,7 @@ def _master_from_page_master(row: Any, handle: str, storage_handle: str | None =
         # This offset records where local zero sits on the upstream timeline so
         # source-floor and cross-page exclusion checks use original time.
         "sourceOffsetMs": source_offset_ms,
+        **({"origin": origin} if origin else {}),
         "provenance": {
             "sourceUrl": source_url or f"{shipstream_origin()}/assets/{quote(storage_key, safe='')}",
             "acquiredAt": registered_at,
@@ -640,8 +668,16 @@ def parse_shipstream_source_manifest(
     masters.sort(key=lambda row: row["sourceId"])
 
     def projected_library(projected_masters: list[dict[str, Any]]) -> SourceDnaLibrary:
+        # ``origin`` names the upstream footage a master was cut from; it is
+        # recorded on the parsed MasterSource but is NOT part of the immutable
+        # library identity. Publications pinned before origin recording must
+        # keep resolving to the same sourceLibraryId/sourceLibraryVersion.
+        identity_masters = [
+            {key: value for key, value in master.items() if key != "origin"}
+            for master in projected_masters
+        ]
         identity = hashlib.sha256(json.dumps(
-            {"pageId": page_id, "format": format_slug, "masters": projected_masters},
+            {"pageId": page_id, "format": format_slug, "masters": identity_masters},
             sort_keys=True, separators=(",", ":"), ensure_ascii=False,
         ).encode()).hexdigest()
         slug = re.sub(r"[^a-z0-9]+", "-", handle.lower()).strip("-")[:48]
@@ -666,7 +702,8 @@ def parse_shipstream_source_manifest(
     # legacy identity and behavior; new selections receive the offset-aware
     # identity. This is a compatibility branch, not a silent version rewrite.
     legacy_masters = [
-        {**master, "sourceOffsetMs": 0}
+        {key: (0 if key == "sourceOffsetMs" else value)
+         for key, value in master.items() if key != "origin"}
         for master in masters
     ]
     legacy_library = projected_library(legacy_masters)
