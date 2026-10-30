@@ -37,6 +37,7 @@ from routers.control_plane_recipes import LANE, require_control_plane_bearer
 from services import roster
 from services.json_store import lock_for
 from services.master_pages_contract import (
+    EXTERNAL_PAGE_SOURCES,
     REQUIRED_MATERIAL_FIELDS,
     SCHEMA as MASTER_PAGES_SCHEMA,
     canonical_intent,
@@ -46,10 +47,10 @@ from services.master_pages_contract import (
 
 router = APIRouter()
 
-# Sources whose rows this door may write and delete. Closed on purpose: a
-# null-source row is a legacy Postiz page or a pipeline placeholder awaiting
-# its Notion sync, and neither belongs to the control plane.
-EXTERNAL_PAGE_SOURCES = frozenset({"northstar"})
+# ``EXTERNAL_PAGE_SOURCES`` (services/master_pages_contract.py) is the closed
+# set of sources whose rows this door may write and delete. The ShipStream
+# manifest parser reads the same set, so a page is an external page in exactly
+# one place.
 # Notion sync and pipeline intake mint ``acct:<handle>``. Keeping external ids
 # out of that namespace is what guarantees a later Notion row can never land on
 # (and overwrite) an external page.

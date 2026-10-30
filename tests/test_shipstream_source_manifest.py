@@ -566,3 +566,220 @@ def test_http_fetch_stops_when_a_chunked_manifest_exceeds_the_cap(monkeypatch):
     monkeypatch.setattr(source_manifest.httpx, "stream", lambda *args, **kwargs: Stream())
     with pytest.raises(ShipStreamSourceError, match="too large"):
         source_manifest._fetch_manifest(source_manifest.source_manifest_url(HANDLE))
+
+
+# A registered external page (PR 237): the control plane wrote its intent with
+# ``source: "northstar"`` and ``notionPageId: null`` because it has no Notion
+# row. Its own uploads are ShipStream vault masters bound by a Content Lab
+# import, so the parser accepts the null id for that one shape and nothing else.
+EXTERNAL_PAGE_ID = "ns-tt-6b3e9c1a-k7pq3m2x"
+EXTERNAL_HANDLE = "night.walks.artist"
+EXTERNAL_SHA256 = "b" * 64
+
+
+def _external_intent(**overrides) -> dict:
+    intent, _ = master_pages(
+        EXTERNAL_PAGE_ID,
+        handle=EXTERNAL_HANDLE,
+        content_niche="POV — Night Core",
+        content_engine="sourced_video",
+        vault_url=f"https://shipstream.test/vault/{EXTERNAL_HANDLE}",
+    )
+    intent.update({"notionPageId": None, "source": "northstar", "automationMode": "Operator"})
+    intent.update(overrides)
+    return intent
+
+
+def _external_import_manifest(page_id: str = EXTERNAL_PAGE_ID, handle: str = EXTERNAL_HANDLE) -> dict:
+    """What ShipStream must write for an external page's own upload."""
+    return {
+        "schema": "shipstream.source-manifest.v1",
+        "page": handle,
+        "notion": {
+            "pageId": None,
+            "contentEngine": "sourced_video",
+            "contentNiche": "POV — Night Core",
+            "serviceMode": "Operator",
+        },
+        "format": FORMAT,
+        "sourceAuthority": {
+            "kind": "content_lab_page_source_import",
+            "pageId": page_id,
+            "pageHandle": handle,
+            "notionPageId": None,
+            "intentSource": "northstar",
+            "replacementEligible": True,
+        },
+        "master": {
+            "sha256": EXTERNAL_SHA256,
+            "storageKey": f"vault/{handle}/masters/{EXTERNAL_SHA256}.mp4",
+            "bytes": 20_000_000,
+            "media": {"durationSeconds": 7.5},
+            "originSourceUrl": "https://cdn.example/artist-upload.mp4",
+            "originWindowSeconds": [0.0, 7.5],
+            "registeredAt": "2026-10-27T18:02:10Z",
+        },
+        "historicalPostedCuts": [],
+        "cuts": [],
+        "updatedAt": "2026-10-27T18:02:11Z",
+    }
+
+
+def test_external_page_with_null_notion_id_resolves_its_own_import():
+    library = parse_shipstream_source_manifest(
+        _raw(_external_import_manifest()), _external_intent(),
+        page_id=EXTERNAL_PAGE_ID, expected_format=FORMAT,
+    )
+    assert library.page_id == EXTERNAL_PAGE_ID
+    assert library.format_slug == FORMAT
+    assert [master.sha256 for master in library.masters] == [EXTERNAL_SHA256]
+    assert library.masters[0].storage_key == (
+        f"vault/{EXTERNAL_HANDLE}/masters/{EXTERNAL_SHA256}.mp4"
+    )
+    # The projection view reads the same manifest; no approved cuts yet.
+    projection = parse_shipstream_source_projection(
+        _raw(_external_import_manifest()), _external_intent(),
+        page_id=EXTERNAL_PAGE_ID, expected_format=FORMAT,
+    )
+    assert projection.source_library.library_id == library.library_id
+    assert projection.approved_cut_status == "missing"
+
+
+@pytest.mark.parametrize("notion_page_id", [None, "", " "])
+def test_notion_page_with_blank_id_is_still_refused_by_an_import_authority(notion_page_id):
+    """The exception is for pages owned outside Notion, never a Notion row missing its id."""
+    intent, _ = _intent()
+    intent["notionPageId"] = notion_page_id
+    manifest = _external_import_manifest(PAGE_ID, HANDLE)
+    manifest["notion"]["pageId"] = notion_page_id
+    manifest["sourceAuthority"]["notionPageId"] = notion_page_id
+    with pytest.raises(ShipStreamSourceError, match="Notion page ID is missing"):
+        parse_shipstream_source_manifest(
+            _raw(manifest), intent, page_id=PAGE_ID, expected_format=FORMAT,
+        )
+
+
+def test_external_page_whose_authority_names_another_page_is_refused():
+    manifest = _external_import_manifest()
+    manifest["sourceAuthority"]["pageId"] = "ns-tt-00000000-other0000"
+    with pytest.raises(ShipStreamSourceError, match="Notion page ID is missing"):
+        parse_shipstream_source_manifest(
+            _raw(manifest), _external_intent(), page_id=EXTERNAL_PAGE_ID, expected_format=FORMAT,
+        )
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"source": None},
+        {"source": "notion"},
+        {"source": "postiz"},
+        {"notionPageId": ""},
+        {"notionPageId": " "},
+    ],
+    ids=["null-source", "notion-source", "unknown-source", "blank-id", "space-id"],
+)
+def test_null_id_exception_requires_an_external_owner_and_a_null_id(overrides):
+    with pytest.raises(ShipStreamSourceError, match="Notion page ID is missing"):
+        parse_shipstream_source_manifest(
+            _raw(_external_import_manifest()), _external_intent(**overrides),
+            page_id=EXTERNAL_PAGE_ID, expected_format=FORMAT,
+        )
+
+
+def test_null_notion_manifest_without_intent_source_is_refused():
+    """ShipStream marks an external page's manifest with intentSource; without it the null id is just missing."""
+    manifest = _external_import_manifest()
+    manifest["sourceAuthority"].pop("intentSource")
+    with pytest.raises(ShipStreamSourceError, match="Notion page ID is missing"):
+        parse_shipstream_source_manifest(
+            _raw(manifest), _external_intent(), page_id=EXTERNAL_PAGE_ID, expected_format=FORMAT,
+        )
+
+
+@pytest.mark.parametrize("intent_source", ["notion", "northstar-legacy", None, ""])
+def test_null_notion_manifest_with_another_intent_source_is_refused(intent_source):
+    manifest = _external_import_manifest()
+    manifest["sourceAuthority"]["intentSource"] = intent_source
+    with pytest.raises(ShipStreamSourceError, match="Notion page ID is missing"):
+        parse_shipstream_source_manifest(
+            _raw(manifest), _external_intent(), page_id=EXTERNAL_PAGE_ID, expected_format=FORMAT,
+        )
+
+
+@pytest.mark.parametrize("intent_source", ["northstar", "notion", None])
+def test_notion_page_manifest_carrying_intent_source_diverges(intent_source):
+    """Rising Tides manifests carry no intentSource; one that does is not this page's manifest."""
+    intent, _ = _intent()
+    manifest = _external_import_manifest(PAGE_ID, HANDLE)
+    manifest["notion"]["pageId"] = NOTION_PAGE_ID
+    manifest["sourceAuthority"]["notionPageId"] = NOTION_PAGE_ID
+    manifest["sourceAuthority"]["intentSource"] = intent_source
+    with pytest.raises(ShipStreamSourceError, match="diverges from Master Pages"):
+        parse_shipstream_source_manifest(
+            _raw(manifest), intent, page_id=PAGE_ID, expected_format=FORMAT,
+        )
+    manifest["sourceAuthority"].pop("intentSource")
+    library = parse_shipstream_source_manifest(
+        _raw(manifest), intent, page_id=PAGE_ID, expected_format=FORMAT,
+    )
+    assert library.page_id == PAGE_ID
+
+
+def _as_exact_page_binding(manifest: dict) -> None:
+    manifest["sourceAuthority"].update(kind="exact_page_binding", pageBound=True)
+
+
+def _as_historical_recovery(manifest: dict) -> None:
+    manifest["sourceAuthority"].update(kind="historical_posted_cut_recovery", pageBound=True)
+    manifest["master"] = None
+    manifest["historicalPostedCuts"] = [{**_historical_row(1), "pageHandle": EXTERNAL_HANDLE,
+                                         "notionPageId": None,
+                                         "storageKey": f"vault/{EXTERNAL_HANDLE}/pool/{1:064x}.mp4"}]
+
+
+def _omit_notion_page_id(manifest: dict) -> None:
+    manifest["notion"].pop("pageId")
+
+
+def _omit_authority_notion_page_id(manifest: dict) -> None:
+    manifest["sourceAuthority"].pop("notionPageId")
+
+
+def _invent_notion_page_id(manifest: dict) -> None:
+    manifest["notion"]["pageId"] = NOTION_PAGE_ID
+
+
+def _invent_authority_notion_page_id(manifest: dict) -> None:
+    manifest["sourceAuthority"]["notionPageId"] = NOTION_PAGE_ID
+
+
+def _other_handle(manifest: dict) -> None:
+    manifest["sourceAuthority"]["pageHandle"] = "someone.else"
+
+
+def _no_master(manifest: dict) -> None:
+    manifest["master"] = None
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        _as_exact_page_binding,
+        _as_historical_recovery,
+        _omit_notion_page_id,
+        _omit_authority_notion_page_id,
+        _invent_notion_page_id,
+        _invent_authority_notion_page_id,
+        _other_handle,
+        _no_master,
+    ],
+    ids=lambda fn: fn.__name__.strip("_"),
+)
+def test_external_page_null_id_binds_only_through_its_own_import(mutate):
+    manifest = _external_import_manifest()
+    mutate(manifest)
+    with pytest.raises(ShipStreamSourceError):
+        parse_shipstream_source_manifest(
+            _raw(manifest), _external_intent(), page_id=EXTERNAL_PAGE_ID, expected_format=FORMAT,
+        )

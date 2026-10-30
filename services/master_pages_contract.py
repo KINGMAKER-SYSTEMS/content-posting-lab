@@ -18,6 +18,12 @@ FIELDS = (
 REQUIRED_MATERIAL_FIELDS = (
     "contentNiche", "contentEngine", "automationMode", "vaultUrl",
 )
+# ``source`` values that name a Master Pages owner outside Notion. Closed on
+# purpose: the external-pages route writes and deletes only these rows, and the
+# ShipStream manifest parser accepts a null ``notionPageId`` only for them. A
+# null-source row is a legacy Postiz page or a pipeline placeholder awaiting
+# its Notion sync, and neither belongs to an external owner.
+EXTERNAL_PAGE_SOURCES = frozenset({"northstar"})
 HASH = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 
