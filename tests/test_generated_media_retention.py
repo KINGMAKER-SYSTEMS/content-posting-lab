@@ -399,3 +399,22 @@ def test_restartable_import_snapshot_never_deletes_a_new_retry(tmp_path, retry_t
     worker.sweep({'jobs': {job_id: job}}, root, NOW)
     assert fresh.read_bytes() == b'fresh retry media'
     assert not old.exists()
+
+
+def test_definitively_failed_import_cleans_old_attempts(tmp_path):
+    root = tmp_path / 'gen'
+    job_id = 'cpl-' + 'a' * 16
+    group = root / 'acct:page' / 'source-imports' / job_id
+    old = group / ('b' * 32) / 'old.mp4'
+    current = group / ('c' * 32) / 'current.mp4'
+    for path in (old, current):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b'stray')
+    job = {'jobId': job_id, 'pageId': 'acct:page', 'sourceKind': 'page_source_import',
+           'sourceImportClaimVersion': 1, 'sourceImportAttemptId': 'c' * 32,
+           'artifactRoot': str(group / ('c' * 32)), 'status': 'failed',
+           'error': 'source_import_cancelled',
+           'completedAt': (NOW - timedelta(days=3)).isoformat(), 'clips': []}
+    worker, _ = sweeper(True)
+    worker.sweep({'jobs': {job_id: job}}, root, NOW)
+    assert not old.exists() and not current.exists()

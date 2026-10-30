@@ -197,7 +197,8 @@ class GeneratedMediaRetention:
                 # A failed snapshot can be retried after it was read.  Never
                 # scan sibling attempts from that snapshot: a sibling may be
                 # the live retry, even if it appears while planning a sweep.
-                if directory is not None and job.get("status") != "completed":
+                if (directory is not None and job.get("status") == "failed"
+                        and job.get("error") == "source_import_runtime_restarted"):
                     directory = artifact_directory
             else:
                 directory = _job_dir(root, job.get("artifactRoot"))
