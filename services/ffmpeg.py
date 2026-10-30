@@ -114,10 +114,26 @@ def _validated_playback_speed(value: float) -> float:
         isinstance(value, bool)
         or not isinstance(value, (int, float))
         or not math.isfinite(float(value))
-        or not 0.5 <= float(value) <= 2.0
+        or not 0.3 <= float(value) <= 2.0
     ):
-        raise ValueError("playback_speed must be a finite number from 0.5 through 2.0")
+        raise ValueError("playback_speed must be a finite number from 0.3 through 2.0")
     return float(value)
+
+
+def _atempo_chain(speed: float) -> str:
+    """An ffmpeg ``atempo`` expression for ``speed``.
+
+    A single atempo instance admits 0.5-2.0; the Scrambler draws down to 0.3,
+    so slower speeds chain two instances (0.5 then ``speed * 2``) to stay
+    inside the per-filter range, keeping audio at exactly the video tempo.
+    """
+    if 0.5 <= speed <= 2.0:
+        return f"atempo={speed:.6f}"
+    if speed < 0.5:
+        # 0.5 * (speed * 2) == speed, and speed * 2 lands in [0.5, 2.0] for
+        # every speed at or above the 0.25 sanity floor.
+        return f"atempo=0.500000,atempo={speed * 2:.6f}"
+    return f"atempo=2.000000,atempo={speed / 2:.6f}"
 
 
 def _validated_clip_crop(value: dict | None) -> dict[str, float] | None:
@@ -343,7 +359,7 @@ def build_cc_filter(
             - None → no scale filter, input dimensions pass through.
             - "1080:1920" → appends `scale=1080:1920:flags=lanczos,setsar=1`
               (Burn tab's TikTok default).
-        playback_speed: Video and audio playback-rate multiplier, 0.5 through
+        playback_speed: Video and audio playback-rate multiplier, 0.3 through
             2.0. Video PTS is changed here; `run_color_correct` applies the
             matching audio tempo when an audio stream exists.
         clip_crop_size: Exact even-pixel output width and height used when a
@@ -832,7 +848,7 @@ async def run_color_correct(
     if speed != 1.0:
         # `0:a?` preserves silent provider outputs while changing embedded
         # audio in lockstep when it exists. Filtered audio cannot stream-copy.
-        audio_args = ["-map", "0:v:0", "-map", "0:a?", "-af", f"atempo={speed:.6f}"]
+        audio_args = ["-map", "0:v:0", "-map", "0:a?", "-af", _atempo_chain(speed)]
         for index, argument in enumerate(enc[:-1]):
             if argument == "-c:a" and enc[index + 1] == "copy":
                 enc[index + 1] = "aac"
