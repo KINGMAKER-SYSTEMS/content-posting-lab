@@ -295,6 +295,7 @@ async def _download_with_workspace_limit(source_url: str, target: Path) -> Path:
     ))
     loop = asyncio.get_running_loop()
     deadline = loop.time() + MAX_SOURCE_IMPORT_SECONDS
+    cancellation = None
     try:
         while True:
             remaining = deadline - loop.time()
@@ -307,6 +308,9 @@ async def _download_with_workspace_limit(source_url: str, target: Path) -> Path:
                 return task.result()
             if _tree_bytes(target.parent) > MAX_SOURCE_IMPORT_WORKSPACE_BYTES:
                 raise SourceImportError("source video exceeds the import workspace limit")
+    except asyncio.CancelledError as error:
+        cancellation = error
+        raise
     finally:
         if not task.done():
             task.cancel()
@@ -322,6 +326,11 @@ async def _download_with_workspace_limit(source_url: str, target: Path) -> Path:
             except asyncio.CancelledError:
                 pass
             if cancelled_during_join:
+                # Preserve an expiry cancellation received before cleanup.
+                # A later cancellation must not make an earlier download
+                # failure retryable.
+                if cancellation is not None:
+                    raise cancellation
                 raise asyncio.CancelledError
 
 
