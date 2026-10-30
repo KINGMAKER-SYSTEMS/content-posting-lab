@@ -37,6 +37,8 @@ should fail, and how it did.
 from __future__ import annotations
 
 import asyncio
+import contextvars
+import functools
 from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import hmac
@@ -4459,7 +4461,11 @@ _syzygy_slideshow_tasks: dict[str, asyncio.Task] = {}
 
 async def _settle_source_update(job_id: str, **fields: Any) -> dict[str, Any] | None:
     """Do not drop a held claim while its persistence thread is still live."""
-    worker = asyncio.create_task(asyncio.to_thread(_update_source_job, job_id, **fields))
+    # A bare executor Future is not a Task, so event-loop shutdown's
+    # cancel-all sweep cannot cancel the handle before the thread settles.
+    context = contextvars.copy_context()
+    call = functools.partial(context.run, _update_source_job, job_id, **fields)
+    worker = asyncio.get_running_loop().run_in_executor(None, call)
     cancelled = False
     while not worker.done():
         try:

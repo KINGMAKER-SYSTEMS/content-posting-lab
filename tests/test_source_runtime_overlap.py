@@ -349,9 +349,9 @@ async def test_cancelled_setup_failure_keeps_claim_until_write_settles(lab, monk
         assert acquired, 'the claim is released once the write settles'
 
 
-@pytest.mark.parametrize('stage', ['initial', 'progress', 'completion'])
+@pytest.mark.parametrize('stage,cancel_inner', [('initial', False), ('progress', False), ('completion', False), ('completion', True)])
 @pytest.mark.asyncio
-async def test_source_runner_holds_claim_until_cancelled_write_settles(lab, monkeypatch, tmp_path, stage):
+async def test_source_runner_holds_claim_until_cancelled_write_settles(lab, monkeypatch, tmp_path, stage, cancel_inner):
     import threading
     from pathlib import Path
 
@@ -392,6 +392,11 @@ async def test_source_runner_holds_claim_until_cancelled_write_settles(lab, monk
     try:
         assert await asyncio.to_thread(entered.wait, 5)
         runner.cancel()
+        if cancel_inner:
+            # Shutdown cancels every Task, including a nested to_thread Task.
+            for task in asyncio.all_tasks():
+                if task is not runner and task is not asyncio.current_task() and getattr(task.get_coro(), '__qualname__', '') == 'to_thread':
+                    task.cancel()
         await asyncio.sleep(0)
         runner.cancel()
         await asyncio.sleep(0)
