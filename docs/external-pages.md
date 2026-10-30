@@ -54,52 +54,35 @@ $CONTROL_PLANE_TOKEN` plus `X-RT-Lane: content-bucket-control-plane`.
 - **Source imports, clip jobs and capabilities** resolve the row by exact page id,
   the same way they resolve a Notion row.
 
-The row does still appear in the operator roster listings (`/api/roster`,
-`/api/pages`). The existing `PUT /api/roster/{id}` and `POST /api/roster/dedup`
-can still change or remove it, just as they can a Notion row.
+The row appears in operator roster listings. Generic name-based roster dedup
+excludes externally owned rows: it cannot remove one or transfer its inventory
+into a Notion/provider row. The existing operator project-assignment route can
+still change a row's project, which changes its intent hash.
 
 ## Syzygy slideshow library subject
 
-A slideshow format (`meme-slideshow` on lane `meme`, `lyric-edits` on lane
-`slideshow-webweaving`) renders from the Syzygy/R2 library
-`syzygy:<lane>:<subject>`, whose objects live at
-`<lane>/<subject>/photos/<file>` (clips at `<lane>/<subject>/clips/<file>`).
-`services/control_plane_slideshows.library_subject` derives the subject once
-for both the Dossier ingredients read and the job path:
+The canonical external subject is `external--<sha256(exact pageId UTF-8)>`.
+It is independent of handle, and hashes the exact bounded page token rather
+than a casefolded slug. Case/punctuation-distinct page ids remain separate.
+The ordinary Notion/legacy/pipeline slugger is unchanged: it collapses each
+punctuation run to one hyphen. It can never produce the external double-hyphen
+prefix, even if a matching Notion handle appears after registration.
 
-- A Rising Tides page (a Notion, legacy or pipeline row) slugs its **handle**,
-  byte for byte as before.
-- An external page (`source` in `EXTERNAL_PAGE_SOURCES`) slugs its **page id**
-  and never consults its handle, so a workspace that shares a handle with a
-  Rising Tides page, or whose handle slugs alike, has its own picture pool.
+Both ingredients and execution use `library_subject` through
+`slideshow_library_address`. The resulting address is
+`syzygy:<lane>:<reserved subject>`, with objects at
+`<lane>/<reserved subject>/photos/<file>` or `clips/<file>`.
+`meme-slideshow` uses lane `meme`; `lyric-edits` uses
+`slideshow-webweaving`. The writer must use the advertised ingredient binding
+subject/libraryId; it must not reconstruct paths from handle or page-id slug.
+The recipe's sourceLibraryId and catalogVersion must exactly select that
+advertised option. Existing Rising Tides library addresses remain byte-identical.
 
-The slug: casefold, replace every run of characters outside `[a-z0-9]` with
-one `-`, strip leading and trailing `-`; an empty result or one longer than
-100 characters means the page has no library (the ingredient reports
-`missing`). For the ids the control plane mints (`ns-tt-<8 hex>-<8 base36>`)
-the subject equals the page id, so the North Star page
-`ns-tt-6b3e9c1a-k7pq3m2x` on `meme-slideshow` reads
-`syzygy:meme:ns-tt-6b3e9c1a-k7pq3m2x` from
-`meme/ns-tt-6b3e9c1a-k7pq3m2x/photos/`, and on `lyric-edits` reads
-`syzygy:slideshow-webweaving:ns-tt-6b3e9c1a-k7pq3m2x`.
-
-Registration computes the subject the new page would derive and refuses with
-409 one that any other roster page already derives (a Notion row from its
-handle, an external row from its page id), naming the subject and that page.
-A page never collides with its own row, so re-registering is still
-`unchanged`.
-
-The control plane's recipe for such a page must send
-`production.sourceLibraryId` equal to the `libraryId` the Dossier ingredient
-catalog advertises on the format's `image-library` ingredient (its one
-option), together with that selection's `catalogVersion`. Recipe publish and
-the job path refuse any other library id, including the handle-derived one.
-
-Not covered: a Notion row that later appears with a handle slugging to an
-already-registered external page's subject is not refused (Notion sync does
-not consult subjects, and nothing reads the roster on the render path), and
-two Rising Tides handles that slug alike (`holy.fumble`, `holy_fumble`) still
-share one pool, as before.
+This reserved address corrects the unlanded #264 proposal, which let a later
+Notion handle collide with an external page-id slug. Matching Syzygy uploader
+support and actual cross-service activation have not been verified; do not
+activate North Star slideshow production until writer/reader address agreement
+is qualified. No existing namespace is migrated or aliased by this code.
 
 ## Sourced video for an external page
 

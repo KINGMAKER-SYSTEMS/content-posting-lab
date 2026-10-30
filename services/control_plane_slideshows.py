@@ -555,21 +555,20 @@ def _subject(handle: Any) -> str | None:
 
 
 def library_subject(page_id: Any, handle: Any, source: Any) -> str | None:
-    """The Syzygy library subject one roster page owns, or None.
+    """Keep ordinary addresses; reserve a disjoint exact-page external subject.
 
-    The slug is the input casefolded, every run of characters outside
-    ``[a-z0-9]`` replaced by one ``-``, outer ``-`` stripped, at most 100
-    characters. A Rising Tides page (a Notion, legacy or pipeline row) keeps
-    slugging its handle, byte for byte as before. A page whose Master Pages
-    intent is owned outside Notion (``source`` in ``EXTERNAL_PAGE_SOURCES``)
-    slugs its page id instead and never consults its handle, so two workspaces
-    that share a handle, or whose handles slug alike, never read one picture
-    pool: the library follows the page, not the handle. Both the Dossier
-    ingredients read and the job path address the library through this one
-    derivation (``slideshow_library_address``).
+    The ordinary slugger collapses every punctuation run to a single hyphen,
+    so it can never produce the external ``external--`` prefix. Hashing the
+    exact bounded page token also keeps case/punctuation-distinct ids separate.
+    Both ingredients and execution use this one derivation. External writers
+    must use the advertised catalog subject, never reconstruct it from handle.
     """
     if isinstance(source, str) and source in EXTERNAL_PAGE_SOURCES:
-        return _subject(page_id)
+        if (not isinstance(page_id, str)
+                or not re.fullmatch(r"[A-Za-z0-9._:-]{1,128}", page_id)
+                or _subject(page_id) is None):
+            return None
+        return "external--" + hashlib.sha256(page_id.encode("utf-8")).hexdigest()
     return _subject(handle)
 
 

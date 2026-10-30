@@ -471,13 +471,16 @@ def test_delete_removes_only_rows_this_route_owns(lab):
     assert refused.status_code == 409
 
 
-def test_app_serves_the_external_page_routes():
+def test_app_serves_the_external_page_routes(lab, monkeypatch):
     import app as app_module
 
-    methods = {
-        method
-        for route in app_module.app.routes
-        if getattr(route, "path", None) == "/api/control-plane/v1/external-pages/{page_id}"
-        for method in route.methods
-    }
-    assert {"PUT", "DELETE"} <= methods
+    # FastAPI may expose included routers lazily; exercise the actual app and
+    # generated method contract instead of private route object internals.
+    methods = app_module.app.openapi()["paths"]["/api/control-plane/v1/external-pages/{page_id}"]
+    assert {"put", "delete"} <= set(methods)
+    monkeypatch.setattr(app_module, "_APP_API_KEY", "")
+    client = TestClient(app_module.app)
+    registered = client.put(URL, headers=AUTH, json=northstar_intent())
+    assert registered.status_code == 200 and registered.json()["status"] == "created"
+    removed = client.delete(URL, headers=AUTH)
+    assert removed.status_code == 200 and removed.json()["status"] == "deleted"

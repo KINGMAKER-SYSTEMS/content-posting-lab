@@ -3,7 +3,7 @@
 Rising Tides pages address ``syzygy:{lane}:{handle slug}``. A page whose Master
 Pages intent is owned outside Notion (``source: "northstar"``, registered by
 ``routers/control_plane_external_pages.py``) addresses
-``syzygy:{lane}:{page id slug}`` instead, through the same
+``syzygy:{lane}:external--{sha256(exact pageId)}`` instead, through the same
 ``slideshow_library_address`` the Dossier ingredients read and the job path
 share. Registration refuses, by name, a subject any other roster page already
 derives, so two pages never render from one picture pool.
@@ -46,7 +46,7 @@ TOKEN = "test-control-plane-token"
 LANE_HEADER = "content-bucket-control-plane"
 # The page id the control plane mints for a North Star workspace page.
 NS_PAGE_ID = "ns-tt-6b3e9c1a-k7pq3m2x"
-NS_SUBJECT = "ns-tt-6b3e9c1a-k7pq3m2x"
+NS_SUBJECT = "external--" + hashlib.sha256(NS_PAGE_ID.encode()).hexdigest()
 # The same handle as the Rising Tides fixture page in
 # tests/test_control_plane_slideshow_execution.py, on purpose: a shared handle
 # must not mean a shared library.
@@ -141,17 +141,15 @@ def _image_library(catalog: dict, format_slug: str) -> dict:
 # ── Derivation ──────────────────────────────────────────────────────────────
 
 
-def test_external_pages_slug_their_page_id_and_rising_tides_pages_their_handle():
+def test_external_subjects_are_reserved_exact_page_hashes_and_ordinary_addresses_unchanged():
     assert EXTERNAL_PAGE_SOURCES == frozenset({"northstar"})
     assert external.EXTERNAL_PAGE_SOURCES is EXTERNAL_PAGE_SOURCES
-    # North Star: the page id slug, however the handle is spelled.
+    # North Star: the exact page identity, however the handle is spelled.
     assert library_subject(NS_PAGE_ID, HANDLE, "northstar") == NS_SUBJECT
     assert library_subject(NS_PAGE_ID, "some.other.handle", "northstar") == NS_SUBJECT
     assert library_subject(NS_PAGE_ID, None, "northstar") == NS_SUBJECT
-    # The slug rules are the handle rules applied to the page id: casefold,
-    # every run outside [a-z0-9] becomes one '-', outer '-' stripped, <= 100.
-    assert library_subject("NS.TT_6B3E9C1A:k7pq3m2x", HANDLE, "northstar") == NS_SUBJECT
-    assert library_subject("ns-" + "x" * 98, HANDLE, "northstar") is None
+    assert library_subject("NS.TT_6B3E9C1A:k7pq3m2x", HANDLE, "northstar") != NS_SUBJECT
+    assert library_subject("ns-" + "x" * 126, HANDLE, "northstar") is None
     assert library_subject("...", HANDLE, "northstar") is None
     assert library_subject(None, HANDLE, "northstar") is None
     # Rising Tides (Notion, legacy, pipeline): the handle slug, never the id.
@@ -170,8 +168,8 @@ def test_subject_holder_names_the_other_page_that_derives_it():
         ("acct:ns-tt-6b3e9c1a-k7pq3m2x", "ns.tt.6b3e9c1a.k7pq3m2x", "notion"),
         ("ns-tt-ffffffff-aaaaaaaa", "another.artist", "northstar"),
     ]
-    assert library_subject_holder(NS_SUBJECT, pages) == "acct:ns-tt-6b3e9c1a-k7pq3m2x"
-    assert library_subject_holder("ns-tt-ffffffff-aaaaaaaa", pages) == "ns-tt-ffffffff-aaaaaaaa"
+    assert library_subject_holder(NS_SUBJECT, pages) is None
+    assert library_subject_holder(library_subject("ns-tt-ffffffff-aaaaaaaa", "", "northstar"), pages) == "ns-tt-ffffffff-aaaaaaaa"
     assert library_subject_holder(HANDLE_SUBJECT, pages) == "acct:holy-fumble"
     assert library_subject_holder("another-artist", pages) is None
     assert library_subject_holder(None, pages) is None
@@ -432,43 +430,20 @@ def _register(client, intent):
     )
 
 
-def test_registration_refuses_a_subject_a_notion_page_derives_from_its_handle(roster_lab):
-    # A Notion handle that slugs to the North Star page id. Handles differ, so
-    # only the subject gate can refuse this.
-    _seed({**NOTION_ROW, "integration_id": "acct:ns-tt-6b3e9c1a-k7pq3m2x",
-           "name": "ns.tt.6b3e9c1a.k7pq3m2x",
-           "tiktok_url": "https://www.tiktok.com/@ns.tt.6b3e9c1a.k7pq3m2x"})
-    before = _roster_bytes()
-    refused = _register(roster_lab, northstar_intent())
-    assert refused.status_code == 409
-    assert refused.json()["detail"] == (
-        f"Syzygy library subject {NS_SUBJECT} is already derived by roster page "
-        "acct:ns-tt-6b3e9c1a-k7pq3m2x"
-    )
-    assert _roster_bytes() == before
-    assert roster.get_page(NS_PAGE_ID) is None
+def test_registration_keeps_external_subject_disjoint_from_existing_notion_handle(roster_lab):
+    _seed({**NOTION_ROW, "integration_id": "acct:future-collision", "name": NS_PAGE_ID})
+    registered = _register(roster_lab, northstar_intent())
+    assert registered.status_code == 200
+    assert library_subject(NS_PAGE_ID, HANDLE, "northstar") != library_subject(
+        "acct:future-collision", NS_PAGE_ID, "notion")
 
 
-def test_registration_refuses_a_subject_another_external_page_derives(roster_lab):
-    first = _register(roster_lab, northstar_intent())
-    assert first.status_code == 200, first.json()
-    before = _roster_bytes()
-    # A second workspace page whose id slugs the same, under a different handle.
-    twin = northstar_intent(
-        pageId="NS.TT_6B3E9C1A:k7pq3m2x", handle="other.artist",
-        vaultUrl="https://shipstream.test/vault/other.artist",
-    )
-    refused = _register(roster_lab, twin)
-    assert refused.status_code == 409
-    assert refused.json()["detail"] == (
-        f"Syzygy library subject {NS_SUBJECT} is already derived by roster page {NS_PAGE_ID}"
-    )
-    assert _roster_bytes() == before
-    # The page itself never collides with its own row.
-    repeat = _register(roster_lab, northstar_intent())
-    assert repeat.status_code == 200
-    assert repeat.json()["status"] == "unchanged"
-    assert _roster_bytes() == before
+def test_case_and_punctuation_distinct_external_ids_get_distinct_pools(roster_lab):
+    assert _register(roster_lab, northstar_intent()).status_code == 200
+    twin = northstar_intent(pageId="NS.TT_6B3E9C1A:k7pq3m2x", handle="other.artist",
+                           vaultUrl="https://shipstream.test/vault/other.artist")
+    assert _register(roster_lab, twin).status_code == 200
+    assert library_subject(twin["pageId"], twin["handle"], "northstar") != NS_SUBJECT
 
 
 def test_a_handle_shared_with_a_rising_tides_page_is_not_a_shared_library(roster_lab):
@@ -484,3 +459,12 @@ def test_a_handle_shared_with_a_rising_tides_page_is_not_a_shared_library(roster
     resolved, _ = cp._current_master_pages_intent(NS_PAGE_ID)
     profile = _profile(FORMAT, resolved)
     assert slideshow_library_address(profile, resolved) == (NS_LIBRARY_ID, LANE, NS_SUBJECT)
+
+
+def test_future_notion_row_cannot_claim_external_pool(roster_lab):
+    assert _register(roster_lab, northstar_intent()).status_code == 200
+    # Notion can legitimately add a handle after external registration. Its
+    # ordinary slug must never alias the existing external page's pool.
+    _seed({**NOTION_ROW, 'integration_id': 'acct:future-notion', 'name': NS_PAGE_ID})
+    assert library_subject(NS_PAGE_ID, HANDLE, 'northstar') != library_subject(
+        'acct:future-notion', NS_PAGE_ID, 'notion')

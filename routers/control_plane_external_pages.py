@@ -20,9 +20,8 @@ construction:
 * An id or handle another roster row already holds is refused, and DELETE
   removes only rows whose source this door owns.
 * The Syzygy slideshow library subject an external page derives is its page
-  id slug, never its handle slug (``services.control_plane_slideshows``), and
-  a subject any other roster page already derives is refused by name, so no
-  two pages ever render from one picture pool.
+  reserved exact-page subject, never its handle slug (``services.control_plane_slideshows``), and
+  a subject any other roster page already derives is refused by name, so a new registration cannot claim an existing page's pool.
 """
 
 from __future__ import annotations
@@ -52,13 +51,8 @@ from services.master_pages_contract import (
 
 router = APIRouter()
 
-# ``EXTERNAL_PAGE_SOURCES`` (services/master_pages_contract.py) is the closed
-# set of sources whose rows this door may write and delete. The ShipStream
-# manifest parser reads the same set, so a page is an external page in exactly
-# one place.
-# ``EXTERNAL_PAGE_SOURCES`` (the sources whose rows this door may write and
-# delete) lives in ``services.master_pages_contract`` so the slideshow service
-# can derive a page-owned library subject from the same closed set.
+# The shared closed external-owner set governs registration, exact source-
+# manifest binding and page-owned slideshow subjects in one contract module.
 # Notion sync and pipeline intake mint ``acct:<handle>``. Keeping external ids
 # out of that namespace is what guarantees a later Notion row can never land on
 # (and overwrite) an external page.
@@ -92,7 +86,7 @@ def _require_machine(authorization: str | None, lane: str | None, page_id: str) 
     require_control_plane_bearer(authorization)
     if lane != LANE:
         raise HTTPException(400, f"X-RT-Lane must be {LANE}")
-    if not PAGE_ID_RE.match(page_id):
+    if not PAGE_ID_RE.fullmatch(page_id):
         raise HTTPException(400, "pageId must be a bounded page token")
 
 
@@ -171,7 +165,7 @@ def register_external_page(
                 if other.get("source") == "notion":
                     raise HTTPException(409, "handle is held by a Notion Master Pages row")
                 raise HTTPException(409, "handle is held by another roster page")
-        # The page's Syzygy slideshow library subject is its page id slug. A
+        # The external subject is derived from its exact page token. A
         # subject any other roster page derives (a Notion row from its handle,
         # an external row from its page id) would make two pages render from
         # one picture pool, so it is refused by name.

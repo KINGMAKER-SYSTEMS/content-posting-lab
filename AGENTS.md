@@ -218,9 +218,9 @@
   address `syzygy:<lane>:<subject>` for both the Dossier ingredients read and
   the job path. `library_subject` is the one derivation: a Rising Tides page
   slugs its handle (unchanged, byte for byte); a page whose `source` is in
-  `services.master_pages_contract.EXTERNAL_PAGE_SOURCES` (`northstar`) slugs
-  its page id and never its handle, so the library follows the page, not
-  whoever shares its handle. The closed external-owner set lives in the
+  `services.master_pages_contract.EXTERNAL_PAGE_SOURCES` (`northstar`) derives
+  `external--<sha256(exact pageId UTF-8)>`, never its handle. The double-hyphen
+  prefix cannot be produced by the unchanged ordinary handle slugger. The closed external-owner set lives in the
   contract module so the router and the service read one definition.
   The shared external-owner constant also governs the exact ShipStream
   null-Notion-id manifest exception.
@@ -808,7 +808,7 @@
   shape it still refuses.
 - Run `pytest -q tests/test_northstar_slideshow_library.py tests/test_control_plane_slideshow_execution.py`
   for page-owned Syzygy library subjects: an external page's ingredients and
-  jobs address `syzygy:<lane>:<page id slug>` on both commissioned lanes, a
+  jobs address `syzygy:<lane>:<reserved exact-page subject>` on both commissioned lanes, a
   Rising Tides page keeps its handle subject, and registration refuses a
   subject another roster page derives.
 - Run `pytest -q tests/test_production_image_imports.py` for isolated imports from
@@ -847,3 +847,8 @@
   rules.
 
 ## Child devlog Index
+
+Name-based roster dedup must skip externally owned rows and preserve their
+identity and inventory. External slideshow writers must use the advertised
+reserved catalog subject/libraryId; production activation requires verified
+producer/consumer agreement and must not reuse the old unlanded page-id slug.
