@@ -766,8 +766,9 @@ def capabilities(
         else:
             generation_recipe = None
             generation_unavailable_reason = None
+        source_refusal_reasons: list[str] = []
         source_recipe = (
-            _dossier_source_recipe(publication)
+            _dossier_source_recipe(publication, source_refusal_reasons)
             if publication_engine == "sourced_video"
             else None
         )
@@ -781,7 +782,10 @@ def capabilities(
             and source_recipe is None
             and slideshow_recipe is None
         ):
-            if publication_engine in _SLIDESHOW_ENGINES and not syzygy_runtime_available():
+            if source_refusal_reasons:
+                unresolved_reason = source_refusal_reasons[0]
+                unresolved_detail = None
+            elif publication_engine in _SLIDESHOW_ENGINES and not syzygy_runtime_available():
                 unresolved_reason = SLIDESHOW_RUNTIME_UNAVAILABLE
                 unresolved_detail = None
             else:
@@ -2373,12 +2377,13 @@ def _registered_recipe(project: str) -> dict[str, Any] | None:
     return None
 
 
-def _dossier_source_recipe(publication: dict[str, Any] | None):
+def _dossier_source_recipe(publication: dict[str, Any] | None, refusal_reasons: list[str] | None = None):
     if publication is None:
         return None
     return resolve_source_recipe(
         publication,
         base_recipe_lookup=_registered_recipe,
+        refusal_reasons=refusal_reasons,
     )
 
 

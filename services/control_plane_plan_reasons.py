@@ -18,6 +18,7 @@ from __future__ import annotations
 from typing import Any
 
 from services.control_plane_sources import (
+    SOURCE_MASTER_RETIRED,
     SOURCE_MASTER_TOO_SHORT,
     SOURCE_WINDOWS_EXHAUSTED,
     SOURCE_WINDOWS_RESERVED_ELSEWHERE,
@@ -136,6 +137,10 @@ REASONS: dict[str, tuple[str, bool, str]] = {
     PLAN_AVAILABLE: (
         "slideshow", False,
         "A fresh plan is still available; the explainer was called on a non-empty plan.",
+    ),
+    SOURCE_MASTER_RETIRED: (
+        "source-dna", True,
+        "Use an active source library that does not contain a retired master.",
     ),
     SOURCE_MASTER_TOO_SHORT: (
         "source-dna", True,
