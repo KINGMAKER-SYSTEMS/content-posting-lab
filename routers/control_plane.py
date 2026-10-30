@@ -58,7 +58,7 @@ from urllib.parse import quote, urlparse
 import httpx
 import anyio
 
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException, Response
 
 from project_manager import PROJECTS_DIR
 from providers import PROVIDERS
@@ -607,6 +607,17 @@ def _capabilities_job_views(
 
 def _require_capabilities_bearer(authorization: str | None = Header(default=None)) -> None:
     require_control_plane_bearer(authorization)
+
+
+@router.get("/v1/safety-controls", dependencies=[Depends(_require_capabilities_bearer)])
+def safety_controls(response: Response) -> dict[str, Any]:
+    # Auth runs before the flag and before any configuration is read.
+    if os.getenv("CONTENT_LAB_SAFETY_CONTROLS_ENABLED") != "1":
+        raise HTTPException(404, "Not found")
+    from routers import post_renders
+    from services.safety_controls import snapshot
+    response.headers["Cache-Control"] = "no-store"
+    return snapshot(post_renders._started_service)
 
 
 @router.get("/v1/capabilities", dependencies=[Depends(_require_capabilities_bearer)])

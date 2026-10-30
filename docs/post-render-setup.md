@@ -180,3 +180,15 @@ failure during recovery refuses startup rather than serving an incomplete index.
 Keep private reservations with their job/request history. Unverifiable receipt
 bytes are not reconstructed by guessing. See post-render-authority-repair.md
 for exact-byte compatibility and the availability cost of uncertain history.
+
+### Safety controls view
+
+`GET /api/control-plane/v1/safety-controls` is available only when
+`CONTENT_LAB_SAFETY_CONTROLS_ENABLED=1` and requires the Control Plane Bearer
+credential. It returns a no-store, allowlisted view of selected limits for this
+process. The configured worker value is distinct from the worker count captured
+by the started render manager; without a started manager, that count and the
+calculated claim floor are unknown. Invalid configuration is marked explicitly,
+including the consumer's fallback where representable. This view is an
+observation, not a readiness check or fleet-wide assertion. It does not report
+secrets, paths, current disk space, job counts, or provider outcomes.
