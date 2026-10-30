@@ -128,7 +128,8 @@ def _completed_flat_import_dir(root: Path, job_id: str, job: dict[str, Any]) -> 
     page, value = job.get("pageId"), job.get("artifactRoot")
     if (job.get("sourceKind") != "page_source_import" or job.get("status") != "completed"
             or job.get("jobId") != job_id or not re.fullmatch(r"cpl-[0-9a-f]{16}", job_id)
-            or not isinstance(page, str) or not re.fullmatch(r"[A-Za-z0-9._:-]{1,128}", page)
+            or not isinstance(page, str) or page in {".", ".."}
+            or not re.fullmatch(r"[A-Za-z0-9._:-]{1,128}", page)
             or type(job.get("sourceImportClaimVersion")) is not int or job["sourceImportClaimVersion"] != 1
             or not isinstance(job.get("sourceImportAttemptId"), str)
             or not re.fullmatch(r"[0-9a-f]{32}", job["sourceImportAttemptId"])
@@ -136,7 +137,8 @@ def _completed_flat_import_dir(root: Path, job_id: str, job: dict[str, Any]) -> 
             or not isinstance(value, str) or not Path(value).is_absolute()):
         return None
     expected = root / page / "source-imports" / job_id
-    if Path(value) != expected or expected.resolve() != expected:
+    if (expected.relative_to(root).parts != (page, "source-imports", job_id)
+            or Path(value) != expected or expected.resolve() != expected):
         return None
     current = root
     for part in expected.relative_to(root).parts:
