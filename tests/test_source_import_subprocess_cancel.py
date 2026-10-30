@@ -8,6 +8,7 @@ import pytest
 import routers.control_plane as cp
 import scraper.frame_extractor as scraper
 from services import control_plane_source_imports as imports
+from services.owned_import_process import create_import_subprocess
 
 
 @pytest.mark.parametrize('kind', ['normalize', 'probe', 'thumbnail', 'download'])
@@ -21,7 +22,7 @@ async def test_cancelled_import_child_is_killed_and_reaped_before_return(tmp_pat
         'while not gate.exists(): time.sleep(0.01)\n'
         'out.write_bytes(b"late")\n'
     )
-    real_spawn = asyncio.create_subprocess_exec
+    real_spawn = create_import_subprocess
     processes = []
     async def spawn(*_args, **_kwargs):
         if _args:
@@ -34,7 +35,8 @@ async def test_cancelled_import_child_is_killed_and_reaped_before_return(tmp_pat
         process = await spawn()
         runner = asyncio.create_task(scraper._communicate_or_kill(process, True))
     else:
-        monkeypatch.setattr(asyncio, 'create_subprocess_exec', spawn)
+        monkeypatch.setattr(imports, 'create_import_subprocess', spawn)
+        monkeypatch.setattr(cp, 'create_import_subprocess', spawn)
         if kind == 'normalize':
             runner = asyncio.create_task(imports._normalize_video(tmp_path / 'source', tmp_path / 'dest'))
         elif kind == 'probe':
@@ -60,8 +62,7 @@ async def test_cancelled_import_child_is_killed_and_reaped_before_return(tmp_pat
         gate.touch(exist_ok=True)
         for process in processes:
             if process.returncode is None:
-                process.kill()
-                await process.wait()
+                await process.terminate()
 
 
 @pytest.mark.parametrize('reason', ['source_import_runtime_restarted', 'ordinary_cancel'])
@@ -99,14 +100,14 @@ async def test_download_join_survives_repeated_cancellation(tmp_path, monkeypatc
 @pytest.mark.asyncio
 async def test_normalizer_timeout_still_names_timeout_and_reaps_child(tmp_path, monkeypatch):
     process_holder = []
-    real_spawn = asyncio.create_subprocess_exec
+    real_spawn = create_import_subprocess
     async def spawn(*_args, **kwargs):
         assert kwargs.get('start_new_session') is True
         process = await real_spawn(sys.executable, '-c', 'import time; time.sleep(30)',
             stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE, start_new_session=True)
         process_holder.append(process)
         return process
-    monkeypatch.setattr(asyncio, 'create_subprocess_exec', spawn)
+    monkeypatch.setattr(imports, 'create_import_subprocess', spawn)
     monkeypatch.setattr(imports, 'MAX_SOURCE_NORMALIZE_SECONDS', 0.1)
     with pytest.raises(imports.SourceImportError, match='normalization timed out'):
         await imports._normalize_video(tmp_path / 'source', tmp_path / 'dest')

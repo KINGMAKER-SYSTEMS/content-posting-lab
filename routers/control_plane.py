@@ -36,6 +36,9 @@ should fail, and how it did.
 """
 from __future__ import annotations
 
+from services.owned_import_process import create_import_subprocess
+from services import source_import_layout
+
 import asyncio
 import contextvars
 import functools
@@ -2874,14 +2877,15 @@ async def _thumbnail_manifest(job_root: Path, video: Path, index: int) -> dict[s
     thumbnail_root = job_root / "thumbnails"
     thumbnail_root.mkdir(parents=True, exist_ok=True, mode=0o700)
     target = thumbnail_root / f"{index:04d}.jpg"
-    process = await asyncio.create_subprocess_exec(
+    deadline = asyncio.get_running_loop().time() + 30
+    process = await create_import_subprocess(
         "ffmpeg", "-y", "-loglevel", "error", "-ss", "0.25", "-i", str(video),
         "-frames:v", "1", "-vf", "scale=360:-2", str(target),
         stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
         start_new_session=True,
     )
     try:
-        _, stderr = await asyncio.wait_for(process.communicate(), timeout=30)
+        _, stderr = await asyncio.wait_for(process.communicate(), timeout=max(0, deadline - asyncio.get_running_loop().time()))
     except (asyncio.CancelledError, TimeoutError):
         await terminate_import_process_group(process)
         raise
@@ -4843,13 +4847,15 @@ async def create_source_import(
                     raise HTTPException(status_code=409, detail="source import capacity is currently full")
                 job_id = existing["jobId"]
                 parent = (_generation_root() / page_id / "source-imports" / job_id).resolve()
-                if Path(existing.get("artifactRoot", "")).resolve() != parent / existing["sourceImportAttemptId"]:
+                previous_root = Path(existing.get("artifactRoot", "")).resolve()
+                if previous_root not in (parent, parent / existing["sourceImportAttemptId"]):
                     raise HTTPException(status_code=409, detail="source import artifact root is invalid")
                 attempt_id = _secrets.token_hex(16)
-                job_root = parent / attempt_id
-                # Never reuse or remove the old attempt path here: an orphaned
-                # child from a crashed runtime may still open its old output.
-                job_root.mkdir(parents=True, exist_ok=False, mode=0o700)
+                job_root = source_import_layout.attempt_root(parent, attempt_id, previous_root=previous_root)
+                # Never clear a parent containing private historical attempts.
+                # Flat phase-A jobs retain their old layout after the old owned
+                # runner has drained; B jobs always retain private isolation.
+                job_root.mkdir(parents=True, exist_ok=(job_root == parent), mode=0o700)
                 existing.update({
                     "status": "queued",
                     "progress": 0,
@@ -4886,7 +4892,8 @@ async def create_source_import(
 
             job_id = JOB_ID_PREFIX + _secrets.token_hex(8)
             attempt_id = _secrets.token_hex(16)
-            job_root = (_generation_root() / page_id / "source-imports" / job_id / attempt_id).resolve()
+            parent = (_generation_root() / page_id / "source-imports" / job_id).resolve()
+            job_root = source_import_layout.attempt_root(parent, attempt_id)
             job_root.mkdir(parents=True, exist_ok=False, mode=0o700)
             now = datetime.now(timezone.utc).isoformat()
             job = {

@@ -18,7 +18,8 @@ PAGE = "acct:runtime-reconciliation"
 
 
 @pytest.fixture
-def history(tmp_path):
+def history(tmp_path, monkeypatch):
+    monkeypatch.setattr(reconcile.source_import_layout, "PRIVATE_ATTEMPT_ROOTS", True)
     private = tmp_path / "private"
     private.mkdir(mode=0o700)
     generation = private / "generated"

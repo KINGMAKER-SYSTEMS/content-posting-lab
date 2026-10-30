@@ -6,6 +6,8 @@ apply compares one reviewed job revision and preserves all existing media.
 
 from __future__ import annotations
 
+from services import source_import_layout
+
 import argparse
 from datetime import datetime, timezone
 import json
@@ -271,13 +273,15 @@ def reconcile_job(store_path, job_id, *, retired_runtime, expected_job_sha256,
                     raise ReconciliationRefused("generation_root_required")
                 parent = _legacy_import_parent(job, generation_root)
                 attempt = secrets.token_hex(16)
-                attempt_root = parent / attempt
-                parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-                attempt_root.mkdir(mode=0o700)
+                root = source_import_layout.attempt_root(parent, attempt)
+                if root != parent:
+                    attempt_root = root
+                    parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+                    attempt_root.mkdir(mode=0o700)
                 job.update(sourceImportClaimVersion=1, sourceImportAttemptId=attempt,
-                           artifactRoot=str(attempt_root))
+                           artifactRoot=str(root))
             job.update(status="failed", completedAt=datetime.now(timezone.utc).isoformat(),
-                       error=("source_import_runtime_restarted" if attempt_root is not None
+                       error=("source_import_runtime_restarted" if result["sourceKind"] == "page_source_import"
                               else "generation_runtime_restarted"))
             previous_umask = os.umask(0o077)
             try:

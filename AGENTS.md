@@ -813,3 +813,11 @@
   rules.
 
 ## Child devlog Index
+
+Source-import rollout compatibility: `services/source_import_layout.py` defines
+an internal two-phase producer switch. Keep phase A's default flat producer until
+its deployment is qualified; both stored layouts remain readable/retryable.
+Retries of existing private attempts must stay private regardless of the switch.
+Never restore asyncio child-watcher ownership for these process groups: retain
+the owned supervisor until bounded group cleanup and final reap. Run layout,
+owned-process, subprocess-cancel and source-import retry regressions for changes.

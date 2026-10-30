@@ -3,11 +3,12 @@
 import asyncio
 import base64
 import os
-import signal
 import shutil
 import stat
 import tempfile
 from pathlib import Path
+
+from services.owned_import_process import create_import_subprocess
 
 # ── Cookies support ──────────────────────────────────────────────────
 # Resolution order (first hit wins):
@@ -375,29 +376,8 @@ def sweep_private_cookie_jars() -> int:
 
 
 async def terminate_import_process_group(proc):
-    """Kill the owned process group and wait for the parent despite cancellation."""
-    try:
-        if getattr(proc, "pid", None):
-            os.killpg(proc.pid, signal.SIGKILL)
-        elif proc.returncode is None:
-            proc.kill()
-    except ProcessLookupError:
-        pass
-    except OSError:
-        if proc.returncode is None:
-            try:
-                proc.kill()
-            except ProcessLookupError:
-                pass
-    while proc.returncode is None:
-        try:
-            # Recheck returncode even if pipe transport shutdown is delayed by
-            # unread output; once the process exited it can no longer write.
-            await asyncio.wait_for(proc.wait(), timeout=0.1)
-        except (asyncio.CancelledError, TimeoutError):
-            # The caller retains its import claim until the child exits, even
-            # when shutdown or a second request cancels it again.
-            continue
+    """Join cleanup only for a process whose unreaped leader we own."""
+    await proc.terminate()
 
 
 async def _communicate_or_kill(proc, source_import_mode: bool):
@@ -517,7 +497,8 @@ async def download_video(
             if source_import_mode:
                 # yt-dlp may spawn ffmpeg. Own the complete subprocess tree.
                 process_options["start_new_session"] = True
-            proc = await asyncio.create_subprocess_exec(*cmd, **process_options)
+            spawn = create_import_subprocess if source_import_mode else asyncio.create_subprocess_exec
+            proc = await spawn(*cmd, **process_options)
             _, stderr = await _communicate_or_kill(proc, source_import_mode)
         finally:
             if private_jar is not None:

@@ -8,6 +8,8 @@ then probe and hash the exact bytes that the artifact endpoint will serve.
 
 from __future__ import annotations
 
+from services.owned_import_process import create_import_subprocess
+
 import asyncio
 from dataclasses import dataclass
 import hashlib
@@ -343,7 +345,8 @@ def _sha256_file(path: Path) -> str:
 
 
 async def _probe_video(path: Path) -> SourceImportMedia:
-    process = await asyncio.create_subprocess_exec(
+    deadline = asyncio.get_running_loop().time() + 30
+    process = await create_import_subprocess(
         "ffprobe", "-v", "error", "-show_streams", "-show_format",
         "-of", "json", str(path),
         stdout=asyncio.subprocess.PIPE,
@@ -351,7 +354,7 @@ async def _probe_video(path: Path) -> SourceImportMedia:
         start_new_session=True,
     )
     try:
-        stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=30)
+        stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=max(0, deadline - asyncio.get_running_loop().time()))
     except asyncio.CancelledError:
         await terminate_import_process_group(process)
         raise
@@ -416,7 +419,8 @@ async def _probe_video(path: Path) -> SourceImportMedia:
 
 
 async def _normalize_video(source: Path, destination: Path) -> None:
-    process = await asyncio.create_subprocess_exec(
+    deadline = asyncio.get_running_loop().time() + MAX_SOURCE_NORMALIZE_SECONDS
+    process = await create_import_subprocess(
         "ffmpeg", "-y", "-loglevel", "error", "-i", str(source),
         "-map", "0:v:0", "-an", "-vf",
         (
@@ -432,7 +436,7 @@ async def _normalize_video(source: Path, destination: Path) -> None:
     )
     try:
         _, stderr = await asyncio.wait_for(
-            process.communicate(), timeout=MAX_SOURCE_NORMALIZE_SECONDS,
+            process.communicate(), timeout=max(0, deadline - asyncio.get_running_loop().time()),
         )
     except asyncio.CancelledError:
         await terminate_import_process_group(process)

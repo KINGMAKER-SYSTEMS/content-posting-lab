@@ -38,6 +38,7 @@ HEADERS = {
 
 @pytest.fixture
 def lab(monkeypatch, tmp_path):
+    monkeypatch.setattr(cp.source_import_layout, "PRIVATE_ATTEMPT_ROOTS", True)
     intent, revision = master_pages(
         PAGE_ID,
         handle="night.walks",
