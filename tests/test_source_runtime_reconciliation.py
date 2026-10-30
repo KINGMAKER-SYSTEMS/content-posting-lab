@@ -288,3 +288,18 @@ def test_reconciled_import_can_use_the_real_same_key_retry(lab):
     assert current["sourceImportAttemptId"] != adopted["sourceImportAttemptId"]
     assert Path(current["artifactRoot"]) != Path(adopted["artifactRoot"])
     assert original.read_bytes() == b"retained legacy media"
+
+
+@pytest.mark.parametrize("checkpoint", [[{"path": "treated/cut.mp4", "sha256": "b" * 64, "bytes": 12}],
+                                         None, {}, "malformed", False, 0])
+def test_explicit_legacy_reconcile_refuses_private_checkpoint(history, checkpoint):
+    path, root, store = history
+    store["jobs"][JOB]["scramblerRenderedClips"] = checkpoint
+    path.write_text(json.dumps(store)); before = path.read_bytes()
+    revision = reconcile._revision(store["jobs"][JOB])
+    with pytest.raises(reconcile.ReconciliationRefused, match="existing_artifacts_require_reconciliation"):
+        reconcile.inspect_job(path, JOB, retired_runtime=RUNTIME, generation_root=root)
+    with pytest.raises(reconcile.ReconciliationRefused, match="existing_artifacts_require_reconciliation"):
+        reconcile.reconcile_job(path, JOB, retired_runtime=RUNTIME, generation_root=root,
+                               expected_job_sha256=revision, runtime_stopped_confirmed=True)
+    assert path.read_bytes() == before

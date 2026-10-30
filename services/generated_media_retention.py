@@ -9,7 +9,10 @@ grew it by about 10 GB a day. Each clip the Worker delivers is copied into R2 as
   ``/staging-video/<sha>.mp4`` door answers 200 with the clip's byte length.
   A clip the Worker has not copied is never deleted; it is re-checked after
   ``UNCONFIRMED_RECHECK_SECONDS``.
-* **Every other file** in the job directory (provider intermediates, resume
+* **Private Scrambler checkpoints** retain their produced clip and thumbnail
+  paths. A matching public clip still uses the R2-confirmed cleanup above;
+  malformed or conflicting private metadata holds the whole job.
+* **Every other unreferenced file** in the job directory (provider intermediates, resume
   renders, masters, unreferenced thumbnails) is a stray and is deleted
   ``STRAY_RETENTION`` after the job finished: 48 h, or sooner under volume
   pressure (see ``services.post_render_jobs.volume_pressure``).
@@ -168,6 +171,67 @@ def _inside(directory: Path, relative: Any) -> Path | None:
     return path if directory in path.parents else None
 
 
+def _private_scrambler_paths(root: Path, directory: Path, job_id: str,
+                            job: dict[str, Any]) -> set[Path] | None:
+    """Protect produced private clips; None holds an ambiguous whole job."""
+    clips = job.get("scramblerRenderedClips", [])
+    if not isinstance(clips, list):
+        return None
+    if not clips:
+        return set()
+    parts = directory.relative_to(root).parts
+    if (job.get("sourceKind") != "dossier_source_dna" or job.get("jobId") != job_id
+            or len(parts) != JOB_DIR_DEPTH or parts[0] != job.get("pageId") or parts[2] != job_id):
+        return None
+    identities: dict[Path, tuple[str, int]] = {}
+
+    def protect(manifest: Any) -> None:
+        if not isinstance(manifest, dict):
+            raise ValueError("private manifest invalid")
+        relative, digest, size = (manifest.get(key) for key in ("path", "sha256", "bytes"))
+        if (not isinstance(relative, str) or "\\" in relative
+                or any(part in {"", ".", ".."} for part in relative.split("/"))
+                or not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest)
+                or type(size) is not int or size <= 0):
+            raise ValueError("private manifest identity invalid")
+        path = _inside(directory, relative)
+        if path is None:
+            raise ValueError("private path outside job")
+        current = directory
+        for part in Path(relative).parts:
+            current /= part
+            if current.is_symlink():
+                raise ValueError("private path alias")
+        identity = (digest, size)
+        if path in identities and identities[path] != identity:
+            raise ValueError("conflicting private identity")
+        identities[path] = identity
+
+    try:
+        for clip in clips:
+            protect(clip)
+            if "thumbnail" in clip:
+                protect(clip["thumbnail"])
+        # A matching public manifest may still use the existing R2-confirmed
+        # cleanup path. Conflicting claims must never choose which asset wins.
+        public_clips = job.get("clips")
+        if not isinstance(public_clips, list):
+            raise ValueError("public checkpoint shape invalid")
+        for clip in public_clips:
+            if not isinstance(clip, dict):
+                raise ValueError("public checkpoint shape invalid")
+            for manifest in (clip, clip.get("thumbnail")):
+                if not isinstance(manifest, dict):
+                    continue
+                path = _inside(directory, manifest.get("path"))
+                if path in identities and (type(manifest.get("bytes")) is not int
+                        or identities[path] != (manifest.get("sha256"), manifest.get("bytes"))):
+                    raise ValueError("conflicting public/private identity")
+    except Exception:  # An unenumerable checkpoint must never enable deletion.
+        return None
+    return set(identities)
+
+
 def _holds_truck_pool(job: dict[str, Any]) -> bool:
     if job.get("sourceKind") != "generated" or job.get("status") != "completed":
         return False
@@ -258,7 +322,10 @@ class GeneratedMediaRetention:
         for finished, _job_id, directory, artifact_directory, job, flat_import in candidates:
             if plan.jobs >= job_limit or self.monotonic() - started > time_budget:
                 break
-            clip_paths: set[Path] = set()
+            private_paths = _private_scrambler_paths(root, artifact_directory, _job_id, job)
+            if private_paths is None:
+                continue
+            clip_paths: set[Path] = private_paths
             inside = _flat_import_file if flat_import else _inside
             work = False
             for clip in job.get("clips", []) or []:
