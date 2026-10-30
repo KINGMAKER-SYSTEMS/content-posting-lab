@@ -64,8 +64,9 @@ async def test_cancelled_import_child_is_killed_and_reaped_before_return(tmp_pat
                 await process.wait()
 
 
+@pytest.mark.parametrize('reason', ['source_import_runtime_restarted', 'ordinary_cancel'])
 @pytest.mark.asyncio
-async def test_download_join_survives_repeated_cancellation(tmp_path, monkeypatch):
+async def test_download_join_survives_repeated_cancellation(tmp_path, monkeypatch, reason):
     entered, cleaning, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
     async def download(*_args, **_kwargs):
         entered.set()
@@ -83,15 +84,16 @@ async def test_download_join_survives_repeated_cancellation(tmp_path, monkeypatc
     runner = asyncio.create_task(imports._download_with_workspace_limit('https://fixture.test/video', tmp_path / 'video'))
     try:
         await asyncio.wait_for(entered.wait(), 5)
-        runner.cancel()
+        runner.cancel(reason)
         await asyncio.wait_for(cleaning.wait(), 5)
         runner.cancel()
         await asyncio.sleep(0)
         assert not runner.done(), 'the caller joins child cleanup before releasing its claim'
     finally:
         release.set()
-    with pytest.raises(asyncio.CancelledError):
+    with pytest.raises(asyncio.CancelledError) as cancelled:
         await runner
+    assert cancelled.value.args == (reason,)
 
 
 @pytest.mark.asyncio

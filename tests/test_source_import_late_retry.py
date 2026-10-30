@@ -10,6 +10,8 @@ import routers.control_plane as cp
 from tests.test_control_plane_source_imports import lab, _body, HEADERS, PAGE_ID, TOKEN
 from services.control_plane_source_imports import SourceImportArtifact, SourceImportMedia
 
+_start_import_runner = cp._start_page_source_import
+
 
 def install_fake_media(monkeypatch):
     data = b'fake import'
@@ -394,3 +396,180 @@ def test_foreign_active_import_still_occupies_page_capacity(lab):
     assert second.status_code == 409
     assert second.json()['detail'] == 'source import is already active for this page'
     assert cp._load_jobs()['jobs'][job_id]['status'] == 'queued'
+
+
+def install_blocked_download_join(monkeypatch):
+    """Keep the real download join; replace only the media subprocess boundary."""
+    from services import control_plane_source_imports as imports
+
+    entered, cleaning, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    async def download(*_args, **_kwargs):
+        entered.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cleaning.set()
+            while not release.is_set():
+                try:
+                    await release.wait()
+                except asyncio.CancelledError:
+                    continue
+            raise
+    async def through_real_join(url, destination):
+        return await imports._download_with_workspace_limit(url, destination)
+    monkeypatch.setattr(imports, 'download_video', download)
+    monkeypatch.setattr(cp, 'download_source_video', through_real_join)
+    return entered, cleaning, release
+
+
+@pytest.mark.parametrize('cancel_request', [False, True])
+@pytest.mark.asyncio
+async def test_expired_import_keeps_its_retry_reason_when_status_is_cancelled(lab, monkeypatch, cancel_request):
+    client, intent, revision, _ = lab
+    created = client.post('/api/control-plane/v1/source-imports', headers=HEADERS, json=_body(intent, revision))
+    assert created.status_code == 200
+    job_id = created.json()['jobId']
+    attempt = cp._load_jobs()['jobs'][job_id]['sourceImportAttemptId']
+    entered, cleaning, release = install_blocked_download_join(monkeypatch)
+    _start_import_runner(job_id)
+    runner = cp._source_import_tasks[job_id]
+    status = None
+    try:
+        await asyncio.wait_for(entered.wait(), 5)
+        cp._update_job(job_id, createdAt=(datetime.now(timezone.utc) - timedelta(
+            seconds=cp.SOURCE_IMPORT_ACTIVE_DEADLINE_SECONDS + 1)).isoformat())
+        status = asyncio.create_task(cp.job_status(job_id, x_rt_page_id=PAGE_ID, authorization=f'Bearer {TOKEN}'))
+        await asyncio.wait_for(cleaning.wait(), 5)
+        if cancel_request:
+            status.cancel()
+            await asyncio.sleep(0)
+        assert not runner.done(), 'expiry must join download cleanup'
+        with cp.runner_lock(cp._jobs_path(), job_id) as acquired:
+            assert not acquired, 'the old attempt still owns its claim while cleanup waits'
+        release.set()
+        result = (await asyncio.gather(status, return_exceptions=True))[0]
+        assert isinstance(result, (dict, asyncio.CancelledError))
+        final = cp._load_jobs()['jobs'][job_id]
+        assert final['status'] == 'failed'
+        assert final['error'] == 'source_import_runtime_restarted'
+        assert final['sourceImportAttemptId'] == attempt
+        retry = await asyncio.to_thread(client.post, '/api/control-plane/v1/source-imports',
+            headers=HEADERS, json=_body(intent, revision))
+        assert retry.status_code == 200
+        assert retry.json()['status'] == 'queued'
+        assert cp._load_jobs()['jobs'][job_id]['sourceImportAttemptId'] != attempt
+    finally:
+        release.set()
+        if status is not None and not status.done():
+            status.cancel()
+        if not runner.done():
+            runner.cancel()
+        await asyncio.gather(runner, *([status] if status is not None else []), return_exceptions=True)
+        if cp._source_import_tasks.get(job_id) is runner:
+            cp._source_import_tasks.pop(job_id, None)
+
+
+@pytest.mark.parametrize('repeat_cancel', [False, True, 'expiry'])
+@pytest.mark.asyncio
+async def test_ordinary_import_cancellation_stays_terminal_after_join(lab, monkeypatch, repeat_cancel):
+    client, intent, revision, _ = lab
+    created = client.post('/api/control-plane/v1/source-imports', headers=HEADERS, json=_body(intent, revision))
+    assert created.status_code == 200
+    job_id = created.json()['jobId']
+    attempt = cp._load_jobs()['jobs'][job_id]['sourceImportAttemptId']
+    entered, cleaning, release = install_blocked_download_join(monkeypatch)
+    _start_import_runner(job_id)
+    runner = cp._source_import_tasks[job_id]
+    try:
+        await asyncio.wait_for(entered.wait(), 5)
+        runner.cancel()
+        await asyncio.wait_for(cleaning.wait(), 5)
+        if repeat_cancel:
+            if repeat_cancel == 'expiry':
+                runner.cancel('source_import_runtime_restarted')
+            else:
+                runner.cancel()
+            await asyncio.sleep(0)
+        assert not runner.done(), 'ordinary cancellation must also join cleanup'
+        with cp.runner_lock(cp._jobs_path(), job_id) as acquired:
+            assert not acquired
+        release.set()
+        with pytest.raises(asyncio.CancelledError) as cancelled:
+            await runner
+        assert cancelled.value.args == ()
+        final = cp._load_jobs()['jobs'][job_id]
+        assert final['status'] == 'failed'
+        assert final['error'] == 'source_import_cancelled'
+        retry = await asyncio.to_thread(client.post, '/api/control-plane/v1/source-imports',
+            headers=HEADERS, json=_body(intent, revision))
+        assert retry.status_code == 200
+        assert retry.json()['status'] == 'failed'
+        assert cp._load_jobs()['jobs'][job_id]['sourceImportAttemptId'] == attempt
+    finally:
+        release.set()
+        if not runner.done():
+            runner.cancel()
+        await asyncio.gather(runner, return_exceptions=True)
+        if cp._source_import_tasks.get(job_id) is runner:
+            cp._source_import_tasks.pop(job_id, None)
+
+
+@pytest.mark.parametrize('failure', ['workspace', 'timeout', 'storage'])
+@pytest.mark.parametrize('later_expiry_cancel', [False, True])
+@pytest.mark.asyncio
+async def test_download_failure_is_not_made_retryable_by_late_expiry_cancel(
+    lab, monkeypatch, failure, later_expiry_cancel,
+):
+    from services import control_plane_source_imports as imports
+
+    client, intent, revision, _ = lab
+    created = client.post('/api/control-plane/v1/source-imports', headers=HEADERS, json=_body(intent, revision))
+    assert created.status_code == 200
+    job_id = created.json()['jobId']
+    attempt = cp._load_jobs()['jobs'][job_id]['sourceImportAttemptId']
+    entered, cleaning, release = install_blocked_download_join(monkeypatch)
+    monkeypatch.setattr(imports, 'SOURCE_IMPORT_POLL_SECONDS', 0.001)
+    if failure == 'workspace':
+        monkeypatch.setattr(imports, '_tree_bytes', lambda _: imports.MAX_SOURCE_IMPORT_WORKSPACE_BYTES + 1)
+        expected_detail = 'workspace limit'
+    elif failure == 'timeout':
+        monkeypatch.setattr(imports, 'MAX_SOURCE_IMPORT_SECONDS', 0.001)
+        expected_detail = 'download timed out'
+    else:
+        def broken_storage(_):
+            raise OSError('fixture storage fault')
+        monkeypatch.setattr(imports, '_tree_bytes', broken_storage)
+        expected_detail = 'fixture storage fault'
+    _start_import_runner(job_id)
+    runner = cp._source_import_tasks[job_id]
+    try:
+        await asyncio.wait_for(cleaning.wait(), 5)
+        assert entered.is_set(), 'the download was active before its failure began cleanup'
+        if later_expiry_cancel:
+            runner.cancel('source_import_runtime_restarted')
+            await asyncio.sleep(0)
+            runner.cancel()
+            await asyncio.sleep(0)
+        assert not runner.done()
+        with cp.runner_lock(cp._jobs_path(), job_id) as acquired:
+            assert not acquired, 'terminal-error cleanup must also retain the import claim'
+        release.set()
+        result = (await asyncio.gather(runner, return_exceptions=True))[0]
+        assert result is None or isinstance(result, asyncio.CancelledError)
+        final = cp._load_jobs()['jobs'][job_id]
+        assert final['status'] == 'failed'
+        assert final['error'] != 'source_import_runtime_restarted'
+        if not later_expiry_cancel:
+            assert expected_detail in final['error']
+        retry = await asyncio.to_thread(client.post, '/api/control-plane/v1/source-imports',
+            headers=HEADERS, json=_body(intent, revision))
+        assert retry.status_code == 200
+        assert retry.json()['status'] == 'failed'
+        assert cp._load_jobs()['jobs'][job_id]['sourceImportAttemptId'] == attempt
+    finally:
+        release.set()
+        if not runner.done():
+            runner.cancel()
+        await asyncio.gather(runner, return_exceptions=True)
+        if cp._source_import_tasks.get(job_id) is runner:
+            cp._source_import_tasks.pop(job_id, None)
