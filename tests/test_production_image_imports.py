@@ -59,8 +59,8 @@ def no_network(event, args):
 sys.addaudithook(no_network)
 import app
 import burn_quality_gate
-from services import post_render
-for module in (app, burn_quality_gate, post_render):
+from services import post_render, source_runtime_reconciliation
+for module in (app, burn_quality_gate, post_render, source_runtime_reconciliation):
     assert pathlib.Path(module.__file__).resolve().is_relative_to(root)
 assert '/api/control-plane/v1/post-renders' in app.app.openapi()['paths']
 assert '/api/control-plane/v1/jobs/{job_id}/visual-admission/{index}' in app.app.openapi()['paths']

@@ -2411,13 +2411,18 @@ def _clip_manifest(project: str, rel_path: str) -> dict[str, Any] | None:
     }
 
 
-def _generation_root() -> Path:
+def _generation_root_path() -> Path:
     configured = os.environ.get("CONTENT_LAB_GENERATION_ROOT", "").strip()
     if configured:
         root = Path(configured).resolve()
     else:
         from services.roster import ROSTER_PATH
         root = (ROSTER_PATH.parent / "control_plane_generated").resolve()
+    return root
+
+
+def _generation_root() -> Path:
+    root = _generation_root_path()
     root.mkdir(parents=True, exist_ok=True, mode=0o700)
     return root
 
@@ -5490,11 +5495,13 @@ async def job_status(
             if _has_source_runner_claim(job):
                 with runner_lock(_jobs_path(), job_id) as acquired:
                     if acquired:
-                        _update_source_job(
-                            job_id, status="failed",
-                            error="generation_runtime_restarted",
-                            completedAt=datetime.now(timezone.utc).isoformat(),
-                        )
+                        current = _get_job_or_404(job_id)
+                        if current.get("status") in GENERATION_ACTIVE_STATUSES:
+                            _update_source_job(
+                                job_id, status="failed",
+                                error="generation_runtime_restarted",
+                                completedAt=datetime.now(timezone.utc).isoformat(),
+                            )
         else:
             current = _get_job_or_404(job_id)
             if current.get("status") in GENERATION_ACTIVE_STATUSES:
