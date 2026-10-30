@@ -877,7 +877,7 @@ def test_capability_counts_down_to_zero_only_when_every_window_is_cut(lab, monke
     client, _, _ = lab
     resolve = cp._dossier_source_recipe
 
-    def short_master(payload):
+    def short_master(payload, refusal_reasons=None):
         recipe = resolve(payload)
         return replace(recipe, masters=tuple(
             replace(master, duration_ms=12_000) for master in recipe.masters
@@ -1495,7 +1495,7 @@ def test_source_capability_suppresses_unknown_original_identity(lab, monkeypatch
     from dataclasses import replace
     client, _, _ = lab
     resolve = cp._dossier_source_recipe
-    def malformed(publication):
+    def malformed(publication, refusal_reasons=None):
         recipe = resolve(publication)
         return replace(recipe, masters=tuple(replace(master, provenance={}) for master in recipe.masters))
     monkeypatch.setattr(cp, "_dossier_source_recipe", malformed)
@@ -1579,7 +1579,7 @@ def test_pov_club_unsupported_speed_is_refused_before_job_or_window_admission(la
     original_resolver = cp._dossier_source_recipe
     monkeypatch.setattr(
         cp, "_dossier_source_recipe",
-        lambda publication: replace(
+        lambda publication, refusal_reasons=None: replace(
             original_resolver(publication), format_slug="pov-club",
         ),
     )
@@ -1642,7 +1642,7 @@ async def test_pov_club_measures_output_before_admitting_manifest(lab, monkeypat
     )
     job_id = response.json()["jobId"]
     resolver = cp._dossier_source_recipe
-    monkeypatch.setattr(cp, "_dossier_source_recipe", lambda p: replace(resolver(p), format_slug="pov-club"))
+    monkeypatch.setattr(cp, "_dossier_source_recipe", lambda p, refusal_reasons=None: replace(resolver(p), format_slug="pov-club"))
     source = tmp_path / "master.mp4"
     source.write_bytes(b"master")
 
@@ -2287,7 +2287,7 @@ async def test_a_cut_on_a_backup_whose_file_is_missing_is_skipped_and_the_job_go
     original_recipe = cp._dossier_source_recipe
     primary_sha = None
 
-    def pooled(publication):
+    def pooled(publication, refusal_reasons=None):
         nonlocal primary_sha
         recipe = original_recipe(publication)
         primary = recipe.masters[0]
@@ -2399,6 +2399,32 @@ def test_resolve_refuses_a_library_that_still_holds_a_retired_master(caplog):
         "recipeSpecHash": "sha256:" + hashlib.sha256(canonical.encode()).hexdigest(),
         "recipeSpecCanonical": canonical,
     }
+    reasons = []
     with caplog.at_level(logging.WARNING, logger="content_lab.control_plane_sources"):
-        assert resolve_source_recipe(payload) is None
+        assert resolve_source_recipe(payload, refusal_reasons=reasons) is None
+    assert reasons == ["source_master_retired"]
     assert any("source_master_retired" in record.message for record in caplog.records)
+
+
+def test_retired_reason_is_hidden_byte_for_byte_when_flag_off(monkeypatch):
+    row = {"recipeId": "test:master", "engine": "sourced_video", "recipeVersion": "v1"}
+    monkeypatch.delenv(cp.ADVERTISE_ZERO_REASONS_ENV, raising=False)
+    before = cp._capabilities_response([], [cp._zero_plan_recipe(row, "recipe_unresolved")])
+    after = cp._capabilities_response([], [cp._zero_plan_recipe(row, "source_master_retired")])
+    assert json.dumps(before).encode() == json.dumps(after).encode()
+    monkeypatch.setenv(cp.ADVERTISE_ZERO_REASONS_ENV, "1")
+    assert cp._capabilities_response([], [cp._zero_plan_recipe(row, "source_master_retired")])["zeroPlanRecipes"][0]["zeroReason"] == "source_master_retired"
+
+
+def test_capabilities_names_retired_source_only_when_enabled(lab, monkeypatch):
+    import services.control_plane_sources as source
+
+    client, _, _ = lab
+    monkeypatch.setattr(source, "RETIRED_MASTER_SHAS", {MASTER_SHA})
+    headers_for_page = {"X-RT-Page-Id": PAGE_ID, "Authorization": f"Bearer {TOKEN}"}
+    enabled = client.get("/api/control-plane/v1/capabilities", headers=headers_for_page)
+    assert enabled.status_code == 200
+    assert enabled.json()["zeroPlanRecipes"][0]["zeroReason"] == "source_master_retired"
+    monkeypatch.delenv(cp.ADVERTISE_ZERO_REASONS_ENV)
+    disabled = client.get("/api/control-plane/v1/capabilities", headers=headers_for_page)
+    assert disabled.content == json.dumps({"schema": cp.RESPONSE_SCHEMA, "capabilities": []}, separators=(",", ":")).encode()

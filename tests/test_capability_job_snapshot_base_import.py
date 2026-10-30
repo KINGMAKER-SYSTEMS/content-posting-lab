@@ -215,7 +215,7 @@ def _wire(module, monkeypatch, *, job_path, master_pages, bindings_present):
         lambda publication: (_stub_generation_recipe(), None),
         raising=False,
     )
-    monkeypatch.setattr(module, "_dossier_source_recipe", lambda publication: _stub_source_recipe())
+    monkeypatch.setattr(module, "_dossier_source_recipe", lambda publication, refusal_reasons=None: _stub_source_recipe())
     # sourced_slideshow/lyrics_slideshows are not in the field list this
     # file is scoped to (per the ruling); force that branch off identically
     # on both sides rather than wiring its own deep material-profile chain.
