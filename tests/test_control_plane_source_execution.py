@@ -877,7 +877,7 @@ def test_capability_counts_down_to_zero_only_when_every_window_is_cut(lab, monke
     client, _, _ = lab
     resolve = cp._dossier_source_recipe
 
-    def short_master(payload):
+    def short_master(payload, refusal_reasons=None):
         recipe = resolve(payload)
         return replace(recipe, masters=tuple(
             replace(master, duration_ms=12_000) for master in recipe.masters
@@ -1495,7 +1495,7 @@ def test_source_capability_suppresses_unknown_original_identity(lab, monkeypatch
     from dataclasses import replace
     client, _, _ = lab
     resolve = cp._dossier_source_recipe
-    def malformed(publication):
+    def malformed(publication, refusal_reasons=None):
         recipe = resolve(publication)
         return replace(recipe, masters=tuple(replace(master, provenance={}) for master in recipe.masters))
     monkeypatch.setattr(cp, "_dossier_source_recipe", malformed)
@@ -1579,7 +1579,7 @@ def test_pov_club_unsupported_speed_is_refused_before_job_or_window_admission(la
     original_resolver = cp._dossier_source_recipe
     monkeypatch.setattr(
         cp, "_dossier_source_recipe",
-        lambda publication: replace(
+        lambda publication, refusal_reasons=None: replace(
             original_resolver(publication), format_slug="pov-club",
         ),
     )
@@ -1642,7 +1642,7 @@ async def test_pov_club_measures_output_before_admitting_manifest(lab, monkeypat
     )
     job_id = response.json()["jobId"]
     resolver = cp._dossier_source_recipe
-    monkeypatch.setattr(cp, "_dossier_source_recipe", lambda p: replace(resolver(p), format_slug="pov-club"))
+    monkeypatch.setattr(cp, "_dossier_source_recipe", lambda p, refusal_reasons=None: replace(resolver(p), format_slug="pov-club"))
     source = tmp_path / "master.mp4"
     source.write_bytes(b"master")
 
@@ -1999,6 +1999,110 @@ async def test_transforms_all_off_makes_a_non_varying_page_match_main(lab, monke
 
 
 @pytest.mark.asyncio
+async def test_a_layer_b_only_page_logs_its_drawn_transforms(lab, monkeypatch, caplog):
+    from services.clip_transforms import CutTransforms
+
+    # Releases grep Railway logs to prove Layer B applies (an 1182-line release
+    # check found zero transform lines). Every cut on a transforms-enabled page
+    # logs ONE INFO line keyed content_lab.source_cut_transforms with the drawn
+    # set and its slot id; applied=True only when apply_transforms really
+    # re-encoded the cut. Log-only: the manifest and receipt stay as they were.
+    client, tmp_path, _ = lab
+    monkeypatch.setattr(cp, "varies_clips", lambda page_id: False)
+    monkeypatch.setattr(cp, "cut_transforms", lambda *a, **k: CutTransforms(mirror=True))
+    applied = []
+    monkeypatch.setattr(cp, "apply_transforms",
+                        lambda path, transforms, encode_args: applied.append(path))
+    response = client.post(
+        "/api/control-plane/v1/jobs", json=job_body(2),
+        headers=headers("source-job-transform-log"),
+    )
+    job_id = response.json()["jobId"]
+    _pin_cuts_to_first_frame(job_id)
+    source = tmp_path / "master.mp4"
+    _write_av_test_clip(source, duration=40.0)
+
+    async def cached_source(*_):
+        return source
+
+    monkeypatch.setattr(cp, "_cached_source_master", cached_source)
+    with caplog.at_level("INFO", logger="control_plane"):
+        await cp._run_dossier_source(job_id)
+    job = cp._load_jobs()["jobs"][job_id]
+    assert job["status"] == "completed", job.get("error")
+    lines = [record for record in caplog.records
+             if record.message.split()[0] == "content_lab.source_cut_transforms"]
+    assert len(lines) == 2, [record.message for record in caplog.records]
+    logged_slots = set()
+    for record in lines:
+        fields = dict(token.split("=", 1) for token in record.message.split()[1:])
+        assert fields["job_id"] == job_id
+        assert fields["page_id"] == PAGE_ID
+        assert fields["format_slug"] == "pov-dirt-bike"
+        assert fields["cut_slot_id"].startswith(f"{MASTER_SHA}:0:")
+        assert fields["mirror"] == "True"
+        assert fields["motion"] == "None"
+        assert fields["reverse"] == "False"
+        assert fields["loop_swap"] == "False"
+        assert fields["layer"] == "B"
+        assert fields["applied"] == "True"
+        logged_slots.add(fields["cut_slot_id"])
+    # One line per cut, each naming its own slot id <master sha>:<start>:<duration>.
+    assert logged_slots == {f"{cut['masterSha256']}:{cut['startMs']}:{cut['durationMs']}"
+                            for cut in job["sourceCuts"]}
+    assert len(applied) == 2
+    # Log-only change: the manifest still carries the drawn set, the receipt not.
+    for clip in job["clips"]:
+        assert clip["clipTransforms"] == {"mirror": True, "motion": None,
+                                          "reverse": False, "loop_swap": False}
+        assert "clipTransforms" not in clip["sourceTreatment"]
+
+
+@pytest.mark.asyncio
+async def test_transforms_all_off_logs_one_reason_line_and_no_per_cut_lines(
+    lab, monkeypatch, caplog,
+):
+    import services.clip_transforms as ct
+
+    # With the kill-switch off, Layer B is off for the whole job: ONE line per
+    # job names the reason (not one per cut), and no cut logs a transform line
+    # with applied=True. A log sweep can tell "off by design" from "on but
+    # nothing drawn".
+    client, tmp_path, _ = lab
+    monkeypatch.setattr(ct, "TRANSFORMS_ALL", False)
+    response = client.post(
+        "/api/control-plane/v1/jobs", json=job_body(2),
+        headers=headers("source-job-transform-log-off"),
+    )
+    job_id = response.json()["jobId"]
+    _pin_cuts_to_first_frame(job_id)
+    source = tmp_path / "master.mp4"
+    _write_av_test_clip(source, duration=40.0)
+
+    async def cached_source(*_):
+        return source
+
+    monkeypatch.setattr(cp, "_cached_source_master", cached_source)
+    with caplog.at_level("INFO", logger="control_plane"):
+        await cp._run_dossier_source(job_id)
+    job = cp._load_jobs()["jobs"][job_id]
+    assert job["status"] == "completed", job.get("error")
+    keys = [record.message.split()[0] for record in caplog.records]
+    # Two cuts, but the off job explains itself exactly once.
+    assert keys.count("content_lab.source_cut_transforms_off") == 1
+    assert "content_lab.source_cut_transforms" not in keys
+    off = next(record for record in caplog.records
+               if record.message.split()[0] == "content_lab.source_cut_transforms_off")
+    fields = dict(token.split("=", 1) for token in off.message.split()[1:])
+    assert fields == {"job_id": job_id, "page_id": PAGE_ID,
+                      "format_slug": "pov-dirt-bike",
+                      "reason": "transforms_all_off"}
+    assert len(job["clips"]) == 2
+    for clip in job["clips"]:
+        assert "clipTransforms" not in clip
+
+
+@pytest.mark.asyncio
 async def test_a_transformed_sourced_cut_outside_the_format_bounds_is_rejected(lab, monkeypatch):
     from services.clip_transforms import CutTransforms
 
@@ -2073,51 +2177,49 @@ async def test_a_layer_b_only_page_delivers_an_unreadable_probe(lab, monkeypatch
 async def test_transforms_all_off_cut_bytes_match_main(lab, monkeypatch):
     import services.clip_transforms as ct
 
-    # DS r- MED-1 (byte-vs-base): with the TRANSFORMS_ALL kill switch off, a
-    # non-varying sourced page must deliver the exact bytes (sha256) and
-    # manifest that Lab main 60db4247 delivers for the same job. The pre-change
-    # (main) path is reproduced by forcing transforms_enabled False — the only
-    # head gate main lacks for a non-varying page, which makes head behaviorally
-    # identical to main here. TRANSFORMS_ALL off reaches that same gate through
-    # the real function. Both runs use the real cut encode, so the sha pins real
-    # delivered bytes rather than a stub.
+    # Recorded by running the same synthetic job on actual main commit 60db4247.
+    # Fixed encoder bytes make the complete manifest and its SHA reproducible.
     client, tmp_path, _ = lab
+    monkeypatch.setattr(cp._secrets, "token_hex", lambda n: "a" * (n * 2))
+    monkeypatch.setattr(ct, "TRANSFORMS_ALL", False)
+    response = client.post(
+        "/api/control-plane/v1/jobs", json=job_body(1),
+        headers=headers("source-job-byte-base"),
+    )
+    job_id = response.json()["jobId"]
+    _pin_cuts_to_first_frame(job_id)
+    source = tmp_path / "master.mp4"
+    source.write_bytes(b"synthetic master")
 
-    async def run_job(use_kill_switch):
-        if use_kill_switch:
-            monkeypatch.setattr(ct, "TRANSFORMS_ALL", False)
-            monkeypatch.setattr(cp, "transforms_enabled", ct.transforms_enabled)
-        else:
-            monkeypatch.setattr(cp, "transforms_enabled", lambda page_id, slug: False)
-        response = client.post(
-            "/api/control-plane/v1/jobs", json=job_body(1),
-            headers=headers("source-job-byte-base"),
-        )
-        job_id = response.json()["jobId"]
-        _pin_cuts_to_first_frame(job_id)
-        source = tmp_path / "master.mp4"
-        _write_av_test_clip(source, duration=40.0)
+    encoder_calls = []
 
-        async def cached_source(*_):
-            return source
+    async def deterministic_encoder(_source, destination, *args, **kwargs):
+        encoder_calls.append({"source": Path(_source).name, "destination": Path(destination).name, "args": args, "kwargs": kwargs})
+        Path(destination).write_bytes(b"deterministic encoded clip")
 
-        monkeypatch.setattr(cp, "_cached_source_master", cached_source)
-        await cp._run_dossier_source(job_id)
-        job = cp._load_jobs()["jobs"][job_id]
-        assert job["status"] == "completed", job.get("error")
-        return job["clips"][0]
+    monkeypatch.setattr(cp, "run_color_correct", deterministic_encoder)
 
-    main_clip = await run_job(False)
-    head_clip = await run_job(True)
-    assert main_clip["sha256"] == head_clip["sha256"]
-    assert main_clip["bytes"] == head_clip["bytes"]
-    assert main_clip["name"] == head_clip["name"]
-    assert main_clip["path"] == head_clip["path"]
-    assert main_clip["clipSpeed"] == head_clip["clipSpeed"] == 1.0
-    assert main_clip["clipCrop"] == head_clip["clipCrop"]
-    assert "clipTransforms" not in main_clip and "clipTransforms" not in head_clip
-    assert "similarity" not in main_clip and "similarity" not in head_clip
+    async def cached_source(*_):
+        return source
 
+    monkeypatch.setattr(cp, "_cached_source_master", cached_source)
+    await cp._run_dossier_source(job_id)
+    job = cp._load_jobs()["jobs"][job_id]
+    assert job["status"] == "completed", job.get("error")
+    recorded = json.loads((Path(__file__).parent / "fixtures" / "transforms_all_off_main_60db4247.json").read_text())
+    assert job["clips"][0] == recorded
+    encoder_fixture = Path(__file__).parent / "fixtures" / "transforms_all_off_main_60db4247_encoder.json"
+    assert json.loads(json.dumps(encoder_calls)) == [json.loads(encoder_fixture.read_text())]
+
+
+def test_main_transform_off_recording_is_pinned():
+    fixture = Path(__file__).parent / "fixtures" / "transforms_all_off_main_60db4247.json"
+    assert hashlib.sha256(fixture.read_bytes()).hexdigest() == "a4a401afd85c024c728358156aacf0381ffae240899761d9b8670872aad056d3"
+    recorded = json.loads(fixture.read_text())
+    assert recorded["sourceTreatment"]["generationJobId"] == "cpl-aaaaaaaaaaaaaaaa"
+    assert len(recorded["sha256"]) == 64
+    encoder_fixture = Path(__file__).parent / "fixtures" / "transforms_all_off_main_60db4247_encoder.json"
+    assert hashlib.sha256(encoder_fixture.read_bytes()).hexdigest() == "489e9b5a03b233643c85166368c1d4fc9d5214df959cb0590d3c80072671cad0"
 
 @pytest.mark.asyncio
 async def test_a_denied_sourced_page_gets_zero_transforms_and_no_extra_encode(lab, monkeypatch):
@@ -2287,7 +2389,7 @@ async def test_a_cut_on_a_backup_whose_file_is_missing_is_skipped_and_the_job_go
     original_recipe = cp._dossier_source_recipe
     primary_sha = None
 
-    def pooled(publication):
+    def pooled(publication, refusal_reasons=None):
         nonlocal primary_sha
         recipe = original_recipe(publication)
         primary = recipe.masters[0]
@@ -2399,6 +2501,32 @@ def test_resolve_refuses_a_library_that_still_holds_a_retired_master(caplog):
         "recipeSpecHash": "sha256:" + hashlib.sha256(canonical.encode()).hexdigest(),
         "recipeSpecCanonical": canonical,
     }
+    reasons = []
     with caplog.at_level(logging.WARNING, logger="content_lab.control_plane_sources"):
-        assert resolve_source_recipe(payload) is None
+        assert resolve_source_recipe(payload, refusal_reasons=reasons) is None
+    assert reasons == ["source_master_retired"]
     assert any("source_master_retired" in record.message for record in caplog.records)
+
+
+def test_retired_reason_is_hidden_byte_for_byte_when_flag_off(monkeypatch):
+    row = {"recipeId": "test:master", "engine": "sourced_video", "recipeVersion": "v1"}
+    monkeypatch.delenv(cp.ADVERTISE_ZERO_REASONS_ENV, raising=False)
+    before = cp._capabilities_response([], [cp._zero_plan_recipe(row, "recipe_unresolved")])
+    after = cp._capabilities_response([], [cp._zero_plan_recipe(row, "source_master_retired")])
+    assert json.dumps(before).encode() == json.dumps(after).encode()
+    monkeypatch.setenv(cp.ADVERTISE_ZERO_REASONS_ENV, "1")
+    assert cp._capabilities_response([], [cp._zero_plan_recipe(row, "source_master_retired")])["zeroPlanRecipes"][0]["zeroReason"] == "source_master_retired"
+
+
+def test_capabilities_names_retired_source_only_when_enabled(lab, monkeypatch):
+    import services.control_plane_sources as source
+
+    client, _, _ = lab
+    monkeypatch.setattr(source, "RETIRED_MASTER_SHAS", {MASTER_SHA})
+    headers_for_page = {"X-RT-Page-Id": PAGE_ID, "Authorization": f"Bearer {TOKEN}"}
+    enabled = client.get("/api/control-plane/v1/capabilities", headers=headers_for_page)
+    assert enabled.status_code == 200
+    assert enabled.json()["zeroPlanRecipes"][0]["zeroReason"] == "source_master_retired"
+    monkeypatch.delenv(cp.ADVERTISE_ZERO_REASONS_ENV)
+    disabled = client.get("/api/control-plane/v1/capabilities", headers=headers_for_page)
+    assert disabled.content == json.dumps({"schema": cp.RESPONSE_SCHEMA, "capabilities": []}, separators=(",", ":")).encode()

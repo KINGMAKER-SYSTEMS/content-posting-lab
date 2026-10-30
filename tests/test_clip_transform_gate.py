@@ -14,6 +14,7 @@ from services.clip_transforms import (
     CutTransforms,
     TRANSFORM_DENY_PAGES,
     TRANSFORMS_REVERSE_ENABLED,
+    transforms_disabled_reason,
     transforms_enabled,
 )
 
@@ -137,6 +138,40 @@ def test_transforms_all_off_disables_the_layer_b_gate(monkeypatch):
     # Restoring the switch restores Layer B.
     monkeypatch.setattr(ct, "TRANSFORMS_ALL", True)
     assert transforms_enabled(SOURCED_PAGE, "pov-club") is True
+
+
+def test_disabled_reason_names_the_first_gate_that_turned_layer_b_off(monkeypatch):
+    # The off-reason is logged once per job (content_lab.source_cut_transforms_off),
+    # so it must name the gate that actually fired, in the gate's own order:
+    # kill-switch, then format allow-list, then page deny-list.
+    monkeypatch.setattr(ct, "TRANSFORMS_ALL", False)
+    monkeypatch.setattr(ct, "TRANSFORM_DENY_PAGES", frozenset({SOURCED_PAGE}))
+    # All three gates off at once: the kill-switch is the reason.
+    assert transforms_disabled_reason(SOURCED_PAGE, "boat-lake") == "transforms_all_off"
+    monkeypatch.setattr(ct, "TRANSFORMS_ALL", True)
+    assert transforms_disabled_reason(SOURCED_PAGE, "boat-lake") == "format_not_source_cut"
+    assert transforms_disabled_reason(SOURCED_PAGE, "not-a-format") == "format_not_source_cut"
+    assert transforms_disabled_reason(SOURCED_PAGE, "pov-club") == "page_denied"
+    # Nothing off: no reason.
+    assert transforms_disabled_reason("acct:other", "pov-club") is None
+
+
+def test_disabled_reason_agrees_with_the_gate_everywhere(monkeypatch):
+    # transforms_enabled answers through transforms_disabled_reason, so the
+    # logged reason can never disagree with the gate: reason is None exactly
+    # when the gate is open, for every switch / format / deny combination.
+    for all_switch in (True, False):
+        monkeypatch.setattr(ct, "TRANSFORMS_ALL", all_switch)
+        for slug in ("pov-club", "meme", "boat-lake", "not-a-format"):
+            for denied in (False, True):
+                monkeypatch.setattr(
+                    ct, "TRANSFORM_DENY_PAGES",
+                    frozenset({SOURCED_PAGE}) if denied else frozenset(),
+                )
+                reason = transforms_disabled_reason(SOURCED_PAGE, slug)
+                assert (reason is None) == transforms_enabled(SOURCED_PAGE, slug)
+                assert reason in (None, "transforms_all_off", "format_not_source_cut",
+                                  "page_denied")
 
 
 def test_env_switch_wording_names_the_railway_restart_not_a_redeploy():
