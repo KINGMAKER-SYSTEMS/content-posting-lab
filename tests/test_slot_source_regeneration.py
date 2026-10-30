@@ -26,6 +26,14 @@ def _isolated_source_dna(monkeypatch, tmp_path):
     an isolated copy of the registry plus the non-retired dirt-bike fixture."""
     isolate_source_dna_registry(monkeypatch, tmp_path)
 
+
+@pytest.fixture(autouse=True)
+def _reset_layer_b_probe_breaker():
+    cp._layer_b_probe_unreadable_count = 0
+    cp._layer_b_probe_unreadable_times.clear()
+    cp._layer_b_probe_unreadable_tripped = False
+
+
 TOKEN = "only-this-test-service-token"
 PARENT_GRADE = {"brightness": 0.7}
 DESIRED_GRADE = {"brightness": 0.5}
