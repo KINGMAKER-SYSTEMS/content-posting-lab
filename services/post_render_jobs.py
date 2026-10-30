@@ -43,6 +43,33 @@ def render_prepared_post(source, output, request, **kwargs):
         return render_timed_post(source, output, request, **kwargs)
     return render_post(source, output, request, **kwargs)
 
+
+def _dual_duration_matches(duration_ms, clean_decode: dict, burned_decode: dict) -> bool:
+    burned_duration = burned_decode["final_probe"].get("duration_ms")
+    if burned_duration == duration_ms:
+        return True  # Preserve the existing exact-duration acceptance path.
+    frames = clean_decode.get("decoded_video_frames")
+    if (type(frames) is not int or frames <= 0
+            or type(burned_decode.get("decoded_video_frames")) is not int
+            or burned_decode["decoded_video_frames"] != frames
+            or type(duration_ms) not in (int, float)
+            or type(burned_duration) not in (int, float)):
+        return False
+    try:
+        if (not math.isfinite(duration_ms) or not math.isfinite(burned_duration)
+                or duration_ms <= 0 or burned_duration <= 0):
+            return False
+        # Both variants use post_render's closed tiktok_delivery_v1 30fps preset.
+        # Independently probed durations can round one millisecond apart;
+        # require the same complete frame count and its independently bounded time.
+        frame_duration_thirtieths = frames * 1000
+        return (abs(duration_ms - burned_duration) <= 1
+                and abs(duration_ms * 30 - frame_duration_thirtieths) <= 30
+                and abs(burned_duration * 30 - frame_duration_thirtieths) <= 30)
+    except OverflowError:
+        return False
+
+
 log = logging.getLogger("content_lab.post_render_jobs")
 
 JOB_SCHEMA = "content-lab.post-render-job.v1"
@@ -1094,7 +1121,7 @@ class PostRenderJobs:
                     or type(decode.get("decoded_video_frames")) not in (int, float)
                     or decode["decoded_video_frames"] <= 0
                     or not isinstance(probe, dict)
-                    or probe.get("duration_ms") != receipt.get("duration_ms")
+                    or not _dual_duration_matches(receipt.get("duration_ms"), evidence, decode)
                     or (probe.get("width"), probe.get("height"), probe.get("video_codec"), probe.get("pixel_format"))
                        != (1080, 1920, "h264", "yuv420p")):
                 raise RenderJobError("burned_fallback_decode_missing")

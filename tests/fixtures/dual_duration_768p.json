@@ -1,0 +1,64 @@
+{
+  "sourceHead": "98db15b43d3379aa432e5ee1cd556ba1d440c5dd",
+  "provenance": "Retained synthetic full-offline real-render metadata; no media or request identities copied.",
+  "cases": [
+    {
+      "name": "hailuo-768p",
+      "cleanDecodeSha256": "eeba7defbe74e1282dc7280b7198eb6305aeab937af0df239c0fb3997b0333c0",
+      "burnedDecodeSha256": "09b44a3bbf168143bc06fd5bb948ce81b17535f575cd2c957acfeb75e0ddf1a5",
+      "clean": {
+        "decoded_video_frames": 26,
+        "final_probe": {
+          "duration_ms": 867,
+          "height": 1920,
+          "pixel_format": "yuv420p",
+          "rotation": 0,
+          "sample_aspect_ratio": "1:1",
+          "video_codec": "h264",
+          "width": 1080
+        }
+      },
+      "burned": {
+        "decoded_video_frames": 26,
+        "final_probe": {
+          "duration_ms": 866,
+          "height": 1920,
+          "pixel_format": "yuv420p",
+          "rotation": 0,
+          "sample_aspect_ratio": "1:1",
+          "video_codec": "h264",
+          "width": 1080
+        }
+      }
+    },
+    {
+      "name": "hailuo-768p-unspecified-sar",
+      "cleanDecodeSha256": "8e4baaac4e05cd11b88ae775a13e0e1c07873cabfab040105e574368ab39237a",
+      "burnedDecodeSha256": "1687ac7794a81b14128ecf043150c66159c3af55911453041e290f0827e21ac1",
+      "clean": {
+        "decoded_video_frames": 26,
+        "final_probe": {
+          "duration_ms": 867,
+          "height": 1920,
+          "pixel_format": "yuv420p",
+          "rotation": 0,
+          "sample_aspect_ratio": "1:1",
+          "video_codec": "h264",
+          "width": 1080
+        }
+      },
+      "burned": {
+        "decoded_video_frames": 26,
+        "final_probe": {
+          "duration_ms": 866,
+          "height": 1920,
+          "pixel_format": "yuv420p",
+          "rotation": 0,
+          "sample_aspect_ratio": "1:1",
+          "video_codec": "h264",
+          "width": 1080
+        }
+      }
+    }
+  ]
+}
