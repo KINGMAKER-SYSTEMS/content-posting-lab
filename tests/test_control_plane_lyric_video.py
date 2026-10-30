@@ -176,4 +176,7 @@ def test_legacy_maps_retain_baseline_hashes_and_static_renderer_matches_reviewed
         current.pop("meme")
         assert hashlib.sha256(json.dumps(current,sort_keys=True,separators=(",",":"),ensure_ascii=False).encode()).hexdigest()==expected
     # Identity evidence: maj:~/rt-work/cx1022-t73L2/t73L2-evidence/identity-comparison.txt (15 legacy profiles/contracts; 30 byte-identical non-in_app renders).
-    assert hashlib.sha256((root/"services/post_render.py").read_bytes()).hexdigest()=="8b57a9791be0a6fc45d5808866f3392816a8f6223ddecf6e85554225c1603484"
+    # #282 (1e57fc2) intentionally admits upright 768p Hailuo crops. Its only
+    # operational changes are the minimum-height literal and refusal message;
+    # the accepted >=1080 renderer AST and the registry pins above stay fixed.
+    assert hashlib.sha256((root/"services/post_render.py").read_bytes()).hexdigest()=="017c619ab1b58df982b8a9ec908110c18f8c5ee7363d5c0d5f528af5d7c380ab"
