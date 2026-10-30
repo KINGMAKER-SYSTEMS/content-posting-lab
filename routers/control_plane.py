@@ -147,6 +147,7 @@ from services.control_plane_source_imports import (
     SourceImportUnavailable,
     download_source_video,
     source_import_slot,
+    terminate_import_process_group,
     validate_source_url,
 )
 from services.content_engine_registry import (
@@ -2847,8 +2848,13 @@ async def _thumbnail_manifest(job_root: Path, video: Path, index: int) -> dict[s
         "ffmpeg", "-y", "-loglevel", "error", "-ss", "0.25", "-i", str(video),
         "-frames:v", "1", "-vf", "scale=360:-2", str(target),
         stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
+        start_new_session=True,
     )
-    _, stderr = await asyncio.wait_for(process.communicate(), timeout=30)
+    try:
+        _, stderr = await asyncio.wait_for(process.communicate(), timeout=30)
+    except (asyncio.CancelledError, TimeoutError):
+        await terminate_import_process_group(process)
+        raise
     if process.returncode != 0 or not target.is_file() or target.stat().st_size <= 0:
         raise RuntimeError(f"thumbnail_generation_failed:{stderr.decode(errors='replace')[-120:]}")
     return _generated_manifest(job_root, target)
@@ -4737,12 +4743,13 @@ async def create_source_import(
                 if len(active_others) >= MAX_CONCURRENT_SOURCE_IMPORTS:
                     raise HTTPException(status_code=409, detail="source import capacity is currently full")
                 job_id = existing["jobId"]
-                job_root = (
-                    _generation_root() / page_id / "source-imports" / job_id
-                ).resolve()
-                if Path(existing.get("artifactRoot", "")).resolve() != job_root:
+                parent = (_generation_root() / page_id / "source-imports" / job_id).resolve()
+                if Path(existing.get("artifactRoot", "")).resolve() != parent / existing["sourceImportAttemptId"]:
                     raise HTTPException(status_code=409, detail="source import artifact root is invalid")
-                shutil.rmtree(job_root, ignore_errors=True)
+                attempt_id = _secrets.token_hex(16)
+                job_root = parent / attempt_id
+                # Never reuse or remove the old attempt path here: an orphaned
+                # child from a crashed runtime may still open its old output.
                 job_root.mkdir(parents=True, exist_ok=False, mode=0o700)
                 existing.update({
                     "status": "queued",
@@ -4751,7 +4758,7 @@ async def create_source_import(
                     "artifactRoot": str(job_root),
                     "runtimeId": _GENERATION_RUNTIME_ID,
                     "sourceImportClaimVersion": 1,
-                    "sourceImportAttemptId": _secrets.token_hex(16),
+                    "sourceImportAttemptId": attempt_id,
                     "token": _secrets.token_urlsafe(JOB_TOKEN_BYTES),
                     "restartedAt": datetime.now(timezone.utc).isoformat(),
                 })
@@ -4779,9 +4786,8 @@ async def create_source_import(
                 raise HTTPException(status_code=409, detail="source import capacity is currently full")
 
             job_id = JOB_ID_PREFIX + _secrets.token_hex(8)
-            job_root = (
-                _generation_root() / page_id / "source-imports" / job_id
-            ).resolve()
+            attempt_id = _secrets.token_hex(16)
+            job_root = (_generation_root() / page_id / "source-imports" / job_id / attempt_id).resolve()
             job_root.mkdir(parents=True, exist_ok=False, mode=0o700)
             now = datetime.now(timezone.utc).isoformat()
             job = {
@@ -4795,7 +4801,7 @@ async def create_source_import(
                 "sourceUrl": source_url,
                 "sourceKind": "page_source_import",
                 "sourceImportClaimVersion": 1,
-                "sourceImportAttemptId": _secrets.token_hex(16),
+                "sourceImportAttemptId": attempt_id,
                 "status": "queued",
                 "progress": 0,
                 "clips": [],

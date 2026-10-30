@@ -374,22 +374,40 @@ def sweep_private_cookie_jars() -> int:
     return removed
 
 
+async def terminate_import_process_group(proc):
+    """Kill the owned process group and wait for the parent despite cancellation."""
+    try:
+        if getattr(proc, "pid", None):
+            os.killpg(proc.pid, signal.SIGKILL)
+        elif proc.returncode is None:
+            proc.kill()
+    except ProcessLookupError:
+        pass
+    except OSError:
+        if proc.returncode is None:
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
+    while proc.returncode is None:
+        try:
+            await proc.wait()
+        except asyncio.CancelledError:
+            # The caller retains its import claim until the child exits, even
+            # when shutdown or a second request cancels it again.
+            continue
+
+
 async def _communicate_or_kill(proc, source_import_mode: bool):
     try:
         return await proc.communicate()
     except asyncio.CancelledError:
         # Callers may enforce a bounded import timeout. Do not leave yt-dlp
         # running after the awaiting task has been cancelled.
-        if proc.returncode is None:
-            if source_import_mode and getattr(proc, "pid", None):
-                try:
-                    os.killpg(proc.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
-                except OSError:
-                    proc.kill()
-            else:
-                proc.kill()
+        if source_import_mode:
+            await terminate_import_process_group(proc)
+        elif proc.returncode is None:
+            proc.kill()
             await proc.communicate()
         raise
 

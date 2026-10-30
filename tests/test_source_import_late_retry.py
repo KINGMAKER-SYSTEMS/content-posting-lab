@@ -203,3 +203,181 @@ async def test_import_claim_survives_cancel_all_until_completion_write_settles(l
         await runner
     assert finished.is_set()
     assert cp._load_jobs()['jobs'][job_id]['status'] == 'completed'
+
+
+@pytest.mark.parametrize('stage', ['initial', 'cancel', 'failure', 'setup'])
+@pytest.mark.asyncio
+async def test_import_claim_drains_all_state_writes_during_cancel_all(lab, monkeypatch, stage):
+    client, intent, revision, _ = lab
+    created = client.post('/api/control-plane/v1/source-imports', headers=HEADERS, json=_body(intent, revision)).json()
+    job_id = created['jobId']
+    attempt = cp._load_jobs()['jobs'][job_id]['sourceImportAttemptId']
+    entered, release, finished = threading.Event(), threading.Event(), threading.Event()
+    download_entered = asyncio.Event()
+    persist = cp._update_source_import_attempt
+    def gated(target, target_attempt, **fields):
+        is_initial = fields.get('status') == 'running'
+        is_failed = fields.get('status') == 'failed'
+        if target == job_id and ((stage == 'initial' and is_initial) or (stage != 'initial' and is_failed)):
+            entered.set()
+            assert release.wait(10)
+            try: return persist(target, target_attempt, **fields)
+            finally: finished.set()
+        return persist(target, target_attempt, **fields)
+    monkeypatch.setattr(cp, '_update_source_import_attempt', gated)
+    async def blocked_download(*_):
+        download_entered.set()
+        if stage == 'failure':
+            raise RuntimeError('fixture download failure')
+        await asyncio.Event().wait()
+    monkeypatch.setattr(cp, 'download_source_video', blocked_download)
+    if stage == 'setup':
+        async def broken_runner(*_):
+            raise RuntimeError('fixture setup failure')
+        monkeypatch.setattr(cp, '_run_page_source_import', broken_runner)
+    runner = asyncio.create_task(cp._guarded_page_source_import(job_id, attempt))
+    try:
+        if stage == 'cancel':
+            await asyncio.wait_for(download_entered.wait(), 5)
+            runner.cancel()
+        assert await asyncio.to_thread(entered.wait, 5)
+        runner.cancel()
+        for task in asyncio.all_tasks():
+            if task is not runner and task is not asyncio.current_task() and getattr(task.get_coro(), '__qualname__', '') == 'to_thread':
+                task.cancel()
+        await asyncio.sleep(0)
+        runner.cancel()
+        await asyncio.sleep(0)
+        assert not runner.done()
+        with cp.runner_lock(cp._jobs_path(), job_id) as acquired:
+            assert not acquired, 'the active persistence thread retains the import claim'
+    finally:
+        release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await runner
+    assert finished.is_set()
+    with cp.runner_lock(cp._jobs_path(), job_id) as acquired:
+        assert acquired
+    if stage != 'initial':
+        assert cp._load_jobs()['jobs'][job_id]['status'] == 'failed'
+
+
+@pytest.mark.asyncio
+async def test_import_completion_wins_before_stale_expiry_write(lab, monkeypatch):
+    client, intent, revision, _ = lab
+    created = client.post('/api/control-plane/v1/source-imports', headers=HEADERS, json=_body(intent, revision)).json()
+    job_id = created['jobId']
+    old = cp._load_jobs()['jobs'][job_id]
+    attempt = old['sourceImportAttemptId']
+    monkeypatch.setattr(cp, '_GENERATION_RUNTIME_ID', 'another-runtime')
+    entered, release = threading.Event(), threading.Event()
+    persist = cp._update_source_import_attempt
+    def gated(target, target_attempt, **fields):
+        if target == job_id and fields.get('error') == 'source_import_runtime_restarted':
+            entered.set()
+            assert release.wait(10)
+        return persist(target, target_attempt, **fields)
+    monkeypatch.setattr(cp, '_update_source_import_attempt', gated)
+    def query():
+        return asyncio.run(cp.job_status(job_id, x_rt_page_id=PAGE_ID, authorization=f'Bearer {TOKEN}'))
+    task = asyncio.create_task(asyncio.to_thread(query))
+    try:
+        assert await asyncio.to_thread(entered.wait, 5)
+        persist(job_id, attempt, status='completed', clips=[{'proof': 'delivered'}])
+    finally:
+        release.set()
+    result = await task
+    assert result['status'] == 'completed'
+    assert cp._load_jobs()['jobs'][job_id]['clips'] == [{'proof': 'delivered'}]
+
+
+@pytest.mark.asyncio
+async def test_setup_failure_cannot_fail_another_import_owner(lab, monkeypatch):
+    client, intent, revision, _ = lab
+    created = client.post('/api/control-plane/v1/source-imports', headers=HEADERS, json=_body(intent, revision)).json()
+    job_id = created['jobId']
+    job = cp._load_jobs()['jobs'][job_id]
+    cp._update_job(job_id, status='running')
+    async def broken(*_):
+        raise RuntimeError('fixture setup failure')
+    monkeypatch.setattr(cp, '_run_page_source_import', broken)
+    with cp.runner_lock(cp._jobs_path(), job_id) as acquired:
+        assert acquired
+        await cp._guarded_page_source_import(job_id, job['sourceImportAttemptId'])
+        assert cp._load_jobs()['jobs'][job_id]['status'] == 'running'
+
+
+@pytest.mark.asyncio
+async def test_stale_status_cannot_cancel_a_new_import_attempt(lab):
+    client, intent, revision, _ = lab
+    created = client.post('/api/control-plane/v1/source-imports', headers=HEADERS, json=_body(intent, revision)).json()
+    job_id = created['jobId']
+    old = cp._load_jobs()['jobs'][job_id]['sourceImportAttemptId']
+    cp._update_job(job_id, status='failed', error='source_import_runtime_restarted')
+    retry = await asyncio.to_thread(client.post, '/api/control-plane/v1/source-imports', headers=HEADERS, json=_body(intent, revision))
+    assert retry.json()['status'] == 'queued'
+    current = cp._load_jobs()['jobs'][job_id]['sourceImportAttemptId']
+    assert current != old
+    task = asyncio.create_task(asyncio.Event().wait())
+    task._source_import_attempt_id = current
+    cp._source_import_tasks[job_id] = task
+    try:
+        assert not await cp._cancel_page_source_import(job_id, old)
+        assert not task.cancelled()
+    finally:
+        cp._source_import_tasks.pop(job_id, None)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+
+@pytest.mark.asyncio
+async def test_old_child_late_open_cannot_touch_new_attempt_or_use_old_token(lab, tmp_path):
+    import subprocess
+    import sys
+    import time
+
+    client, intent, revision, _ = lab
+    created = client.post('/api/control-plane/v1/source-imports', headers=HEADERS, json=_body(intent, revision)).json()
+    job_id = created['jobId']
+    old = cp._load_jobs()['jobs'][job_id]
+    old_root, old_token = Path(old['artifactRoot']), old['token']
+    (old_root / 'source').mkdir(parents=True)
+    started, release = tmp_path / 'child-started', tmp_path / 'child-release'
+    script = (
+        'import pathlib,sys,time\n'
+        'ready,gate,target=map(pathlib.Path,sys.argv[1:])\n'
+        'ready.write_text("ready")\n'
+        'while not gate.exists(): time.sleep(0.01)\n'
+        'target.write_bytes(b"old-child")\n'
+    )
+    child = subprocess.Popen([sys.executable, '-c', script, str(started), str(release), str(old_root / 'source' / 'source.mp4')])
+    try:
+        deadline = time.monotonic() + 5
+        while not started.exists() and time.monotonic() < deadline:
+            await asyncio.sleep(0.01)
+        assert started.exists()
+        cp._update_job(job_id, status='failed', error='source_import_runtime_restarted')
+        retry = await asyncio.to_thread(client.post, '/api/control-plane/v1/source-imports', headers=HEADERS, json=_body(intent, revision))
+        assert retry.json()['status'] == 'queued'
+        current = cp._load_jobs()['jobs'][job_id]
+        new_root = Path(current['artifactRoot'])
+        assert new_root != old_root and new_root.parent == old_root.parent
+        new_source = new_root / 'source' / 'source.mp4'
+        new_source.parent.mkdir(parents=True)
+        new_source.write_bytes(b'fresh')
+        release.write_text('go')
+        assert await asyncio.to_thread(child.wait, 5) == 0
+        assert (old_root / 'source' / 'source.mp4').read_bytes() == b'old-child'
+        assert new_source.read_bytes() == b'fresh'
+        cp._update_source_import_attempt(job_id, current['sourceImportAttemptId'], status='completed',
+            clips=[{'path': 'source/source.mp4', 'name': 'source.mp4'}])
+        with pytest.raises(Exception) as error:
+            cp.job_download(job_id, 0, token=old_token)
+        assert getattr(error.value, 'status_code', None) == 403
+        assert Path(cp.job_download(job_id, 0, token=current['token']).path).read_bytes() == b'fresh'
+    finally:
+        release.touch(exist_ok=True)
+        if child.poll() is None:
+            child.kill()
+            await asyncio.to_thread(child.wait)
