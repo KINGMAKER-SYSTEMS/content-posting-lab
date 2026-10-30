@@ -89,7 +89,7 @@ def census(source, filename):
             return False
         if not (isinstance(node.func, ast.Attribute) and node.func.attr == "to_thread"
                 and isinstance(node.func.value, ast.Name) and node.func.value.id == "asyncio"
-                and node.args and isinstance(node.args[0], ast.Name) and node.args[0].id == "_update_job"):
+                and node.args and isinstance(node.args[0], ast.Name) and node.args[0].id in {"_update_job", "_update_source_job"}):
             return False
         keywords = {kw.arg: kw.value for kw in node.keywords}
         if not (_string(keywords.get("status"), "completed")
