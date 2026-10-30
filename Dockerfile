@@ -33,6 +33,7 @@ COPY recipes/ ./recipes/
 COPY providers/ ./providers/
 COPY scraper/ ./scraper/
 COPY services/ ./services/
+COPY tools/ ./tools/
 COPY fonts/ ./fonts/
 COPY --from=frontend /app/frontend/dist ./frontend/dist
 
