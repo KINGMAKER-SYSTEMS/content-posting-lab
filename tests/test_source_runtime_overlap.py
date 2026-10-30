@@ -87,14 +87,18 @@ async def test_foreign_reader_fences_a_queued_runner_before_expiring_it(lab, mon
 
 
 @pytest.mark.parametrize("door", ["status", "replay"])
+@pytest.mark.parametrize("version", [None, True, "1", 2])
 @pytest.mark.asyncio
-async def test_legacy_foreign_source_without_a_claim_keeps_its_reservations(lab, monkeypatch, door):
+async def test_legacy_foreign_source_without_a_claim_keeps_its_reservations(lab, monkeypatch, door, version):
     client, _, _ = lab
     response = client.post('/api/control-plane/v1/jobs', json=job_body(1), headers=headers('source-legacy-overlap'))
     job_id = response.json()['jobId']
     store = cp._load_jobs()
     job = store['jobs'][job_id]
-    job.pop('sourceClaimVersion')
+    if version is None:
+        job.pop('sourceClaimVersion')
+    else:
+        job['sourceClaimVersion'] = version
     job['status'] = 'running'
     planned = job['sourceCuts'][0]['slotId']
     cp.atomic_save(cp._jobs_path(), store)

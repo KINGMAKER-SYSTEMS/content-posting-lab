@@ -2434,6 +2434,11 @@ def _update_job(job_id: str, **fields: Any) -> dict[str, Any] | None:
         return dict(job)
 
 
+def _has_source_runner_claim(job: dict[str, Any]) -> bool:
+    version = job.get("sourceClaimVersion")
+    return type(version) is int and version == 1
+
+
 def _checkpointed_generation(job: dict[str, Any]) -> bool:
     return job.get("sourceKind") == "generated" and job.get("generationCheckpointVersion") == 1
 
@@ -4897,7 +4902,7 @@ async def create_job(
                 and existing.get("status") in GENERATION_ACTIVE_STATUSES
                 and existing.get("runtimeId") != _GENERATION_RUNTIME_ID
             ):
-                if existing.get("sourceKind") == "dossier_source_dna" and existing.get("sourceClaimVersion") != 1:
+                if existing.get("sourceKind") == "dossier_source_dna" and not _has_source_runner_claim(existing):
                     # A legacy runner never took the claim; its liveness is
                     # unknown, so its windows must remain reserved.
                     pass
@@ -5305,7 +5310,7 @@ async def job_status(
         if job.get("sourceKind") == "dossier_source_dna":
             # A pre-claim runtime can still be cutting without holding a lock.
             # Its windows stay reserved until that legacy job is reconciled.
-            if job.get("sourceClaimVersion") == 1:
+            if _has_source_runner_claim(job):
                 with runner_lock(_jobs_path(), job_id) as acquired:
                     if acquired:
                         expire_if_active()
