@@ -101,6 +101,22 @@ AGE_OUT_BATCH = 120
 AGE_OUT_TIME_BUDGET_MS = 60 * 1000
 
 
+def _paired_duration_matches(clean_ms, burned_ms, clean_frames, burned_frames) -> bool:
+    def positive_finite(value):
+        return (type(value) in (int, float) and value > 0
+                and (type(value) is int or math.isfinite(value)))
+
+    if not positive_finite(clean_ms) or not positive_finite(burned_ms):
+        return False
+    if clean_ms == burned_ms:
+        return True
+    # Separate encodes of the same decoded frames can round their container
+    # duration to adjacent milliseconds. This is not a general timing tolerance.
+    return (abs(clean_ms - burned_ms) == 1
+            and positive_finite(clean_frames) and positive_finite(burned_frames)
+            and clean_frames == burned_frames)
+
+
 def render_claim_floor_bytes(worker_count: int | None = None) -> int:
     """Free bytes below which no new render is claimed."""
     return _min_free_bytes() + PEAK_RENDER_WORKSPACE_BYTES * (worker_count or _worker_count())
@@ -1094,7 +1110,9 @@ class PostRenderJobs:
                     or type(decode.get("decoded_video_frames")) not in (int, float)
                     or decode["decoded_video_frames"] <= 0
                     or not isinstance(probe, dict)
-                    or probe.get("duration_ms") != receipt.get("duration_ms")
+                    or not _paired_duration_matches(
+                        receipt.get("duration_ms"), probe.get("duration_ms"),
+                        evidence.get("decoded_video_frames"), decode.get("decoded_video_frames"))
                     or (probe.get("width"), probe.get("height"), probe.get("video_codec"), probe.get("pixel_format"))
                        != (1080, 1920, "h264", "yuv420p")):
                 raise RenderJobError("burned_fallback_decode_missing")
