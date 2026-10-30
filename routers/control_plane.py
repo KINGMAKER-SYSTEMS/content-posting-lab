@@ -41,6 +41,7 @@ from services import source_import_layout
 
 import asyncio
 import contextvars
+from contextlib import asynccontextmanager
 import functools
 import weakref
 from concurrent.futures import ThreadPoolExecutor
@@ -3875,13 +3876,39 @@ async def _run_dossier_source(job_id: str) -> None:
         await _run_owned_dossier_source(job_id)
 
 
+@asynccontextmanager
+async def _scrambler_source_cleanup(job_id: str, job: dict):
+    """Finish durable side effects before the caller releases its claims."""
+    try:
+        yield
+    except BaseException as error:
+        try:
+            await _settle_source_call(release_job_reservations, job["pageId"], job_id,
+                                    reason="execution_setup_failed")
+        finally:
+            # A second cancellation can arrive while release drains. Persist
+            # the terminal state before any acquired claim is allowed to drop.
+            await _settle_source_update(
+                job_id, status="failed",
+                error=("generation_cancelled" if isinstance(error, asyncio.CancelledError)
+                       else str(error)[:300]),
+                completedAt=datetime.now(timezone.utc).isoformat())
+        if isinstance(error, asyncio.CancelledError):
+            raise
+    finally:
+        # Rendered rows are immutable; only unrendered commitments release.
+        await _settle_source_call(release_job_reservations, job["pageId"], job_id,
+                                reason="execution_finished")
+
+
 async def _run_owned_dossier_source(job_id: str) -> None:
-    """Release private reservations even if execution fails before rendering."""
+    """Hold acquired page ownership through execution AND settled cleanup."""
     job = _get_job_or_404(job_id)
     scramble = any(isinstance(cut, dict) and isinstance(cut.get("scrambler"), dict)
                    for cut in job.get("sourceCuts", ()) or ())
     if not scramble:
         return await _run_dossier_source_inner(job_id)
+    entered_page = False
     try:
         # One ON execution per page, across tasks and processes. Waiting is
         # cooperative; no jobs-store or ledger lock spans an await.
@@ -3891,28 +3918,19 @@ async def _run_owned_dossier_source(job_id: str) -> None:
             while True:
                 with runner_lock(_jobs_path(), lock_id) as acquired:
                     if acquired:
-                        await _run_dossier_source_inner(job_id)
-                        break
+                        entered_page = True
+                        async with _scrambler_source_cleanup(job_id, job):
+                            await _run_dossier_source_inner(job_id)
+                        return
                 await asyncio.sleep(0.25)
-    except BaseException as error:
-        try:
-            await _settle_source_call(release_job_reservations, job["pageId"], job_id,
-                                    reason="execution_setup_failed")
-        finally:
-            # A second cancellation can arrive while release drains. Persist
-            # the terminal state before the outer job claim is allowed to drop.
-            await _settle_source_update(
-                job_id, status="failed",
-                error=("generation_cancelled" if isinstance(error, asyncio.CancelledError)
-                       else str(error)[:300]),
-                completedAt=datetime.now(timezone.utc).isoformat())
-        if isinstance(error, asyncio.CancelledError):
+    except BaseException:
+        if entered_page:
+            # The inner context already drained cleanup under the page claim.
             raise
-    finally:
-        # Covers early named returns as well as ordinary completion. Rendered
-        # rows are immutable; only remaining unrendered commitments release.
-        await _settle_source_call(release_job_reservations, job["pageId"], job_id,
-                                reason="execution_finished")
+        # A cancelled waiter never entered the page's render lane. Terminalize
+        # and release only its own queued draws under the outer job claim.
+        async with _scrambler_source_cleanup(job_id, job):
+            raise
 
 
 async def _run_dossier_source_inner(job_id: str) -> None:
