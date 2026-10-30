@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import math
 import os
 import re
 import time
@@ -49,7 +50,7 @@ def _provider_download_deadline() -> float:
             value = float(raw)
         except ValueError:
             value = 0.0
-        if value > 0:
+        if math.isfinite(value) and value > 0:
             return value
     return _DEFAULT_PROVIDER_DOWNLOAD_SECONDS
 

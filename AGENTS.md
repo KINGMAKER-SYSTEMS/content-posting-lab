@@ -246,6 +246,12 @@
 
 ## Local Contracts
 
+- Provider artifact download deadlines accept only finite positive seconds.
+  Infinity and numeric overflow use the existing finite default, so a malformed
+  setting cannot remove the whole-download deadline. Positive fractional values
+  remain supported. Verify with `tests/test_provider_deadline_finite.py` and
+  `tests/test_provider_download_bounds.py` on the suite host.
+
 - Generic clean-video replenishment excludes every media key held by an active
   or archived slideshow reservation before forming the next complete chunk.
   The archive index retains each plan's template and media keys with its
