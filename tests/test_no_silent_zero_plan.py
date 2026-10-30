@@ -476,8 +476,11 @@ def _capability_scaffold(
             ),
         )
     monkeypatch.setattr(
-        cp, "_dossier_source_recipe",
-        resolve_source if resolve_source is not None else (lambda publication: None),
+        cp, "resolve_source_recipe_with_reason",
+        lambda publication: (
+            resolve_source(publication) if resolve_source is not None else None,
+            None,
+        ),
     )
     monkeypatch.setattr(cp, "syzygy_runtime_available", lambda: runtime_available)
     monkeypatch.setattr(cp, "resolve_material_profile", lambda publication, spec: object())

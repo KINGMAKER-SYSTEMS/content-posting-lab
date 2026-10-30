@@ -51,8 +51,8 @@ MAX_DURATION_MS = 86_400_000
 # library of a page that has since moved on, e.g. the retired old-tt library),
 # so history stays pinned without making the retired footage cuttable again.
 # The canonical list = control-plane tools/originality/origguard/retired-origins.json
-# (origin-keyed; originality runs `origguard lab-check --registry <lab>/recipes/source-dna`
-# before each Lab gap that touches source-dna, which fails on drift either way).
+# (origin-keyed). The Lab enforces only the SHA set below; cross-repository
+# synchronization requires a separate `origguard lab-check --registry` run.
 RETIRED_MASTER_SHAS = frozenset({
     # 3816ff5c = IMG_4962 family (BTL v1 + automation-v1).
     "3816ff5c4c79d73eff1694cc21f3644aff18bb68c3a97ca5b8306316feda1314",

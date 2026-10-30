@@ -19,6 +19,7 @@ from typing import Any
 
 from services.control_plane_sources import (
     SOURCE_MASTER_TOO_SHORT,
+    SOURCE_MASTER_RETIRED,
     SOURCE_WINDOWS_EXHAUSTED,
     SOURCE_WINDOWS_RESERVED_ELSEWHERE,
 )
@@ -65,6 +66,10 @@ SOURCE_IDENTITY_MISSING = "source_identity_missing"
 # pinned to a master, a non-photo page stays non-photo, and the generated
 # prompt space is Lab capacity rather than a page lever.
 REASONS: dict[str, tuple[str, bool, str]] = {
+    SOURCE_MASTER_RETIRED: (
+        "source-dna", False,
+        "Bind a non-retired source master and publish the matching recipe.",
+    ),
     LIBRARY_MISMATCH: (
         "slideshow", False,
         "Re-point the recipe so its live library matches the page's address.",

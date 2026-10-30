@@ -114,7 +114,7 @@ SOURCE_WINDOWS_EXHAUSTED = "source_windows_exhausted"
 SOURCE_WINDOWS_RESERVED_ELSEWHERE = "source_windows_reserved_by_other_pages"
 SOURCE_SPEED_DURATION_UNSUPPORTED = "source_speed_duration_unsupported"
 # A publication names a registered library that still holds a retired master
-# (Rule #1): resolve fails with this named reason instead of silently.
+# (Rule #1): resolution refuses it; flagged capabilities expose this reason.
 SOURCE_MASTER_RETIRED = "source_master_retired"
 # Retired 2026-09-30 (replaced by SOURCE_WINDOWS_EXHAUSTED, which is reached
 # only after every sub-second start is cut too). The name stays importable for
@@ -273,18 +273,30 @@ def resolve_source_recipe(
     *,
     base_recipe_lookup: Callable[[str], dict[str, Any] | None] | None = None,
 ) -> SourceRecipe | None:
+    """Keep the established recipe-or-None contract for execution callers."""
+    recipe, _ = resolve_source_recipe_with_reason(
+        publication, base_recipe_lookup=base_recipe_lookup,
+    )
+    return recipe
+
+
+def resolve_source_recipe_with_reason(
+    publication: dict[str, Any],
+    *,
+    base_recipe_lookup: Callable[[str], dict[str, Any] | None] | None = None,
+) -> tuple[SourceRecipe | None, str | None]:
     del base_recipe_lookup  # old derivative-project lookup is not authority
     if not isinstance(publication, dict):
-        return None
+        return None, None
     recipe_id = publication.get("recipeId")
     engine = publication.get("engine")
     if not isinstance(recipe_id, str) or engine != "sourced_video":
-        return None
+        return None, None
     spec = typed_recipe_spec(publication)
     if spec is None or spec.get("schema") not in {
         "dossier.recipe-spec.v3", "dossier.recipe-spec.v4",
     }:
-        return None
+        return None, None
     profile = resolve_material_profile(publication, spec)
     if (
         profile is None
@@ -295,22 +307,22 @@ def resolve_source_recipe(
         or profile.executor_version is None
         or recipe_id != f"{profile.format_slug}:master"
     ):
-        return None
+        return None, None
     try:
         executor, executor_hash = _executor_contract()
     except (OSError, ValueError, json.JSONDecodeError):
-        return None
+        return None, None
     if (
         profile.executor_id != executor["executorId"]
         or profile.executor_version != f"sha256:{executor_hash}"
     ):
-        return None
+        return None, None
     production = spec.get("production")
     source_library_id = (
         production.get("sourceLibraryId") if isinstance(production, dict) else None
     )
     if not isinstance(source_library_id, str) or not source_library_id:
-        return None
+        return None, None
     master_pages = spec.get("masterPages")
     try:
         library = load_source_dna_library(source_library_id)
@@ -323,17 +335,17 @@ def resolve_source_recipe(
                 expected_library_id=source_library_id,
             )
         except ShipStreamSourceError:
-            return None
+            return None, None
     if any(master.sha256 in RETIRED_MASTER_SHAS for master in library.masters):
         log.warning(
             "%s library=%s page=%s format=%s: a publication named a library that still holds a retired master",
             SOURCE_MASTER_RETIRED, library.library_id, library.page_id, library.format_slug,
         )
-        return None
+        return None, SOURCE_MASTER_RETIRED
     try:
         contracts, _ = load_format_contracts()
     except (OSError, ValueError, json.JSONDecodeError):
-        return None
+        return None, None
     # Local import avoids the ingredient catalog's intentional import of
     # source_treatment_capability from this module.
     from services.dossier_ingredients import (
@@ -362,7 +374,7 @@ def resolve_source_recipe(
                 load_shipstream=False,
             )
         except (OSError, ValueError, json.JSONDecodeError, KeyError):
-            return None
+            return None, None
     if (
         library.format_slug != profile.format_slug
         or not isinstance(master_pages, dict)
@@ -373,11 +385,11 @@ def resolve_source_recipe(
         )
         or contracts.get(profile.format_slug) is None
     ):
-        return None
+        return None, None
     cut_duration_ms = _cut_duration(spec, executor)
     minimum_source_start_ms = _minimum_source_start(spec)
     if cut_duration_ms is None or minimum_source_start_ms is None:
-        return None
+        return None, None
     return SourceRecipe(
         recipe_id=recipe_id,
         format_slug=profile.format_slug,
@@ -399,7 +411,7 @@ def resolve_source_recipe(
         material_source=profile.material_source,
         asset_type=profile.asset_type,
         recipe_spec=spec,
-    )
+    ), None
 
 
 def canonical_source_identity(value: Any) -> str | None:

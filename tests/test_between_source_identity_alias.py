@@ -69,12 +69,13 @@ def test_original_manifest_bytes_sha_is_pinned():
     )
 
 
-def test_alias_page_offers_only_v2_and_original_page_still_offers_v1():
+def test_alias_lists_only_v2_and_original_keeps_historical_v1_listing():
     alias_rows = _master_source_options("pov-night-core", ALIAS_PAGE_ID)
     original_rows = _master_source_options("pov-night-core", ORIGINAL_PAGE_ID)
 
     # The alias page's automation-v1 library is retired and deleted: ONLY v2 is
-    # offered. The original tt-warner page keeps its v1 library for history.
+    # offered. The original tt-warner page keeps its v1 listing for history;
+    # listing does not authorize execution of its retired master.
     assert [row["libraryId"] for row in alias_rows] == [ALIAS_LIBRARY_ID]
     assert [row["pageId"] for row in alias_rows] == [ALIAS_PAGE_ID]
     assert [row["libraryId"] for row in original_rows] == [ORIGINAL_LIBRARY_ID]

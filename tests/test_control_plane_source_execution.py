@@ -884,6 +884,7 @@ def test_capability_counts_down_to_zero_only_when_every_window_is_cut(lab, monke
         ))
 
     monkeypatch.setattr(cp, "_dossier_source_recipe", short_master)
+    monkeypatch.setattr(cp, "resolve_source_recipe_with_reason", lambda payload: (short_master(payload), None))
 
     def capability():
         response = client.get(
@@ -1498,7 +1499,7 @@ def test_source_capability_suppresses_unknown_original_identity(lab, monkeypatch
     def malformed(publication):
         recipe = resolve(publication)
         return replace(recipe, masters=tuple(replace(master, provenance={}) for master in recipe.masters))
-    monkeypatch.setattr(cp, "_dossier_source_recipe", malformed)
+    monkeypatch.setattr(cp, "resolve_source_recipe_with_reason", lambda payload: (malformed(payload), None))
     response = client.get("/api/control-plane/v1/capabilities", headers={"X-RT-Page-Id": PAGE_ID, "Authorization": f"Bearer {TOKEN}"})
     assert response.status_code == 200
     assert response.json()["capabilities"] == []
@@ -2327,10 +2328,11 @@ async def test_a_cut_on_a_backup_whose_file_is_missing_is_skipped_and_the_job_go
         assert job["error"] == "source_dna_master_unavailable"
 
 
-def test_resolve_refuses_a_library_that_still_holds_a_retired_master(caplog):
+@pytest.mark.parametrize("advertise", [False, True])
+def test_retired_master_refused_and_capability_reason_flagged(caplog, monkeypatch, tmp_path, advertise):
     """Rule #1: a stale publication naming a library that still holds a retired
-    master fails with a named, logged reason instead of resolving the retired
-    footage again. The library is a single-primary historical record, so it
+    master refuses execution and exposes its capability reason only when flagged.
+    The HTTP auth and capability projection are exercised without rendering. The library is a single-primary historical record, so it
     parses; the executor is what refuses it."""
     import services.source_dna_registry as registry
 
@@ -2402,3 +2404,31 @@ def test_resolve_refuses_a_library_that_still_holds_a_retired_master(caplog):
     with caplog.at_level(logging.WARNING, logger="content_lab.control_plane_sources"):
         assert resolve_source_recipe(payload) is None
     assert any("source_master_retired" in record.message for record in caplog.records)
+
+    from services.control_plane_sources import resolve_source_recipe_with_reason
+    assert resolve_source_recipe_with_reason(payload) == (None, "source_master_retired")
+    monkeypatch.setenv("CONTROL_PLANE_TOKEN", TOKEN)
+    monkeypatch.setenv("CONTENT_LAB_ADVERTISE_ZERO_REASONS", "1" if advertise else "0")
+    monkeypatch.setenv("CONTENT_LAB_ADVERTISE_SUPPORTED_CONSTRAINTS", "0")
+    monkeypatch.setattr(cp, "_jobs_path", lambda: tmp_path / "retired-jobs.json")
+    cp._capabilities_cache.clear()
+    cp._jobs_snapshot = None
+    cp._jobs_decode_pending.clear()
+    bind_current_intent(monkeypatch, cp, intent, revision)
+    monkeypatch.setattr(cp, "list_registered_recipe_bindings", lambda *args: [("retired", payload)])
+    app = FastAPI()
+    app.include_router(cp.router, prefix="/api/control-plane")
+    client = TestClient(app)
+    endpoint = "/api/control-plane/v1/capabilities"
+    assert client.get(endpoint, headers={"X-RT-Page-Id": retired_page}).status_code == 401
+    response = client.get(endpoint, headers={
+        "X-RT-Page-Id": retired_page, "Authorization": f"Bearer {TOKEN}",
+    })
+    assert response.status_code == 200
+    expected = {"schema": cp.RESPONSE_SCHEMA, "capabilities": []}
+    if advertise:
+        expected["zeroPlanRecipes"] = [{
+            "recipeId": payload["recipeId"], "engine": "sourced_video",
+            "recipeVersion": payload["recipeVersion"], "zeroReason": "source_master_retired",
+        }]
+    assert response.json() == expected

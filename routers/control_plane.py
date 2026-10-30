@@ -105,6 +105,7 @@ from services.control_plane_sources import (
     source_cut_is_planned,
     source_cut_durations,
     resolve_source_recipe,
+    resolve_source_recipe_with_reason,
     source_window_exclusions,
     SOURCE_SPEED_DURATION_UNSUPPORTED,
 )
@@ -766,10 +767,10 @@ def capabilities(
         else:
             generation_recipe = None
             generation_unavailable_reason = None
-        source_recipe = (
-            _dossier_source_recipe(publication)
+        source_recipe, source_unavailable_reason = (
+            resolve_source_recipe_with_reason(publication)
             if publication_engine == "sourced_video"
-            else None
+            else (None, None)
         )
         slideshow_recipe = (
             resolve_slideshow_recipe(publication)
@@ -785,7 +786,7 @@ def capabilities(
                 unresolved_reason = SLIDESHOW_RUNTIME_UNAVAILABLE
                 unresolved_detail = None
             else:
-                unresolved_reason = RECIPE_UNRESOLVED
+                unresolved_reason = source_unavailable_reason or RECIPE_UNRESOLVED
                 unresolved_detail = generation_unavailable_reason
             zero_plan_recipes.append(
                 _zero_plan_recipe(publication, unresolved_reason, unresolved_detail)
