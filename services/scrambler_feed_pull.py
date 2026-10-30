@@ -30,7 +30,13 @@ whose ``generated_at`` is older than 20 hours logs a warning but does NOT fail
 the pull; the files keep that old mtime, so the 26 h gate still refuses them
 once the data itself is over 26 hours old.
 
-The scheduled pull runs only when ``SCRAMBLER_ENABLED=1``. The scheduler thread
+An independent optional summary pull runs when
+``CONTENT_LAB_ORIGINALITY_SUMMARY_FEED_ENABLED=1`` and publishes only to the
+absolute ``CONTENT_LAB_ORIGINALITY_SUMMARY_PATH``. It verifies the private
+manifest hash, bound timestamps, shape and 26-hour freshness; errors keep the
+last valid file. This switch does not enable the Scrambler.
+
+The scheduled Scrambler pull runs only when ``SCRAMBLER_ENABLED=1``. The scheduler thread
 itself is started on every boot (app lifespan); while OFF it only sleeps and
 re-reads the switch once an hour: no R2 call, no write. One manual pull,
 regardless of the switch, is ``tools/scrambler_report.py --pull-feed-once``
@@ -44,6 +50,7 @@ Env names are kept in lockstep with the existing switches:
 from __future__ import annotations
 
 import hashlib
+import fcntl
 import json
 import logging
 import os
@@ -51,6 +58,7 @@ import re
 import secrets
 import shutil
 import threading
+import tempfile
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -444,6 +452,125 @@ def run_feed_pull_once() -> PullResult:
     return pull_once(fetch, dest)
 
 
+SUMMARY_FEED_ENABLED_ENV = "CONTENT_LAB_ORIGINALITY_SUMMARY_FEED_ENABLED"
+SUMMARY_PATH_ENV = "CONTENT_LAB_ORIGINALITY_SUMMARY_PATH"
+SUMMARY_NAME = "usage-summary.json"
+SUMMARY_MAX_BYTES = 2 * 1024 * 1024
+SUMMARY_MANIFEST_MAX_BYTES = 128 * 1024
+
+
+def summary_enabled_now() -> bool:
+    return os.environ.get(SUMMARY_FEED_ENABLED_ENV, "0").strip() == "1"
+
+
+def _summary_fetch(fetch, name: str, limit: int) -> bytes:
+    try:
+        data = fetch(name)
+    except Exception:
+        raise ScramblerFeedPullError("summary_fetch_failed") from None
+    if not isinstance(data, (bytes, bytearray, memoryview)) or not 0 < len(data) <= limit:
+        raise ScramblerFeedPullError("summary_size_invalid")
+    return bytes(data)
+
+
+def pull_summary_once(fetch, destination: Path, now_epoch: float | None = None) -> None:
+    """Validate a private summary before atomically replacing the reader's file."""
+    from services import originality_shadow
+    now = time.time() if now_epoch is None else now_epoch
+    manifest_raw = _summary_fetch(fetch, "manifest.json", SUMMARY_MANIFEST_MAX_BYTES)
+    manifest = parse_manifest(manifest_raw)
+    try:
+        manifest_doc = json.loads(manifest_raw)
+    except Exception as error:
+        raise ScramblerFeedPullError("summary_manifest_invalid") from error
+    data = _summary_fetch(fetch, SUMMARY_NAME, SUMMARY_MAX_BYTES)
+    _verify_sha(SUMMARY_NAME, data, manifest)
+    try:
+        summary_doc = json.loads(data)
+        gen = summary_doc["generated_at"]
+        stamp = _parse_epoch(gen)
+        if (not isinstance(gen, str) or gen != manifest_doc.get("usage_summary_generated_at")
+                or stamp is None or manifest.generated_at_epoch is None
+                or stamp > now or manifest.generated_at_epoch > now
+                or stamp > manifest.generated_at_epoch
+                or manifest.generated_at_epoch - stamp > 300
+                or now - stamp > 26 * 3600):
+            raise ValueError("summary timestamp")
+        originality_shadow._parse_summary(data, now)
+    except Exception as error:
+        raise ScramblerFeedPullError("summary_invalid") from error
+    destination = Path(destination)
+    if not destination.is_absolute() or destination.is_symlink() or not destination.parent.is_dir():
+        raise ScramblerFeedPullError("summary_destination_invalid")
+    tmp_path = None
+    lock_fd = None
+    try:
+        # Serialize cooperating pullers so an older generation cannot replace a
+        # newer one after a slow fetch. Lock refusal leaves the last file intact.
+        lock_path = destination.with_name("." + destination.name + ".lock")
+        lock_fd = os.open(str(lock_path), os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise ScramblerFeedPullError("summary_lock_busy") from None
+        if destination.is_symlink():
+            raise ScramblerFeedPullError("summary_destination_invalid")
+        try:
+            with destination.open("rb") as handle:
+                existing = handle.read(SUMMARY_MAX_BYTES + 1)
+            if len(existing) > SUMMARY_MAX_BYTES:
+                raise ScramblerFeedPullError("summary_existing_oversize")
+            old = json.loads(existing)
+            old_stamp = _parse_epoch(old.get("generated_at")) if isinstance(old, dict) else None
+            if old_stamp is not None and old_stamp > stamp:
+                raise ScramblerFeedPullError("summary_generation_regressed")
+        except (OSError, ValueError, UnicodeError):
+            # An unreadable or corrupt cache cannot prove a newer generation.
+            # The incoming object was fully verified before taking the lock.
+            pass
+        fd, raw_path = tempfile.mkstemp(prefix=".summary-", dir=str(destination.parent))
+        tmp_path = Path(raw_path)
+        with os.fdopen(fd, "wb") as handle:
+            os.fchmod(handle.fileno(), 0o600)
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp_path, destination)
+        tmp_path = None
+        _fsync_dir_quiet(destination.parent)
+    except OSError as error:
+        raise ScramblerFeedPullError("summary_write_failed") from error
+    finally:
+        if tmp_path is not None:
+            _unlink_quiet(tmp_path)
+        if lock_fd is not None:
+            os.close(lock_fd)
+
+
+
+def run_summary_pull_once() -> None:
+    config = feed_config()
+    raw_path = os.environ.get(SUMMARY_PATH_ENV, "").strip()
+    if config is None or not raw_path:
+        raise ScramblerFeedPullError("summary_unconfigured")
+    bucket, prefix = config
+    def fetch(name):
+        from services import r2
+        response = r2.client().get_object(Bucket=bucket, Key=feed_key(prefix, name))
+        body = response["Body"]
+        limit = SUMMARY_MANIFEST_MAX_BYTES if name == "manifest.json" else SUMMARY_MAX_BYTES
+        try:
+            return body.read(limit + 1)
+        finally:
+            body.close()
+    pull_summary_once(fetch, Path(raw_path))
+
+
+def maybe_pull_summary_once() -> None:
+    if summary_enabled_now():
+        run_summary_pull_once()
+
+
 def maybe_pull_once() -> PullResult | None:
     """Run one pull only when SCRAMBLER_ENABLED=1; None (no I/O) when OFF."""
     if not scrambler_enabled_now():
@@ -468,6 +595,12 @@ def _feed_pull_loop() -> None:
             except Exception:  # a failed pull must never take the process down
                 log.exception("content_lab.scrambler-feed-pull.unexpected (old files kept)")
         # OFF: no R2 call, no write — byte-identical to base.
+        if summary_enabled_now():
+            try:
+                run_summary_pull_once()
+            except Exception:
+                # Never print provider exception, key, bucket, path or token.
+                log.error("content_lab.originality-summary-pull.failed")
         if _FEED_PULL_STOP.wait(PULL_INTERVAL_SECONDS):
             break
 
