@@ -175,3 +175,79 @@ def test_message_less_generation_failure_writer_records_named_reason(lab):
     stored = cp._load_jobs()["jobs"][job_id]
     assert stored["error"] == "generation_failed_without_message:RuntimeError"
     assert 0 < len(stored["error"]) <= 300
+
+
+@pytest.mark.parametrize("raw,expected", [
+    ("a" + " " * 400 + "b", "a"),
+    ("🙂" * 200, "🙂" * 150),
+    ("\ufeffprefix\ufeff", "prefix"),
+    ("\ufeff", "lab_failure_reason_unrecorded"),
+    ("\x1cunchanged\x1c", "\x1cunchanged\x1c"),
+    ("a" * 299, "a" * 299),
+    ("a" * 300, "a" * 300),
+    ("a" * 301, "a" * 300),
+    ("a" * 299 + "🙂", "a" * 299),
+    ("a" * 298 + "🙂", "a" * 298 + "🙂"),
+    ("\ufeff" + " " * 301 + "z", "z"),
+])
+def test_legacy_failure_reason_matches_worker_string_contract(lab, raw, expected):
+    client, _, _, _ = lab
+    job_id = _store_status_job("failed", raw)
+    before = cp._jobs_path().read_bytes()
+    response = client.get(f"/api/control-plane/v1/jobs/{job_id}", headers=HEADERS)
+    assert response.status_code == 200
+    assert response.json()["error"] == expected
+    assert cp._jobs_path().read_bytes() == before
+
+
+@pytest.mark.parametrize("raw,expected", [
+    ("a" + " " * 400 + "b", "a"),
+    ("🙂" * 200, "🙂" * 150),
+    ("\ufeffx\ufeff", "x"),
+    ("\ufeff", "generation_failed_without_message"),
+    ("\x1cunchanged\x1c", "\x1cunchanged\x1c"),
+])
+def test_failure_writer_persists_worker_compatible_reason(lab, raw, expected):
+    _client, _, _, _ = lab
+    job_id = _store_status_job("running")
+    cp._update_job(job_id, status="failed", error=raw)
+    assert cp._load_jobs()["jobs"][job_id]["error"] == expected
+
+
+@pytest.mark.parametrize("raw,expected", [
+    ("\ud800", "\ufffd"),
+    ("\udfff", "\ufffd"),
+    ("x🙂\ud800z\udfffy", "x🙂\ufffdz\ufffdy"),
+])
+def test_unpaired_surrogates_are_safe_in_writer_and_status(lab, raw, expected):
+    client, _, _, _ = lab
+    job_id = _store_status_job("running")
+    cp._update_job(job_id, status="failed", error=raw)
+    assert cp._load_jobs()["jobs"][job_id]["error"] == expected
+    legacy_id = _store_status_job("failed", "placeholder")
+    legacy = json.loads(cp._jobs_path().read_text())
+    legacy["jobs"][legacy_id]["error"] = raw
+    cp._jobs_path().write_text(json.dumps(legacy, ensure_ascii=True))
+    before = cp._jobs_path().read_bytes()
+    response = client.get(f"/api/control-plane/v1/jobs/{legacy_id}", headers=HEADERS)
+    assert response.status_code == 200
+    assert response.json()["error"] == expected
+    assert cp._jobs_path().read_bytes() == before
+
+
+@pytest.mark.parametrize("char", list("\u0009\u000a\u000b\u000c\u000d\u0020\u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000\ufeff"))
+def test_worker_trim_whitespace_boundaries(lab, char):
+    client, _, _, _ = lab
+    job_id = _store_status_job("failed", char + "word" + char)
+    before = cp._jobs_path().read_bytes()
+    response = client.get(f"/api/control-plane/v1/jobs/{job_id}", headers=HEADERS)
+    assert response.json()["error"] == "word"
+    assert cp._jobs_path().read_bytes() == before
+
+
+@pytest.mark.parametrize("char", list("\x1c\x1d\x1e\x1f\x85"))
+def test_python_only_whitespace_is_not_discarded(lab, char):
+    client, _, _, _ = lab
+    job_id = _store_status_job("failed", char + "word" + char)
+    response = client.get(f"/api/control-plane/v1/jobs/{job_id}", headers=HEADERS)
+    assert response.json()["error"] == char + "word" + char
