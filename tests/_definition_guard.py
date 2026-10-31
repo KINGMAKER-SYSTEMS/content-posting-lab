@@ -1,7 +1,7 @@
-"""Detect direct, unconditional test definitions shadowed in one namespace.
+"""Detect direct, unconditional test function definitions shadowed in one namespace.
 
-This does not model conditional definitions, assignments, imports or Python's
-whole-program name resolution. Parsing never imports the inspected modules.
+This does not model conditional definitions, assignments, imports, class
+redefinitions or Python's whole-program name resolution. Parsing never imports the inspected modules.
 """
 import argparse
 import ast

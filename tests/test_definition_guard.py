@@ -53,5 +53,5 @@ def test_cli_parse_error_is_not_clean(tmp_path):
     assert json.loads(result.stdout) == {"error": "SyntaxError"}
 
 
-def test_repository_has_no_unconditional_duplicate_test_definitions():
+def test_repository_has_no_unconditional_duplicate_test_function_definitions():
     assert guard.scan_paths([Path(__file__).parent]) == []
