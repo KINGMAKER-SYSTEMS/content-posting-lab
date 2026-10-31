@@ -9,10 +9,10 @@ and ``SCRAMBLER_FEED_R2_PREFIX`` is the key prefix of the feed directory itself
 producer, control-plane tools/launchd/bin/originality-feed.sh, puts them). Each
 data file's sha256 is verified against the manifest's REQUIRED ``sha256s`` map
 and the usage row count against ``rows``, then all
-three files are written with per-file atomicity (temp file + ``os.replace``)
-into the destination directory, origins.json before usage.jsonl (this narrows,
-but does not close, the window in which a concurrent reader can pair two
-generations; see ``WRITE_ORDER``). usage.jsonl and origins.json get the
+three files are published under a permanent local writer lock. The manifest
+is installed and its directory synced before either data file; readers check
+its digests against the exact bytes they parse and refuse incomplete refreshes.
+usage.jsonl and origins.json get the
 manifest's ``generated_at`` as their mtime (capped at now), NOT the pull time:
 the Scrambler's 26-hour usage freshness gate (services/scrambler_originality.py
 ``USAGE_STALE_AFTER_S``) reads that mtime, so it measures the age of the DATA.
@@ -46,6 +46,8 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import fcntl
+import stat
 import os
 import re
 import secrets
@@ -71,17 +73,9 @@ FEED_REL_PREFIX = "originality/feed"
 FEED_FILES = ("manifest.json", "usage.jsonl", "origins.json")
 DATA_FILES = ("usage.jsonl", "origins.json")
 
-# Replace order for the final files. origins.json precedes usage.jsonl:
-# ``load_originality_index`` (services/scrambler_originality.py) reads
-# origins.json BEFORE usage.jsonl, so replacing origins first means a reader
-# that reads NEW origins always reads NEW usage after it. This NARROWS the
-# mixed-generation window but does not close it: a reader that read OLD
-# origins.json just before both renames and then reads usage.jsonl after them
-# still pairs OLD origins with NEW usage. The impact is small, because each
-# producer usage row carries its own origin identity (origin_kind, origin_id,
-# origin_start_s/end_s). manifest.json is not consumed by the Scrambler reader
-# and goes last.
-WRITE_ORDER = ("origins.json", "usage.jsonl", "manifest.json")
+# Publish the verified manifest first. Readers refuse until data matches it.
+# The durable marker distinguishes managed feeds from stable legacy two-file feeds.
+WRITE_ORDER = ("manifest.json", "origins.json", "usage.jsonl")
 
 PULL_INTERVAL_SECONDS = 60 * 60
 MANIFEST_STALE_AFTER_S = 20 * 3600.0
@@ -245,9 +239,10 @@ def _snapshot_old(dest: Path, names: tuple[str, ...]) -> dict[str, Path | None]:
                 backups[name] = backup
             except FileNotFoundError:
                 backups[name] = None
-            except OSError:
+            except OSError as error:
                 _unlink_quiet(backup)
-                backups[name] = None
+                _discard_backups_quiet(backups)
+                raise ScramblerFeedPullError(f"write_failed: backup {name}: {error}") from error
         else:
             backups[name] = backup
     return backups
@@ -288,17 +283,37 @@ def _discard_backups_quiet(backups: dict[str, Path | None]) -> None:
 
 def _write_all(dest: Path, payloads: dict[str, bytes],
                data_mtime: float | None = None) -> None:
-    """Write the feed files with per-file atomicity and rollback on failure.
+    dest.mkdir(parents=True, exist_ok=True)
+    marker = dest / ".scrambler-feed.lock"
+    fd = os.open(marker, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        opened = os.fstat(fd)
+        named = marker.lstat()
+        if (not stat.S_ISREG(opened.st_mode) or
+                (opened.st_dev, opened.st_ino) != (named.st_dev, named.st_ino)):
+            raise ScramblerFeedPullError("write_failed: feed lock identity changed")
+        os.fsync(fd)
+        _fsync_dir_strict(dest)
+        _write_all_locked(dest, payloads, data_mtime)
+    finally:
+        os.close(fd)
 
-    Each file is still temp + ``os.replace``, so no reader ever sees a
-    half-written file. The replace order (``WRITE_ORDER``) replaces origins.json
-    BEFORE usage.jsonl, which narrows (does not close) the window in which a
-    reader following ``load_originality_index``'s read order pairs two
-    generations (see ``WRITE_ORDER``). With ``data_mtime`` set, each DATA file's
-    temp file gets that mtime BEFORE its rename, so the final file appears with
-    the data's age already in place (no fresh-mtime moment). If a replace fails
-    part-way, the already-replaced files are rolled back to their old contents
-    (best-effort) and a named reason is raised.
+
+def _fsync_dir_strict(dest: Path) -> None:
+    fd = os.open(dest, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def _write_all_locked(dest: Path, payloads: dict[str, bytes],
+                      data_mtime: float | None = None) -> None:
+    """Publish a verified generation; leave a mismatch on failed rollback.
+
+    Data ages are retained. The manifest barrier precedes data renames, and
+    rollback restores and syncs data before restoring the prior manifest.
     """
     try:
         dest.mkdir(parents=True, exist_ok=True)
@@ -319,6 +334,8 @@ def _write_all(dest: Path, payloads: dict[str, bytes],
             tmp_paths[name] = tmp
             if data_mtime is not None and name in DATA_FILES:
                 os.utime(tmp, (data_mtime, data_mtime))
+                with open(tmp, "rb") as handle:
+                    os.fsync(handle.fileno())
     except OSError as error:
         for tmp in tmp_paths.values():
             _unlink_quiet(tmp)
@@ -331,15 +348,36 @@ def _write_all(dest: Path, payloads: dict[str, bytes],
             os.replace(tmp_paths[name], dest / name)
             del tmp_paths[name]
             replaced.append(name)
+            if name == "manifest.json":
+                _fsync_dir_strict(dest)
+        _fsync_dir_strict(dest)
     except OSError as error:
         for tmp in tmp_paths.values():
             _unlink_quiet(tmp)
-        _rollback_quiet(dest, backups, replaced)
+        # Restore data before the manifest. If data restoration fails, retain
+        # the new manifest so a mixed generation cannot be treated as valid.
+        restored = True
+        for name in reversed(replaced):
+            if name == "manifest.json":
+                if restored:
+                    try:
+                        _fsync_dir_strict(dest)
+                    except OSError:
+                        restored = False
+                if not restored:
+                    continue
+            try:
+                backup = backups[name]
+                if backup is None:
+                    (dest / name).unlink(missing_ok=True)
+                else:
+                    os.replace(backup, dest / name)
+            except OSError:
+                restored = False
         _discard_backups_quiet(backups)
         raise ScramblerFeedPullError(f"write_failed: {error}") from error
 
     _discard_backups_quiet(backups)
-    _fsync_dir_quiet(dest)
 
 
 def _unlink_quiet(path: Path) -> None:
