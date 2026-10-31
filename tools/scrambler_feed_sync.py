@@ -2,8 +2,7 @@
 
 The scheduled path is services/scrambler_feed_pull.py (hourly R2 pull inside
 the app, ON only). This tool is the operator's manual fallback: seed the volume
-from a local directory, or recover when R2 is unreachable. It writes the same
-two files to the same directory, in the same order (origins.json first).
+from a local directory, or recover when R2 is unreachable. It publishes the same data through the shared manifest-verified writer.
 
 The Scrambler ON path requires a 26-hour-fresh ``usage.jsonl`` beside a valid
 ``origins.json`` (services/scrambler_originality.py). This tool is the missing
@@ -30,6 +29,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from services import scrambler_originality as originality
+from services import scrambler_feed_pull as feed
 
 USAGE_NAME = "usage.jsonl"
 ORIGINS_NAME = "origins.json"
@@ -74,8 +74,7 @@ def sync_feed(
 
     Refuses (``FeedSyncRefused``) unless BOTH files exist in the source, the
     usage ledger is within ``stale_after_s`` of ``now_epoch``, and each file is
-    within its byte bound (usage 64 MiB, origins 8 MiB). Writes are atomic
-    (tmp + fsync + replace) so a reader never sees a half-copied feed.
+    within its byte bound (usage 64 MiB, origins 8 MiB). Readers accept only a complete verified generation and refuse during publication.
     """
     source = Path(source_dir)
     dest = Path(dest_dir)
@@ -95,26 +94,30 @@ def sync_feed(
     if now - stat.st_mtime > stale_after_s:
         hours = int((now - stat.st_mtime) / 3600)
         raise FeedSyncRefused(f"usage ledger is {hours} h stale (limit {stale_after_s / 3600:.0f} h)")
-    usage_raw = _bounded_read(usage_src, originality.USAGE_MAX_BYTES)
-    origins_raw = _bounded_read(origins_src, originality.ORIGINS_MAX_BYTES)
-    # Refuse to forward a JSON-invalid origins map (usage.jsonl is validated
-    # later by the loader, line by line, but the map is cheap to check here).
     try:
+        usage_raw, origins_raw, verified_age = originality._verified_feed_snapshot(usage_src, origins_src)
+        if now - verified_age > stale_after_s:
+            raise FeedSyncRefused("verified usage is stale")
+        after = usage_src.stat()
+        if (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns) != (
+                after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns):
+            raise FeedSyncRefused("usage changed while reading")
         json.loads(origins_raw)
-    except (json.JSONDecodeError, ValueError) as error:
-        raise FeedSyncRefused(f"origins map is not valid JSON: {error}") from error
-    dest.mkdir(parents=True, exist_ok=True)
-    # origins.json first, then usage.jsonl: the same order as the scheduled
-    # pull (services/scrambler_feed_pull.py WRITE_ORDER). The loader reads
-    # origins before usage, so the files on disk never form NEW usage beside OLD
-    # origins. (A reader that spans both writes can still pair generations; the
-    # impact is small: each usage row carries its own origin identity.)
-    _atomic_write(dest / ORIGINS_NAME, origins_raw)
-    _atomic_write(dest / USAGE_NAME, usage_raw)
+        manifest = json.dumps({
+            "generated_at": datetime.fromtimestamp(min(stat.st_mtime, verified_age), timezone.utc).isoformat(),
+            "rows": feed.count_usage_rows(usage_raw),
+            "sha256s": {"usage.jsonl": feed.sha256_hex(usage_raw),
+                        "origins.json": feed.sha256_hex(origins_raw)},
+        }).encode()
+        feed._write_all(dest, {"manifest.json": manifest, "usage.jsonl": usage_raw,
+                               "origins.json": origins_raw}, data_mtime=min(stat.st_mtime, verified_age))
+    except (originality.ScramblerOriginalityUnavailable, OSError, ValueError,
+            feed.ScramblerFeedPullError) as error:
+        raise FeedSyncRefused(f"feed sync failed: {error}") from error
     return {
         "usageBytes": len(usage_raw),
         "originsBytes": len(origins_raw),
-        "usageAgeSeconds": int(now - stat.st_mtime),
+        "usageAgeSeconds": int(now - min(stat.st_mtime, verified_age)),
         "dest": str(dest),
     }
 
