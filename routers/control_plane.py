@@ -2260,8 +2260,8 @@ def _truck_master_candidates(
     """Return durable, unused, current-authority truck masters for re-cropping.
 
     A completed recovery reserves its exact masters permanently. Active
-    recoveries reserve them against concurrent replenishment. Failed recovery
-    jobs release them because no new delivery bytes crossed the API boundary.
+    recoveries reserve them against concurrent replenishment. A failed recovery
+    releases its masters only when it has no clips that the artifact API can expose.
     A landscape file alone is not enough: the producing job must match the
     selected profile, recipe, prompt catalog, executor and provider
     model. This prevents old-model or old-prompt renders from silently becoming
@@ -2277,13 +2277,9 @@ def _truck_master_candidates(
         if (
             not isinstance(job, dict)
             or job.get("sourceKind") != "truck_master_recovery"
-            or job.get("status") not in SOURCE_DNA_UNAVAILABLE_STATUSES
         ):
             continue
-        for master in job.get("recoveryMasters", []):
-            sha256 = master.get("sha256") if isinstance(master, dict) else None
-            if isinstance(sha256, str) and re.fullmatch(r"[0-9a-f]{64}", sha256):
-                reserved.add(sha256)
+        reserved.update(compaction.truck_recovery_reserved_masters(job))
     # Archived completed recoveries reserve their masters permanently.
     for sha256 in archive_index.get("truckRecoveryMasters", []):
         if isinstance(sha256, str) and re.fullmatch(r"[0-9a-f]{64}", sha256):
@@ -2542,6 +2538,30 @@ def _update_source_job(job_id: str, **fields: Any) -> dict[str, Any] | None:
         store = _load_jobs()
         job = store["jobs"].get(job_id)
         if (not isinstance(job, dict) or job.get("sourceKind") != "dossier_source_dna"
+                or job.get("status") not in GENERATION_ACTIVE_STATUSES):
+            return None
+        job.update(fields)
+        _save_jobs(store)
+        return dict(job)
+
+
+def _has_truck_recovery_claim(job: dict[str, Any]) -> bool:
+    return (type(job.get("truckRecoveryClaimVersion")) is int
+            and job["truckRecoveryClaimVersion"] == 1
+            and isinstance(job.get("truckRecoveryAttemptId"), str)
+            and bool(job["truckRecoveryAttemptId"]))
+
+
+def _update_truck_recovery_job(job_id: str, attempt_id: str, runtime_id: str, **fields: Any) -> dict[str, Any] | None:
+    if fields.get("status") in _FAILURE_TERMINAL_STATUSES:
+        fields["error"] = _terminal_failure_reason(fields.get("error"), fallback=_WRITER_FAILURE_REASON)
+    with lock_for(_jobs_path()):
+        store = _load_jobs()
+        job = store.get("jobs", {}).get(job_id)
+        if (not isinstance(job, dict) or job.get("sourceKind") != "truck_master_recovery"
+                or not _has_truck_recovery_claim(job)
+                or job.get("truckRecoveryAttemptId") != attempt_id
+                or job.get("runtimeId") != runtime_id
                 or job.get("status") not in GENERATION_ACTIVE_STATUSES):
             return None
         job.update(fields)
@@ -3717,7 +3737,34 @@ async def _video_geometry(path: Path) -> tuple[int, int]:
     return width, height
 
 
-async def _run_truck_master_recovery(job_id: str) -> None:
+_TRUCK_RECOVERY_ATTEMPT_UNSET = object()
+
+
+async def _run_truck_master_recovery(job_id: str, expected_attempt: Any = _TRUCK_RECOVERY_ATTEMPT_UNSET,
+                                     expected_runtime: Any = _TRUCK_RECOVERY_ATTEMPT_UNSET) -> None:
+    initial = _get_job_or_404(job_id)
+    attempt = initial.get("truckRecoveryAttemptId") if expected_attempt is _TRUCK_RECOVERY_ATTEMPT_UNSET else expected_attempt
+    runtime = _GENERATION_RUNTIME_ID if expected_runtime is _TRUCK_RECOVERY_ATTEMPT_UNSET else expected_runtime
+    with runner_lock(_jobs_path(), job_id) as acquired:
+        if not acquired:
+            return
+        current = _get_job_or_404(job_id)
+        if (not _has_truck_recovery_claim(current) or current.get("sourceKind") != "truck_master_recovery"
+                or current.get("truckRecoveryAttemptId") != attempt or current.get("runtimeId") != runtime
+                or current.get("status") not in GENERATION_ACTIVE_STATUSES):
+            return
+        try:
+            await _run_owned_truck_master_recovery(job_id, attempt, runtime)
+        except BaseException as error:
+            await _settle_source_call(_update_truck_recovery_job, job_id, attempt, runtime,
+                                      status="failed", error=("generation_cancelled"
+                                      if isinstance(error, asyncio.CancelledError) else _exception_failure_reason(error)),
+                                      completedAt=datetime.now(timezone.utc).isoformat())
+            if not isinstance(error, Exception):
+                raise
+
+
+async def _run_owned_truck_master_recovery(job_id: str, attempt: str, runtime: str) -> None:
     """Turn preserved paid truck masters into five exact portrait deliveries.
 
     This path never calls a model. It copies and re-hashes the previously
@@ -3728,8 +3775,7 @@ async def _run_truck_master_recovery(job_id: str) -> None:
     """
     job = _get_job_or_404(job_id)
     if not _job_matches_current_master_pages(job):
-        await asyncio.to_thread(_update_job,
-            job_id,
+        await _settle_source_call(_update_truck_recovery_job, job_id, attempt, runtime,
             status="failed",
             error="master_pages_strategy_changed",
             completedAt=datetime.now(timezone.utc).isoformat(),
@@ -3748,8 +3794,7 @@ async def _run_truck_master_recovery(job_id: str) -> None:
         ).hexdigest()
         or not publication_matches_master_pages(publication, job["masterPages"], job["masterPagesHash"])
     ):
-        await asyncio.to_thread(_update_job,
-            job_id, status="failed", error="truck_master_recipe_unavailable",
+        await _settle_source_call(_update_truck_recovery_job, job_id, attempt, runtime, status="failed", error="truck_master_recipe_unavailable",
             completedAt=datetime.now(timezone.utc).isoformat(),
         )
         return
@@ -3758,13 +3803,13 @@ async def _run_truck_master_recovery(job_id: str) -> None:
     master_root.mkdir(parents=True, exist_ok=True, mode=0o700)
     masters = job.get("recoveryMasters")
     if not isinstance(masters, list) or not masters:
-        await asyncio.to_thread(_update_job,
-            job_id, status="failed", error="truck_master_recovery_empty",
+        await _settle_source_call(_update_truck_recovery_job, job_id, attempt, runtime, status="failed", error="truck_master_recovery_empty",
             completedAt=datetime.now(timezone.utc).isoformat(),
         )
         return
     manifests: list[dict[str, Any]] = []
-    await asyncio.to_thread(_update_job,job_id, status="running", progress=0)
+    if await _settle_source_call(_update_truck_recovery_job, job_id, attempt, runtime, status="running", progress=0) is None:
+        return
     try:
         for master_index, candidate in enumerate(masters):
             if not _job_matches_current_master_pages(job):
@@ -3828,36 +3873,34 @@ async def _run_truck_master_recovery(job_id: str) -> None:
                     job_root, crop, len(manifests),
                 )
                 manifests.append(manifest)
-            await asyncio.to_thread(_update_job,
-                job_id,
-                progress=int(((master_index + 1) / len(masters)) * 100),
-            )
+            if await _settle_source_call(_update_truck_recovery_job, job_id, attempt, runtime,
+                    progress=int(((master_index + 1) / len(masters)) * 100)) is None:
+                return
     except asyncio.CancelledError:
-        shutil.rmtree(job_root, ignore_errors=True)
-        await asyncio.to_thread(_update_job,
-            job_id,
+        failed = await _settle_source_call(_update_truck_recovery_job, job_id, attempt, runtime,
             status="failed",
             error="generation_cancelled",
             completedAt=datetime.now(timezone.utc).isoformat(),
         )
+        if failed is not None and not failed.get("clips"):
+            shutil.rmtree(job_root, ignore_errors=True)
         raise
     except Exception as error:
-        shutil.rmtree(job_root, ignore_errors=True)
-        await asyncio.to_thread(_update_job,
-            job_id, status="failed", error=_exception_failure_reason(error),
+        failed = await _settle_source_call(_update_truck_recovery_job, job_id, attempt, runtime, status="failed", error=_exception_failure_reason(error),
             completedAt=datetime.now(timezone.utc).isoformat(),
         )
+        if failed is not None and not failed.get("clips"):
+            shutil.rmtree(job_root, ignore_errors=True)
         return
     if not _job_matches_current_master_pages(job):
-        await asyncio.to_thread(_update_job,
-            job_id,
+        await _settle_source_call(_update_truck_recovery_job, job_id, attempt, runtime,
             status="failed",
             error="master_pages_strategy_changed",
             completedAt=datetime.now(timezone.utc).isoformat(),
         )
         return
-    await asyncio.to_thread(_update_job,
-        job_id, status="completed", progress=100, clips=manifests,
+    await _settle_source_call(_update_truck_recovery_job, job_id, attempt, runtime,
+        status="completed", progress=100, clips=manifests,
         completedAt=datetime.now(timezone.utc).isoformat(),
     )
 
@@ -5176,9 +5219,14 @@ def _start_dossier_source(job_id: str) -> None:
 
 
 def _start_truck_master_recovery(job_id: str) -> None:
-    task = asyncio.create_task(_run_truck_master_recovery(job_id))
+    current = _truck_recovery_tasks.get(job_id)
+    if current is not None and not current.done():
+        return
+    job = _get_job_or_404(job_id)
+    task = asyncio.create_task(_run_truck_master_recovery(job_id, job.get("truckRecoveryAttemptId"), _GENERATION_RUNTIME_ID))
     _truck_recovery_tasks[job_id] = task
-    task.add_done_callback(lambda _: _truck_recovery_tasks.pop(job_id, None))
+    task.add_done_callback(lambda completed: _truck_recovery_tasks.pop(job_id, None)
+                           if _truck_recovery_tasks.get(job_id) is completed else None)
 
 
 async def _guarded_page_source_import(job_id: str, attempt_id: str | None) -> None:
@@ -5623,7 +5671,14 @@ async def create_job(
                 and existing.get("status") in GENERATION_ACTIVE_STATUSES
                 and existing.get("runtimeId") != _GENERATION_RUNTIME_ID
             ):
-                if existing.get("sourceKind") == "syzygy_slideshow":
+                if existing.get("sourceKind") == "truck_master_recovery":
+                    if _has_truck_recovery_claim(existing):
+                        with runner_lock(_jobs_path(), existing["jobId"]) as acquired:
+                            if acquired:
+                                existing.update({"status": "failed", "error": "generation_runtime_restarted",
+                                                 "completedAt": datetime.now(timezone.utc).isoformat()})
+                                _save_jobs(store)
+                elif existing.get("sourceKind") == "syzygy_slideshow":
                     if _has_slideshow_runner_claim(existing):
                         with runner_lock(_jobs_path(), existing["jobId"]) as acquired:
                             if acquired:
@@ -5698,6 +5753,8 @@ async def create_job(
             job = {
                 **common,
                 "sourceKind": "truck_master_recovery",
+                "truckRecoveryClaimVersion": 1,
+                "truckRecoveryAttemptId": _secrets.token_hex(16),
                 "status": "queued",
                 "progress": 0,
                 "clips": [],
@@ -6357,6 +6414,13 @@ async def job_status(
                             error="source_import_runtime_restarted",
                             completedAt=datetime.now(timezone.utc).isoformat(),
                         )
+        elif job.get("sourceKind") == "truck_master_recovery":
+            if _has_truck_recovery_claim(job):
+                with runner_lock(_jobs_path(), job_id) as acquired:
+                    if acquired:
+                        _update_truck_recovery_job(job_id, job["truckRecoveryAttemptId"], job["runtimeId"],
+                                                   status="failed", error="generation_runtime_restarted",
+                                                   completedAt=datetime.now(timezone.utc).isoformat())
         elif job.get("sourceKind") == "syzygy_slideshow":
             if _has_slideshow_runner_claim(job):
                 with runner_lock(_jobs_path(), job_id) as acquired:
