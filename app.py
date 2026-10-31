@@ -192,6 +192,21 @@ async def lifespan(app: FastAPI):
     PROJECTS_DIR.mkdir(parents=True, exist_ok=True)
     ensure_default_project()
 
+    # A Railway volume admits only one mounted deployment at a time. Verify
+    # the actual mount/entrypoint before settling stopped legacy source owners;
+    # other deployments retain the explicit operator reconciliation path.
+    from routers import control_plane as source_runtime
+    from services.source_runtime_reconciliation import reconcile_railway_startup
+    try:
+        reconciliation = await asyncio.to_thread(
+            reconcile_railway_startup, source_runtime._jobs_path(),
+            source_runtime._generation_root_path(), source_runtime._GENERATION_RUNTIME_ID,
+        )
+        log.info("source runtime startup reconciliation: %s", reconciliation)
+    except Exception:
+        # An unavailable proof or repair never adds a global startup gate.
+        log.warning("source runtime reconciliation needs operator follow-up")
+
     # AgenticBuilderNews workspace DB + autonomous factory
     try:
         await agenticnews_db.init_db()

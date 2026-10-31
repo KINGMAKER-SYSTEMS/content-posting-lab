@@ -9,7 +9,10 @@ grew it by about 10 GB a day. Each clip the Worker delivers is copied into R2 as
   ``/staging-video/<sha>.mp4`` door answers 200 with the clip's byte length.
   A clip the Worker has not copied is never deleted; it is re-checked after
   ``UNCONFIRMED_RECHECK_SECONDS``.
-* **Every other file** in the job directory (provider intermediates, resume
+* **Private Scrambler checkpoints** retain their produced clip and thumbnail
+  paths. A matching public clip still uses the R2-confirmed cleanup above;
+  malformed or conflicting private metadata holds the whole job.
+* **Every other unreferenced file** in the job directory (provider intermediates, resume
   renders, masters, unreferenced thumbnails) is a stray and is deleted
   ``STRAY_RETENTION`` after the job finished: 48 h, or sooner under volume
   pressure (see ``services.post_render_jobs.volume_pressure``).
@@ -33,6 +36,7 @@ import logging
 import os
 import re
 import shutil
+import stat
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -101,11 +105,139 @@ def _job_dir(root: Path, value: Any) -> Path | None:
     return path if len(relative.parts) == JOB_DIR_DEPTH else None
 
 
+def _source_import_attempt_dirs(root: Path, job_id: str, job: dict[str, Any]) -> tuple[Path, Path] | None:
+    """Return job group and current attempt only for the exact private layout."""
+    attempt = job.get("sourceImportAttemptId")
+    version = job.get("sourceImportClaimVersion")
+    value = job.get("artifactRoot")
+    if (job.get("sourceKind") != "page_source_import" or job.get("jobId") != job_id
+            or type(version) is not int or version != 1
+            or not isinstance(attempt, str) or not re.fullmatch(r"[0-9a-f]{32}", attempt)
+            or not isinstance(value, str) or not value):
+        return None
+    path = Path(value).resolve()
+    try:
+        parts = path.relative_to(root).parts
+    except ValueError:
+        return None
+    if (len(parts) != JOB_DIR_DEPTH + 1 or parts[0] != job.get("pageId")
+            or parts[1] != "source-imports" or parts[2] != job_id or parts[3] != attempt
+            or not re.fullmatch(r"cpl-[0-9a-f]{16}", job_id)):
+        return None
+    return path.parent, path
+
+
+def _completed_flat_import_dir(root: Path, job_id: str, job: dict[str, Any]) -> Path | None:
+    """Recognize completed phase-A ownership without broad private fallback."""
+    page, value = job.get("pageId"), job.get("artifactRoot")
+    if (job.get("sourceKind") != "page_source_import" or job.get("status") != "completed"
+            or job.get("jobId") != job_id or not re.fullmatch(r"cpl-[0-9a-f]{16}", job_id)
+            or not isinstance(page, str) or page in {".", ".."}
+            or not re.fullmatch(r"[A-Za-z0-9._:-]{1,128}", page)
+            or type(job.get("sourceImportClaimVersion")) is not int or job["sourceImportClaimVersion"] != 1
+            or not isinstance(job.get("sourceImportAttemptId"), str)
+            or not re.fullmatch(r"[0-9a-f]{32}", job["sourceImportAttemptId"])
+            or not isinstance(job.get("runtimeId"), str) or not re.fullmatch(r"[0-9a-f]{32}", job["runtimeId"])
+            or not isinstance(value, str) or not Path(value).is_absolute()):
+        return None
+    expected = root / page / "source-imports" / job_id
+    if (expected.relative_to(root).parts != (page, "source-imports", job_id)
+            or Path(value) != expected or expected.resolve() != expected):
+        return None
+    current = root
+    for part in expected.relative_to(root).parts:
+        current /= part
+        if current.is_symlink():
+            return None
+    return expected
+
+
+def _flat_import_file(directory: Path, relative: Any) -> Path | None:
+    """Only direct source/thumbnail files; never a private attempt or alias."""
+    if not isinstance(relative, str):
+        return None
+    parts = Path(relative).parts
+    if len(parts) != 2 or parts[0] not in {"source", "thumbnails"}:
+        return None
+    path = directory / relative
+    if path.parent.is_symlink() or path.is_symlink() or path.resolve().parent != directory / parts[0]:
+        return None
+    return path
+
+
 def _inside(directory: Path, relative: Any) -> Path | None:
     if not isinstance(relative, str) or not relative:
         return None
     path = (directory / relative).resolve()
     return path if directory in path.parents else None
+
+
+def _private_scrambler_paths(root: Path, directory: Path, job_id: str,
+                            job: dict[str, Any]) -> set[Path] | None:
+    """Protect produced private clips; None holds an ambiguous whole job."""
+    clips = job.get("scramblerRenderedClips", [])
+    if not isinstance(clips, list):
+        return None
+    if not clips:
+        return set()
+    parts = directory.relative_to(root).parts
+    if (job.get("sourceKind") != "dossier_source_dna" or job.get("jobId") != job_id
+            or len(parts) != JOB_DIR_DEPTH or parts[0] != job.get("pageId") or parts[2] != job_id):
+        return None
+    identities: dict[Path, tuple[str, int]] = {}
+
+    def protect(manifest: Any) -> None:
+        if not isinstance(manifest, dict):
+            raise ValueError("private manifest invalid")
+        relative, digest, size = (manifest.get(key) for key in ("path", "sha256", "bytes"))
+        if (not isinstance(relative, str) or "\\" in relative
+                or any(part in {"", ".", ".."} for part in relative.split("/"))
+                or not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest)
+                or type(size) is not int or size <= 0):
+            raise ValueError("private manifest identity invalid")
+        path = _inside(directory, relative)
+        if path is None:
+            raise ValueError("private path outside job")
+        current = directory
+        for part in Path(relative).parts:
+            current /= part
+            if current.is_symlink():
+                raise ValueError("private path alias")
+        try:
+            present = path.lstat()
+        except FileNotFoundError:
+            pass  # A matching public clip may already have been cleaned from R2 proof.
+        else:
+            if not stat.S_ISREG(present.st_mode) or present.st_size != size:
+                raise ValueError("private file identity conflict")
+        identity = (digest, size)
+        if path in identities and identities[path] != identity:
+            raise ValueError("conflicting private identity")
+        identities[path] = identity
+
+    try:
+        for clip in clips:
+            protect(clip)
+            if "thumbnail" in clip:
+                protect(clip["thumbnail"])
+        # A matching public manifest may still use the existing R2-confirmed
+        # cleanup path. Conflicting claims must never choose which asset wins.
+        public_clips = job.get("clips")
+        if not isinstance(public_clips, list):
+            raise ValueError("public checkpoint shape invalid")
+        for clip in public_clips:
+            if not isinstance(clip, dict):
+                raise ValueError("public checkpoint shape invalid")
+            for manifest in (clip, clip.get("thumbnail")):
+                if not isinstance(manifest, dict):
+                    continue
+                path = _inside(directory, manifest.get("path"))
+                if path in identities and (type(manifest.get("bytes")) is not int
+                        or identities[path] != (manifest.get("sha256"), manifest.get("bytes"))):
+                    raise ValueError("conflicting public/private identity")
+    except Exception:  # An unenumerable checkpoint must never enable deletion.
+        return None
+    return set(identities)
 
 
 def _holds_truck_pool(job: dict[str, Any]) -> bool:
@@ -167,27 +299,49 @@ class GeneratedMediaRetention:
             if not isinstance(job, dict) or job.get("status") not in TERMINAL_STATUSES:
                 continue
             finished = terminal_timestamp(job)
-            directory = _job_dir(root, job.get("artifactRoot"))
+            flat_import = False
+            if "sourceImportClaimVersion" in job or "sourceImportAttemptId" in job:
+                # New-layout metadata must prove the exact attempt path; a
+                # malformed marker cannot fall back to a broader job root.
+                attempt_dirs = _source_import_attempt_dirs(root, str(job_id), job)
+                directory, artifact_directory = attempt_dirs if attempt_dirs is not None else (None, None)
+                if attempt_dirs is None:
+                    directory = artifact_directory = _completed_flat_import_dir(root, str(job_id), job)
+                    flat_import = directory is not None
+                # A failed snapshot can be retried after it was read.  Never
+                # scan sibling attempts from that snapshot: a sibling may be
+                # the live retry, even if it appears while planning a sweep.
+                if (directory is not None and job.get("status") == "failed"
+                        and job.get("error") == "source_import_runtime_restarted"):
+                    directory = artifact_directory
+            else:
+                directory = _job_dir(root, job.get("artifactRoot"))
+                artifact_directory = directory
             if (finished is None or now - finished < CONFIRMED_SETTLE or directory is None
-                    or directory in protected or _holds_truck_pool(job) or not directory.is_dir()):
+                    or any(path == directory or directory in path.parents for path in protected)
+                    or _holds_truck_pool(job) or not directory.is_dir()):
                 continue
-            candidates.append((finished, str(job_id), directory, job))
+            candidates.append((finished, str(job_id), directory, artifact_directory, job, flat_import))
         candidates.sort(key=lambda item: (item[0], item[1]))
 
         plan = Plan()
         started = self.monotonic()
         stray_cutoff = now - STRAY_RETENTION[pressure]
-        for finished, _job_id, directory, job in candidates:
+        for finished, _job_id, directory, artifact_directory, job, flat_import in candidates:
             if plan.jobs >= job_limit or self.monotonic() - started > time_budget:
                 break
-            clip_paths: set[Path] = set()
+            private_paths = _private_scrambler_paths(root, artifact_directory, _job_id, job)
+            if private_paths is None:
+                continue
+            clip_paths: set[Path] = private_paths
+            inside = _flat_import_file if flat_import else _inside
             work = False
             for clip in job.get("clips", []) or []:
                 if not isinstance(clip, dict):
                     continue
                 files = [path for path in (
-                    _inside(directory, clip.get("path")),
-                    _inside(directory, (clip.get("thumbnail") or {}).get("path")
+                    inside(artifact_directory, clip.get("path")),
+                    inside(artifact_directory, (clip.get("thumbnail") or {}).get("path")
                             if isinstance(clip.get("thumbnail"), dict) else None),
                 ) if path is not None]
                 clip_paths.update(files)
@@ -208,12 +362,25 @@ class GeneratedMediaRetention:
                     plan.unconfirmed_bytes += sum(_size(path) for path in present)
                     self._recheck_after[sha] = self.monotonic() + UNCONFIRMED_RECHECK_SECONDS
             if finished <= stray_cutoff:
-                for current, _subdirs, names in os.walk(directory):
-                    for name in names:
-                        path = Path(current, name)
-                        if path.resolve() not in clip_paths:
-                            plan.stray_files.append(path)
-                            work = True
+                if flat_import:
+                    # A flat group can gain a private retry at any point. Never
+                    # walk that group (or recurse under its known media dirs).
+                    paths = []
+                    for namespace in ("source", "thumbnails"):
+                        media_dir = directory / namespace
+                        if media_dir.is_symlink() or not media_dir.is_dir():
+                            continue
+                        for child in media_dir.iterdir():
+                            path = _flat_import_file(directory, f"{namespace}/{child.name}")
+                            if path is not None and path.is_file():
+                                paths.append(path)
+                else:
+                    paths = (Path(current, name) for current, _subdirs, names in os.walk(directory)
+                             for name in names)
+                for path in paths:
+                    if path.resolve() not in clip_paths:
+                        plan.stray_files.append(path)
+                        work = True
             plan.jobs += work
         return plan
 

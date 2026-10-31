@@ -38,6 +38,7 @@ HEADERS = {
 
 @pytest.fixture
 def lab(monkeypatch, tmp_path):
+    monkeypatch.setattr(cp.source_import_layout, "PRIVATE_ATTEMPT_ROOTS", True)
     intent, revision = master_pages(
         PAGE_ID,
         handle="night.walks",
@@ -156,8 +157,11 @@ def test_runtime_restart_resurrects_only_the_exact_idempotent_source_import(lab)
     assert "error" not in recovered
     assert "completedAt" not in recovered
     assert recovered["token"] != old_token
-    assert root.is_dir()
-    assert not partial.exists()
+    new_root = Path(recovered["artifactRoot"])
+    assert new_root.parent == root.parent and new_root != root
+    assert new_root.is_dir()
+    assert partial.read_bytes() == b"partial", "the old attempt is never reused or deleted by retry"
+    assert not (new_root / "source" / "original.part").exists()
     assert started == [job_id, job_id]
 
     recovered.update({
@@ -226,7 +230,7 @@ def test_status_restarts_a_source_import_past_its_bounded_runtime(lab):
     assert "error" not in current.json()
 
 
-def test_expired_live_import_is_cancelled_and_joined_before_retry_reuses_root(
+def test_expired_live_import_is_cancelled_and_joined_before_retry_uses_new_root(
     lab, monkeypatch,
 ):
     client, intent, revision, _ = lab
@@ -294,8 +298,10 @@ def test_expired_live_import_is_cancelled_and_joined_before_retry_reuses_root(
         assert retry.status_code == 200
         assert retry.json()["status"] == "queued"
         assert restarted == [job_id]
-        assert root.is_dir()
-        assert not (root / "source" / "source.mp4").exists()
+        new_root = Path(cp._load_jobs()["jobs"][job_id]["artifactRoot"])
+        assert new_root.parent == root.parent and new_root != root
+        assert new_root.is_dir()
+        assert not (new_root / "source" / "source.mp4").exists()
 
     cp._source_import_tasks.clear()
 

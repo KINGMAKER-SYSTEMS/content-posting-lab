@@ -794,6 +794,12 @@ def test_off_enqueue_serialization_matches_base_golden(lab, tmp_path, monkeypatc
         "tests/golden/scrambler/off-enqueue-base.json is missing: capture it "
         "from the base commit with generate_base_golden.py")
     golden = json.loads(OFF_GOLDEN.read_text())
+    # Runtime ownership adds one private coordination marker to stored jobs.
+    # Pin its exact value, then retain the BASE comparison for every original
+    # stored field and every public enqueue/status/capability/artifact byte.
+    for phase in ("job", "completedJob"):
+        assert type(captured[phase]["sourceClaimVersion"]) is int
+        assert captured[phase].pop("sourceClaimVersion") == 1
     assert captured == golden
 
 

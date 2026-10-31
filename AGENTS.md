@@ -205,6 +205,15 @@
   page-scoped source-link intake.
 - `services/job_token_rotation.py` and `scripts/rotate_job_download_token.py`
   own operator-only rotation of one job's signed download credential.
+- `services/source_runtime_reconciliation.py` owns explicit reconciliation of one
+  legacy source job after an operator verifies its runtime stopped. Dry-run is
+  read-only; apply requires the reviewed job revision and retirement confirmation,
+  preserves old media and completed history, and never infers runtime liveness
+  from an unlocked legacy job. The app lifespan may settle bounded foreign legacy
+  owners only after verifying its Railway volume identity, actual block mount and
+  data devices, and the single-process `main.py` entrypoint. Unverified, nested
+  foreign-filesystem and alternate-worker deployments perform no automatic repair;
+  startup still proceeds and the explicit CLI remains available.
 - `routers/burn.py` exposes caption rendering and final video compositing.
 - `services/roster_public.py` owns what `/api/roster`, `/api/pipeline` and
   `/api/email` may serialise: an allowlist of roster row fields plus a
@@ -744,6 +753,12 @@
   job-scoped compare-and-set, cross-thread store-lock serialization, archived
   no-op, malformed metadata/audit refusal, private-directory and temporary-file
   guards, and old/new download and thumbnail credentials on synthetic artifacts.
+- Run `pytest -q tests/test_source_runtime_reconciliation.py` for read-only plans,
+  retired-runtime/revision/claim checks, completed and delivered-history preservation,
+  failed-write cleanup, and real same-key import retry after legacy adoption.
+- Run `pytest -q tests/test_source_runtime_startup.py` for mount/device and runtime
+  identity proof, live/current/unknown owner preservation, alternate worker layouts,
+  the actual entrypoint's single-worker setting, and real app lifespan ordering.
 
 - Run `pytest -q tests/test_font_static_headers.py tests/test_static_path_confinement.py`
   for font MIME/cache headers, changed-byte validators and static path containment.
@@ -798,3 +813,11 @@
   rules.
 
 ## Child devlog Index
+
+Source-import rollout compatibility: `services/source_import_layout.py` defines
+an internal two-phase producer switch. Keep phase A's default flat producer until
+its deployment is qualified; both stored layouts remain readable/retryable.
+Retries of existing private attempts must stay private regardless of the switch.
+Never restore asyncio child-watcher ownership for these process groups: retain
+the owned supervisor until bounded group cleanup and final reap. Run layout,
+owned-process, subprocess-cancel and source-import retry regressions for changes.

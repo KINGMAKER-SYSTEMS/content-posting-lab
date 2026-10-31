@@ -8,6 +8,8 @@ then probe and hash the exact bytes that the artifact endpoint will serve.
 
 from __future__ import annotations
 
+from services.owned_import_process import create_import_subprocess
+
 import asyncio
 from dataclasses import dataclass
 import hashlib
@@ -21,7 +23,7 @@ import socket
 from typing import Any, Callable
 from urllib.parse import unquote_plus, urlparse, urlunparse
 
-from scraper.frame_extractor import download_video
+from scraper.frame_extractor import download_video, terminate_import_process_group
 from services.ffmpeg import delivery_encode_args
 
 
@@ -295,6 +297,7 @@ async def _download_with_workspace_limit(source_url: str, target: Path) -> Path:
     ))
     loop = asyncio.get_running_loop()
     deadline = loop.time() + MAX_SOURCE_IMPORT_SECONDS
+    cancellation = None
     try:
         while True:
             remaining = deadline - loop.time()
@@ -307,13 +310,30 @@ async def _download_with_workspace_limit(source_url: str, target: Path) -> Path:
                 return task.result()
             if _tree_bytes(target.parent) > MAX_SOURCE_IMPORT_WORKSPACE_BYTES:
                 raise SourceImportError("source video exceeds the import workspace limit")
+    except asyncio.CancelledError as error:
+        cancellation = error
+        raise
     finally:
         if not task.done():
             task.cancel()
+            cancelled_during_join = False
+            while not task.done():
+                try:
+                    await asyncio.shield(task)
+                except asyncio.CancelledError:
+                    if not task.done():
+                        cancelled_during_join = True
             try:
-                await task
+                task.result()
             except asyncio.CancelledError:
                 pass
+            if cancelled_during_join:
+                # Preserve an expiry cancellation received before cleanup.
+                # A later cancellation must not make an earlier download
+                # failure retryable.
+                if cancellation is not None:
+                    raise cancellation
+                raise asyncio.CancelledError
 
 
 def _sha256_file(path: Path) -> str:
@@ -325,18 +345,21 @@ def _sha256_file(path: Path) -> str:
 
 
 async def _probe_video(path: Path) -> SourceImportMedia:
-    process = await asyncio.create_subprocess_exec(
+    deadline = asyncio.get_running_loop().time() + 30
+    process = await create_import_subprocess(
         "ffprobe", "-v", "error", "-show_streams", "-show_format",
         "-of", "json", str(path),
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        start_new_session=True,
     )
     try:
-        stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=30)
+        stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=max(0, deadline - asyncio.get_running_loop().time()))
+    except asyncio.CancelledError:
+        await terminate_import_process_group(process)
+        raise
     except TimeoutError as error:
-        if process.returncode is None:
-            process.kill()
-            await process.communicate()
+        await terminate_import_process_group(process)
         raise SourceImportError("source video probe timed out") from error
     if process.returncode != 0:
         detail = stderr.decode(errors="replace")[-160:].strip()
@@ -396,7 +419,8 @@ async def _probe_video(path: Path) -> SourceImportMedia:
 
 
 async def _normalize_video(source: Path, destination: Path) -> None:
-    process = await asyncio.create_subprocess_exec(
+    deadline = asyncio.get_running_loop().time() + MAX_SOURCE_NORMALIZE_SECONDS
+    process = await create_import_subprocess(
         "ffmpeg", "-y", "-loglevel", "error", "-i", str(source),
         "-map", "0:v:0", "-an", "-vf",
         (
@@ -408,15 +432,17 @@ async def _normalize_video(source: Path, destination: Path) -> None:
         str(destination),
         stdout=asyncio.subprocess.DEVNULL,
         stderr=asyncio.subprocess.PIPE,
+        start_new_session=True,
     )
     try:
         _, stderr = await asyncio.wait_for(
-            process.communicate(), timeout=MAX_SOURCE_NORMALIZE_SECONDS,
+            process.communicate(), timeout=max(0, deadline - asyncio.get_running_loop().time()),
         )
+    except asyncio.CancelledError:
+        await terminate_import_process_group(process)
+        raise
     except TimeoutError as error:
-        if process.returncode is None:
-            process.kill()
-            await process.communicate()
+        await terminate_import_process_group(process)
         raise SourceImportError("source video normalization timed out") from error
     if (
         process.returncode != 0

@@ -602,7 +602,11 @@ def test_bed_ducking_envelope_passes_through_both_backends_identically(tmp_path)
     # ffmpeg fallback: the absolute (t, gain) the volume expression is built from
     # (points carry a trailing interp element we drop here).
     render_gains = [(p[0], p[1]) for p in editor_render._volume_keyframe_points(bed)]
-    assert render_gains == pytest.approx([(0.0, 0.6), (0.5, 0.22), (3.5, 0.6)])
+    expected_gains = [(0.0, 0.6), (0.5, 0.22), (3.5, 0.6)]
+    assert len(render_gains) == 3
+    for index, expected in enumerate(expected_gains):
+        assert len(render_gains[index]) == 2
+        assert render_gains[index] == pytest.approx(expected)
 
     # OpenShot: same gains, scaled 0..1 -> 0..100, keyed at frame t*fps + 1.
     exported = openshot_bridge.timeline_json(project, asset_root=tmp_path)
