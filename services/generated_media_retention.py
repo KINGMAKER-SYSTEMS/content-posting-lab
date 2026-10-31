@@ -345,6 +345,20 @@ class GeneratedMediaRetention:
                 artifact_directory = directory
             if finished is None or now - finished < CONFIRMED_SETTLE or directory is None:
                 continue
+            # A malformed public manifest cannot safely identify protected files.
+            # Hold this job without blocking unrelated terminal jobs.
+            public_clips = job.get("clips", [])
+            if not isinstance(public_clips, list):
+                continue
+            malformed = False
+            for clip in public_clips:
+                if expired():
+                    return
+                if not isinstance(clip, dict):
+                    malformed = True
+                    break
+            if malformed:
+                continue
             covered = False
             for path in protected:
                 if expired():
@@ -369,11 +383,13 @@ class GeneratedMediaRetention:
             descriptors = []
             inside = _flat_import_file if flat_import else _inside
             # Enumerate every in-job public path before *any* deletion.
-            for clip in job.get("clips", []) or []:
+            malformed = False
+            for clip in job.get("clips", []):
                 if expired():
                     return
                 if not isinstance(clip, dict):
-                    continue
+                    malformed = True
+                    break
                 files = []
                 for relative in (clip.get("path"),
                                  (clip.get("thumbnail") or {}).get("path")
@@ -385,6 +401,8 @@ class GeneratedMediaRetention:
                         files.append(path)
                 clip_paths.update(files)
                 descriptors.append((clip, files))
+            if malformed:
+                continue
             worked = False
             for clip, files in descriptors:
                 if expired():
