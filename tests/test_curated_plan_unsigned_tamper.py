@@ -157,7 +157,7 @@ def _prepare_runner(monkeypatch, tmp_path, page, *, tamper_focal=False):
             for key in keys
         ]
 
-    async def fake_submit(plan, *, page_id, recipe_version, format_slug=None):
+    async def fake_submit(plan, *, page_id, recipe_version, format_slug=None, lab_job_id=None):
         boundary["submit"].append(plan)
         return "render-job-test", "draft"
 
