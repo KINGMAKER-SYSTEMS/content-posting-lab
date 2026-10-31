@@ -2102,10 +2102,9 @@ def _slideshow_unavailable_signatures(
             or job.get("sourceKind") != "syzygy_slideshow"
             or job.get("pageId") != page_id
             or job.get("sourceLibraryId") != recipe.library_id
-            or job.get("status") not in SOURCE_DNA_UNAVAILABLE_STATUSES
         ):
             continue
-        for plan in job.get("slideshowPlan", []):
+        for plan in compaction.slideshow_reserved_plans(job):
             signature = plan.get("signature") if isinstance(plan, dict) else None
             if isinstance(signature, str) and re.fullmatch(r"[0-9a-f]{64}", signature):
                 signatures.add(signature)
@@ -2153,9 +2152,8 @@ def _generic_clean_video_reserved_media(
             and job.get("sourceKind") == "syzygy_slideshow"
             and job.get("pageId") == page_id
             and job.get("sourceLibraryId") == recipe.library_id
-            and job.get("status") in SOURCE_DNA_UNAVAILABLE_STATUSES
         ):
-            for plan in job.get("slideshowPlan", []):
+            for plan in compaction.slideshow_reserved_plans(job):
                 if isinstance(plan, dict):
                     remember(plan)
     for entry in (store.get(compaction.ARCHIVE_INDEX_KEY, {}) or {}).get("slideshow", []):
@@ -2551,6 +2549,30 @@ def _update_source_job(job_id: str, **fields: Any) -> dict[str, Any] | None:
         return dict(job)
 
 
+def _has_slideshow_runner_claim(job: dict[str, Any]) -> bool:
+    return (type(job.get("slideshowClaimVersion")) is int
+            and job["slideshowClaimVersion"] == 1
+            and isinstance(job.get("slideshowAttemptId"), str)
+            and bool(job["slideshowAttemptId"]))
+
+
+def _update_slideshow_job(job_id: str, attempt_id: str, runtime_id: str, **fields: Any) -> dict[str, Any] | None:
+    if fields.get("status") in _FAILURE_TERMINAL_STATUSES:
+        fields["error"] = _terminal_failure_reason(fields.get("error"), fallback=_WRITER_FAILURE_REASON)
+    with lock_for(_jobs_path()):
+        store = _load_jobs()
+        job = store.get("jobs", {}).get(job_id)
+        if (not isinstance(job, dict) or job.get("sourceKind") != "syzygy_slideshow"
+                or not _has_slideshow_runner_claim(job)
+                or job.get("slideshowAttemptId") != attempt_id
+                or job.get("runtimeId") != runtime_id
+                or job.get("status") not in GENERATION_ACTIVE_STATUSES):
+            return None
+        job.update(fields)
+        _save_jobs(store)
+        return dict(job)
+
+
 def _has_source_runner_claim(job: dict[str, Any]) -> bool:
     version = job.get("sourceClaimVersion")
     return type(version) is int and version == 1
@@ -2723,6 +2745,7 @@ def _claim_unique_generated_clip(
 
 def _claim_unique_slideshow_clip(
     job_id: str, manifest: dict[str, Any], plan_signature: str,
+    expected_attempt: str | None = None, expected_runtime: str | None = None,
 ) -> None:
     """Atomically admit one fresh render for one reserved slideshow plan."""
     digest = manifest.get("sha256")
@@ -2736,7 +2759,10 @@ def _claim_unique_slideshow_clip(
     with lock_for(_jobs_path()):
         store = _load_jobs()
         job = store.get("jobs", {}).get(job_id)
-        if not isinstance(job, dict) or job.get("status") not in GENERATION_ACTIVE_STATUSES:
+        if (not isinstance(job, dict) or job.get("status") not in GENERATION_ACTIVE_STATUSES
+                or (expected_attempt is not None and
+                    (job.get("sourceKind") != "syzygy_slideshow" or not _has_slideshow_runner_claim(job)
+                     or job.get("slideshowAttemptId") != expected_attempt or job.get("runtimeId") != expected_runtime))):
             raise RuntimeError("slideshow_job_not_active")
         page_id = job.get("pageId")
         archive_index = store.get(compaction.ARCHIVE_INDEX_KEY, {}) or {}
@@ -2753,7 +2779,8 @@ def _claim_unique_slideshow_clip(
             if (
                 not isinstance(other, dict)
                 or other.get("pageId") != page_id
-                or other.get("status") not in SOURCE_DNA_UNAVAILABLE_STATUSES
+                or (other.get("status") not in SOURCE_DNA_UNAVAILABLE_STATUSES
+                    and not (other.get("sourceKind") == "syzygy_slideshow" and other.get("clips")))
             ):
                 continue
             for clip in other.get("clips", []):
@@ -4608,12 +4635,38 @@ async def _run_dossier_source_inner(job_id: str) -> None:
     )
 
 
-async def _run_syzygy_slideshow(job_id: str) -> None:
+_SLIDESHOW_ATTEMPT_UNSET = object()
+
+
+async def _run_syzygy_slideshow(job_id: str, expected_attempt: Any = _SLIDESHOW_ATTEMPT_UNSET,
+                                  expected_runtime: Any = _SLIDESHOW_ATTEMPT_UNSET) -> None:
+    initial = _get_job_or_404(job_id)
+    attempt = initial.get("slideshowAttemptId") if expected_attempt is _SLIDESHOW_ATTEMPT_UNSET else expected_attempt
+    runtime = _GENERATION_RUNTIME_ID if expected_runtime is _SLIDESHOW_ATTEMPT_UNSET else expected_runtime
+    with runner_lock(_jobs_path(), job_id) as acquired:
+        if not acquired:
+            return
+        current = _get_job_or_404(job_id)
+        if (not _has_slideshow_runner_claim(current) or current.get("sourceKind") != "syzygy_slideshow"
+                or current.get("slideshowAttemptId") != attempt or current.get("runtimeId") != runtime
+                or current.get("status") not in GENERATION_ACTIVE_STATUSES):
+            return
+        try:
+            await _run_owned_syzygy_slideshow(job_id, attempt, runtime)
+        except BaseException as error:
+            await _settle_source_call(_update_slideshow_job, job_id, attempt, runtime,
+                                      status="failed", error=("slideshow_render_cancelled"
+                                      if isinstance(error, asyncio.CancelledError) else _exception_failure_reason(error)),
+                                      completedAt=datetime.now(timezone.utc).isoformat())
+            if not isinstance(error, Exception):
+                raise
+
+
+async def _run_owned_syzygy_slideshow(job_id: str, attempt: str, runtime: str) -> None:
     """Render reserved Syzygy plans under one page's locked recipe."""
     job = _get_job_or_404(job_id)
     if not _job_matches_current_master_pages(job):
-        await asyncio.to_thread(_update_job,
-            job_id,
+        await _settle_source_call(_update_slideshow_job, job_id, attempt, runtime,
             status="failed",
             error="master_pages_strategy_changed",
             completedAt=datetime.now(timezone.utc).isoformat(),
@@ -4645,8 +4698,7 @@ async def _run_syzygy_slideshow(job_id: str) -> None:
         or job.get("materialSource") != recipe.material_source
         or job.get("assetType") != recipe.asset_type
     ):
-        await asyncio.to_thread(_update_job,
-            job_id,
+        await _settle_source_call(_update_slideshow_job, job_id, attempt, runtime,
             status="failed",
             error="slideshow_recipe_executor_unavailable",
             completedAt=datetime.now(timezone.utc).isoformat(),
@@ -4658,7 +4710,7 @@ async def _run_syzygy_slideshow(job_id: str) -> None:
         try:
             validate_managed_lyric_job(job, publication, recipe.recipe_spec)
         except (KeyError, TypeError, ValueError):
-            await asyncio.to_thread(_update_job, job_id, status="failed",
+            await _settle_source_call(_update_slideshow_job, job_id, attempt, runtime, status="failed",
                 error="lyric_recipe_authority_mismatch", completedAt=datetime.now(timezone.utc).isoformat())
             return
 
@@ -4676,8 +4728,7 @@ async def _run_syzygy_slideshow(job_id: str) -> None:
     }
     plans = job.get("slideshowPlan")
     if not isinstance(plans, list) or not plans:
-        await asyncio.to_thread(_update_job,
-            job_id,
+        await _settle_source_call(_update_slideshow_job, job_id, attempt, runtime,
             status="failed",
             error="slideshow_recipe_selection_missing",
             completedAt=datetime.now(timezone.utc).isoformat(),
@@ -4685,7 +4736,8 @@ async def _run_syzygy_slideshow(job_id: str) -> None:
         return
     templates = {template.slug: template for template in recipe.templates}
     manifests: list[dict[str, Any]] = []
-    await asyncio.to_thread(_update_job,job_id, status="running", progress=0)
+    if await _settle_source_call(_update_slideshow_job, job_id, attempt, runtime, status="running", progress=0) is None:
+        return
     try:
         library = await asyncio.to_thread(load_recipe_library, recipe)
         if library.library_id != recipe.library_id:
@@ -4891,40 +4943,35 @@ async def _run_syzygy_slideshow(job_id: str) -> None:
             manifest["thumbnail"] = await _thumbnail_manifest(
                 job_root, destination, len(manifests),
             )
-            _claim_unique_slideshow_clip(job_id, manifest, signature)
+            _claim_unique_slideshow_clip(job_id, manifest, signature, attempt, runtime)
             manifests.append(manifest)
-            await asyncio.to_thread(_update_job,
-                job_id,
-                progress=int(((index + 1) / len(plans)) * 100),
-            )
+            if await _settle_source_call(_update_slideshow_job, job_id, attempt, runtime,
+                    progress=int(((index + 1) / len(plans)) * 100)) is None:
+                return
     except asyncio.CancelledError:
-        # A cancelled runner must never leave the job stuck in "running"
-        # with partial renders; the reservation releases with the failure.
-        await asyncio.to_thread(_update_job,
-            job_id,
+        # A cancelled runner becomes terminal; already exposed partial clips
+        # retain their plan and digest reservations.
+        await _settle_source_call(_update_slideshow_job, job_id, attempt, runtime,
             status="failed",
             error="slideshow_render_cancelled",
             completedAt=datetime.now(timezone.utc).isoformat(),
         )
         raise
     except Exception as error:
-        await asyncio.to_thread(_update_job,
-            job_id,
+        await _settle_source_call(_update_slideshow_job, job_id, attempt, runtime,
             status="failed",
             error=_exception_failure_reason(error),
             completedAt=datetime.now(timezone.utc).isoformat(),
         )
         return
     if not _job_matches_current_master_pages(job):
-        await asyncio.to_thread(_update_job,
-            job_id,
+        await _settle_source_call(_update_slideshow_job, job_id, attempt, runtime,
             status="failed",
             error="master_pages_strategy_changed",
             completedAt=datetime.now(timezone.utc).isoformat(),
         )
         return
-    await asyncio.to_thread(_update_job,
-        job_id,
+    await _settle_source_call(_update_slideshow_job, job_id, attempt, runtime,
         status="completed",
         progress=100,
         clips=manifests,
@@ -5184,10 +5231,16 @@ async def _cancel_page_source_import(job_id: str, expected_attempt: str | None =
 
 
 def _start_syzygy_slideshow(job_id: str) -> None:
-    task = asyncio.create_task(_run_syzygy_slideshow(job_id))
+    current = _syzygy_slideshow_tasks.get(job_id)
+    if current is not None and not current.done():
+        return
+    job = _get_job_or_404(job_id)
+    attempt, runtime = job.get("slideshowAttemptId"), _GENERATION_RUNTIME_ID
+    task = asyncio.create_task(_run_syzygy_slideshow(job_id, attempt, runtime))
     _syzygy_slideshow_tasks[job_id] = task
     task.add_done_callback(
-        lambda _: _syzygy_slideshow_tasks.pop(job_id, None),
+        lambda completed: _syzygy_slideshow_tasks.pop(job_id, None)
+        if _syzygy_slideshow_tasks.get(job_id) is completed else None,
     )
 
 
@@ -5570,7 +5623,14 @@ async def create_job(
                 and existing.get("status") in GENERATION_ACTIVE_STATUSES
                 and existing.get("runtimeId") != _GENERATION_RUNTIME_ID
             ):
-                if existing.get("sourceKind") == "dossier_source_dna" and not _has_source_runner_claim(existing):
+                if existing.get("sourceKind") == "syzygy_slideshow":
+                    if _has_slideshow_runner_claim(existing):
+                        with runner_lock(_jobs_path(), existing["jobId"]) as acquired:
+                            if acquired:
+                                existing.update({"status": "failed", "error": "generation_runtime_restarted",
+                                                 "completedAt": datetime.now(timezone.utc).isoformat()})
+                                _save_jobs(store)
+                elif existing.get("sourceKind") == "dossier_source_dna" and not _has_source_runner_claim(existing):
                     # A legacy runner never took the claim; its liveness is
                     # unknown, so its windows must remain reserved.
                     pass
@@ -6081,6 +6141,8 @@ async def create_job(
                 "clips": [],
                 "artifactRoot": str(job_root),
                 "slideshowPlan": plans,
+                "slideshowClaimVersion": 1,
+                "slideshowAttemptId": _secrets.token_hex(16),
                 "sourceLibraryId": slideshow_recipe.library_id,
                 "librarySnapshotHash": slideshow_library.snapshot_hash,
                 "engineRegistryHash": slideshow_recipe.engine_registry_hash,
@@ -6295,6 +6357,13 @@ async def job_status(
                             error="source_import_runtime_restarted",
                             completedAt=datetime.now(timezone.utc).isoformat(),
                         )
+        elif job.get("sourceKind") == "syzygy_slideshow":
+            if _has_slideshow_runner_claim(job):
+                with runner_lock(_jobs_path(), job_id) as acquired:
+                    if acquired:
+                        _update_slideshow_job(job_id, job["slideshowAttemptId"], job["runtimeId"],
+                                              status="failed", error="generation_runtime_restarted",
+                                              completedAt=datetime.now(timezone.utc).isoformat())
         elif job.get("sourceKind") == "dossier_source_dna":
             # Pre-claim owners stay reserved until explicitly reconciled.
             if _has_source_runner_claim(job):
