@@ -283,339 +283,723 @@
         "cropMode": "cover",
         "sources": [
           {
-            "file": "tk-v-0005.mp4",
-            "sha256": "b0db2446862b4e0f789688a9500304bdbb83e558fe8ccdebcd96568923c99d5e",
-            "bytes": 5237433,
-            "duration": 12.0
-          },
-          {
-            "file": "ytal-v-0012.mp4",
-            "sha256": "28b721c76288b5ecd6f78437d59c89162bf25e92aaac1934d14bff28c3e96975",
-            "bytes": 4125502,
-            "duration": 8.5085
-          },
-          {
-            "file": "ytal-v-0014.mp4",
-            "sha256": "2ba7832152cd68451ca8fcc9122bea60bf1066001bb304eeb36bb96bcad4ce07",
-            "bytes": 4387384,
-            "duration": 6.006
-          },
-          {
-            "file": "ytal-v-0003.mp4",
-            "sha256": "1e4b177b4635404ce09d8ce26615376784f7862b0d01bf70d191093c05655e47",
-            "bytes": 5126638,
-            "duration": 7.0
-          },
-          {
-            "file": "ytal-v-0017.mp4",
-            "sha256": "60e0f3f8b55538a5b05afbceaa2dc774a8b3999def2f7fe22208f99655a27c35",
-            "bytes": 3126853,
-            "duration": 6.006
-          },
-          {
-            "file": "ytal-v-0006.mp4",
-            "sha256": "1a5d5e2e6bd94abdceac972dfdb20300910097356801451be7d7dd331b1fb0bb",
-            "bytes": 2741037,
-            "duration": 4.5
-          },
-          {
-            "file": "tk-v-0004.mp4",
-            "sha256": "77581f9d8ca2dbed874caaead476a8f496c1af690d173c09ffc42a95f3e973c5",
-            "bytes": 4388892,
-            "duration": 7.92
-          },
-          {
-            "file": "ytal-v-0008.mp4",
-            "sha256": "1d13175d1a395af05d4872060be2780d60b0000de2f900de1f55a7165fca2990",
-            "bytes": 4233299,
-            "duration": 6.5
-          },
-          {
-            "file": "ytal-v-0007.mp4",
-            "sha256": "4befac6bc711b7333a287e9e2bf44ca463cc225cca0a2ce341200c0a67f501e7",
-            "bytes": 3581347,
-            "duration": 6.0
-          },
-          {
-            "file": "ytal-v-0002.mp4",
-            "sha256": "d425ebd704c00e458efcbae3fed83748c7aec0751578c192fc4d23cbf65a23e7",
-            "bytes": 7791757,
+            "file": "bmr-v-0001.mp4",
+            "sha256": "277d1db3c9bfa96cad426f99209c89dcdb25ebedf8bba9cd0ad6b9fb200d56c1",
+            "bytes": 4529507,
             "duration": 8.0
           },
           {
-            "file": "ytal-v-0001.mp4",
-            "sha256": "87112f63ca91eac20e0aefaabc8697ebccc89e56e932222f063757ccf07ec8db",
-            "bytes": 4979012,
+            "file": "bmr-v-0002.mp4",
+            "sha256": "6ff16267dcb5f08cc675eaff255a86b27131246e3f7212d9079c8cd820fab187",
+            "bytes": 5204061,
             "duration": 8.0
           },
           {
-            "file": "ytal-v-0009.mp4",
-            "sha256": "8c970d9fc11292af471ea33ae45c9938b74092813cf090ba49d0978e4946c8e2",
-            "bytes": 3160623,
-            "duration": 5.5
-          },
-          {
-            "file": "ytal-v-0013.mp4",
-            "sha256": "2e1e4e6209a72ea91ceb41b8430857d9a4665399671e2de1afbbc22519d88970",
-            "bytes": 2661762,
-            "duration": 5.5055
-          },
-          {
-            "file": "tk-v-0006.mp4",
-            "sha256": "5935ebc300f5992f25748a0ffdd28d8383ec6b432c1803ee6e5b38cc90c4dd1d",
-            "bytes": 2523086,
+            "file": "bmr-v-0003.mp4",
+            "sha256": "c1a667aef59b0b1c0ac0f7a2e7bcb34f62428c1dbfa7f65de97fbdc7646c9701",
+            "bytes": 4035186,
             "duration": 8.0
           },
           {
-            "file": "ytal-v-0015.mp4",
-            "sha256": "fcb9a4b88e877b1e9ae10b4697062d44696d1fd36e5161766cba13103b06e99b",
-            "bytes": 1393000,
-            "duration": 4.5045
-          },
-          {
-            "file": "ytal-v-0010.mp4",
-            "sha256": "1261c27e2c9557870b92f6833330a7a2578b108b1d25dce50109e721bac21e69",
-            "bytes": 3646140,
+            "file": "bmr-v-0004.mp4",
+            "sha256": "5609063d887c26edc6f80c3b63b9c20f4e28cc49c54528f531d391549b853688",
+            "bytes": 5312884,
             "duration": 8.0
           },
           {
-            "file": "ytal-v-0011.mp4",
-            "sha256": "bbbca2581c344bd6cb31add5d7c9dc8e856842c8fe1754d7f60aa5ebc1372765",
-            "bytes": 2243910,
-            "duration": 5.0
+            "file": "bmr-v-0005.mp4",
+            "sha256": "5b423f2a83d264c7ccfb83ca5654d782ef9a7c509840fa5228c77a4d31b4c203",
+            "bytes": 3760944,
+            "duration": 8.0
           },
           {
-            "file": "ytal-v-0016.mp4",
-            "sha256": "a1c892e31837d2419ac790a6eb050d2e170158285d3fd2de3a2d40fe0695abe4",
-            "bytes": 2761512,
-            "duration": 4.5045
+            "file": "bmr-v-0006.mp4",
+            "sha256": "dca3ac43709eaa291f6c24bc3622ea6b388eae837526b527f5bade9f3e3118d0",
+            "bytes": 4294181,
+            "duration": 8.0
           },
           {
-            "file": "ytal-v-0005.mp4",
-            "sha256": "ecfab38836938a0331447e5bf8905ece3176097b9a7666e14e43922f85bc77c3",
-            "bytes": 3994986,
-            "duration": 6.5
+            "file": "bmr-v-0007.mp4",
+            "sha256": "eb9a494d5318f51db1b3fd94ad5ae30de3c54fe9bd4ec280d32c9291161fe0f2",
+            "bytes": 3950953,
+            "duration": 8.0
           },
           {
-            "file": "ytal-v-0004.mp4",
-            "sha256": "9b0e14b9935aa5e5709cd88bbf654d37b2dfbb41bc9ebe647b5de0316cd9d965",
-            "bytes": 5402539,
+            "file": "bmr-v-0008.mp4",
+            "sha256": "ec46d3ecc6d6f0d93bf49932df2d880e6c39c9cf585a6b2055e34d48e2d38db0",
+            "bytes": 4073631,
+            "duration": 8.0
+          },
+          {
+            "file": "bmr-v-0009.mp4",
+            "sha256": "cabb9cb2bec7e643d73e8b5a87dbf09500df30867c7d04a9e7d35566a19c297e",
+            "bytes": 4254397,
+            "duration": 8.0
+          },
+          {
+            "file": "bmr-v-0010.mp4",
+            "sha256": "df368cb7deec0a057c84eeb94f94444a28a7db291c949bda775d4f7023f41d4f",
+            "bytes": 4904423,
+            "duration": 8.0
+          },
+          {
+            "file": "bmr-v-0011.mp4",
+            "sha256": "81fd966c9d9b4fb9dc3080b2d1de9c7b53e17b156a716d8fd14b6c91c0b03f9a",
+            "bytes": 3272969,
+            "duration": 8.0
+          },
+          {
+            "file": "bmr-v-0012.mp4",
+            "sha256": "2076e44a4c346e01fe139919798414676494c44ff15148a21272e5b0e3c3cccd",
+            "bytes": 5429464,
+            "duration": 8.0
+          },
+          {
+            "file": "bmr-v-0013.mp4",
+            "sha256": "b5b5974fabbf5fdf2317a74a23f6a95d0a9ff463888afb079448110734196203",
+            "bytes": 3719115,
+            "duration": 8.0
+          },
+          {
+            "file": "bmr-v-0014.mp4",
+            "sha256": "b0f0850efdc9dfefdeecc926d376d90842a741e78c3a994ee81c24757436bcf9",
+            "bytes": 4570674,
+            "duration": 8.0
+          },
+          {
+            "file": "bmr-v-0015.mp4",
+            "sha256": "14d5ea56ae63f59c9916579fa103f5c8cc97cd4697c861a341f4799f77c9ff25",
+            "bytes": 4253117,
+            "duration": 8.0
+          },
+          {
+            "file": "bmr-v-0016.mp4",
+            "sha256": "0eb7026c6c61dfd9d9fb7e921d09032f894157c53b27c1566a4e2ef0ea5c4513",
+            "bytes": 5836580,
+            "duration": 8.0
+          },
+          {
+            "file": "bmr-v-0017.mp4",
+            "sha256": "3ccbd7757e123554a64bf575ae0afead6e67ddc059c97c9184e96ae5a1906a0c",
+            "bytes": 5429309,
+            "duration": 8.0
+          },
+          {
+            "file": "bmr-v-0018.mp4",
+            "sha256": "9451fbb25f236bacae351e24dc90898f206364ab35360482715461650e2e1e58",
+            "bytes": 4687471,
+            "duration": 8.0
+          },
+          {
+            "file": "bmr-v-0019.mp4",
+            "sha256": "c6becef6e6d072cdea62de53f1824e7378c485269c227c04ee9e7283ffc8b201",
+            "bytes": 6353474,
+            "duration": 8.0
+          },
+          {
+            "file": "bmr-v-0020.mp4",
+            "sha256": "327166c4e77669ee0e1b78084ff9ffe175cd52784f8da39f01daac8eaa274743",
+            "bytes": 5287301,
+            "duration": 8.0
+          },
+          {
+            "file": "bmr-v-0021.mp4",
+            "sha256": "e45097f972f1e8b539c6bcb38a82a3260969cba407ee09b03649fe9a17e23e23",
+            "bytes": 4492496,
+            "duration": 8.0
+          },
+          {
+            "file": "bmr-v-0022.mp4",
+            "sha256": "9e32aee57f5eeaa41e7b20f7d61f5d6f1da84bbd01bb7f2e05cbc48041c0c1cf",
+            "bytes": 6622307,
+            "duration": 8.0
+          },
+          {
+            "file": "bmr-v-0023.mp4",
+            "sha256": "95749e856e578bde92ef8e54160bd1abcb12012b4059519eabbb38828e9796d8",
+            "bytes": 4724936,
+            "duration": 8.0
+          },
+          {
+            "file": "bmr-v-0024.mp4",
+            "sha256": "7abb928163d971a966fdd2d09a8ef8839c6b4d1b8f897ec02e3520adb3a4ae30",
+            "bytes": 7260294,
+            "duration": 8.0
+          },
+          {
+            "file": "bmr-v-0025.mp4",
+            "sha256": "62f30c3485e702d5e099f67e90476c07128c3c17347b54ec4b4fbfa518b31d6c",
+            "bytes": 7251134,
+            "duration": 8.0
+          },
+          {
+            "file": "bmr-v-0026.mp4",
+            "sha256": "961914c8e4869d51afc3552330416cd1d3765fa4f5e7d4a5cbcc3e760294c225",
+            "bytes": 5632493,
+            "duration": 8.0
+          },
+          {
+            "file": "bmr-v-0027.mp4",
+            "sha256": "312daae2778c0df2188b44c71fe5187a24b4b1412d1c61f671691e73ac4f5d29",
+            "bytes": 5875980,
+            "duration": 8.0
+          },
+          {
+            "file": "bmr-v-0028.mp4",
+            "sha256": "3e66550ac65b0f6b30beb1b8050e729320ac9c112d74425b556cee2983d0c08b",
+            "bytes": 9712137,
+            "duration": 8.0
+          },
+          {
+            "file": "bmr-v-0029.mp4",
+            "sha256": "764a10c2f3ed4e5eafcb5784b0051abe3daaa9a0f42c3a8c5f01f13cc7700789",
+            "bytes": 10786014,
+            "duration": 8.0
+          },
+          {
+            "file": "bmr-v-0030.mp4",
+            "sha256": "ca286691f60155386c8270edd2b895f768306d33dc4cc6ea7e9623f70198b37d",
+            "bytes": 11681849,
+            "duration": 8.0
+          },
+          {
+            "file": "bmr-v-0031.mp4",
+            "sha256": "46d8fea488c5e115e51838a116d18f08bfadea6765d9505fbc9e6da24e21ce12",
+            "bytes": 10439990,
+            "duration": 8.0
+          },
+          {
+            "file": "bmr-v-0032.mp4",
+            "sha256": "e09b5d461a1c41935317bfb6aebb1a96875ea8e0fc0556496ab6dec7322fd090",
+            "bytes": 11253550,
+            "duration": 8.0
+          },
+          {
+            "file": "bmr-v-0033.mp4",
+            "sha256": "6d0f020f8365545130c9fef961bdabe402fd66616cff5f1263a552a436e8d280",
+            "bytes": 13662384,
+            "duration": 8.0
+          },
+          {
+            "file": "bmr-v-0034.mp4",
+            "sha256": "8b1001734342fcf99df1c4c163d0bbbc0bd2c2874926e8e82cc2940899d42513",
+            "bytes": 13153128,
+            "duration": 8.0
+          },
+          {
+            "file": "bmr-v-0035.mp4",
+            "sha256": "9331a5f459fb6797a1ef5f90511e3c1ec0f2cc3de624a402610c3dc893cd7ef0",
+            "bytes": 15353533,
+            "duration": 8.0
+          },
+          {
+            "file": "bmr-v-0036.mp4",
+            "sha256": "4d991ed06672f2a034d55af255ab7b0a464a1dc8efa9fdf79066d15434fcd028",
+            "bytes": 13940299,
+            "duration": 8.0
+          },
+          {
+            "file": "bmr-v-0037.mp4",
+            "sha256": "26c95291ad174c3b6c45e50b247568715ba92f714dea1f995ae48a3dac68b589",
+            "bytes": 13204956,
+            "duration": 8.0
+          },
+          {
+            "file": "bmr-v-0038.mp4",
+            "sha256": "2ac55ea246872be577aa39276b1cd6387b149696119147721efdbae947de731b",
+            "bytes": 9949886,
+            "duration": 8.0
+          },
+          {
+            "file": "bmr-v-0039.mp4",
+            "sha256": "d9e501c5b7312c005e952ef60cf80d905177f6da40f4b4f6abd22f813f124f2c",
+            "bytes": 10653222,
+            "duration": 8.0
+          },
+          {
+            "file": "bmr-v-0040.mp4",
+            "sha256": "775b988a5834442836a4c293832ca9e8b9b0b9bc4070bec87bbf95dda622e30a",
+            "bytes": 11826711,
+            "duration": 8.0
+          },
+          {
+            "file": "bmr-v-0041.mp4",
+            "sha256": "0568da1286e2b79d6832a20979b0d4de0d1a3b10a72f9fd0e6895f926856c4e0",
+            "bytes": 12763932,
+            "duration": 8.0
+          },
+          {
+            "file": "bmr-v-0042.mp4",
+            "sha256": "f28202a22308776c7d89907c04b3fa03dfdefda68833e63c72cb922f62f8b7a8",
+            "bytes": 11769478,
+            "duration": 8.0
+          },
+          {
+            "file": "bmr-v-0043.mp4",
+            "sha256": "0d76c420be34ae37a179bb2b68d5473a5c139349ad4228690702b575910d7a88",
+            "bytes": 12363620,
+            "duration": 8.0
+          },
+          {
+            "file": "bmr-v-0044.mp4",
+            "sha256": "3f6efca7785fc8e571c3fc6c6d602e65193c0a3194f760005dd372b276a30864",
+            "bytes": 11173345,
+            "duration": 8.0
+          },
+          {
+            "file": "bmr-v-0045.mp4",
+            "sha256": "4c9fb91b5b2725fa3a2b864789bf93763fc93511957c797b4bf7136ea651a4a1",
+            "bytes": 11820565,
+            "duration": 8.0
+          },
+          {
+            "file": "bmr-v-0046.mp4",
+            "sha256": "60ebb8927fa66309f495fd82bcd0f8c6328f68af288c0ab462686f9d79a48545",
+            "bytes": 12280816,
+            "duration": 8.0
+          },
+          {
+            "file": "bmr-v-0047.mp4",
+            "sha256": "8f2773b7ada3fad18cc3ed5196fa8d20236b933789b21f13ce6c4f186efc6ee5",
+            "bytes": 12689720,
+            "duration": 8.0
+          },
+          {
+            "file": "bmr-v-0048.mp4",
+            "sha256": "65a2bc9a03addedd1b28b91ad7608a9efb2007e0a1d1ce7600454e016fb5baf4",
+            "bytes": 11230432,
+            "duration": 8.0
+          },
+          {
+            "file": "bmr-v-0049.mp4",
+            "sha256": "01b2670bc524182b867a795e5a8056d8906f92aeff6b5d53415375d80a27ff29",
+            "bytes": 11886961,
+            "duration": 8.0
+          },
+          {
+            "file": "bmr-v-0050.mp4",
+            "sha256": "d3b0073e9ccd9af6fe7cad15cb5b83d39852b117ca92f0f3a8bb2e1e9f6eb15d",
+            "bytes": 13668184,
+            "duration": 8.0
+          },
+          {
+            "file": "bmr-v-0051.mp4",
+            "sha256": "fa24c5744bd3da46573658a17c05a6f326bd4ac3c0a67d23dd66be4b5dcec65e",
+            "bytes": 12666294,
+            "duration": 8.0
+          },
+          {
+            "file": "bmr-v-0052.mp4",
+            "sha256": "9fb21bc493fd761cc243470db74e5b0cdcd082a7a5eaf2f8e83578b09390e8ba",
+            "bytes": 10353769,
+            "duration": 8.0
+          },
+          {
+            "file": "bmr-v-0053.mp4",
+            "sha256": "a4ee870637c6a1ba068250a6aefb2fff8680e8f62959aeb0d889bf1eecbf14e8",
+            "bytes": 11035660,
+            "duration": 8.0
+          },
+          {
+            "file": "bmr-v-0054.mp4",
+            "sha256": "4490605bcceb5dd68c0182be7d131825ebda2e6ca62b298424af199ad65cb04f",
+            "bytes": 9910723,
+            "duration": 8.0
+          },
+          {
+            "file": "bmr-v-0055.mp4",
+            "sha256": "effebd2d906259fa8addae911d9741c568f45505658f46cb676349a14566df27",
+            "bytes": 10505093,
+            "duration": 8.0
+          },
+          {
+            "file": "bmr-v-0056.mp4",
+            "sha256": "44539843a7ff598187493a9eface9a25b28dd696bf93e15350adb5f781dd09a3",
+            "bytes": 10466116,
+            "duration": 8.0
+          },
+          {
+            "file": "bmr-v-0057.mp4",
+            "sha256": "68927d6255e0e2eced303ea92ab1fd29dbd5398ebf967ac09fa8e3e553f9130d",
+            "bytes": 9592883,
+            "duration": 8.0
+          },
+          {
+            "file": "bmr-v-0058.mp4",
+            "sha256": "4e176c3062aa4d3ed52dbd1d6160c9a251b88d4832e4bc5d35012f7608780a76",
+            "bytes": 9888991,
+            "duration": 8.0
+          },
+          {
+            "file": "bmr-v-0059.mp4",
+            "sha256": "f928a8b264629d93ac9d7c2e3c6cf3fa71b63548138dca391ce30f1ac8bae927",
+            "bytes": 10238164,
+            "duration": 8.0
+          },
+          {
+            "file": "bmr-v-0060.mp4",
+            "sha256": "fc87b77035c9e4ca34f30f128bcd8cb725e43051803fc87cd8c55883c453080a",
+            "bytes": 9675690,
+            "duration": 8.0
+          },
+          {
+            "file": "bmr-v-0061.mp4",
+            "sha256": "5facd0358ea243bb7edf0dc383b14af4002460560da92eb71e13d6e56e220c64",
+            "bytes": 8623370,
+            "duration": 8.0
+          },
+          {
+            "file": "bmr-v-0062.mp4",
+            "sha256": "422e9803725ed5d3b0968b8f5a7471d934b09cba994bae580b711d134830a246",
+            "bytes": 6453023,
+            "duration": 8.0
+          },
+          {
+            "file": "bmr-v-0063.mp4",
+            "sha256": "daa496e179a685ad6aa42b7f22625a56e421b372326332f8a56aabaefdeb0c02",
+            "bytes": 10247087,
+            "duration": 8.0
+          },
+          {
+            "file": "bmr-v-0064.mp4",
+            "sha256": "413c0507c548e340d9d2cd39c00e48971efbcf5285935f9bfad6018ced8b5e27",
+            "bytes": 12422883,
+            "duration": 8.0
+          },
+          {
+            "file": "bmr-v-0065.mp4",
+            "sha256": "02732c347ce69fa438d2124a9a3544e40b498bf73d9893c3321feac01659b365",
+            "bytes": 11478131,
+            "duration": 8.0
+          },
+          {
+            "file": "bmr-v-0066.mp4",
+            "sha256": "f81847536984ed1859f6693b8aa7e1d2b79b7ac88f53e13cd200f2ceb06a5dfb",
+            "bytes": 6011832,
+            "duration": 8.008
+          },
+          {
+            "file": "bmr-v-0067.mp4",
+            "sha256": "dd7380c3aff5054962ec0a693a61fd696207ce4a9bae3397ed82c76903d919d5",
+            "bytes": 6002294,
+            "duration": 7.975
+          },
+          {
+            "file": "bmr-v-0068.mp4",
+            "sha256": "34981cc90963ae8f6d9f0046950be304e582d946d902ea97f32cdf88c0bbdbc1",
+            "bytes": 7482421,
+            "duration": 8.0
+          },
+          {
+            "file": "bmr-v-0069.mp4",
+            "sha256": "7eab40ed80a981cfe06c4bfee28d44d639b870ebde8f4cde3ef7c66d799368d8",
+            "bytes": 8352912,
+            "duration": 8.0
+          },
+          {
+            "file": "bmr-v-0070.mp4",
+            "sha256": "730e73b594cf4ad9dfc68bebfbc54fcc9ccb80f6cb022ddabadd23211e172a56",
+            "bytes": 5426832,
+            "duration": 8.0
+          },
+          {
+            "file": "bmr-v-0071.mp4",
+            "sha256": "99021aef03e9a21f0729f3a2ad302897b6e56511e8991f37e954f33532bdca83",
+            "bytes": 3972270,
+            "duration": 8.0
+          },
+          {
+            "file": "bmr-v-0072.mp4",
+            "sha256": "8b8d42b336a6fadde888d566d505afc5de43e5c5e2eedac7325f798468a6b5d4",
+            "bytes": 3657177,
+            "duration": 8.0
+          },
+          {
+            "file": "bmr-v-0073.mp4",
+            "sha256": "ffc73dabec67ee757069506a52dc4fb98ff1e0cb67466c3da72acf573ddafde3",
+            "bytes": 7383026,
+            "duration": 8.0
+          },
+          {
+            "file": "bmr-v-0074.mp4",
+            "sha256": "7afa161fc759c80887f8efb47fba0d94ddcb1d21c6db4df7f359aad66aa37d79",
+            "bytes": 5434895,
+            "duration": 8.0
+          },
+          {
+            "file": "bmr-v-0075.mp4",
+            "sha256": "0c21e37652971b8ba41cf9a5c43221688135ebeac0ff512ba6198686e62bb8dd",
+            "bytes": 5770753,
+            "duration": 8.0
+          },
+          {
+            "file": "bmr-v-0076.mp4",
+            "sha256": "7c6cdac738d9e3518a491e020b2c9153bed3cac8c0ca75643e3bee179af5e3f9",
+            "bytes": 4892691,
+            "duration": 8.0
+          },
+          {
+            "file": "bmr-v-0077.mp4",
+            "sha256": "b938e2b71df531c5c7b1ecd8a91790cfd9947641a9ed850b8f19c3f8d377330e",
+            "bytes": 4245808,
+            "duration": 8.0
+          },
+          {
+            "file": "bmr-v-0080.mp4",
+            "sha256": "d68dafc7602e77ef5aabd2fb1f2a216d5fa66683870443f6f003de0d277b3c3b",
+            "bytes": 5719883,
+            "duration": 8.0
+          },
+          {
+            "file": "bmr-v-0082.mp4",
+            "sha256": "d6b275aee9479d8394d9ffe74e16c51a345ac8265fd31ea15f569aae640b1bae",
+            "bytes": 9030190,
+            "duration": 8.008
+          },
+          {
+            "file": "bmr-v-0083.mp4",
+            "sha256": "d5e7858429addf6269699d3f8061ae57afa94c7d83a06b7107feeaf8d840f27c",
+            "bytes": 7594558,
+            "duration": 7.966
+          },
+          {
+            "file": "bmr-v-0084.mp4",
+            "sha256": "eb50c1932537918a144c13a02aa8a8a5a7f6294cc5a9474f8f312bfab0ecb930",
+            "bytes": 8566045,
+            "duration": 7.966
+          },
+          {
+            "file": "bmr-v-0085.mp4",
+            "sha256": "1c118c484d124106ca3f1e6909b121fd1aab5a7efb93f45090f6afd2e612ff3b",
+            "bytes": 5541543,
+            "duration": 8.008
+          },
+          {
+            "file": "bmr-v-0086.mp4",
+            "sha256": "8217dd6aa41dcb8a1d517072f7dee3439049304f4274615c7a67d609a092c945",
+            "bytes": 6200868,
+            "duration": 8.008
+          },
+          {
+            "file": "bmr-v-0087.mp4",
+            "sha256": "09807073051fe1971bad78e68a885dd0dadf108078cfab4c2e392762382b49ae",
+            "bytes": 9807331,
             "duration": 8.0
           }
         ],
         "windows": [
           {
-            "source": "tk-v-0005.mp4",
-            "sourceStart": 0,
-            "sourceEnd": 0.4,
+            "source": "bmr-v-0001.mp4",
+            "sourceStart": 4.697058,
+            "sourceEnd": 5.0970580000000005,
             "outputStart": 0,
             "outputEnd": 0.4,
             "focalX": 0.5
           },
           {
-            "source": "ytal-v-0012.mp4",
-            "sourceStart": 2.7,
-            "sourceEnd": 4.1,
+            "source": "bmr-v-0004.mp4",
+            "sourceStart": 1.558048,
+            "sourceEnd": 2.958048,
             "outputStart": 0.4,
             "outputEnd": 1.8,
-            "focalX": 0.25
+            "focalX": 0.5
           },
           {
-            "source": "ytal-v-0014.mp4",
-            "sourceStart": 0,
-            "sourceEnd": 1.2,
+            "source": "bmr-v-0007.mp4",
+            "sourceStart": 5.807893,
+            "sourceEnd": 7.007893,
             "outputStart": 1.8,
             "outputEnd": 3.0,
-            "focalX": 0.29
+            "focalX": 0.5
           },
           {
-            "source": "ytal-v-0003.mp4",
-            "sourceStart": 1.2,
-            "sourceEnd": 1.6,
+            "source": "bmr-v-0010.mp4",
+            "sourceStart": 3.588233,
+            "sourceEnd": 3.9882329999999997,
             "outputStart": 3.0,
             "outputEnd": 3.4,
-            "focalX": 0.68
+            "focalX": 0.5
           },
           {
-            "source": "ytal-v-0017.mp4",
-            "sourceStart": 1.5,
-            "sourceEnd": 1.9,
+            "source": "bmr-v-0013.mp4",
+            "sourceStart": 0.685291,
+            "sourceEnd": 1.0852909999999998,
             "outputStart": 3.4,
             "outputEnd": 3.8,
-            "focalX": 0.43
+            "focalX": 0.5
           },
           {
-            "source": "ytal-v-0006.mp4",
-            "sourceStart": 2.0,
-            "sourceEnd": 2.666666667,
+            "source": "bmr-v-0016.mp4",
+            "sourceStart": 5.193495,
+            "sourceEnd": 5.860161666666667,
             "outputStart": 3.8,
             "outputEnd": 4.466666666666667,
-            "focalX": 0.65
+            "focalX": 0.5
           },
           {
-            "source": "tk-v-0004.mp4",
-            "sourceStart": 1.4,
-            "sourceEnd": 1.8,
+            "source": "bmr-v-0019.mp4",
+            "sourceStart": 2.479408,
+            "sourceEnd": 2.8794079999999993,
             "outputStart": 4.466666666666667,
             "outputEnd": 4.866666666666666,
             "focalX": 0.5
           },
           {
-            "source": "ytal-v-0008.mp4",
-            "sourceStart": 3.0,
-            "sourceEnd": 4.0,
+            "source": "bmr-v-0022.mp4",
+            "sourceStart": 6.609903,
+            "sourceEnd": 7.609903,
             "outputStart": 4.866666666666666,
             "outputEnd": 5.866666666666666,
-            "focalX": 0.57
+            "focalX": 0.5
           },
           {
-            "source": "ytal-v-0007.mp4",
-            "sourceStart": 1.2,
-            "sourceEnd": 1.466666667,
+            "source": "bmr-v-0025.mp4",
+            "sourceStart": 4.348498,
+            "sourceEnd": 4.615164666666668,
             "outputStart": 5.866666666666666,
             "outputEnd": 6.133333333333334,
-            "focalX": 0.48
+            "focalX": 0.5
           },
           {
-            "source": "ytal-v-0002.mp4",
-            "sourceStart": 2.0,
-            "sourceEnd": 2.333333333,
+            "source": "bmr-v-0029.mp4",
+            "sourceStart": 1.382605,
+            "sourceEnd": 1.7159383333333331,
             "outputStart": 6.133333333333334,
             "outputEnd": 6.466666666666667,
-            "focalX": 0.55
+            "focalX": 0.5
           },
           {
-            "source": "ytal-v-0001.mp4",
-            "sourceStart": 4.0,
-            "sourceEnd": 4.6,
+            "source": "bmr-v-0032.mp4",
+            "sourceStart": 5.907966,
+            "sourceEnd": 6.507966,
             "outputStart": 6.466666666666667,
             "outputEnd": 7.066666666666666,
-            "focalX": 0.58
+            "focalX": 0.5
           },
           {
-            "source": "ytal-v-0009.mp4",
-            "sourceStart": 2.0,
-            "sourceEnd": 2.333333333,
+            "source": "bmr-v-0035.mp4",
+            "sourceStart": 3.19246,
+            "sourceEnd": 3.525793333333334,
             "outputStart": 7.066666666666666,
             "outputEnd": 7.4,
-            "focalX": 0.57
+            "focalX": 0.5
           },
           {
-            "source": "ytal-v-0013.mp4",
-            "sourceStart": 1.6,
-            "sourceEnd": 2.0,
+            "source": "bmr-v-0038.mp4",
+            "sourceStart": 0.261758,
+            "sourceEnd": 0.6617579999999994,
             "outputStart": 7.4,
             "outputEnd": 7.8,
-            "focalX": 0.36
+            "focalX": 0.5
           },
           {
-            "source": "ytal-v-0003.mp4",
-            "sourceStart": 3.0,
-            "sourceEnd": 3.433333333,
+            "source": "bmr-v-0041.mp4",
+            "sourceStart": 4.937067,
+            "sourceEnd": 5.3704003333333326,
             "outputStart": 7.8,
             "outputEnd": 8.233333333333333,
-            "focalX": 0.64
+            "focalX": 0.5
           },
           {
-            "source": "tk-v-0006.mp4",
-            "sourceStart": 0.0,
-            "sourceEnd": 1.0,
+            "source": "bmr-v-0044.mp4",
+            "sourceStart": 1.893568,
+            "sourceEnd": 2.893568,
             "outputStart": 8.233333333333333,
             "outputEnd": 9.233333333333333,
             "focalX": 0.5
           },
           {
-            "source": "ytal-v-0012.mp4",
-            "sourceStart": 5.6,
-            "sourceEnd": 6.133333333,
+            "source": "bmr-v-0047.mp4",
+            "sourceStart": 6.63446,
+            "sourceEnd": 7.167793333333335,
             "outputStart": 9.233333333333333,
             "outputEnd": 9.766666666666667,
-            "focalX": 0.35
+            "focalX": 0.5
           },
           {
-            "source": "tk-v-0005.mp4",
-            "sourceStart": 10.0,
-            "sourceEnd": 10.533333333,
+            "source": "bmr-v-0050.mp4",
+            "sourceStart": 3.782447,
+            "sourceEnd": 4.315780333333333,
             "outputStart": 9.766666666666667,
             "outputEnd": 10.3,
             "focalX": 0.5
           },
           {
-            "source": "ytal-v-0015.mp4",
-            "sourceStart": 1.0,
-            "sourceEnd": 1.8,
+            "source": "bmr-v-0053.mp4",
+            "sourceStart": 0.897204,
+            "sourceEnd": 1.6972039999999988,
             "outputStart": 10.3,
             "outputEnd": 11.1,
             "focalX": 0.5
           },
           {
-            "source": "ytal-v-0014.mp4",
-            "sourceStart": 3.0,
-            "sourceEnd": 4.2,
+            "source": "bmr-v-0057.mp4",
+            "sourceStart": 5.049991,
+            "sourceEnd": 6.249991000000001,
             "outputStart": 11.1,
             "outputEnd": 12.3,
-            "focalX": 0.44
+            "focalX": 0.5
           },
           {
-            "source": "ytal-v-0001.mp4",
-            "sourceStart": 6.0,
-            "sourceEnd": 6.4,
+            "source": "bmr-v-0060.mp4",
+            "sourceStart": 2.741166,
+            "sourceEnd": 3.141165999999999,
             "outputStart": 12.3,
             "outputEnd": 12.7,
-            "focalX": 0.57
+            "focalX": 0.5
           },
           {
-            "source": "ytal-v-0010.mp4",
-            "sourceStart": 2.1,
-            "sourceEnd": 2.766666667,
+            "source": "bmr-v-0063.mp4",
+            "sourceStart": 7.177234,
+            "sourceEnd": 7.843900666666668,
             "outputStart": 12.7,
             "outputEnd": 13.366666666666667,
-            "focalX": 0.46
+            "focalX": 0.5
           },
           {
-            "source": "ytal-v-0011.mp4",
-            "sourceStart": 2.5,
-            "sourceEnd": 3.3,
+            "source": "bmr-v-0066.mp4",
+            "sourceStart": 4.301357,
+            "sourceEnd": 5.101356999999999,
             "outputStart": 13.366666666666667,
             "outputEnd": 14.166666666666666,
-            "focalX": 0.38
+            "focalX": 0.5
           },
           {
-            "source": "ytal-v-0016.mp4",
-            "sourceStart": 1.5,
-            "sourceEnd": 2.5,
+            "source": "bmr-v-0069.mp4",
+            "sourceStart": 1.503472,
+            "sourceEnd": 2.503472,
             "outputStart": 14.166666666666666,
             "outputEnd": 15.166666666666666,
-            "focalX": 0.48
+            "focalX": 0.5
           },
           {
-            "source": "ytal-v-0013.mp4",
-            "sourceStart": 3.0,
-            "sourceEnd": 4.066666667,
+            "source": "bmr-v-0072.mp4",
+            "sourceStart": 5.774189,
+            "sourceEnd": 6.840855666666668,
             "outputStart": 15.166666666666666,
             "outputEnd": 16.233333333333334,
-            "focalX": 0.36
+            "focalX": 0.5
           },
           {
-            "source": "tk-v-0006.mp4",
-            "sourceStart": 4.6,
-            "sourceEnd": 5.933333333,
+            "source": "bmr-v-0075.mp4",
+            "sourceStart": 3.005664,
+            "sourceEnd": 4.338997333333332,
             "outputStart": 16.233333333333334,
             "outputEnd": 17.566666666666666,
-            "focalX": 0.9
+            "focalX": 0.5
           },
           {
-            "source": "ytal-v-0005.mp4",
-            "sourceStart": 4.5,
-            "sourceEnd": 5.3,
+            "source": "bmr-v-0080.mp4",
+            "sourceStart": 0.495962,
+            "sourceEnd": 1.2959620000000007,
             "outputStart": 17.566666666666666,
             "outputEnd": 18.366666666666667,
-            "focalX": 0.66
+            "focalX": 0.5
           },
           {
-            "source": "ytal-v-0004.mp4",
-            "sourceStart": 4.5,
-            "sourceEnd": 6.133333333,
+            "source": "bmr-v-0084.mp4",
+            "sourceStart": 4.35002,
+            "sourceEnd": 5.983353333333333,
             "outputStart": 18.366666666666667,
             "outputEnd": 20.0,
             "focalX": 0.5

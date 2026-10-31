@@ -189,8 +189,8 @@
       "executionStatus": "commissioned",
       "executorKind": "slideshow_renderer",
       "executorId": "syzygy-slideshow",
-      "executorVersion": "sha256:092647ed849c4b62d48a19d9a9b346a450b049ae5dc7587ddf6dc6eace33a9ef",
-      "formatContractVersion": "sha256:d98415b21dd9fcd8629d11c045008100a657ccc871c1ad3101cea31efc70eb49",
+      "executorVersion": "sha256:1097ebe82d9a955c63c9f89c4e840c70eeacb0fab62f6c848891c96ca6dffc09",
+      "formatContractVersion": "sha256:8ce242f638e2b146e5ea080dc74afa5478408965ee01ac2e20abae2330640525",
       "maxQuantity": 10
     },
     "lyric-video": {
@@ -201,8 +201,8 @@
       "executionStatus": "commissioned",
       "executorKind": "slideshow_renderer",
       "executorId": "syzygy-slideshow",
-      "executorVersion": "sha256:78da457008391bd873dbc23c57fc7621f9707b8e139781e8d98cea4cdb9f65c9",
-      "formatContractVersion": "sha256:380e6688c1344dc227fb3099fad375fa4016107b363526f19736b53ffed97234",
+      "executorVersion": "sha256:f2ef06869ea2723e83555be2a6a90558315c346196d2139f83870f7444423e78",
+      "formatContractVersion": "sha256:c36d134a19126489ce1f15144783bd884042b494d04354433ee4ba53e9ac0479",
       "maxQuantity": 1
     },
     "image-video": {

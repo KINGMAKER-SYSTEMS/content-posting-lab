@@ -24,7 +24,7 @@ _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 # receipts that reference the canonical set keep byte-identical names/digests.
 _TIMING_ID = "burnt-heavy-foot-chorus-v1"
 _TIMING_PATH = _TIMING_DIR / "burnt-heavy-foot-chorus.v1.json"
-_TIMING_SHA256 = "134be148cc3c522fa8ff48e7bcdd8aebc5ff0c6f1a8073ee5b4010558c3f3e9f"
+_TIMING_SHA256 = "3e8008ed9996e93971086497aaf7060ad587bbe0f4bba45d1b91fa6cf6c4a9b0"
 
 # Per-page bounds, not per-page values. A lyric page's actual duration and
 # phrase count are its own data (the timing manifest); these only bound what a

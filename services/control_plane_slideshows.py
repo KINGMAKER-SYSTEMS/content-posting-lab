@@ -327,6 +327,14 @@ def _curated_variant_windows(
         if window["source"] not in first_focal:
             order.append(window["source"])
             first_focal[window["source"]] = window["focalX"]
+    # A cutter manifest may deliberately contain more new clips than one
+    # approved output has windows.  Include those sources in the re-chop
+    # rotation too, so variants spread through the whole closed manifest
+    # rather than silently orphaning its tail.
+    for source in curated["sources"]:
+        if source["file"] not in first_focal:
+            order.append(source["file"])
+            first_focal[source["file"]] = 0.5
     turn = variant % len(order)
     rotate = {name: order[(index + turn) % len(order)] for index, name in enumerate(order)}
     windows = []
@@ -356,12 +364,11 @@ def _curated_variant_windows(
 def _curated_variant_table(curated_json: str) -> tuple[dict[str, Any] | None, ...]:
     curated = json.loads(curated_json)
     prefix = f'{curated["lane"]}/{curated["subject"]}/clips/'
-    # mediaKeys stay the approved plan's unique ordered source keys for every
-    # variant: rotation only re-assigns the same pinned sources to windows.
-    media_keys: list[str] = []
+    approved_media_keys: list[str] = []
     for window in curated["windows"]:
-        if prefix + window["source"] not in media_keys:
-            media_keys.append(prefix + window["source"])
+        key = prefix + window["source"]
+        if key not in approved_media_keys:
+            approved_media_keys.append(key)
     table: list[dict[str, Any] | None] = []
     seen: set[str] = set()
     for variant in range(CURATED_VARIANT_LIMIT):
@@ -376,9 +383,20 @@ def _curated_variant_table(curated_json: str) -> tuple[dict[str, Any] | None, ..
             if checked is not None and fingerprint not in seen:
                 seen.add(fingerprint)
                 by_file = {source["file"]: source for source in checked["sources"]}
+                media_keys: list[str] = []
+                for window in checked["windows"]:
+                    key = prefix + window["source"]
+                    if key not in media_keys:
+                        media_keys.append(key)
+                # Keep an unchanged signature for a plan whose every variant
+                # already uses the approved source set in the approved order.
+                # A partial-source plan (Burnt's cutter manifest) instead
+                # carries exactly the keys its rotated windows use.
+                if set(media_keys) == set(approved_media_keys):
+                    media_keys = list(approved_media_keys)
                 plan = {
                     "templateSlug": CURATED_VIDEO_PLAN_SLUG,
-                    "mediaKeys": list(media_keys),
+                    "mediaKeys": media_keys,
                     "muted": checked["muted"],
                     "speed": checked["speed"],
                     "cropMode": checked["cropMode"],
@@ -597,6 +615,12 @@ def ugc_page_treatment(page_id: str, format_slug: str = UGC_FORMAT_SLUG) -> dict
     normalized). Unknown pages return None and keep generic UGC behavior.
     """
     if not isinstance(page_id, str) or not page_id.strip():
+        return None
+    # Eric's 2026-10-24 decision retires Burnt's timed-lyric program. Keep its
+    # legacy executor bytes readable for historical authority, but never let
+    # the lyric planner turn either old or replacement clips into a footage
+    # plan. Burnt now uses the static-caption UGC treatment only.
+    if page_id == "acct:burnt-mill-rd" and format_slug == LYRIC_VIDEO_FORMAT_SLUG:
         return None
     try:
         executor, _ = _executor_contract(format_slug)
@@ -857,8 +881,8 @@ def _curated_library_ready(
 ) -> bool:
     """The recipe, live library and plan agree, and every source holds its pinned bytes.
 
-    Every variant uses exactly the approved plan's sources, so this one check
-    covers them all. Extras in the library are never selected.
+    A rotated variant may use any approved source, so all pinned sources must
+    be staged before offering even variant zero. Extras are never selected.
     """
     if (recipe.lane != curated["lane"] or recipe.subject != curated["subject"]
             or library.lane != recipe.lane or library.subject != recipe.subject
@@ -869,7 +893,6 @@ def _curated_library_ready(
         library_bytes.get(f"{recipe.lane}/{recipe.subject}/clips/{source['file']}")
         == source["bytes"]
         for source in curated["sources"]
-        if any(window["source"] == source["file"] for window in curated["windows"])
     )
 
 

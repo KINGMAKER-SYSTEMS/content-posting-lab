@@ -2488,6 +2488,29 @@ def _generation_root() -> Path:
     return root
 
 
+_FAILURE_TERMINAL_STATUSES = frozenset({"failed", "error", "cancelled"})
+_UNRECORDED_FAILURE_REASON = "lab_failure_reason_unrecorded"
+_WRITER_FAILURE_REASON = "generation_failed_without_message"
+
+
+def _terminal_failure_reason(error: Any, *, fallback: str) -> str:
+    """Return the bounded, non-blank reason required by terminal failures."""
+    if isinstance(error, str):
+        reason = error.strip()
+    elif error is None:
+        reason = ""
+    else:
+        reason = str(error).strip()
+    return reason[:300] or fallback
+
+
+def _exception_failure_reason(error: BaseException) -> str:
+    """Name a message-less executor exception without leaving an empty error."""
+    return _terminal_failure_reason(
+        str(error), fallback=f"{_WRITER_FAILURE_REASON}:{type(error).__name__}",
+    )
+
+
 def _update_job(job_id: str, **fields: Any) -> dict[str, Any] | None:
     """Merge ``fields`` onto the job and publish straight to the read cache.
 
@@ -2498,6 +2521,13 @@ def _update_job(job_id: str, **fields: Any) -> dict[str, Any] | None:
     mutate the published snapshot too. Pass a copy (`list(x)`, `dict(x)`) of
     anything you intend to keep changing after this call returns.
     """
+    # Every failure transition flows through this helper. Keep durable state
+    # valid even when a caller supplied None, whitespace, or str(exc) for an
+    # exception class with no message.
+    if fields.get("status") in _FAILURE_TERMINAL_STATUSES:
+        fields["error"] = _terminal_failure_reason(
+            fields.get("error"), fallback=_WRITER_FAILURE_REASON,
+        )
     with lock_for(_jobs_path()):
         store = _load_jobs()
         job = store["jobs"].get(job_id)
@@ -3597,7 +3627,7 @@ async def _run_owned_dossier_generation(job_id: str) -> None:
         await asyncio.to_thread(_update_job,
             job_id,
             status="failed",
-            error=str(error)[:300],
+            error=_exception_failure_reason(error),
             completedAt=datetime.now(timezone.utc).isoformat(),
         )
         return
@@ -3787,7 +3817,7 @@ async def _run_truck_master_recovery(job_id: str) -> None:
     except Exception as error:
         shutil.rmtree(job_root, ignore_errors=True)
         await asyncio.to_thread(_update_job,
-            job_id, status="failed", error=str(error)[:300],
+            job_id, status="failed", error=_exception_failure_reason(error),
             completedAt=datetime.now(timezone.utc).isoformat(),
         )
         return
@@ -4538,7 +4568,7 @@ async def _run_dossier_source_inner(job_id: str) -> None:
         await _settle_source_update(
             job_id,
             status="failed",
-            error=str(error)[:300],
+            error=_exception_failure_reason(error),
             completedAt=datetime.now(timezone.utc).isoformat(),
         )
         return
@@ -4871,7 +4901,7 @@ async def _run_syzygy_slideshow(job_id: str) -> None:
         await asyncio.to_thread(_update_job,
             job_id,
             status="failed",
-            error=str(error)[:300],
+            error=_exception_failure_reason(error),
             completedAt=datetime.now(timezone.utc).isoformat(),
         )
         return
@@ -4971,7 +5001,7 @@ async def _run_owned_page_source_import(job_id: str, attempt_id: str | None) -> 
         await _settle_source_import_update(
             job_id, attempt_id,
             status="failed",
-            error=str(error)[:300],
+            error=_exception_failure_reason(error),
             completedAt=datetime.now(timezone.utc).isoformat(),
         )
         return
@@ -6290,12 +6320,13 @@ async def job_status(
         "status": job["status"],
         "progress": int(job.get("progress") or 0),
     }
-    if job["status"] == "failed" and isinstance(job.get("error"), str):
-        # The executor already persists a bounded terminal reason. Keep it on
-        # the page-scoped, authenticated status contract so the control plane
-        # can report and recover the real seam instead of collapsing every
-        # terminal failure to a generic label.
-        response["error"] = job["error"][:300]
+    if job["status"] in _FAILURE_TERMINAL_STATUSES:
+        # A legacy stored failure may predate the writer invariant. Serve a
+        # named marker rather than an empty value, but do not migrate the row
+        # during a GET. Active/success states intentionally omit ``error``.
+        response["error"] = _terminal_failure_reason(
+            job.get("error"), fallback=_UNRECORDED_FAILURE_REASON,
+        )
     response.update(_job_status_failure_cause(job))
     return response
 
