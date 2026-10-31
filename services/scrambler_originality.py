@@ -94,11 +94,13 @@ authority for races between two jobs.
 from __future__ import annotations
 
 import io
+import hashlib
 import json
 from decimal import Decimal
 import logging
 import math
 import os
+import stat
 import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -564,7 +566,7 @@ def _read_bounded(path: Path, max_bytes: int, reason: str) -> bytes:
     return raw
 
 
-def _load_origins_map(origins_path: Path) -> dict[str, _OriginWindow]:
+def _load_origins_map(origins_path: Path, raw: bytes | None = None) -> dict[str, _OriginWindow]:
     """The real producer map: master SHA -> canonical origin + window.
 
     A missing/unparseable map refuses ON (candidates could not be keyed).
@@ -573,7 +575,8 @@ def _load_origins_map(origins_path: Path) -> dict[str, _OriginWindow]:
     closed as ``origin_mapping_unknown``. Null offsets mean the upstream
     window is explicitly lost: the identity maps, the window does not.
     """
-    raw = _read_bounded(origins_path, ORIGINS_MAX_BYTES, "origins_map_invalid")
+    if raw is None:
+        raw = _read_bounded(origins_path, ORIGINS_MAX_BYTES, "origins_map_invalid")
     try:
         data = json.loads(raw)
     except (json.JSONDecodeError, ValueError) as error:
@@ -646,6 +649,7 @@ def load_originality_index(
     retired_path: str | Path | None = None,
     now_epoch: float | None = None,
     stale_after_s: float = USAGE_STALE_AFTER_S,
+    _snapshot: tuple[bytes, bytes, float] | None = None,
 ) -> OriginalityIndex:
     """Build the canonical-origin show index from the real feed.
 
@@ -693,7 +697,12 @@ def load_originality_index(
         if os.environ.get(ORIGINALITY_RETIRED_PATH_ENV) else
         RETIRED_REPO_PATH
     )
-    origins = _load_origins_map(resolved_origins)
+    if _snapshot is None:
+        _snapshot = _verified_feed_snapshot(file_path, resolved_origins)
+    usage_raw, origins_raw, usage_mtime = _snapshot
+    if now - usage_mtime > stale_after_s:
+        raise ScramblerOriginalityUnavailable("usage_ledger_stale: verified feed is too old")
+    origins = _load_origins_map(resolved_origins, origins_raw)
     retired_masters = _load_retired(resolved_retired)
     # Origin aliases of retired masters: the retired IDENTITY, not just SHAs.
     retired_origin_ids = frozenset(
@@ -704,9 +713,8 @@ def load_originality_index(
     # Bounded read: the stat check above is only a fast precheck, the read
     # itself is capped so a ledger growing between stat and read cannot
     # deliver unbounded bytes here.
-    raw = _read_bounded(file_path, USAGE_MAX_BYTES, "usage_ledger_too_large")
     try:
-        text = raw.decode("utf-8")
+        text = usage_raw.decode("utf-8")
     except UnicodeDecodeError as error:
         raise ScramblerOriginalityUnavailable(
             f"usage_line_corrupt: cannot decode {file_path}: {error}"
@@ -807,7 +815,54 @@ def _feed_stat_key(path: Path):
         stat = path.stat()
     except OSError:
         return None
-    return (str(path), stat.st_ino, stat.st_size, stat.st_mtime_ns)
+    return (str(path), stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_dev, stat.st_ctime_ns)
+
+
+def _strict_feed_identity(path: Path):
+    try:
+        value = os.lstat(path)
+    except FileNotFoundError:
+        return None
+    except OSError as error:
+        raise ScramblerOriginalityUnavailable(f"feed_snapshot_invalid: cannot inspect {path}: {error}") from error
+    if not stat.S_ISREG(value.st_mode):
+        raise ScramblerOriginalityUnavailable(f"feed_snapshot_invalid: not a regular file: {path}")
+    return (str(path), value.st_ino, value.st_size, value.st_mtime_ns, value.st_dev, value.st_ctime_ns)
+
+
+def _verified_feed_snapshot(usage: Path, origins: Path) -> tuple[bytes, bytes, float]:
+    """Read one bounded generation; a managed feed must match its commit manifest."""
+    from services import scrambler_feed_pull as feed
+    manifest = usage.parent / "manifest.json"
+    marker = usage.parent / ".scrambler-feed.lock"
+    paths = (manifest, marker, usage, origins)
+    before = tuple(_strict_feed_identity(path) for path in paths)
+    if before[1] is not None and before[0] is None:
+        raise ScramblerOriginalityUnavailable("feed_snapshot_invalid: managed manifest missing")
+    if before[0] is not None and origins.parent != usage.parent:
+        raise ScramblerOriginalityUnavailable("feed_snapshot_invalid: non-colocated managed feed")
+    manifest_raw = (_read_bounded(manifest, 1024 * 1024, "feed_snapshot_invalid")
+                    if before[0] is not None else None)
+    origin_raw = _read_bounded(origins, ORIGINS_MAX_BYTES, "origins_map_invalid")
+    usage_raw = _read_bounded(usage, USAGE_MAX_BYTES, "usage_ledger_too_large")
+    if before != tuple(_strict_feed_identity(path) for path in paths):
+        raise ScramblerOriginalityUnavailable("feed_snapshot_invalid: feed changed while reading")
+    if before[2] is None or before[3] is None:
+        raise ScramblerOriginalityUnavailable("feed_snapshot_invalid: feed file missing")
+    usage_mtime = before[2][3] / 1e9
+    if manifest_raw is not None:
+        try:
+            parsed = feed.parse_manifest(manifest_raw)
+            if parsed.generated_at_epoch is None or not math.isfinite(parsed.generated_at_epoch):
+                raise ValueError("invalid generation time")
+            usage_mtime = min(usage_mtime, parsed.generated_at_epoch)
+            for name, data in (("usage.jsonl", usage_raw), ("origins.json", origin_raw)):
+                feed._verify_sha(name, data, parsed)
+            if feed.count_usage_rows(usage_raw) != parsed.rows:
+                raise ValueError("row count mismatch")
+        except (feed.ScramblerFeedPullError, ValueError) as error:
+            raise ScramblerOriginalityUnavailable(f"feed_snapshot_invalid: {error}") from error
+    return usage_raw, origin_raw, usage_mtime
 
 
 def load_originality_index_cached(*, now_epoch: float | None = None) -> OriginalityIndex:
@@ -825,16 +880,18 @@ def load_originality_index_cached(*, now_epoch: float | None = None) -> Original
                if os.environ.get(ORIGINALITY_ORIGINS_PATH_ENV) else usage.parent / ORIGINS_FILE_NAME)
     retired = (Path(os.environ[ORIGINALITY_RETIRED_PATH_ENV])
                if os.environ.get(ORIGINALITY_RETIRED_PATH_ENV) else RETIRED_REPO_PATH)
-    key = tuple(_feed_stat_key(path) for path in (usage, origins, retired))
+    snapshot = _verified_feed_snapshot(usage, origins)
+    key = (hashlib.sha256(snapshot[0]).digest(), hashlib.sha256(snapshot[1]).digest(),
+           snapshot[2], _feed_stat_key(retired))
     now = now_epoch if now_epoch is not None else datetime.now(timezone.utc).timestamp()
     if None not in key:
         with _index_cache_lock:
             cached = _index_cache[0] if _index_cache else None
         if (cached is not None and cached[0] == key
                 and 0 <= now - cached[1] <= INDEX_CACHE_MAX_AGE_S
-                and now - key[0][3] / 1e9 <= USAGE_STALE_AFTER_S):
+                and now - key[2] <= USAGE_STALE_AFTER_S):
             return cached[2]
-    index = load_originality_index(now_epoch=now_epoch)
+    index = load_originality_index(now_epoch=now_epoch, _snapshot=snapshot)
     if None not in key:
         with _index_cache_lock:
             _index_cache[:] = [(key, now, index)]
