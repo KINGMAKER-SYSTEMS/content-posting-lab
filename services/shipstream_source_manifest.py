@@ -20,6 +20,7 @@ from urllib.parse import quote, unquote, urlparse, urlsplit
 import httpx
 
 from services.config_errors import ConfigError
+from services.master_pages_contract import EXTERNAL_PAGE_SOURCES
 from services.source_dna_registry import (
     SourceDnaLibrary,
     SourceDnaError,
@@ -537,6 +538,52 @@ def _master_from_historical_cut(
     }
 
 
+def _external_page_import(
+    master_pages: dict[str, Any], authority: Any, page_id: str,
+) -> bool:
+    """A registered external page may bind its manifest without a Notion id.
+
+    The Master Pages Notion page id is the page identity everywhere else in
+    this module. A page whose intent is owned outside Notion (``source`` in
+    ``EXTERNAL_PAGE_SOURCES``) has no Notion row, so its id is ``None`` rather
+    than blank. Such a page is bound only by its own Content Lab import
+    authority naming the operational page id and repeating the intent's
+    ``source`` as ``intentSource``. No other authority kind, no other page id,
+    no blank string and no manifest without ``intentSource`` stands in for the
+    missing Notion row.
+    """
+    return (
+        master_pages.get("notionPageId") is None
+        and master_pages.get("source") in EXTERNAL_PAGE_SOURCES
+        and isinstance(authority, dict)
+        and authority.get("kind") == "content_lab_page_source_import"
+        and authority.get("pageId") == page_id
+        and authority.get("intentSource") == master_pages.get("source")
+    )
+
+
+def _intent_source_matches(authority: dict[str, Any], master_pages: dict[str, Any]) -> bool:
+    """``sourceAuthority.intentSource`` names the external owner, or is absent.
+
+    ShipStream writes ``intentSource`` only on an external page's manifest and
+    keeps Rising Tides manifests byte-identical to before, so a Notion page's
+    manifest carrying the key diverges from Master Pages.
+    """
+    source = master_pages.get("source")
+    if source in EXTERNAL_PAGE_SOURCES:
+        return authority.get("intentSource") == source
+    return "intentSource" not in authority
+
+
+def _repeats_notion_page_id(block: Any, key: str, notion_page_id: str | None) -> bool:
+    """The manifest block carries the Master Pages Notion page id exactly.
+
+    For an external page that id is ``None``, and the block must then carry
+    the key as an explicit null. An omitted key never matches.
+    """
+    return isinstance(block, dict) and key in block and block[key] == notion_page_id
+
+
 def parse_shipstream_source_manifest(
     raw: bytes,
     master_pages: dict[str, Any],
@@ -557,7 +604,9 @@ def parse_shipstream_source_manifest(
     authority = value.get("sourceAuthority") if isinstance(value, dict) else None
     format_slug = value.get("format") if isinstance(value, dict) else None
     notion_page_id = master_pages.get("notionPageId")
-    if not _nonblank(notion_page_id):
+    if not _nonblank(notion_page_id) and not _external_page_import(
+        master_pages, authority, page_id,
+    ):
         raise ShipStreamSourceError("Master Pages Notion page ID is missing")
     exact_page_authority = (
         isinstance(authority, dict)
@@ -573,7 +622,7 @@ def parse_shipstream_source_manifest(
     notion_page_matches = (
         isinstance(notion, dict)
         and (
-            notion.get("pageId") == notion_page_id
+            _repeats_notion_page_id(notion, "pageId", notion_page_id)
             or (
                 notion.get("pageId") is None
                 and isinstance(authority, dict)
@@ -593,7 +642,8 @@ def parse_shipstream_source_manifest(
         or notion.get("serviceMode") != master_pages.get("automationMode")
         or not isinstance(authority, dict)
         or not _same_page_handle(authority.get("pageHandle"), handle)
-        or authority.get("notionPageId") != notion_page_id
+        or not _repeats_notion_page_id(authority, "notionPageId", notion_page_id)
+        or not _intent_source_matches(authority, master_pages)
         or not exact_page_authority
         or authority.get("replacementEligible") is not True
         or not isinstance(format_slug, str)

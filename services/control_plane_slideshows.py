@@ -19,7 +19,7 @@ import math
 import os
 from pathlib import Path
 import re
-from typing import Any
+from typing import Any, Iterable
 from urllib.parse import parse_qsl, quote, unquote, urljoin, urlsplit
 
 import httpx
@@ -27,6 +27,7 @@ import httpx
 from services.content_engine_registry import MaterialProfile, resolve_material_profile
 from services.control_plane_image_video import IMAGE_VIDEO_FORMATS, image_video_plan_for_format
 from services.control_plane_generation import typed_recipe_spec
+from services.master_pages_contract import EXTERNAL_PAGE_SOURCES
 
 
 EXECUTOR_PATH = (
@@ -553,6 +554,41 @@ def _subject(handle: Any) -> str | None:
     return value if value and len(value) <= 100 else None
 
 
+def library_subject(page_id: Any, handle: Any, source: Any) -> str | None:
+    """Keep ordinary addresses; reserve a disjoint exact-page external subject.
+
+    The ordinary slugger collapses every punctuation run to a single hyphen,
+    so it can never produce the external ``external--`` prefix. Hashing the
+    exact bounded page token also keeps case/punctuation-distinct ids separate.
+    Both ingredients and execution use this one derivation. External writers
+    must use the advertised catalog subject, never reconstruct it from handle.
+    """
+    if isinstance(source, str) and source in EXTERNAL_PAGE_SOURCES:
+        if (not isinstance(page_id, str)
+                or not re.fullmatch(r"[A-Za-z0-9._:-]{1,128}", page_id)
+                or not re.search(r"[A-Za-z0-9]", page_id)):
+            return None
+        return "external--" + hashlib.sha256(page_id.encode("utf-8")).hexdigest()
+    return _subject(handle)
+
+
+def library_subject_holder(
+    subject: str | None, candidates: Iterable[tuple[Any, Any, Any]],
+) -> str | None:
+    """The id of the first other roster page deriving ``subject``, or None.
+
+    ``candidates`` are ``(page_id, handle, source)`` triples for every roster
+    page except the one being checked. Registration refuses a page whose
+    subject another page already derives, so no two pages share one pool.
+    """
+    if subject is None:
+        return None
+    for other_id, handle, source in candidates:
+        if library_subject(other_id, handle, source) == subject:
+            return other_id
+    return None
+
+
 def ugc_page_treatment(page_id: str, format_slug: str = UGC_FORMAT_SLUG) -> dict[str, Any] | None:
     """Return the closed server-owned treatment for one UGC page, if any.
 
@@ -584,7 +620,9 @@ def slideshow_library_address(
     if profile.executor_version != f"sha256:{digest}":
         return None
     config = executor["formats"].get(profile.format_slug)
-    subject = _subject(master_pages.get("handle"))
+    subject = library_subject(
+        master_pages.get("pageId"), master_pages.get("handle"), master_pages.get("source"),
+    )
     if not isinstance(config, dict) or subject is None:
         return None
     if profile.format_slug in IMAGE_VIDEO_FORMATS:

@@ -28,6 +28,7 @@ from routers.control_plane import generation_budget_status
 from routers.post_renders import router as post_renders_router, start_workers as start_post_render_workers, readiness as post_render_readiness
 from routers.control_plane_dossier import router as control_plane_dossier_router
 from routers.control_plane_recipes import router as control_plane_recipes_router
+from routers.control_plane_external_pages import router as control_plane_external_pages_router
 from routers.control_plane_source_libraries import (
     router as control_plane_source_libraries_router,
 )
@@ -325,6 +326,10 @@ _AUTH_SKIP = ("/api/health", "/api/miniapp/")
 
 @app.middleware("http")
 async def check_api_key(request: Request, call_next):
+    # This exact write route checks the private machine bearer itself. The
+    # browser API key must not block a valid machine request or authorize one.
+    if request.method == "POST" and request.url.path == "/api/burn/import-tos":
+        return await call_next(request)
     if _APP_API_KEY and request.url.path.startswith("/api/"):
         if not any(request.url.path.startswith(s) for s in _AUTH_SKIP):
             token = request.headers.get("authorization", "").removeprefix("Bearer ").strip()
@@ -369,6 +374,11 @@ app.include_router(
     tags=["control-plane-dossier"],
 )
 app.include_router(control_plane_recipes_router, prefix="/api/control-plane", tags=["control-plane-recipes"])
+app.include_router(
+    control_plane_external_pages_router,
+    prefix="/api/control-plane",
+    tags=["control-plane-external-pages"],
+)
 app.include_router(
     control_plane_source_libraries_router,
     prefix="/api/control-plane",
