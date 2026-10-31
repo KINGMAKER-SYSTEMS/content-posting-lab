@@ -1151,6 +1151,23 @@ def syzygy_idempotency_key(*parts: str) -> str:
     return "cpl-syzygy-" + hashlib.sha256(canonical.encode()).hexdigest()
 
 
+def _render_idempotency_key(
+    page_id: str, recipe_version: str, signature: str, lab_job_id: str | None,
+) -> str:
+    """One Syzygy render per Lab job and plan.
+
+    Syzygy replays a stored Idempotency-Key, including a FAILED render, so a
+    key built only from page, recipe and plan pinned every later Lab job for
+    that plan to the first failure (burnt.mill.rd, 10-31). Retries inside one
+    Lab job still share a key; a new Lab job gets a fresh render.
+    """
+    if lab_job_id is None:
+        return syzygy_idempotency_key(page_id, recipe_version, signature, "render-v1")
+    if not isinstance(lab_job_id, str) or not lab_job_id:
+        raise SyzygyError("Syzygy render needs a non-empty Lab job id")
+    return syzygy_idempotency_key(page_id, recipe_version, signature, "render-v2", lab_job_id)
+
+
 async def _request_json(
     method: str,
     endpoint: str,
@@ -1203,7 +1220,7 @@ async def syzygy_revision() -> str:
 
 async def submit_syzygy_render(
     plan: dict[str, Any], *, page_id: str, recipe_version: str,
-    format_slug: str | None = None,
+    format_slug: str | None = None, lab_job_id: str | None = None,
 ) -> tuple[str, str]:
     if format_slug in IMAGE_VIDEO_FORMATS:
         from services.control_plane_image_video import submit_image_video_render
@@ -1246,9 +1263,7 @@ async def submit_syzygy_render(
             "uses_original_audio": False,
             "media": media,
         }
-        key = syzygy_idempotency_key(
-            page_id, recipe_version, plan["signature"], "render-v1",
-        )
+        key = _render_idempotency_key(page_id, recipe_version, plan["signature"], lab_job_id)
         value = await _request_json(
             "POST", "/api/v1/render", body={"spec": spec},
             idempotency_key=key, timeout=90.0,
@@ -1292,9 +1307,7 @@ async def submit_syzygy_render(
         if policy is not None:
             spec["cuts"] = {"mode": policy["cutMode"], "cuts": policy["cuts"]}
             spec["audio"]["section_end"] = policy["audioSectionEnd"]
-    key = syzygy_idempotency_key(
-        page_id, recipe_version, plan["signature"], "render-v1",
-    )
+    key = _render_idempotency_key(page_id, recipe_version, plan["signature"], lab_job_id)
     value = await _request_json(
         "POST", "/api/v1/render", body={"spec": spec},
         idempotency_key=key, timeout=90.0,
