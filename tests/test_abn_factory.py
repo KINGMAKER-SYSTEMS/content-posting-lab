@@ -3289,7 +3289,7 @@ def _stub_purge_disk(monkeypatch, *, protection_complete, free_gb, renders):
     return trimmed
 
 
-def test_purge_disk_skips_render_trim_when_protection_scan_incomplete(monkeypatch):
+def test_purge_disk_skips_render_trim_when_protection_scan_incomplete_with_populated_render_set(monkeypatch):
     """FAIL SAFE: even with disk critically low, an INCOMPLETE protection scan must skip the
     destructive render trim — a live render we couldn't prove safe is never tombstoned."""
     renders = [Path(f"/ep{i}/renders/episode.mp4") for i in range(10)]
