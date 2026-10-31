@@ -4524,6 +4524,11 @@ async def _run_dossier_source_inner(job_id: str) -> None:
                              else (transforms.reverse if vary_transforms else None)),
                     hflip=(scram_transforms.mirror if scram_record is not None
                            else (transforms.mirror if vary_transforms else None)),
+                    # A Scrambler split_swap cut is the Lab's split-and-rotate
+                    # loop path (PR 281): its halves are re-ordered in place,
+                    # so the advertised recipe records loop_split True. Every
+                    # other cut keeps loop_split null (the pre-G39 value).
+                    loop_split=(scram_split_swap or None),
                 )} if advertise_origin() else {}),
             })
             manifest["thumbnail"] = await _thumbnail_manifest(

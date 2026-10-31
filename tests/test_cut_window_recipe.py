@@ -280,7 +280,7 @@ async def test_flag_on_a_vary_cut_records_its_drawn_look(lab, monkeypatch):
     assert recipe["speed"] == clip["clipSpeed"] != 1.0  # the drawn speed
     assert recipe["reverse"] is (True if drawn.reverse else None)
     assert recipe["hflip"] is (True if drawn.mirror else None)
-    assert recipe["loop_split"] is None  # no split-and-rotate loop path yet
+    assert recipe["loop_split"] is None  # Layer B vary cuts are not the split loop
     assert recipe["crop"] == clip["clipCrop"]  # the drawn crop, as drawn
 
 

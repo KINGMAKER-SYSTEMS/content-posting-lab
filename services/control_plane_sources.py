@@ -536,7 +536,8 @@ def cut_window_recipe(
     ``reverse``/``hflip`` are true only when that transform ran
     (services/clip_transforms.py CutTransforms.reverse/mirror). ``loop_split``
     is true when the cut is a split-and-rotate loop (it covers the same
-    origin seconds); the Lab has no such cut path yet, so it stays null.
+    origin seconds): the Scrambler ``split_swap`` treatment (PR 281) is that
+    path, so it stays null for every other cut.
     Anything outside the ledger's type bounds raises: these values come from
     validated recipes and draws, so an out-of-domain input is a bug, not a
     missing treatment.
