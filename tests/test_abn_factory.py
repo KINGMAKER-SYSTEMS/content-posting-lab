@@ -17,6 +17,8 @@ Whisper, or ffmpeg — every external call is monkeypatched. The hard gates cove
 import asyncio
 import json
 import shlex
+import sys
+from types import ModuleType, SimpleNamespace
 from pathlib import Path
 
 import pytest
@@ -4468,7 +4470,7 @@ def test_diagram_steps_extracts_real_mechanism_and_rejects_filler():
     assert abn_factory._diagram_steps("It's called the Defending Code Ref.") == []       # naming clause
 
 
-# --- _v2_scene_cards integration: stub the tagger + renderer, capture the routed card type ---
+# --- Local _v2_scene_cards routing: hermetic imports, stub tagger + renderer ---
 
 
 class _FakeV2Cards:
@@ -4497,15 +4499,42 @@ class _FakeV2Cards:
 
 
 def _stub_v2_env(monkeypatch, scenes, shots, title="Cursor — the headline", comparison=""):
-    """Wire _v2_scene_cards to run offline: fixed scene list + shot list, a recording fake card
-    renderer, and stubbed asset-path/url so nothing touches disk. Returns the fake renderer."""
-    if not abn_factory._V2_VISUALS:
-        pytest.skip("factory.formats (v2 visuals) not importable in this environment")
+    """Exercise Lab's local guards, not the optional factory integration.
+
+    Format lookup and comparison_target are import dependencies, while the
+    tagger, director, renderer and asset gateway were already stubbed here.
+    Replace entire module parents so a real installed package is never mutated.
+    The actual _v2_scene_cards and all its local routing helpers stay in use.
+    """
+    modules = {name: ModuleType(name) for name in (
+        "factory", "factory.formats", "factory.formats.scenes",
+        "factory.contracts", "factory.contracts.stages",
+    )}
+    factory, formats, scene_module, contracts, stages = modules.values()
+    for package in (factory, formats, contracts):
+        package.__path__ = []
+    factory.formats, factory.contracts = formats, contracts
+    formats.scenes, contracts.stages = scene_module, stages
+    stages.VideoFormat = SimpleNamespace(ROUNDUP=object())
+    spec = object()
+
+    def get_format(kind):
+        assert kind is stages.VideoFormat.ROUNDUP
+        return spec
+
+    def direct_visuals(scene_list, selected_spec):
+        assert selected_spec is spec
+        assert scene_list == list(scenes)
+        return list(shots)
+
+    formats.get_format = get_format
+    scene_module.comparison_target = lambda text: comparison
+    for name, module in modules.items():
+        monkeypatch.setitem(sys.modules, name, module)
+    monkeypatch.setattr(abn_factory, "_V2_VISUALS", True)
     monkeypatch.setattr(abn_factory, "_USE_V2_VISUALS", True)
-    monkeypatch.setattr(abn_factory, "tag_scenes", lambda *a, **k: list(scenes))
-    monkeypatch.setattr(abn_factory, "direct_visuals", lambda *a, **k: list(shots))
-    import factory.formats.scenes as _scenes_mod
-    monkeypatch.setattr(_scenes_mod, "comparison_target", lambda text: comparison)
+    monkeypatch.setattr(abn_factory, "tag_scenes", lambda *a, **k: list(scenes), raising=False)
+    monkeypatch.setattr(abn_factory, "direct_visuals", direct_visuals, raising=False)
     fake = _FakeV2Cards()
     monkeypatch.setattr(abn_factory, "_v2cards", fake)
     monkeypatch.setattr(abn_factory, "asset_path",
@@ -4601,8 +4630,52 @@ def test_v2_episode_quote_cap_rotates_excess_quotes_to_other_cards(monkeypatch):
 def test_v2_returns_empty_when_v2_visuals_disabled(monkeypatch):
     """Master kill-switch: with v2 off, _v2_scene_cards returns [] so the legacy visual renders
     (the whole function is best-effort and must NEVER break a render)."""
+    fake = _stub_v2_env(monkeypatch, [_scene(1, "A substantive scene for the routing guard.")],
+                        [_shot("title_card")])
     monkeypatch.setattr(abn_factory, "_USE_V2_VISUALS", False)
     assert abn_factory._v2_scene_cards("ep_t", 0, {"script": "x", "title": "t"}) == []
+    assert fake.calls == []
+
+
+def test_v2_returns_empty_when_external_factory_is_unavailable(monkeypatch):
+    """The production availability gate remains distinct from the local routing tests."""
+    fake = _stub_v2_env(monkeypatch, [_scene(1, "A substantive scene for the routing guard.")],
+                        [_shot("title_card")])
+    monkeypatch.setattr(abn_factory, "_V2_VISUALS", False)
+    assert abn_factory._v2_scene_cards("ep_t", 1, {"script": "x", "title": "t"}) == []
+    assert fake.calls == []
+
+
+def test_v2_stub_restores_preexisting_module_parents_and_optional_globals(monkeypatch):
+    """A local routing test cannot leak fake attributes into an installed factory."""
+    originals = {name: ModuleType(name) for name in (
+        "factory", "factory.formats", "factory.formats.scenes",
+        "factory.contracts", "factory.contracts.stages",
+    )}
+    originals["factory"].formats = originals["factory.formats"]
+    originals["factory"].contracts = originals["factory.contracts"]
+    originals["factory.formats"].scenes = originals["factory.formats.scenes"]
+    originals["factory.contracts"].stages = originals["factory.contracts.stages"]
+    originals["factory.formats"].get_format = object()
+    originals["factory.formats.scenes"].comparison_target = object()
+    for name, module in originals.items():
+        monkeypatch.setitem(sys.modules, name, module)
+    dictionaries = {name: dict(module.__dict__) for name, module in originals.items()}
+    missing = object()
+    globals_before = {name: getattr(abn_factory, name, missing) for name in (
+        "_V2_VISUALS", "_USE_V2_VISUALS", "tag_scenes", "direct_visuals", "_v2cards",
+    )}
+    with monkeypatch.context() as routing:
+        fake = _stub_v2_env(routing, [_scene(1, "A substantive local routing statement.")],
+                            [_shot("title_card")])
+        assert all(sys.modules[name] is not module for name, module in originals.items())
+        assert abn_factory._v2_scene_cards("ep_t", 1, {"script": "x", "title": "Cursor"})
+        assert fake.calls[0][0] == "hook"
+    for name, module in originals.items():
+        assert sys.modules[name] is module
+        assert module.__dict__ == dictionaries[name]
+    for name, value in globals_before.items():
+        assert getattr(abn_factory, name, missing) is value
 
 
 # ---------------- ATOMIC BINARY COPY: no truncated clips for downstream readers ----------------
