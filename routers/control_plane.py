@@ -4512,9 +4512,18 @@ async def _run_dossier_source_inner(job_id: str) -> None:
                 # g-worker-allow-origin-1028): cutWindow keeps exactly the
                 # Worker's five cut fields in every mode.
                 **({"recipe": cut_window_recipe(
-                    cut_speed, cut_crop,
-                    reverse=(transforms.reverse if vary_transforms else None),
-                    hflip=(transforms.mirror if vary_transforms else None),
+                    # A Scrambler cut's true render values deliberately stay
+                    # out of the Worker-compared treatment receipt above, but
+                    # the advertised-origin recipe is originality evidence and
+                    # must describe the pixels that were actually rendered.
+                    # Legacy/non-Scrambler cuts retain their byte-identical
+                    # mapping from Layer B's drawn transforms.
+                    (render_speed if scram_record is not None else cut_speed),
+                    cut_crop,
+                    reverse=(scram_transforms.reverse if scram_record is not None
+                             else (transforms.reverse if vary_transforms else None)),
+                    hflip=(scram_transforms.mirror if scram_record is not None
+                           else (transforms.mirror if vary_transforms else None)),
                 )} if advertise_origin() else {}),
             })
             manifest["thumbnail"] = await _thumbnail_manifest(

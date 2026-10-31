@@ -115,7 +115,9 @@ def test_a_plain_cut_emits_all_null():
     }
 
 
-@pytest.mark.parametrize("speed", [0.5, 0.78, 1.5, 2.0])
+@pytest.mark.parametrize("speed", [
+    0.4, 0.5, 0.6, 0.78, 0.8, 1.1, 1.12, 1.3, 1.5, 2.0,
+])
 def test_speed_boundaries_are_finite_and_positive(speed):
     assert cut_window_recipe(speed, NEUTRAL_CROP)["speed"] == speed
 
