@@ -851,9 +851,10 @@ def _off_serialization(client, tmp_path, monkeypatch):
 
 
 def test_off_enqueue_serialization_matches_base_golden(lab, tmp_path, monkeypatch):
-    """The OFF surface is byte-identical to the BASE commit under identical
-    fixtures. The golden was re-captured from Lab main 036bb75f (the rebase
-    base) with the same normalization
+    """Pin the complete normalized OFF surface, including stored authority.
+    Behavioral bytes retain the 036bb75f baseline; only its two stored-job
+    registry-hash leaves were reviewed against current registry bytes.
+    The capture uses the same normalization
     (see tests/golden/scrambler/generate_base_golden.py); volatile fields
     (timestamps/runtime ids) are removed and only the tmp root is replaced
     on BOTH sides; paths, artifactRoot and thumbnail claims remain compared."""
@@ -870,21 +871,10 @@ def test_off_enqueue_serialization_matches_base_golden(lab, tmp_path, monkeypatc
         assert type(captured[phase]["sourceClaimVersion"]) is int
         assert captured[phase].pop("sourceClaimVersion") == 1
 
-    # The reviewed Burnt UGC authority changes the shared UGC executor and
-    # contract digests.  Those two authority pins legitimately flow into an
-    # otherwise unrelated source-job receipt; all behavioural serialization
-    # remains compared against the base golden.
-    def without_reviewed_authority_pins(value):
-        if isinstance(value, dict):
-            return {key: without_reviewed_authority_pins(item)
-                    for key, item in value.items()
-                    if key not in {"executorVersion", "formatContractVersion",
-                                   "engineRegistryHash", "engineProfileHash", "jobRequestHash"}}
-        if isinstance(value, list):
-            return [without_reviewed_authority_pins(item) for item in value]
-        return value
-
-    assert without_reviewed_authority_pins(captured) == without_reviewed_authority_pins(golden)
+    # Only the two known stored-job registry-hash leaves were refreshed to
+    # the current registry bytes. Every authority field, including the exact
+    # request hash, remains part of the full queued/completed comparison.
+    assert captured == golden
 
 
 # ---------------------------------------------------------------------------
