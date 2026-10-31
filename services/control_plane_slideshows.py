@@ -1225,7 +1225,8 @@ async def submit_syzygy_render(
     if format_slug in IMAGE_VIDEO_FORMATS:
         from services.control_plane_image_video import submit_image_video_render
         return await submit_image_video_render(plan.get("photoPlan"), page_id=page_id,
-            recipe_version=recipe_version, request_json=_request_json, format_slug=format_slug)
+            recipe_version=recipe_version, request_json=_request_json, format_slug=format_slug,
+            lab_job_id=lab_job_id)
     if format_slug == LYRIC_VIDEO_FORMAT_SLUG:
         from services.control_plane_lyric_video import validate_lyric_wire_plan
         validate_lyric_wire_plan(plan, page_id)
