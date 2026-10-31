@@ -3,11 +3,12 @@
 import asyncio
 import base64
 import os
-import signal
 import shutil
 import stat
 import tempfile
 from pathlib import Path
+
+from services.owned_import_process import create_import_subprocess
 
 # ── Cookies support ──────────────────────────────────────────────────
 # Resolution order (first hit wins):
@@ -374,22 +375,21 @@ def sweep_private_cookie_jars() -> int:
     return removed
 
 
+async def terminate_import_process_group(proc):
+    """Join cleanup only for a process whose unreaped leader we own."""
+    await proc.terminate()
+
+
 async def _communicate_or_kill(proc, source_import_mode: bool):
     try:
         return await proc.communicate()
     except asyncio.CancelledError:
         # Callers may enforce a bounded import timeout. Do not leave yt-dlp
         # running after the awaiting task has been cancelled.
-        if proc.returncode is None:
-            if source_import_mode and getattr(proc, "pid", None):
-                try:
-                    os.killpg(proc.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
-                except OSError:
-                    proc.kill()
-            else:
-                proc.kill()
+        if source_import_mode:
+            await terminate_import_process_group(proc)
+        elif proc.returncode is None:
+            proc.kill()
             await proc.communicate()
         raise
 
@@ -497,7 +497,8 @@ async def download_video(
             if source_import_mode:
                 # yt-dlp may spawn ffmpeg. Own the complete subprocess tree.
                 process_options["start_new_session"] = True
-            proc = await asyncio.create_subprocess_exec(*cmd, **process_options)
+            spawn = create_import_subprocess if source_import_mode else asyncio.create_subprocess_exec
+            proc = await spawn(*cmd, **process_options)
             _, stderr = await _communicate_or_kill(proc, source_import_mode)
         finally:
             if private_jar is not None:

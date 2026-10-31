@@ -67,6 +67,7 @@ def test_deprecation_banner_is_stripped_from_surfaced_error(monkeypatch, tmp_pat
     )
     exec_stub, _ = _fake_exec([(lambda cmd: True, 1, stderr)])
     monkeypatch.setattr(asyncio, "create_subprocess_exec", exec_stub)
+    monkeypatch.setattr(fe, "create_import_subprocess", exec_stub)
     monkeypatch.setattr(fe, "_in_container", lambda: True)
 
     with pytest.raises(RuntimeError) as exc:
@@ -82,6 +83,7 @@ def test_browser_probes_are_skipped_in_a_container(monkeypatch, tmp_path):
     """`--cookies-from-browser` can never work on Railway — don't even try."""
     exec_stub, calls = _fake_exec([(lambda cmd: True, 1, b"ERROR: nope")])
     monkeypatch.setattr(asyncio, "create_subprocess_exec", exec_stub)
+    monkeypatch.setattr(fe, "create_import_subprocess", exec_stub)
     monkeypatch.setattr(fe, "_in_container", lambda: True)
 
     with pytest.raises(RuntimeError):
@@ -93,6 +95,7 @@ def test_browser_probes_are_skipped_in_a_container(monkeypatch, tmp_path):
 def test_bounded_call_forwards_max_filesize_to_ytdlp(monkeypatch, tmp_path):
     exec_stub, calls = _fake_exec([(lambda cmd: True, 1, b"ERROR: unavailable")])
     monkeypatch.setattr(asyncio, "create_subprocess_exec", exec_stub)
+    monkeypatch.setattr(fe, "create_import_subprocess", exec_stub)
     monkeypatch.setattr(fe, "_in_container", lambda: True)
 
     with pytest.raises(RuntimeError):
@@ -116,6 +119,7 @@ def test_source_import_mode_verifies_tls_and_starts_an_owned_process_group(
         return _FakeProc(1, b"ERROR: unavailable")
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", _exec)
+    monkeypatch.setattr(fe, "create_import_subprocess", _exec)
     monkeypatch.setattr(fe, "_in_container", lambda: True)
     cookies = tmp_path / "cookies.txt"
     cookies.write_text("stale")
@@ -153,12 +157,18 @@ def test_source_import_cancellation_kills_the_complete_process_group(
             self.returncode = -9
             return b"", b""
 
+        async def terminate(self):
+            killed.append((self.pid, "owned cleanup"))
+            self.returncode = -9
+            return self.returncode
+
     process = BlockingProc()
 
     async def _exec(*_cmd, **_kwargs):
         return process
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", _exec)
+    monkeypatch.setattr(fe, "create_import_subprocess", _exec)
     monkeypatch.setattr(fe, "_in_container", lambda: True)
     monkeypatch.setattr(fe.os, "killpg", lambda pid, sig: killed.append((pid, sig)))
 
@@ -174,7 +184,7 @@ def test_source_import_cancellation_kills_the_complete_process_group(
             await task
 
     asyncio.run(run())
-    assert killed == [(4321, fe.signal.SIGKILL)]
+    assert killed == [(4321, "owned cleanup")]
 
 
 def test_browser_probe_failure_does_not_blame_the_cookies_file(monkeypatch, tmp_path):
@@ -197,6 +207,7 @@ def test_browser_probe_failure_does_not_blame_the_cookies_file(monkeypatch, tmp_
         (lambda cmd: True, 1, b"ERROR: unable to download video data: HTTP Error 403: Forbidden"),
     ])
     monkeypatch.setattr(asyncio, "create_subprocess_exec", exec_stub)
+    monkeypatch.setattr(fe, "create_import_subprocess", exec_stub)
 
     with pytest.raises(RuntimeError) as exc:
         asyncio.run(fe.download_video("https://youtu.be/x", tmp_path / "o.mp4"))
@@ -224,6 +235,7 @@ def test_cookie_attempt_is_reported_over_the_no_auth_attempt(monkeypatch, tmp_pa
         (lambda cmd: True, 1, b"ERROR: generic no-auth noise"),
     ])
     monkeypatch.setattr(asyncio, "create_subprocess_exec", exec_stub)
+    monkeypatch.setattr(fe, "create_import_subprocess", exec_stub)
 
     with pytest.raises(RuntimeError) as exc:
         asyncio.run(fe.download_video("https://youtu.be/x", tmp_path / "o.mp4"))
@@ -242,6 +254,7 @@ def test_successful_download_returns_destination(monkeypatch, tmp_path):
         return _FakeProc(0, b"")
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", _exec)
+    monkeypatch.setattr(fe, "create_import_subprocess", _exec)
     monkeypatch.setattr(fe, "_in_container", lambda: True)
 
     assert asyncio.run(fe.download_video("https://youtu.be/x", dest)) == dest
@@ -250,6 +263,7 @@ def test_successful_download_returns_destination(monkeypatch, tmp_path):
 def test_tried_strategies_are_listed_for_debugging(monkeypatch, tmp_path):
     exec_stub, _ = _fake_exec([(lambda cmd: True, 1, b"ERROR: unsupported URL")])
     monkeypatch.setattr(asyncio, "create_subprocess_exec", exec_stub)
+    monkeypatch.setattr(fe, "create_import_subprocess", exec_stub)
     monkeypatch.setattr(fe, "_in_container", lambda: True)
 
     with pytest.raises(RuntimeError) as exc:
@@ -283,6 +297,7 @@ def test_youtube_source_import_falls_back_to_cookies_after_the_bot_check(
     """Live 2026-09-25: every YouTube page import failed `no-auth` on Railway."""
     exec_stub, calls = _source_import_exec([(1, _BOT_CHECK), (0, b"")])
     monkeypatch.setattr(asyncio, "create_subprocess_exec", exec_stub)
+    monkeypatch.setattr(fe, "create_import_subprocess", exec_stub)
     monkeypatch.setattr(fe, "_in_container", lambda: True)
     cookies = tmp_path / "cookies.txt"
     cookies.write_text("# Netscape HTTP Cookie File\n")
@@ -310,6 +325,7 @@ def test_youtube_source_import_falls_back_to_cookies_after_the_bot_check(
 def test_non_youtube_source_import_never_receives_the_cookie_jar(monkeypatch, tmp_path):
     exec_stub, calls = _source_import_exec([(1, _BOT_CHECK)])
     monkeypatch.setattr(asyncio, "create_subprocess_exec", exec_stub)
+    monkeypatch.setattr(fe, "create_import_subprocess", exec_stub)
     monkeypatch.setattr(fe, "_in_container", lambda: True)
     cookies = tmp_path / "cookies.txt"
     cookies.write_text("# Netscape HTTP Cookie File\n")
@@ -331,6 +347,7 @@ def test_public_youtube_source_import_succeeds_without_touching_cookies(
 ):
     exec_stub, calls = _source_import_exec([(0, b"")])
     monkeypatch.setattr(asyncio, "create_subprocess_exec", exec_stub)
+    monkeypatch.setattr(fe, "create_import_subprocess", exec_stub)
     monkeypatch.setattr(fe, "_in_container", lambda: True)
     cookies = tmp_path / "cookies.txt"
     cookies.write_text("# Netscape HTTP Cookie File\n")
@@ -359,6 +376,7 @@ def test_youtube_source_import_never_writes_the_shared_cookie_jar(monkeypatch, t
         return _FakeProc(1, _BOT_CHECK)
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", _exec)
+    monkeypatch.setattr(fe, "create_import_subprocess", _exec)
     monkeypatch.setattr(fe, "_in_container", lambda: True)
     shared = tmp_path / "shared" / "cookies.txt"
     shared.parent.mkdir()
@@ -465,6 +483,11 @@ def test_cookie_attempt_cleanup_preserves_original_on_failure(monkeypatch, tmp_p
             self.returncode = -9
             return b"", b""
 
+        async def terminate(self):
+            killed.append((self.pid, "owned cleanup"))
+            self.returncode = -9
+            return self.returncode
+
     async def execute(*cmd, **kwargs):
         if "--cookies" not in cmd:
             return _FakeProc(1, _BOT_CHECK)
@@ -475,6 +498,7 @@ def test_cookie_attempt_cleanup_preserves_original_on_failure(monkeypatch, tmp_p
         return _FakeProc(1, b"ERROR: unavailable video")
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", execute)
+    monkeypatch.setattr(fe, "create_import_subprocess", execute)
     monkeypatch.setattr(fe.os, "killpg", lambda pid, sig: killed.append((pid, sig)))
     error = asyncio.CancelledError if failure == "cancel" else OSError if failure in {"copy", "spawn"} else RuntimeError
     with pytest.raises(error):
@@ -483,4 +507,4 @@ def test_cookie_attempt_cleanup_preserves_original_on_failure(monkeypatch, tmp_p
     assert list(fe._private_jar_dir().iterdir()) == []
     assert original.read_text() == "synthetic original"
     if failure == "cancel":
-        assert killed == [(4321, fe.signal.SIGKILL)]
+        assert killed == [(4321, "owned cleanup")]

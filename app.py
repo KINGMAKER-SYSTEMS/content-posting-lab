@@ -28,6 +28,7 @@ from routers.control_plane import generation_budget_status
 from routers.post_renders import router as post_renders_router, start_workers as start_post_render_workers, readiness as post_render_readiness
 from routers.control_plane_dossier import router as control_plane_dossier_router
 from routers.control_plane_recipes import router as control_plane_recipes_router
+from routers.control_plane_external_pages import router as control_plane_external_pages_router
 from routers.control_plane_source_libraries import (
     router as control_plane_source_libraries_router,
 )
@@ -192,6 +193,21 @@ async def lifespan(app: FastAPI):
     PROJECTS_DIR.mkdir(parents=True, exist_ok=True)
     ensure_default_project()
 
+    # A Railway volume admits only one mounted deployment at a time. Verify
+    # the actual mount/entrypoint before settling stopped legacy source owners;
+    # other deployments retain the explicit operator reconciliation path.
+    from routers import control_plane as source_runtime
+    from services.source_runtime_reconciliation import reconcile_railway_startup
+    try:
+        reconciliation = await asyncio.to_thread(
+            reconcile_railway_startup, source_runtime._jobs_path(),
+            source_runtime._generation_root_path(), source_runtime._GENERATION_RUNTIME_ID,
+        )
+        log.info("source runtime startup reconciliation: %s", reconciliation)
+    except Exception:
+        # An unavailable proof or repair never adds a global startup gate.
+        log.warning("source runtime reconciliation needs operator follow-up")
+
     # AgenticBuilderNews workspace DB + autonomous factory
     try:
         await agenticnews_db.init_db()
@@ -310,6 +326,10 @@ _AUTH_SKIP = ("/api/health", "/api/miniapp/")
 
 @app.middleware("http")
 async def check_api_key(request: Request, call_next):
+    # This exact write route checks the private machine bearer itself. The
+    # browser API key must not block a valid machine request or authorize one.
+    if request.method == "POST" and request.url.path == "/api/burn/import-tos":
+        return await call_next(request)
     if _APP_API_KEY and request.url.path.startswith("/api/"):
         if not any(request.url.path.startswith(s) for s in _AUTH_SKIP):
             token = request.headers.get("authorization", "").removeprefix("Bearer ").strip()
@@ -354,6 +374,11 @@ app.include_router(
     tags=["control-plane-dossier"],
 )
 app.include_router(control_plane_recipes_router, prefix="/api/control-plane", tags=["control-plane-recipes"])
+app.include_router(
+    control_plane_external_pages_router,
+    prefix="/api/control-plane",
+    tags=["control-plane-external-pages"],
+)
 app.include_router(
     control_plane_source_libraries_router,
     prefix="/api/control-plane",
