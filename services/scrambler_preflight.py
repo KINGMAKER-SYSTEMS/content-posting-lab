@@ -263,9 +263,127 @@ def preflight_problems_as_enabled(env: Mapping[str, str] | None = None, *,
     return problems
 
 
+def _resolve_page_master_shas(page: str) -> tuple[list[str], str | None]:
+    """Resolve ``page``'s current master SHAs the way the planner does, plus a
+    short failure reason (``None`` on success).
+
+    Roster intent -> the page's current registered recipe bindings ->
+    ``resolve_source_recipe`` -> its master library. Returns ``(shas, failure)``:
+    on success ``shas`` is non-empty and ``failure`` is ``None``; any failure to
+    resolve (missing intent, no matching bindings, an unresolvable recipe, or an
+    empty master library) answers ``([], reason)`` so the caller fails CLOSED
+    instead of silently reporting the page ready.
+
+    Bounded and fail-soft by design (LOW-2): this runs once at boot, iterates at
+    most one ``resolve_source_recipe`` call per registered binding (pages x
+    bindings), and each ShipStream manifest fetch is a single best-effort read
+    with no retry. A vault/network failure raises ``ShipStreamSourceUnavailable``,
+    which ``resolve_source_recipe`` already converts to ``None`` (never a crash);
+    we answer ``([], reason)`` and the preflight logs NOT READY.
+    """
+    from routers.control_plane import _current_master_pages_intent
+    from routers.control_plane_recipes import list_registered_recipe_bindings
+    from services.control_plane_sources import resolve_source_recipe
+
+    try:
+        intent = _current_master_pages_intent(page)
+    except Exception as error:  # fail closed: a broken seam must not read ready
+        return [], f"intent_exception:{type(error).__name__}"
+    if intent is None:
+        return [], "no_master_pages_intent"
+    master_pages, master_pages_hash = intent
+    try:
+        bindings = list_registered_recipe_bindings(
+            page, master_pages, master_pages_hash)
+    except Exception as error:
+        return [], f"bindings_exception:{type(error).__name__}"
+    if not bindings:
+        return [], "no_registered_recipe_bindings"
+    shas: list[str] = []
+    for _bound_page, publication in bindings:
+        try:
+            recipe = resolve_source_recipe(publication)
+        except Exception as error:
+            return [], f"resolve_exception:{type(error).__name__}"
+        if recipe is None:
+            return [], "recipe_unresolved"
+        shas.extend(master.sha256 for master in getattr(recipe, "masters", ()))
+    if not shas:
+        return [], "empty_masters"
+    return shas, None
+
+
+def preflight_page_origin_problems(env: Mapping[str, str] | None = None) -> list[str]:
+    """One ``page=<id> reason=<r>`` per listed page that is not READY.
+
+    Two failure classes, both named by page (MED-1):
+
+    * ``origin_mapping_unknown:<sha12>`` / ``origin_window_unknown:<kind>:<id>``
+      — the page resolves to masters but a master lacks a usable origin mapping;
+    * ``master_resolution_failed:<short>`` — a listed page cannot be resolved to
+      masters at all (no intent, no bindings, unresolvable recipe, or empty
+      masters). This used to answer ``[]`` and read ``ready``; it now fails
+      closed so a resolution drift is visible at startup.
+
+    This is the startup visibility for the 409 the enqueue would otherwise
+    refuse with (``scrambler_unavailable: origin_mapping_unknown:<sha12>``).
+    """
+    env = os.environ if env is None else env
+    pages = sorted(core._page_list(env.get(core.SCRAMBLER_PAGES_ENV)))
+    if not pages:
+        return []
+    usage_raw = str(env.get(originality.ORIGINALITY_USAGE_PATH_ENV, "")).strip()
+    if not usage_raw:
+        return []
+    usage = Path(usage_raw)
+    origins_raw = str(env.get(originality.ORIGINALITY_ORIGINS_PATH_ENV, "")).strip()
+    origins = Path(origins_raw) if origins_raw else usage.parent / originality.ORIGINS_FILE_NAME
+    try:
+        origins_map = originality._load_origins_map(origins)
+    except originality.ScramblerOriginalityUnavailable as error:
+        # A missing map is also reported by preflight_problems(full=False), but
+        # an unparseable/corrupt map is only parsed by the full check — startup
+        # would otherwise log ready. Either way, without a usable map no
+        # master's origin can be verified, so fail CLOSED and name every page.
+        short = str(error).split(":", 1)[0] or "origins_map_unavailable"
+        return [f"page={page} reason=origins_map_unavailable:{short}"
+                for page in pages]
+    problems: list[str] = []
+    for page in pages:
+        try:
+            shas, resolution_failure = _resolve_page_master_shas(page)
+        except Exception as error:
+            shas, resolution_failure = [], f"exception:{type(error).__name__}"
+        if resolution_failure:
+            problems.append(
+                f"page={page} reason=master_resolution_failed:{resolution_failure}")
+            continue
+        reason = None
+        for sha in shas:
+            key = originality._normalize_master_sha(sha)
+            if key is None:
+                reason = f"origin_mapping_unknown:{str(sha)[:12]}"
+            else:
+                mapping = origins_map.get(key)
+                if mapping is None:
+                    reason = f"origin_mapping_unknown:{key[:12]}"
+                elif mapping.window is None:
+                    reason = (f"origin_window_unknown:{mapping.origin_kind}:"
+                              f"{mapping.origin_id}")
+            if reason:
+                break
+        if reason:
+            problems.append(f"page={page} reason={reason}")
+    return problems
+
+
 def log_startup_preflight(logger: logging.Logger | None = None,
                           env: Mapping[str, str] | None = None) -> list[str]:
-    """One startup log line: OFF, ready, or NOT READY with every missing setting."""
+    """One startup log line: OFF, ready, or NOT READY with every missing setting.
+
+    A listed page that cannot be resolved to masters, or whose current master(s)
+    lack a usable origin mapping, is logged by name and is NOT reported ready.
+    """
     logger = logger or logging.getLogger("scrambler.preflight")
     env = os.environ if env is None else env
     if (str(env.get(core.SCRAMBLER_ENABLED_ENV, "")).strip() != "1"
@@ -273,7 +391,11 @@ def log_startup_preflight(logger: logging.Logger | None = None,
         logger.info("scrambler preflight: OFF")
         return []
     problems = preflight_problems(env, full=False)
+    problems.extend(preflight_page_origin_problems(env))
     if problems:
+        for problem in problems:
+            if problem.startswith("page="):
+                logger.warning("scrambler preflight: NOT READY %s", problem)
         logger.warning("scrambler preflight: NOT READY (%d): %s", len(problems), "; ".join(problems))
     else:
         logger.info("scrambler preflight: ready pages=%s",
