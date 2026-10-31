@@ -3,6 +3,8 @@
 No production provider incident is reproduced. Network and local encoding alone
 are replaced. Duplicate dispatch is explicit; no automatic retry is asserted.
 """
+import copy
+import hashlib
 import json
 from pathlib import Path
 
@@ -32,7 +34,7 @@ def _same_plan_ids(payload, library):
     raise AssertionError("fixture must offer two real job identities selecting one plan")
 
 
-def _stateful_provider(monkeypatch, library, *, ambiguous=False):
+def _stateful_provider(monkeypatch, library, *, ambiguous=False, traffic=None):
     source_bytes = {item.key: b"x" * item.bytes for item in library.objects}
     cache, jobs, posts = {}, {}, []
     lost = False
@@ -40,6 +42,8 @@ def _stateful_provider(monkeypatch, library, *, ambiguous=False):
     def respond(request):
         nonlocal lost
         path = request.url.path
+        if traffic is not None:
+            traffic.append((request.method, request.url.host, path))
         if request.url.host == "r2.example":
             assert request.method in {"GET", "HEAD"}
             assert "authorization" not in request.headers
@@ -123,19 +127,72 @@ async def test_actual_new_job_escapes_failed_remote_cache_and_request_replay_sta
 
 
 @pytest.mark.asyncio
-async def test_explicit_ambiguous_same_job_redispatch_reuses_remote_key(lab, monkeypatch):
+async def test_ambiguous_failed_job_replay_and_duplicate_runner_stay_terminal(lab, monkeypatch):
     client, _root, started, library, payload = lab
-    cache, remote_jobs, posts = _stateful_provider(monkeypatch, library, ambiguous=True)
+    traffic = []
+    cache, remote_jobs, posts = _stateful_provider(
+        monkeypatch, library, ambiguous=True, traffic=traffic,
+    )
     job_id = _enqueue(client, payload, "cache-ambiguous-same-job")
     await cp._run_syzygy_slideshow(job_id)
-    assert cp._load_jobs()["jobs"][job_id]["status"] == "failed"
+    failed = cp._load_jobs()["jobs"][job_id]
+    assert failed["status"] == "failed" and failed["clips"] == []
     assert len(posts) == len(cache) == 1 and list(remote_jobs.values()) == ["done"]
+    private_before = cp._jobs_path().read_bytes()
+    failed_before = copy.deepcopy(failed)
+    posts_before, cache_before = copy.deepcopy(posts), dict(cache)
+    remote_before, traffic_before = dict(remote_jobs), list(traffic)
+    artifact_root = Path(failed["artifactRoot"])
+
+    def artifact_files():
+        return {str(path.relative_to(artifact_root)): hashlib.sha256(path.read_bytes()).hexdigest()
+                for path in artifact_root.rglob("*") if path.is_file()}
+
+    files_before = artifact_files()
+    artifacts_before = client.get(f"/api/control-plane/v1/jobs/{job_id}/artifacts", headers=headers())
+    assert artifacts_before.status_code == 200 and artifacts_before.json()["artifacts"] == []
+    assert cp._jobs_path().read_bytes() == private_before
     assert _enqueue(client, payload, "cache-ambiguous-same-job") == job_id
-    assert started == [job_id] and len(posts) == 1
-    # Explicit duplicate worker dispatch, not a claim of automatic API resume.
+    assert started == [job_id]
+    # This is a terminal-runner refusal, not an automatic remote-job resume.
     await cp._run_syzygy_slideshow(job_id)
-    complete = cp._load_jobs()["jobs"][job_id]
-    assert complete["status"] == "completed", complete.get("error")
-    assert len(complete["clips"]) == 1
-    assert len(posts) == 2 and len(cache) == 1
-    assert posts[0] == posts[1], "ambiguous retry keeps key and exact payload"
+    artifacts_after = client.get(f"/api/control-plane/v1/jobs/{job_id}/artifacts", headers=headers())
+    assert artifacts_after.status_code == 200
+    assert artifacts_after.json() == artifacts_before.json()
+    assert cp._load_jobs()["jobs"][job_id] == failed_before
+    assert cp._jobs_path().read_bytes() == private_before
+    assert posts == posts_before and cache == cache_before
+    assert remote_jobs == remote_before and traffic == traffic_before
+    assert artifact_files() == files_before
+
+
+@pytest.mark.asyncio
+async def test_explicit_active_job_adapter_retry_reuses_remote_key_and_body(lab, monkeypatch):
+    """Adapter identity only: direct calls do not dispatch or resume a runner."""
+    client, _root, started, library, payload = lab
+    traffic = []
+    cache, remote_jobs, posts = _stateful_provider(
+        monkeypatch, library, ambiguous=True, traffic=traffic,
+    )
+    job_id = _enqueue(client, payload, "cache-active-adapter-identity")
+    job = cp._load_jobs()["jobs"][job_id]
+    assert job["status"] == "queued" and cp._has_slideshow_runner_claim(job)
+    plan = job["slideshowPlan"][0]
+    plan_before = copy.deepcopy(plan)
+    recipe = slides.resolve_slideshow_recipe(payload)
+    assert recipe is not None
+    identity = dict(page_id=job["pageId"], recipe_version=job["recipeVersion"],
+                    format_slug=recipe.format_slug, lab_job_id=job_id)
+    private_before = cp._jobs_path().read_bytes()
+    with pytest.raises(slides.SyzygyUnavailable, match="Syzygy request failed"):
+        await slides.submit_syzygy_render(plan, **identity)
+    assert len(posts) == len(cache) == 1 and list(remote_jobs.values()) == ["done"]
+    remote, quality = await slides.submit_syzygy_render(plan, **identity)
+    assert quality == "full" and remote == next(iter(cache.values()))
+    assert len(posts) == 2 and len(cache) == len(remote_jobs) == 1
+    assert posts[0] == posts[1], "same active-job adapter identity keeps key and exact payload"
+    assert traffic == [("POST", "syzygy.example", "/api/v1/render")] * 2
+    assert plan == plan_before
+    assert cp._jobs_path().read_bytes() == private_before
+    assert cp._load_jobs()["jobs"][job_id] == job
+    assert started == [job_id]  # only the original enqueue, no runner execution
