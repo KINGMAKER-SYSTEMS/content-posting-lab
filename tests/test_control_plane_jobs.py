@@ -149,8 +149,8 @@ def test_status_serves_named_reason_for_legacy_blank_terminal_error(lab):
     assert 0 < len(error) <= 300
 
 
-@pytest.mark.parametrize("status", ["queued", "running"])
-def test_status_omits_error_for_nonterminal_jobs(lab, status):
+@pytest.mark.parametrize("status", ["queued", "running", "completed", "succeeded"])
+def test_status_omits_error_for_active_or_successful_jobs(lab, status):
     client, _, _, _ = lab
     job_id = _store_status_job(status, "stale failure should not leak")
 
