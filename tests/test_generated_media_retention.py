@@ -589,3 +589,42 @@ def test_old_unconfirmed_clip_is_never_a_stray(tmp_path):
     assert (directory / 'thumbnails/0000.jpg').read_bytes() == b't'
     assert not (directory / 'scratch/old.bin').exists()
     assert result['stray_files'] == 1 and result['clip_files'] == 0
+
+
+@pytest.mark.parametrize('shape', ['scalar', 'null', 'dict', 'string', 'bool', 'invalid_only', 'invalid_later'])
+def test_persisted_malformed_clips_hold_job_without_blocking_other_cleanup(tmp_path, monkeypatch, shape):
+    import routers.control_plane as cp
+    root = tmp_path / 'gen'
+    bad_dir, bad = make_job(root, name='bad', age=timedelta(days=3), extra_files=())
+    good_dir, good = make_job(root, name='good', age=timedelta(hours=3), clips=((B, 'renders/good.mp4'),), extra_files=())
+    bad['clips'] = {
+        'scalar': 1, 'null': None, 'dict': {}, 'string': 'bad', 'bool': True,
+        'invalid_only': [1], 'invalid_later': [bad['clips'][0], 1],
+    }[shape]
+    store_path = tmp_path / 'jobs.json'
+    monkeypatch.setattr(cp, '_jobs_path', lambda: store_path)
+    cp.atomic_save(store_path, {'jobs': {'bad': bad, 'good': good}, 'byIdempotency': {}})
+    stored_before = store_path.read_bytes()
+    before = {str(p.relative_to(bad_dir)): p.read_bytes() for p in bad_dir.rglob('*') if p.is_file()}
+    worker, asked = sweeper(True)
+    errors = []
+    try:
+        worker.sweep(cp._load_jobs(), root, NOW)
+    except Exception as error:
+        errors.append(type(error).__name__)
+    after = {str(p.relative_to(bad_dir)): p.read_bytes() for p in bad_dir.rglob('*') if p.is_file()}
+    assert store_path.read_bytes() == stored_before
+    assert not errors, f'malformed saved row blocked pass: {errors}'
+    assert after == before, 'malformed job files must all be held'
+    assert not good_dir.exists(), 'unrelated confirmed job should still clean'
+    assert asked == [(B, 100)]
+
+
+def test_missing_clips_key_keeps_legacy_no_clips_cleanup(tmp_path):
+    root = tmp_path / 'gen'
+    directory, job = make_job(root, age=timedelta(days=3), clips=(), extra_files=('scratch/old.bin',))
+    del job['clips']
+    worker, asked = sweeper(True)
+    result = worker.sweep({'jobs': {'j': job}}, root, NOW)
+    assert asked == [] and result['stray_files'] == 1
+    assert not directory.exists()
