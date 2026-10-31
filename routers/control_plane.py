@@ -2493,15 +2493,34 @@ _UNRECORDED_FAILURE_REASON = "lab_failure_reason_unrecorded"
 _WRITER_FAILURE_REASON = "generation_failed_without_message"
 
 
+# ECMAScript String.prototype.trim whitespace, matching the Worker validator.
+# Python's default strip differs for FEFF and several C0 control characters.
+_WORKER_TRIM_CHARS = (
+    "\u0009\u000a\u000b\u000c\u000d\u0020\u00a0\u1680"
+    "\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a"
+    "\u2028\u2029\u202f\u205f\u3000\ufeff"
+)
+
+
 def _terminal_failure_reason(error: Any, *, fallback: str) -> str:
-    """Return the bounded, non-blank reason required by terminal failures."""
-    if isinstance(error, str):
-        reason = error.strip()
-    elif error is None:
-        reason = ""
-    else:
-        reason = str(error).strip()
-    return reason[:300] or fallback
+    """Produce a nonblank reason bounded in the Worker's UTF-16 units."""
+    reason = error if isinstance(error, str) else "" if error is None else str(error)
+    reason = reason.strip(_WORKER_TRIM_CHARS)
+    kept = []
+    units = 0
+    for char in reason:
+        code = ord(char)
+        # Avoid emitting an invalid Unicode scalar if a stored JSON value
+        # contains an unpaired surrogate.
+        if 0xD800 <= code <= 0xDFFF:
+            char = "\ufffd"
+            code = 0xFFFD
+        width = 2 if code > 0xFFFF else 1
+        if units + width > 300:
+            break
+        kept.append(char)
+        units += width
+    return "".join(kept).strip(_WORKER_TRIM_CHARS) or fallback
 
 
 def _exception_failure_reason(error: BaseException) -> str:
