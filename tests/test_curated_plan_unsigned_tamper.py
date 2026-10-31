@@ -122,6 +122,7 @@ def _prepare_runner(monkeypatch, tmp_path, page, *, tamper_focal=False):
         job.update(authority_job)
         job["status"] = "queued"
 
+    job.update({"sourceKind": "syzygy_slideshow", "slideshowClaimVersion": 1, "slideshowAttemptId": "test-attempt", "runtimeId": routes._GENERATION_RUNTIME_ID})
     monkeypatch.setattr(routes, "_get_job_or_404", lambda _: job)
     monkeypatch.setattr(routes, "_job_matches_current_master_pages", lambda _: True)
     monkeypatch.setattr(routes, "load_registered_recipe", lambda *a: publication)
@@ -130,7 +131,7 @@ def _prepare_runner(monkeypatch, tmp_path, page, *, tamper_focal=False):
     monkeypatch.setattr(routes, "job_profile_authority_matches", lambda *a: True)
     monkeypatch.setattr(routes, "load_recipe_library", lambda _: library)
     monkeypatch.setattr(
-        routes, "_update_job", lambda _job_id, **changes: job.update(changes)
+        routes, "_update_slideshow_job", lambda _job_id, _attempt, _runtime, **changes: (job.update(changes) or dict(job))
     )
     monkeypatch.setattr(routes, "_claim_unique_slideshow_clip", lambda *a: None)
     monkeypatch.setattr(routes, "_source_provenance", lambda _, source: source)

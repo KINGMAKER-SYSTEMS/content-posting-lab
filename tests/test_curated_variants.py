@@ -256,6 +256,8 @@ def _runner_fixture(monkeypatch, tmp_path, plan):
     job.update(status="queued", artifactRoot=str(tmp_path), sourceLibraryId=recipe.library_id,
                formatContractVersion=recipe.format_contract_version, executorVersion=recipe.executor_version,
                materialSource=recipe.material_source, assetType=recipe.asset_type, slideshowPlan=[plan])
+    job.update({"sourceKind": "syzygy_slideshow", "slideshowClaimVersion": 1,
+                "slideshowAttemptId": "test-attempt", "runtimeId": routes._GENERATION_RUNTIME_ID})
     monkeypatch.setattr(routes, "_get_job_or_404", lambda _: job)
     monkeypatch.setattr(routes, "_job_matches_current_master_pages", lambda _: True)
     monkeypatch.setattr(routes, "load_registered_recipe", lambda *a: publication)
@@ -263,7 +265,7 @@ def _runner_fixture(monkeypatch, tmp_path, plan):
     monkeypatch.setattr(routes, "typed_recipe_spec", lambda _: value)
     monkeypatch.setattr(routes, "job_profile_authority_matches", lambda *a: True)
     monkeypatch.setattr(routes, "load_recipe_library", lambda _: library)
-    monkeypatch.setattr(routes, "_update_job", lambda _, **changes: job.update(changes))
+    monkeypatch.setattr(routes, "_update_slideshow_job", lambda _id, _attempt, _runtime, **changes: (job.update(changes) or dict(job)))
     monkeypatch.setattr(routes, "_claim_unique_slideshow_clip", lambda *a: None)
     monkeypatch.setattr(routes, "_source_provenance", lambda _, source: source)
     calls = _fake_syzygy_boundary(monkeypatch, library)
