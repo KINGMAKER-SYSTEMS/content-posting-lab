@@ -1330,6 +1330,8 @@ async def test_truck_recovery_cancel_is_terminal_and_preserves_candidate_root(la
     publication = recipe_publication()
     spec = json.loads(publication["recipeSpecCanonical"])
     store["jobs"][job_id] = {"jobId": job_id, "pageId": PAGE_ID, "status": "queued",
+        "sourceKind": "truck_master_recovery", "truckRecoveryClaimVersion": 1,
+        "truckRecoveryAttemptId": "test-attempt", "runtimeId": cp._GENERATION_RUNTIME_ID,
         "recipeId": publication["recipeId"], "engine": publication["engine"],
         "recipeVersion": publication["recipeVersion"], "recipeSpecHash": publication["recipeSpecHash"],
         "masterPages": spec["masterPages"], "masterPagesHash": spec["masterPagesHash"],

@@ -696,26 +696,32 @@ async def submit_image_video_render(
     request_json: Any = None,
     timeout: float = 90.0,
     format_slug: str | None = None,
+    lab_job_id: str | None = None,
 ) -> tuple[str, str]:
     """Submit one prepared photo plan and return (job_id, quality).
 
     ``request_json`` is dependency-injectable (matching the existing
     ``_request_json`` signature) so tests capture the exact request receipt
-    without a live runtime. The idempotency key is scoped to page + recipe +
-    plan signature. The receipt is (job_id, quality) only and never asserts an
+    without a live runtime. With a Lab job id, retries of that job keep one key
+    and a new job gets a fresh key. Legacy callers retain their page + recipe +
+    plan signature key. The receipt is (job_id, quality) only and never asserts an
     applied brightness gain.
     """
     if (not isinstance(plan, dict) or plan.get("pageId") != page_id
             or not isinstance(recipe_version, str) or not recipe_version.strip()
             or recipe_version != recipe_version.strip()):
         raise ImageVideoError("image-video submission identity is invalid")
+    if lab_job_id is not None and (not isinstance(lab_job_id, str) or not lab_job_id):
+        raise ImageVideoError("image-video render needs a non-empty Lab job id")
     if format_slug is not None:
         target = IMAGE_VIDEO_TARGETS.get(format_slug)
         if target is None or page_id != target[0] or len(plan.get("media", [])) != target[5]:
             raise ImageVideoError("image-video submission format differs from exact page")
     spec = build_image_video_spec(plan)
-    key = image_video_idempotency_key(
-        page_id, recipe_version, plan["signature"], "render-v1",
+    key = (
+        image_video_idempotency_key(page_id, recipe_version, plan["signature"], "render-v1")
+        if lab_job_id is None else
+        image_video_idempotency_key(page_id, recipe_version, plan["signature"], "render-v2", lab_job_id)
     )
     if request_json is None:
         from services.control_plane_slideshows import _request_json
