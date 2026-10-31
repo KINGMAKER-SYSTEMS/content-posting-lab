@@ -443,7 +443,7 @@ async def test_feed_parse_is_off_loop_before_the_lock_and_once_per_job(lab, monk
     assert [kind for kind, _ in events].count("load") == 1
 
 
-def test_cached_index_reparses_on_change_and_still_refuses_stale(tmp_path, monkeypatch):
+def test_cached_index_reuses_equal_content_reparses_changed_content_and_refuses_stale(tmp_path, monkeypatch):
     feed = tmp_path / "feed"
     feed.mkdir()
     (feed / "usage.jsonl").write_text("")
@@ -460,7 +460,14 @@ def test_cached_index_reparses_on_change_and_still_refuses_stale(tmp_path, monke
     first = so.load_originality_index_cached()
     assert so.load_originality_index_cached() is first and len(calls) == 1
     os.utime(feed / "origins.json", (time.time() + 5,) * 2)
-    assert so.load_originality_index_cached() is not first and len(calls) == 2
+    assert so.load_originality_index_cached() is first and len(calls) == 1
+    (feed / "origins.json").write_text(json.dumps({
+        "a" * 64: {"page": "pilot", "origin_kind": "yt", "origin_id": "fresh",
+                   "origin_start_s": 0, "origin_end_s": 9},
+    }))
+    changed = so.load_originality_index_cached()
+    assert changed is not first and len(calls) == 2
+    assert "a" * 64 in changed.origins
     # Even an unchanged, in-age cache entry refuses once the ledger is stale.
     monkeypatch.setattr(so, "INDEX_CACHE_MAX_AGE_S", 10.0 ** 9)
     so.load_originality_index_cached()

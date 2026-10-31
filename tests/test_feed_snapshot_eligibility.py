@@ -324,7 +324,7 @@ def test_manual_sync_reports_verified_generation_age(tmp_path):
     import time
     from datetime import datetime, timezone
     from tools import scrambler_feed_sync
-    now = time.time()
+    now = int(time.time())
     source, dest = tmp_path / 'source', tmp_path / 'dest'
     feed = _feed_generation(['a'])
     feed['manifest.json'] = _manifest(feed['usage.jsonl'], feed['origins.json'],

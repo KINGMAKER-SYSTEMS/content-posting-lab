@@ -868,9 +868,9 @@ def _verified_feed_snapshot(usage: Path, origins: Path) -> tuple[bytes, bytes, f
 def load_originality_index_cached(*, now_epoch: float | None = None) -> OriginalityIndex:
     """``load_originality_index()`` from the environment, reusing an unchanged parse.
 
-    Any change to a feed file (or a cache older than INDEX_CACHE_MAX_AGE_S)
-    reparses; a usage ledger that has gone stale since the parse refuses
-    exactly like a fresh load. Errors are never cached.
+    Every return verifies the bounded feed bytes. Changed content or an expired
+    parse cache reparses; a metadata-only touch with identical content can reuse
+    the parsed index. A stale usage ledger refuses. Errors are never cached.
     """
     raw = os.environ.get(ORIGINALITY_USAGE_PATH_ENV)
     if raw is None or not str(raw).strip():
