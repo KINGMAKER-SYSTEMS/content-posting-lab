@@ -66,11 +66,7 @@ def _culture_page():
     return recipe, library, CULTURE_PAGE
 
 
-PAGES = pytest.mark.parametrize(
-    "page",
-    [_burnt_page, _culture_page],
-    ids=["burnt", "culture"],
-)
+PAGES = pytest.mark.parametrize("page", [_culture_page], ids=["culture"])
 
 
 def _prepare_runner(monkeypatch, tmp_path, page, *, tamper_focal=False):

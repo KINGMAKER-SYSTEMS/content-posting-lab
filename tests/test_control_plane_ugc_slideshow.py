@@ -693,16 +693,13 @@ def _burnt_library() -> SyzygyLibrary:
     )
 
 
-def test_burnt_curated_plan_matches_approved_lyric_plan_and_uses_burnt_sources():
-    # P89-BURNT-CULTURE-FORMAT: burnt-mill-rd now runs the shared ugc-slideshow
-    # executor from its OWN 20 clips, verbatim the approved lyric-video montage.
+def test_burnt_ugc_plan_is_independent_of_the_retired_lyric_lane():
     treatment = ugc_page_treatment("acct:burnt-mill-rd")
     assert isinstance(treatment, dict)
     curated = treatment["curatedVideoPlan"]
     lyric = json.loads(slideshows.LYRIC_VIDEO_EXECUTOR_PATH.read_bytes())
-    approved = lyric["pageTreatments"]["acct:burnt-mill-rd"]["curatedVideoPlan"]
-    assert curated == approved
-    assert len(curated["sources"]) == 20
+    assert "acct:burnt-mill-rd" not in lyric["pageTreatments"]
+    assert len(curated["sources"]) == 84
     assert len(curated["windows"]) == 27
     assert curated["audioSectionEnd"] == 20
     assert curated["lane"] == "slideshow-webweaving"

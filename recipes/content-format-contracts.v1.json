@@ -1202,7 +1202,7 @@
       "creativeAuthority": {
         "kind": "slideshow_renderer",
         "id": "syzygy-slideshow",
-        "version": "sha256:092647ed849c4b62d48a19d9a9b346a450b049ae5dc7587ddf6dc6eace33a9ef"
+        "version": "sha256:1097ebe82d9a955c63c9f89c4e840c70eeacb0fab62f6c848891c96ca6dffc09"
       },
       "dimensions": {
         "subject": {
@@ -1279,7 +1279,7 @@
       "creativeAuthority": {
         "kind": "slideshow_renderer",
         "id": "syzygy-slideshow",
-        "version": "sha256:78da457008391bd873dbc23c57fc7621f9707b8e139781e8d98cea4cdb9f65c9"
+        "version": "sha256:f2ef06869ea2723e83555be2a6a90558315c346196d2139f83870f7444423e78"
       },
       "dimensions": {
         "subject": {

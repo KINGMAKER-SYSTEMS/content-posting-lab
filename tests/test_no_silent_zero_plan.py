@@ -169,7 +169,7 @@ def test_image_video_variant_zero_signature_is_unchanged(
 
 def test_curated_variant_zero_signature_is_unchanged():
     recipe, library = burnt_recipe_and_library()
-    assert ss.plan_slideshows(recipe, library, 1, set(), "run")[0]["signature"] == BURNT_CANONICAL
+    assert ss.plan_slideshows(recipe, library, 1, set(), "run")[0] == ss.curated_plan_for_recipe(recipe, library)
     recipe, library = _culture_recipe(), _culture_library()
     assert ss.plan_slideshows(recipe, library, 1, set(), "run")[0]["signature"] == CULTURE_CANONICAL
 

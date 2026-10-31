@@ -68,6 +68,8 @@ def validate_lyric_recipe(spec: dict) -> dict:
     official sound to this value when submitting the timed final request.
     """
     master = spec.get("masterPages", {})
+    if isinstance(master, dict) and master.get("pageId") == "acct:burnt-mill-rd":
+        raise ValueError("burnt lyric video disabled: static captions only")
     production = spec.get("production", {})
     controls = production.get("controls", {}) if isinstance(production, dict) else None
     if (not isinstance(master, dict)
@@ -94,6 +96,8 @@ def validate_lyric_wire_plan(plan: dict, page_id: str) -> None:
     from services.control_plane_slideshows import (
         _parse_curated_video_plan, curated_plan_signature, curated_variant_number, curated_variant_plan,
     )
+    if page_id == "acct:burnt-mill-rd":
+        raise ValueError("burnt lyric video disabled: static captions only")
     timing_set = _timing_set_for_page(page_id)
     if timing_set is None:
         raise ValueError("lyric video page is not registered")

@@ -117,3 +117,61 @@ def test_job_master_pages_hash_and_current_roster_are_exact(lab, monkeypatch):
         json=job_body(version, intent, revision),
         headers=HEADERS,
     ).status_code == 409
+
+
+def _store_status_job(status, error=None):
+    job_id = "cpl-0123456789abcdef"
+    job = {
+        "jobId": job_id,
+        "pageId": PAGE_ID,
+        "status": status,
+        "progress": 0,
+        "clips": [],
+    }
+    if error is not None:
+        job["error"] = error
+    store = cp._empty_jobs()
+    store["jobs"][job_id] = job
+    cp._save_jobs(store)
+    return job_id
+
+
+def test_status_serves_named_reason_for_legacy_blank_terminal_error(lab):
+    client, _, _, _ = lab
+    job_id = _store_status_job("failed", " \t ")
+
+    response = client.get(f"/api/control-plane/v1/jobs/{job_id}", headers=HEADERS)
+
+    assert response.status_code == 200
+    error = response.json()["error"]
+    assert error == "lab_failure_reason_unrecorded"
+    assert error == error.strip()
+    assert 0 < len(error) <= 300
+
+
+@pytest.mark.parametrize("status", ["queued", "running"])
+def test_status_omits_error_for_nonterminal_jobs(lab, status):
+    client, _, _, _ = lab
+    job_id = _store_status_job(status, "stale failure should not leak")
+
+    response = client.get(f"/api/control-plane/v1/jobs/{job_id}", headers=HEADERS)
+
+    assert response.status_code == 200
+    assert "error" not in response.json()
+
+
+def test_message_less_generation_failure_writer_records_named_reason(lab):
+    _client, _, _, _ = lab
+    job_id = _store_status_job("running")
+
+    # This is the generic generation-runner seam: its old `str(error)[:300]`
+    # was empty for RuntimeError(), leaving the Worker unable to validate polls.
+    cp._update_job(
+        job_id,
+        status="failed",
+        error=cp._exception_failure_reason(RuntimeError()),
+    )
+
+    stored = cp._load_jobs()["jobs"][job_id]
+    assert stored["error"] == "generation_failed_without_message:RuntimeError"
+    assert 0 < len(stored["error"]) <= 300
