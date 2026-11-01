@@ -172,7 +172,9 @@ def test_only_files_inside_a_job_directory_inside_the_root_are_eligible(tmp_path
     plan = worker.plan({"jobs": {"j": job, "page": page_level}}, root, NOW)
 
     assert (outside / "keep.mp4").exists()
-    assert plan.clip_files == [directory / "thumbnails/0000.jpg"]
+    assert plan.clip_files == [], "escaped primary holds the whole job"
+    assert (directory / "thumbnails/0000.jpg").read_bytes() == b"t"
+    assert (directory / "renders/hailuo/c0.mp4").read_bytes() == b"c" * 100
     assert plan.stray_files == []
 
 
@@ -593,7 +595,12 @@ def test_old_unconfirmed_clip_is_never_a_stray(tmp_path):
     assert result['stray_files'] == 1 and result['clip_files'] == 0
 
 
-@pytest.mark.parametrize('shape', ['scalar', 'null', 'dict', 'string', 'bool', 'invalid_only', 'invalid_later'])
+@pytest.mark.parametrize('shape', ['scalar', 'null', 'dict', 'string', 'bool', 'invalid_only', 'invalid_later',
+                                        'missing_path', 'null_path', 'outside_path',
+                                        'thumbnail_scalar', 'thumbnail_missing_path',
+                                        'thumbnail_null_path', 'thumbnail_outside_path',
+                                        'primary_directory', 'thumbnail_directory',
+                                        'primary_nul', 'thumbnail_nul'])
 def test_persisted_malformed_clips_hold_job_without_blocking_other_cleanup(tmp_path, monkeypatch, shape):
     import routers.control_plane as cp
     root = tmp_path / 'gen'
@@ -602,6 +609,16 @@ def test_persisted_malformed_clips_hold_job_without_blocking_other_cleanup(tmp_p
     bad['clips'] = {
         'scalar': 1, 'null': None, 'dict': {}, 'string': 'bad', 'bool': True,
         'invalid_only': [1], 'invalid_later': [bad['clips'][0], 1],
+        'missing_path': [{}], 'null_path': [{'path': None}],
+        'outside_path': [{'path': '../outside.mp4'}],
+        'thumbnail_scalar': [{**bad['clips'][0], 'thumbnail': 'unknown'}],
+        'thumbnail_missing_path': [{**bad['clips'][0], 'thumbnail': {}}],
+        'thumbnail_null_path': [{**bad['clips'][0], 'thumbnail': {'path': None}}],
+        'thumbnail_outside_path': [{**bad['clips'][0], 'thumbnail': {'path': '../outside.jpg'}}],
+        'primary_nul': [{**bad['clips'][0], 'path': 'renders/bad\x00.mp4'}],
+        'thumbnail_nul': [{**bad['clips'][0], 'thumbnail': {'path': 'thumbnails/bad\x00.jpg'}}],
+        'primary_directory': [{**bad['clips'][0], 'path': 'renders'}],
+        'thumbnail_directory': [{**bad['clips'][0], 'thumbnail': {'path': 'thumbnails'}}],
     }[shape]
     store_path = tmp_path / 'jobs.json'
     monkeypatch.setattr(cp, '_jobs_path', lambda: store_path)
@@ -630,3 +647,81 @@ def test_missing_clips_key_keeps_legacy_no_clips_cleanup(tmp_path):
     result = worker.sweep({'jobs': {'j': job}}, root, NOW)
     assert asked == [] and result['stray_files'] == 1
     assert not directory.exists()
+
+
+@pytest.mark.parametrize('thumbnail', [None, 'absent'])
+def test_optional_unclaimed_thumbnail_does_not_hold_valid_primary(tmp_path, thumbnail):
+    root = tmp_path / 'gen'
+    directory, job = make_job(root, age=timedelta(hours=3), extra_files=())
+    if thumbnail == 'absent':
+        del job['clips'][0]['thumbnail']
+    else:
+        job['clips'][0]['thumbnail'] = None
+    worker, asked = sweeper(True)
+    plan = worker.plan({'jobs': {'j': job}}, root, NOW)
+    assert plan.clip_files == [directory / 'renders/hailuo/c0.mp4']
+    assert plan.stray_files == []
+    assert asked == [(A, 100)]
+
+
+@pytest.mark.parametrize('missing', ['primary', 'thumbnail'])
+def test_valid_absent_artifact_paths_remain_eligible_for_peer_cleanup(tmp_path, missing):
+    root = tmp_path / 'gen'
+    directory, job = make_job(root, age=timedelta(hours=3), extra_files=())
+    primary = directory / job['clips'][0]['path']
+    thumbnail = directory / job['clips'][0]['thumbnail']['path']
+    (primary if missing == 'primary' else thumbnail).unlink()
+    worker, asked = sweeper(True)
+    plan = worker.plan({'jobs': {'j': job}}, root, NOW)
+    assert plan.clip_files == [thumbnail if missing == 'primary' else primary]
+    assert plan.stray_files == []
+    assert asked == [(A, 100)]
+
+
+@pytest.mark.parametrize('kind', ['fifo', 'permission'])
+def test_nonregular_or_unreadable_declared_artifact_holds_only_its_job(tmp_path, monkeypatch, kind):
+    import os
+    from pathlib import Path
+    root = tmp_path / 'gen'
+    bad_dir, bad = make_job(root, name='bad', age=timedelta(days=3), extra_files=())
+    good_dir, good = make_job(root, name='good', clips=((B, 'renders/good.mp4'),), extra_files=())
+    primary = bad_dir / bad['clips'][0]['path']
+    if kind == 'fifo':
+        primary.unlink()
+        os.mkfifo(primary)
+    else:
+        original_stat = Path.stat
+        def denied_stat(path, *args, **kwargs):
+            if path == primary:
+                raise PermissionError('owned test artifact type unavailable')
+            return original_stat(path, *args, **kwargs)
+        monkeypatch.setattr(Path, 'stat', denied_stat)
+    worker, asked = sweeper(True)
+    plan = worker.plan({'jobs': {'bad': bad, 'good': good}}, root, NOW)
+    assert not any(bad_dir in p.parents for p in plan.clip_files + plan.stray_files)
+    assert plan.clip_files == [good_dir / 'renders/good.mp4', good_dir / 'thumbnails/0000.jpg']
+    assert asked == [(B, 100)]
+    assert (bad_dir / 'thumbnails/0000.jpg').read_bytes() == b't'
+
+
+@pytest.mark.parametrize('field', ['primary', 'thumbnail'])
+@pytest.mark.parametrize('error_type', [ValueError, OSError, RuntimeError])
+def test_public_artifact_resolution_failure_holds_only_its_job(tmp_path, monkeypatch, field, error_type):
+    from pathlib import Path
+    root = tmp_path / 'gen'
+    bad_dir, bad = make_job(root, name='bad', age=timedelta(days=3), extra_files=())
+    good_dir, good = make_job(root, name='good', clips=((B, 'renders/good.mp4'),), extra_files=())
+    relative = bad['clips'][0]['path'] if field == 'primary' else bad['clips'][0]['thumbnail']['path']
+    target = bad_dir / relative
+    original_resolve = Path.resolve
+    def unavailable(path, *args, **kwargs):
+        if path == target:
+            raise error_type('owned descriptor resolution unavailable')
+        return original_resolve(path, *args, **kwargs)
+    monkeypatch.setattr(Path, 'resolve', unavailable)
+    worker, asked = sweeper(True)
+    plan = worker.plan({'jobs': {'bad': bad, 'good': good}}, root, NOW)
+    assert not any(bad_dir in p.parents for p in plan.clip_files + plan.stray_files)
+    assert plan.clip_files == [good_dir / 'renders/good.mp4', good_dir / 'thumbnails/0000.jpg']
+    assert asked == [(B, 100)]
+    assert target.read_bytes() == (b'c' * 100 if field == 'primary' else b't')
