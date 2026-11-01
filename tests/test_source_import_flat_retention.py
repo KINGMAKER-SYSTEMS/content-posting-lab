@@ -60,12 +60,15 @@ def test_completed_flat_never_walks_new_private_child(completed_flat, timing):
     if timing == 'before_plan':
         create_child()
     if timing == 'after_plan':
-        original_plan = worker.plan
-        def plan_then_child(*args, **kwargs):
-            plan = original_plan(*args, **kwargs)
-            create_child()
-            return plan
-        worker.plan = plan_then_child
+        original_units = worker._units
+        def units_then_child(*args, **kwargs):
+            created = False
+            for unit in original_units(*args, **kwargs):
+                if not created:
+                    create_child()
+                    created = True
+                yield unit
+        worker._units = units_then_child
     worker.sweep(store, cp._generation_root(), now)
     assert private.read_bytes() == b'live retry'
 
@@ -92,7 +95,6 @@ def test_unproven_or_noncompleted_flat_rows_are_never_cleaned(completed_flat, ch
     clip = directory / job['clips'][0]['path']
     if change in {'failed', 'restartable_failed'}:
         clip.write_bytes(b'new same-root retry')
-    worker.plan = lambda *_args, **_kwargs: plan
     worker.sweep(store, cp._generation_root(), now)
     assert asked == [] and clip.exists()
     assert not plan.clip_files and not plan.stray_files
