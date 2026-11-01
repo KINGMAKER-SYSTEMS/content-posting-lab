@@ -338,9 +338,9 @@ def _key_id_for_engine(engine: Any) -> str | None:
     return PROVIDERS.get(engine, {}).get("key_id")
 
 
-def fold_into_index(index: dict[str, Any], job: dict[str, Any]) -> None:
+def fold_into_index(index: dict[str, Any], job: dict[str, Any], *, entries: dict[str, Any] | None = None) -> None:
     """Fold one archived job's compact facts into ``index`` (mutates it)."""
-    e = extract_index_entries(job)
+    e = entries if entries is not None else extract_index_entries(job)
     page_id = job.get("pageId")
 
     for (pid, identity) in e["sourceIdentities"]:
@@ -526,8 +526,15 @@ def compact_job_store(
     archived: list[dict[str, Any]] = []
     for job_id in archived_ids:
         job = jobs[job_id]
+        try:
+            entries = extract_index_entries(job)
+        except ValueError as error:
+            # Keep opaque records intact; they must not starve valid peers in
+            # this bounded batch or publish partial reservation evidence.
+            log.warning("compaction retained malformed job %s: %s", job_id, error)
+            continue
+        fold_into_index(index, job, entries=entries)
         archived.append(job)
-        fold_into_index(index, job)
         del jobs[job_id]
 
     # Normalize lists for deterministic on-disk shape.

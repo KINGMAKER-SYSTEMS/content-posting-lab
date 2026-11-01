@@ -5701,6 +5701,10 @@ async def _create_job_impl(
                                 existing.update({"status": "failed", "error": "generation_runtime_restarted",
                                                  "completedAt": datetime.now(timezone.utc).isoformat()})
                                 _save_jobs(store)
+                    else:
+                        existing.update({"status": "failed", "error": "generation_runtime_restarted",
+                                         "completedAt": datetime.now(timezone.utc).isoformat()})
+                        _save_jobs(store)
                 elif existing.get("sourceKind") == "syzygy_slideshow":
                     if _has_slideshow_runner_claim(existing):
                         with runner_lock(_jobs_path(), existing["jobId"]) as acquired:
@@ -5708,6 +5712,10 @@ async def _create_job_impl(
                                 existing.update({"status": "failed", "error": "generation_runtime_restarted",
                                                  "completedAt": datetime.now(timezone.utc).isoformat()})
                                 _save_jobs(store)
+                    else:
+                        existing.update({"status": "failed", "error": "generation_runtime_restarted",
+                                         "completedAt": datetime.now(timezone.utc).isoformat()})
+                        _save_jobs(store)
                 elif existing.get("sourceKind") == "dossier_source_dna" and not _has_source_runner_claim(existing):
                     # A legacy runner never took the claim; its liveness is
                     # unknown, so its windows must remain reserved.
@@ -6472,6 +6480,11 @@ async def job_status(
                         _update_truck_recovery_job(job_id, job["truckRecoveryAttemptId"], job["runtimeId"],
                                                    status="failed", error="generation_runtime_restarted",
                                                    completedAt=datetime.now(timezone.utc).isoformat())
+            else:
+                current = _get_job_or_404(job_id)
+                if current.get("status") in GENERATION_ACTIVE_STATUSES:
+                    _update_job(job_id, status="failed", error="generation_runtime_restarted",
+                                completedAt=datetime.now(timezone.utc).isoformat())
         elif job.get("sourceKind") == "syzygy_slideshow":
             if _has_slideshow_runner_claim(job):
                 with runner_lock(_jobs_path(), job_id) as acquired:
@@ -6479,6 +6492,11 @@ async def job_status(
                         _update_slideshow_job(job_id, job["slideshowAttemptId"], job["runtimeId"],
                                               status="failed", error="generation_runtime_restarted",
                                               completedAt=datetime.now(timezone.utc).isoformat())
+            else:
+                current = _get_job_or_404(job_id)
+                if current.get("status") in GENERATION_ACTIVE_STATUSES:
+                    _update_job(job_id, status="failed", error="generation_runtime_restarted",
+                                completedAt=datetime.now(timezone.utc).isoformat())
         elif job.get("sourceKind") == "dossier_source_dna":
             # Pre-claim owners stay reserved until explicitly reconciled.
             if _has_source_runner_claim(job):
