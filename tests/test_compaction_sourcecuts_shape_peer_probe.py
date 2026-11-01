@@ -23,6 +23,8 @@ def _stored_pair(tmp_path, source_cuts):
         'good': {'jobId': 'good', 'pageId': 'page', 'sourceKind': 'generated',
                  'status': 'completed', 'completedAt': stamp, 'createdAt': stamp, 'clips': []},
     }, 'byIdempotency': {'bad-key': 'bad', 'good-key': 'good'}}
+    if source_cuts == 'missing':
+        del store['jobs']['bad']['sourceCuts']
     path = tmp_path / 'jobs.json'
     atomic_save(path, store)
     return path, private, atomic_load(path, default={})
@@ -57,7 +59,7 @@ def test_noniterable_sourcecuts_holds_row_and_preserves_cursor_peer_progress(tmp
         assert private.read_bytes() == b'owned-private-artifact'
 
 
-@pytest.mark.parametrize('source_cuts', [[], [{'slotId': 'slot', 'masterSha256': 'a' * 64,
+@pytest.mark.parametrize('source_cuts', ['missing', [], [{'slotId': 'slot', 'masterSha256': 'a' * 64,
                                             'startMs': 0, 'durationMs': 6000}]])
 def test_valid_sourcecuts_still_archive_both_rows_without_io(tmp_path, source_cuts):
     path, private, store = _stored_pair(tmp_path, source_cuts)
@@ -66,7 +68,7 @@ def test_valid_sourcecuts_still_archive_both_rows_without_io(tmp_path, source_cu
     result, archived = compaction.compact_job_store(store, NOW, batch_size=2)
     assert [row['jobId'] for row in archived] == ['bad', 'good']
     assert result['jobs'] == {}
-    assert len(result[compaction.ARCHIVE_INDEX_KEY]['sourceDnaCuts']) == len(source_cuts)
+    assert len(result[compaction.ARCHIVE_INDEX_KEY]['sourceDnaCuts']) == (0 if source_cuts == 'missing' else len(source_cuts))
     assert compaction.COMPACTION_SCAN_NEXT_KEY not in result
     assert store == original and path.read_bytes() == disk
     assert private.read_bytes() == b'owned-private-artifact'
