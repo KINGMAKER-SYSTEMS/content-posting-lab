@@ -221,8 +221,15 @@ def test_startup_log_line(tmp_path, caplog):
     assert "scrambler preflight: NOT READY" in caplog.text
     assert "SCRAMBLER_WORKER_SOURCE_WINDOW_COMPAT" in caplog.text
     caplog.clear()
-    assert pf.log_startup_preflight(env=_pilot_env(tmp_path)) == []
-    assert "scrambler preflight: ready" in caplog.text
+    # MED-1 fail-closed: a complete pilot env without roster intent for the
+    # listed pages (this test has no roster) must NOT read ready — each page
+    # is named with a master_resolution_failed reason.
+    problems = pf.log_startup_preflight(env=_pilot_env(tmp_path))
+    assert problems
+    assert ("page=acct:trailheadtravis reason=master_resolution_failed:no_master_pages_intent"
+            in problems), problems
+    assert "scrambler preflight: NOT READY" in caplog.text
+    assert "scrambler preflight: ready" not in caplog.text
 
 
 def test_preflight_is_not_on_any_http_path():
