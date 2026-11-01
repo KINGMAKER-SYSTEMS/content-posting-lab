@@ -1810,6 +1810,16 @@ def run_compaction_once(
             )
             raise
         if not archived:
+            # Persist scan-only progress without publishing a synthetic empty
+            # archive index or appending an empty archive batch.
+            cursor_key = compaction.COMPACTION_SCAN_NEXT_KEY
+            if (cursor_key in store) != (cursor_key in new_store) or store.get(cursor_key) != new_store.get(cursor_key):
+                cursor_only = dict(store)
+                if cursor_key in new_store:
+                    cursor_only[cursor_key] = new_store[cursor_key]
+                else:
+                    cursor_only.pop(cursor_key, None)
+                _save_jobs(cursor_only)
             return {"archived": 0, "jobs_before": before, "jobs_after": before,
                     "tmp_swept": _sweep_stale_compaction_tmps(path)}
         compaction.append_archive_records(path, archived, now)
@@ -4605,19 +4615,20 @@ async def _run_dossier_source_inner(job_id: str) -> None:
                     # out of the Worker-compared treatment receipt above, but
                     # the advertised-origin recipe is originality evidence and
                     # must describe the pixels that were actually rendered.
-                    # Legacy/non-Scrambler cuts retain their byte-identical
-                    # mapping from Layer B's drawn transforms.
+                    # Both transform lanes report the actual drawn operations;
+                    # non-loop cuts retain null and origin-OFF adds no recipe.
                     (render_speed if scram_record is not None else cut_speed),
                     cut_crop,
                     reverse=(scram_transforms.reverse if scram_record is not None
                              else (transforms.reverse if vary_transforms else None)),
                     hflip=(scram_transforms.mirror if scram_record is not None
                            else (transforms.mirror if vary_transforms else None)),
-                    # A Scrambler split_swap cut is the Lab's split-and-rotate
-                    # loop path (PR 281): its halves are re-ordered in place,
-                    # so the advertised recipe records loop_split True. Every
-                    # other cut keeps loop_split null (the pre-G39 value).
-                    loop_split=(scram_split_swap or None),
+                    # Scrambler split_swap and Layer B loop_swap both reorder
+                    # the cut's halves. Read only the active lane's draw;
+                    # transforms may be None when Layer B is disabled.
+                    loop_split=((scram_split_swap if scram_record is not None
+                                 else (transforms.loop_swap if vary_transforms else None))
+                                or None),
                 )} if advertise_origin() else {}),
             })
             manifest["thumbnail"] = await _thumbnail_manifest(
