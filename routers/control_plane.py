@@ -4613,6 +4613,11 @@ async def _run_dossier_source_inner(job_id: str) -> None:
                              else (transforms.reverse if vary_transforms else None)),
                     hflip=(scram_transforms.mirror if scram_record is not None
                            else (transforms.mirror if vary_transforms else None)),
+                    # A Scrambler split_swap cut is the Lab's split-and-rotate
+                    # loop path (PR 281): its halves are re-ordered in place,
+                    # so the advertised recipe records loop_split True. Every
+                    # other cut keeps loop_split null (the pre-G39 value).
+                    loop_split=(scram_split_swap or None),
                 )} if advertise_origin() else {}),
             })
             manifest["thumbnail"] = await _thumbnail_manifest(
@@ -5524,8 +5529,7 @@ async def create_source_import(
     return {"schema": RESPONSE_SCHEMA, "jobId": job_id, "status": "queued"}
 
 
-@router.post("/v1/jobs")
-async def create_job(
+async def _create_job_impl(
     request: Request,
     x_rt_page_id: str | None = Header(default=None),
     x_rt_lane: str | None = Header(default=None),
@@ -6252,6 +6256,34 @@ async def create_job(
     elif start_slideshow:
         _start_syzygy_slideshow(job_id)
     return {"schema": RESPONSE_SCHEMA, "jobId": job_id, "status": job["status"]}
+
+
+@router.post("/v1/jobs")
+async def create_job(
+    request: Request,
+    x_rt_page_id: str | None = Header(default=None),
+    x_rt_lane: str | None = Header(default=None),
+    idempotency_key: str | None = Header(default=None),
+    authorization: str | None = Header(default=None),
+    body: dict[str, Any] = Body(default=None),
+) -> dict[str, Any]:
+    """Exact recipe version under one durable idempotency key.
+
+    Every 409 is logged with its page id and detail so a repeating refusal
+    (e.g. ``scrambler_unavailable: origin_mapping_unknown``) is visible in
+    Railway logs, not only in the response body.
+    """
+    try:
+        return await _create_job_impl(
+            request, x_rt_page_id, x_rt_lane, idempotency_key, authorization,
+            body,
+        )
+    except HTTPException as error:
+        if error.status_code == 409:
+            page = (x_rt_page_id or "").strip() or "-"
+            log.info("POST /api/control-plane/v1/jobs 409 page=%s detail=%s",
+                     page, error.detail)
+        raise
 
 
 def _get_job_or_404(job_id: str) -> dict[str, Any]:

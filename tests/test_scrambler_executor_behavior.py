@@ -509,6 +509,88 @@ async def test_advertised_recipe_reports_scrambler_truth_without_changing_receip
     assert lane["renders"][0]["playback_speed"] == record["speed"]
 
 
+@pytest.mark.asyncio
+async def test_flag_on_split_swap_recipe_emits_loop_split_true(
+    lab, monkeypatch, tmp_path,
+):
+    """G39: a Scrambler split_swap cut is the Lab's split-and-rotate loop.
+
+    Flag on, the advertised-origin recipe records loop_split True for a
+    split_swap cut (PR 281) and nowhere else.
+    """
+    client, tmp_path, _ = lab
+    _scrambler_on(monkeypatch)
+    _originality_feed(monkeypatch, tmp_path)
+    monkeypatch.setenv(cp.ADVERTISE_ORIGIN_ENV, "1")
+    monkeypatch.setenv("SCRAMBLER_TREATMENT_WEIGHTS",
+                       "none:0,split_swap:1,camera:0,grade:0")
+    response = client.post(
+        "/api/control-plane/v1/jobs", json=job_body(1),
+        headers=headers("scrambler-g39-split-swap"),
+    )
+    job_id = response.json()["jobId"]
+    assert _job_scrambler_records(job_id)[0]["treatment"] == "split_swap"
+    _wire_executor(monkeypatch, tmp_path, [job_id])
+    await _run(job_id)
+    job = cp._load_jobs()["jobs"][job_id]
+    assert job["status"] == "completed", job.get("error")
+    recipe = job["clips"][0]["source"]["recipe"]
+    assert recipe["loop_split"] is True
+
+
+@pytest.mark.asyncio
+async def test_flag_on_non_split_scrambler_recipe_keeps_loop_split_null(
+    lab, monkeypatch, tmp_path,
+):
+    """G39: a non-split_swap Scrambler cut keeps loop_split null (pre-G39)."""
+    client, tmp_path, _ = lab
+    _scrambler_on(monkeypatch)
+    _originality_feed(monkeypatch, tmp_path)
+    monkeypatch.setenv(cp.ADVERTISE_ORIGIN_ENV, "1")
+    monkeypatch.setenv("SCRAMBLER_TREATMENT_WEIGHTS",
+                       "none:1,split_swap:0,camera:0,grade:0")
+    response = client.post(
+        "/api/control-plane/v1/jobs", json=job_body(1),
+        headers=headers("scrambler-g39-none"),
+    )
+    job_id = response.json()["jobId"]
+    assert _job_scrambler_records(job_id)[0]["treatment"] == "none"
+    _wire_executor(monkeypatch, tmp_path, [job_id])
+    await _run(job_id)
+    job = cp._load_jobs()["jobs"][job_id]
+    assert job["status"] == "completed", job.get("error")
+    recipe = job["clips"][0]["source"]["recipe"]
+    assert recipe["loop_split"] is None
+
+
+@pytest.mark.asyncio
+async def test_flag_off_split_swap_receipt_keeps_no_recipe_leg(
+    lab, monkeypatch, tmp_path,
+):
+    """G39: flag off, a split_swap cut's source keeps exactly the base keys.
+
+    The recipe leg (and its loop_split) stays off the wire entirely; the
+    receipt body is byte-identical to OFF.
+    """
+    client, tmp_path, _ = lab
+    _scrambler_on(monkeypatch)
+    _originality_feed(monkeypatch, tmp_path)
+    monkeypatch.delenv(cp.ADVERTISE_ORIGIN_ENV, raising=False)
+    monkeypatch.setenv("SCRAMBLER_TREATMENT_WEIGHTS",
+                       "none:0,split_swap:1,camera:0,grade:0")
+    response = client.post(
+        "/api/control-plane/v1/jobs", json=job_body(1),
+        headers=headers("scrambler-g39-split-swap-off"),
+    )
+    job_id = response.json()["jobId"]
+    assert _job_scrambler_records(job_id)[0]["treatment"] == "split_swap"
+    _wire_executor(monkeypatch, tmp_path, [job_id])
+    await _run(job_id)
+    job = cp._load_jobs()["jobs"][job_id]
+    assert job["status"] == "completed", job.get("error")
+    assert "recipe" not in job["clips"][0]["source"]
+
+
 # ---------------------------------------------------------------------------
 # Kill switch / legacy interplay through real executor runs
 # ---------------------------------------------------------------------------
@@ -851,10 +933,9 @@ def _off_serialization(client, tmp_path, monkeypatch):
 
 
 def test_off_enqueue_serialization_matches_base_golden(lab, tmp_path, monkeypatch):
-    """Pin the complete normalized OFF surface, including stored authority.
-    Behavioral bytes retain the 036bb75f baseline; only its two stored-job
-    registry-hash leaves were reviewed against current registry bytes.
-    The capture uses the same normalization
+    """The OFF surface is byte-identical to the BASE commit under identical
+    fixtures. The golden was re-captured from Lab main 036bb75f (the rebase
+    base) with the same normalization
     (see tests/golden/scrambler/generate_base_golden.py); volatile fields
     (timestamps/runtime ids) are removed and only the tmp root is replaced
     on BOTH sides; paths, artifactRoot and thumbnail claims remain compared."""
@@ -871,9 +952,19 @@ def test_off_enqueue_serialization_matches_base_golden(lab, tmp_path, monkeypatc
         assert type(captured[phase]["sourceClaimVersion"]) is int
         assert captured[phase].pop("sourceClaimVersion") == 1
 
-    # Only the two known stored-job registry-hash leaves were refreshed to
-    # the current registry bytes. Every authority field, including the exact
-    # request hash, remains part of the full queued/completed comparison.
+    # #315 changed the shared registry when Burnt moved to its own UGC
+    # footage and retired its lyric lane. Exact 61e capture changes only
+    # these two stored registry hashes. The fixture page's executor,
+    # contract, profile and request hashes remain byte-identical to BASE.
+    # Keep the historical golden and apply only the reviewed substitutions
+    # at these exact paths; never discard authority fields recursively.
+    for phase in ("job", "completedJob"):
+        assert golden[phase]["engineRegistryHash"] == (
+            "4c8de21caa2e3fefbfc6b2ba659a3e029321e576ef0291f9213497043a4f31ed"
+        )
+        golden[phase]["engineRegistryHash"] = (
+            "640e8bacfd94a9b6d7ecde9924a84bb622caacfc2aab2819d6170ba80055310e"
+        )
     assert captured == golden
 
 
