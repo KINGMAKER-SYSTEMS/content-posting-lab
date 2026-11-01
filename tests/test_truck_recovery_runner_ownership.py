@@ -208,7 +208,11 @@ async def test_legacy_failed_exposed_truck_clips_keep_master_through_compaction(
     store = cp._load_jobs()
     store['jobs'][job_id].pop('truckRecoveryClaimVersion')
     store['jobs'][job_id].pop('truckRecoveryAttemptId')
+    store['jobs'][job_id].update(status='running', runtimeId='old-runtime')
     cp.atomic_save(cp._jobs_path(), store)
+    observed = client.get(f'/api/control-plane/v1/jobs/{job_id}', headers=HEADERS)
+    assert observed.status_code == 200 and observed.json()['status'] == 'failed'
+    assert observed.json()['error'] == 'generation_runtime_restarted'
     row = cp._load_jobs()['jobs'][job_id]
     assert len(row['clips']) == 5
     artifacts = client.get(f'/api/control-plane/v1/jobs/{job_id}/artifacts', headers=HEADERS)

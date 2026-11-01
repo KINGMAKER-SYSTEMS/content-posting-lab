@@ -75,7 +75,8 @@ async def test_foreign_status_cannot_release_live_slideshow_plan(lab, monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_failed_partial_clip_remains_reserved_and_archived(lab, monkeypatch):
+@pytest.mark.parametrize('legacy_restart', [False, True])
+async def test_failed_partial_clip_remains_reserved_and_archived(lab, monkeypatch, legacy_restart):
     client, _, _, library, payload = lab
     first = client.post('/api/control-plane/v1/jobs', json=job_body(2, payload),
                         headers=headers('partial-ownership-first'))
@@ -94,6 +95,18 @@ async def test_failed_partial_clip_remains_reserved_and_archived(lab, monkeypatc
     await cp._run_syzygy_slideshow(job_id)
     job = cp._load_jobs()['jobs'][job_id]
     assert job['status'] == 'failed' and len(job['clips']) == 1
+    if legacy_restart:
+        store = cp._load_jobs()
+        legacy = store['jobs'][job_id]
+        legacy.update(status='running', runtimeId='old-runtime')
+        legacy.pop('slideshowClaimVersion')
+        legacy.pop('slideshowAttemptId')
+        cp.atomic_save(cp._jobs_path(), store)
+        observed = client.get(f'/api/control-plane/v1/jobs/{job_id}', headers=headers())
+        assert observed.status_code == 200 and observed.json()['status'] == 'failed'
+        assert observed.json()['error'] == 'generation_runtime_restarted'
+        job = cp._load_jobs()['jobs'][job_id]
+        assert len(job['clips']) == 1
     artifact = client.get(f'/api/control-plane/v1/jobs/{job_id}/artifacts', headers=headers())
     assert artifact.status_code == 200 and len(artifact.json()['artifacts']) == 1
     download = client.get(artifact.json()['artifacts'][0]['url'])
