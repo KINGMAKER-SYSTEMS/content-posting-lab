@@ -1049,3 +1049,19 @@ def test_cursor_archive_append_save_failure_retries_without_duplicate(job_path, 
     assert cp.run_compaction_once(job_path, now, batch_size=1)['archived'] == 1
     assert [json.loads(x)['jobId'] for x in archive.read_text().splitlines()] == ['second']
     assert cp._load_jobs()['compactionScanNextJobId'] == 'first'
+
+
+@pytest.mark.parametrize('batch_size', [0, -1])
+def test_nonpositive_batch_is_noop_without_cursor_or_write(job_path, monkeypatch, batch_size):
+    now = _now(); store = _empty()
+    store['jobs'] = {'old': _old_completed('old')}
+    store['futureMeta'] = {'keep': 1}
+    _write(job_path, store); before = job_path.read_bytes()
+    def unexpected(*_args, **_kwargs):
+        pytest.fail('nonpositive batch must not save or append')
+    monkeypatch.setattr(cp, '_save_jobs', unexpected)
+    monkeypatch.setattr(c, 'append_archive_records', unexpected)
+    result = cp.run_compaction_once(job_path, now, batch_size=batch_size)
+    assert result['archived'] == 0 and job_path.read_bytes() == before
+    assert cp._load_jobs() == store
+    assert not c.archive_path_for(job_path, now).exists()
