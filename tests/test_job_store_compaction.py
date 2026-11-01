@@ -995,7 +995,7 @@ def test_cursor_only_pass_persists_then_next_same_clock_archives(job_path, monke
     first = cp.run_compaction_once(job_path, now, batch_size=1)
     saved = cp._load_jobs()
     assert first['archived'] == 0 and appended == []
-    assert saved['compactionScanNextJobId'] == 'good'
+    assert saved.get('compactionScanNextJobId') == 'good'
     assert c.ARCHIVE_INDEX_KEY not in saved
     assert saved['jobs'] == store['jobs'] and saved['byIdempotency'] == store['byIdempotency']
     assert saved['futureMeta'] == store['futureMeta']
@@ -1014,3 +1014,38 @@ def test_compaction_invalid_cursor_falls_back_to_first_eligible(cursor):
     result, archived = c.compact_job_store(store, _now(), batch_size=1)
     assert [j['jobId'] for j in archived] == ['0']
     assert result['compactionScanNextJobId'] == '1'
+
+
+def test_cursor_only_save_failure_retries_without_archive(job_path, monkeypatch):
+    now = _now(); old = _old(); store = _empty()
+    store['jobs'] = {'bad': {'jobId': 'bad', 'pageId': 'acct:p', 'status': 'failed',
+        'sourceKind': 'syzygy_slideshow', 'createdAt': old, 'clips': [{'sha256': 'invalid'}], 'slideshowPlan': []},
+        'good': _old_completed('good')}
+    _write(job_path, store); before = job_path.read_bytes(); real_save = cp._save_jobs
+    def fail_save(_store): raise OSError('injected save failure')
+    monkeypatch.setattr(cp, '_save_jobs', fail_save)
+    with pytest.raises(OSError, match='injected save failure'):
+        cp.run_compaction_once(job_path, now, batch_size=1)
+    assert job_path.read_bytes() == before
+    assert not c.archive_path_for(job_path, now).exists()
+    monkeypatch.setattr(cp, '_save_jobs', real_save)
+    assert cp.run_compaction_once(job_path, now, batch_size=1)['archived'] == 0
+    assert cp.run_compaction_once(job_path, now, batch_size=1)['archived'] == 1
+
+
+def test_cursor_archive_append_save_failure_retries_without_duplicate(job_path, monkeypatch):
+    now = _now(); store = _empty(); store[c.ARCHIVE_INDEX_KEY] = c.empty_index()
+    store['jobs'] = {'first': _old_completed('first'), 'second': _old_completed('second')}
+    store['compactionScanNextJobId'] = 'second'
+    _write(job_path, store); before = job_path.read_bytes(); real_save = cp._save_jobs
+    def fail_save(_store): raise OSError('injected save failure')
+    monkeypatch.setattr(cp, '_save_jobs', fail_save)
+    with pytest.raises(OSError, match='injected save failure'):
+        cp.run_compaction_once(job_path, now, batch_size=1)
+    assert job_path.read_bytes() == before
+    archive = c.archive_path_for(job_path, now)
+    assert [json.loads(x)['jobId'] for x in archive.read_text().splitlines()] == ['second']
+    monkeypatch.setattr(cp, '_save_jobs', real_save)
+    assert cp.run_compaction_once(job_path, now, batch_size=1)['archived'] == 1
+    assert [json.loads(x)['jobId'] for x in archive.read_text().splitlines()] == ['second']
+    assert cp._load_jobs()['compactionScanNextJobId'] == 'first'
