@@ -559,15 +559,16 @@ def compact_job_store(
     }
     # The cursor never grants archive authority. Its target is an eligible row
     # not examined this pass; after the tail, wrap to the first retained row.
-    end = start + len(archived_ids)
-    if end < len(candidates):
-        new_store[COMPACTION_SCAN_NEXT_KEY] = candidates[end]
-    else:
-        retained = next((job_id for job_id in candidates if job_id in jobs), None)
-        if retained is None:
-            new_store.pop(COMPACTION_SCAN_NEXT_KEY, None)
+    if batch_size > 0:
+        end = start + len(archived_ids)
+        if end < len(candidates):
+            new_store[COMPACTION_SCAN_NEXT_KEY] = candidates[end]
         else:
-            new_store[COMPACTION_SCAN_NEXT_KEY] = retained
+            retained = next((job_id for job_id in candidates if job_id in jobs), None)
+            if retained is None:
+                new_store.pop(COMPACTION_SCAN_NEXT_KEY, None)
+            else:
+                new_store[COMPACTION_SCAN_NEXT_KEY] = retained
     return new_store, archived
 
 
