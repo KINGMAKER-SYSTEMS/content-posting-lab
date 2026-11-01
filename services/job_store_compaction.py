@@ -137,7 +137,10 @@ def _canonical_identity(value: Any) -> str | None:
 
 def _clip_sha256s(job: dict[str, Any]) -> list[str]:
     out: list[str] = []
-    for clip in job.get("clips", []):
+    clips = job.get("clips", [])
+    if not isinstance(clips, list):
+        raise ValueError("completed_clips_not_a_list")
+    for clip in clips:
         if not isinstance(clip, dict):
             continue
         digest = clip.get("sha256")
