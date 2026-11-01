@@ -1,6 +1,7 @@
 """A live runner must retain its plan until final publication settles."""
 import asyncio
 import threading
+from pathlib import Path
 
 import pytest
 import routers.control_plane as cp
@@ -75,7 +76,8 @@ async def test_foreign_status_cannot_release_live_slideshow_plan(lab, monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_failed_partial_clip_remains_reserved_and_archived(lab, monkeypatch):
+@pytest.mark.parametrize('confirmed', [False, True])
+async def test_failed_partial_clip_remains_reserved_and_archived(lab, monkeypatch, confirmed):
     client, _, _, library, payload = lab
     first = client.post('/api/control-plane/v1/jobs', json=job_body(2, payload),
                         headers=headers('partial-ownership-first'))
@@ -114,10 +116,25 @@ async def test_failed_partial_clip_remains_reserved_and_archived(lab, monkeypatc
     with pytest.raises(RuntimeError, match='duplicate_slideshow_artifact'):
         cp._claim_unique_slideshow_clip(second_id, job['clips'][0], second_plan)
     from datetime import datetime, timedelta, timezone
+    from services.generated_media_retention import GeneratedMediaRetention
+    now = datetime.now(timezone.utc) + timedelta(days=3)
+    media = Path(job['artifactRoot']) / job['clips'][0]['path']
+    thumbnail = Path(job['artifactRoot']) / job['clips'][0]['thumbnail']['path']
+    assert media.is_file() and thumbnail.is_file()
+    asked = []
+    def confirm(sha, size):
+        asked.append((sha, size))
+        return confirmed
+    sweeper = GeneratedMediaRetention(confirm=confirm, monotonic=lambda: 0.0)
+    sweeper.sweep(cp._load_jobs(), cp._generation_root(), now)
+    assert asked == [(job['clips'][0]['sha256'], job['clips'][0]['bytes'])]
+    assert media.exists() is (not confirmed) and thumbnail.exists() is (not confirmed)
     compacted, archived = cp.compaction.compact_job_store(cp._load_jobs(), datetime.now(timezone.utc) + timedelta(days=60))
     assert any(row['jobId'] == job_id for row in archived)
     assert signature in cp._slideshow_unavailable_signatures(compacted, recipe, job['pageId'])
     cp.atomic_save(cp._jobs_path(), compacted)
+    assert job['clips'][0]['sha256'] in compacted[cp.compaction.ARCHIVE_INDEX_KEY]['usedClipSha256'][job['pageId']]
+    assert media.exists() is (not confirmed) and thumbnail.exists() is (not confirmed)
     with pytest.raises(RuntimeError, match='duplicate_slideshow_artifact'):
         cp._claim_unique_slideshow_clip(second_id, job['clips'][0], second_plan)
 

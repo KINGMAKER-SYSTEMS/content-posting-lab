@@ -200,7 +200,26 @@ async def test_foreign_recovery_requires_marked_free_owner(lab, monkeypatch, leg
 @pytest.mark.asyncio
 async def test_legacy_failed_exposed_truck_clips_keep_master_through_compaction(lab, monkeypatch):
     from datetime import datetime, timedelta, timezone
-    client, job_id, master_sha, _ = _seed_recovery(lab, monkeypatch)
+    client, job_id, master_sha, master = _seed_recovery(lab, monkeypatch)
+    from services.generated_media_retention import GeneratedMediaRetention
+    from tests.test_generated_media_retention import make_job
+    root = cp._generation_root()
+    unrelated_dir, unrelated = make_job(root, name='unrelated', age=timedelta(days=3), extra_files=())
+    store = cp._load_jobs()
+    # Exercise the active recovery reference itself: a delivered producer clip
+    # does not receive the separate undelivered-truck-pool protection.
+    store['jobs']['cpl-2222222222222222']['clips'][0]['delivery'] = {}
+    store['jobs']['unrelated'] = unrelated
+    cp.atomic_save(cp._jobs_path(), store)
+    asked = []
+    def confirm(sha, size):
+        asked.append((sha, size))
+        return True
+    sweeper = GeneratedMediaRetention(confirm=confirm, monotonic=lambda: 0.0)
+    sweeper.sweep(cp._load_jobs(), root, datetime.now(timezone.utc) + timedelta(days=3))
+    assert master.is_file(), 'active recovery must protect its original paid master'
+    assert not unrelated_dir.exists(), 'unrelated confirmed media must still be cleaned'
+    assert all(sha != master_sha for sha, _ in asked)
     await cp._run_truck_master_recovery(job_id)
     cp._update_job(job_id, status='failed', error='legacy partial')
     store = cp._load_jobs()
