@@ -50,6 +50,8 @@ TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled"})
 SOURCE_DNA_UNAVAILABLE_STATUSES = frozenset({"queued", "running", "completed"})
 ARCHIVE_INDEX_KEY = "archiveIndex"
 ARCHIVE_INDEX_VERSION = 1
+# Advisory scan position only; old versions ignore it and may repeat or starve.
+COMPACTION_SCAN_NEXT_KEY = "compactionScanNextJobId"
 DEFAULT_RETENTION_DAYS = 30
 DEFAULT_BATCH_SIZE = 2000
 DEFAULT_SIZE_THRESHOLD_BYTES = 50 * 1024 * 1024
@@ -504,7 +506,12 @@ def compact_job_store(
     jobs are the original dicts moved out of ``jobs``.
     """
     cutoff = now - timedelta(days=retention_days)
-    archived_ids = archivable_job_ids(store, cutoff)[:batch_size]
+    candidates = archivable_job_ids(store, cutoff)
+    cursor = store.get(COMPACTION_SCAN_NEXT_KEY)
+    start = candidates.index(cursor) if isinstance(cursor, str) and cursor in candidates else 0
+    # Preserve the first pass's insertion order. Each pass examines at most one
+    # batch, then starts at its next untouched eligible row on the next pass.
+    archived_ids = candidates[start:start + batch_size] if batch_size > 0 else []
 
     jobs = dict(store.get("jobs", {}))
     by_idem = dict(store.get("byIdempotency", {}))
@@ -531,7 +538,7 @@ def compact_job_store(
         except ValueError as error:
             # Keep opaque records intact; they must not starve valid peers in
             # this bounded batch or publish partial reservation evidence.
-            log.warning("compaction retained malformed job %s: %s", job_id, error)
+            log.warning("ALERT-LABJOBSTORE compaction retained malformed job %s: %s", job_id, error)
             continue
         fold_into_index(index, job, entries=entries)
         archived.append(job)
@@ -550,6 +557,17 @@ def compact_job_store(
         "byIdempotency": by_idem,
         ARCHIVE_INDEX_KEY: index,
     }
+    # The cursor never grants archive authority. Its target is an eligible row
+    # not examined this pass; after the tail, wrap to the first retained row.
+    end = start + len(archived_ids)
+    if end < len(candidates):
+        new_store[COMPACTION_SCAN_NEXT_KEY] = candidates[end]
+    else:
+        retained = next((job_id for job_id in candidates if job_id in jobs), None)
+        if retained is None:
+            new_store.pop(COMPACTION_SCAN_NEXT_KEY, None)
+        else:
+            new_store[COMPACTION_SCAN_NEXT_KEY] = retained
     return new_store, archived
 
 
