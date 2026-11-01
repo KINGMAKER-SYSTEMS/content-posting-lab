@@ -392,7 +392,12 @@ class GeneratedMediaRetention:
                     break
                 # A nonempty manifest must identify every claimed artifact.
                 # Otherwise an unidentified video/thumbnail could become a stray.
-                primary = inside(artifact_directory, clip.get("path"))
+                try:
+                    primary = inside(artifact_directory, clip.get("path"))
+                except (ValueError, OSError, RuntimeError):
+                    # Invalid bytes, unavailable paths or symlink loops leave
+                    # this public descriptor's footprint unknown. Hold its job.
+                    primary = None
                 if expired():
                     return
                 if primary is None:
@@ -404,7 +409,10 @@ class GeneratedMediaRetention:
                     if not isinstance(thumbnail, dict):
                         malformed = True
                         break
-                    thumbnail_path = inside(artifact_directory, thumbnail.get("path"))
+                    try:
+                        thumbnail_path = inside(artifact_directory, thumbnail.get("path"))
+                    except (ValueError, OSError, RuntimeError):
+                        thumbnail_path = None
                     if expired():
                         return
                     if thumbnail_path is None:

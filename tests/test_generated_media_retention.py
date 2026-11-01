@@ -599,7 +599,8 @@ def test_old_unconfirmed_clip_is_never_a_stray(tmp_path):
                                         'missing_path', 'null_path', 'outside_path',
                                         'thumbnail_scalar', 'thumbnail_missing_path',
                                         'thumbnail_null_path', 'thumbnail_outside_path',
-                                        'primary_directory', 'thumbnail_directory'])
+                                        'primary_directory', 'thumbnail_directory',
+                                        'primary_nul', 'thumbnail_nul'])
 def test_persisted_malformed_clips_hold_job_without_blocking_other_cleanup(tmp_path, monkeypatch, shape):
     import routers.control_plane as cp
     root = tmp_path / 'gen'
@@ -614,6 +615,8 @@ def test_persisted_malformed_clips_hold_job_without_blocking_other_cleanup(tmp_p
         'thumbnail_missing_path': [{**bad['clips'][0], 'thumbnail': {}}],
         'thumbnail_null_path': [{**bad['clips'][0], 'thumbnail': {'path': None}}],
         'thumbnail_outside_path': [{**bad['clips'][0], 'thumbnail': {'path': '../outside.jpg'}}],
+        'primary_nul': [{**bad['clips'][0], 'path': 'renders/bad\x00.mp4'}],
+        'thumbnail_nul': [{**bad['clips'][0], 'thumbnail': {'path': 'thumbnails/bad\x00.jpg'}}],
         'primary_directory': [{**bad['clips'][0], 'path': 'renders'}],
         'thumbnail_directory': [{**bad['clips'][0], 'thumbnail': {'path': 'thumbnails'}}],
     }[shape]
@@ -699,3 +702,26 @@ def test_nonregular_or_unreadable_declared_artifact_holds_only_its_job(tmp_path,
     assert plan.clip_files == [good_dir / 'renders/good.mp4', good_dir / 'thumbnails/0000.jpg']
     assert asked == [(B, 100)]
     assert (bad_dir / 'thumbnails/0000.jpg').read_bytes() == b't'
+
+
+@pytest.mark.parametrize('field', ['primary', 'thumbnail'])
+@pytest.mark.parametrize('error_type', [ValueError, OSError, RuntimeError])
+def test_public_artifact_resolution_failure_holds_only_its_job(tmp_path, monkeypatch, field, error_type):
+    from pathlib import Path
+    root = tmp_path / 'gen'
+    bad_dir, bad = make_job(root, name='bad', age=timedelta(days=3), extra_files=())
+    good_dir, good = make_job(root, name='good', clips=((B, 'renders/good.mp4'),), extra_files=())
+    relative = bad['clips'][0]['path'] if field == 'primary' else bad['clips'][0]['thumbnail']['path']
+    target = bad_dir / relative
+    original_resolve = Path.resolve
+    def unavailable(path, *args, **kwargs):
+        if path == target:
+            raise error_type('owned descriptor resolution unavailable')
+        return original_resolve(path, *args, **kwargs)
+    monkeypatch.setattr(Path, 'resolve', unavailable)
+    worker, asked = sweeper(True)
+    plan = worker.plan({'jobs': {'bad': bad, 'good': good}}, root, NOW)
+    assert not any(bad_dir in p.parents for p in plan.clip_files + plan.stray_files)
+    assert plan.clip_files == [good_dir / 'renders/good.mp4', good_dir / 'thumbnails/0000.jpg']
+    assert asked == [(B, 100)]
+    assert target.read_bytes() == (b'c' * 100 if field == 'primary' else b't')
