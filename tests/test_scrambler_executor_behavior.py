@@ -952,21 +952,20 @@ def test_off_enqueue_serialization_matches_base_golden(lab, tmp_path, monkeypatc
         assert type(captured[phase]["sourceClaimVersion"]) is int
         assert captured[phase].pop("sourceClaimVersion") == 1
 
-    # The reviewed Burnt UGC authority changes the shared UGC executor and
-    # contract digests.  Those two authority pins legitimately flow into an
-    # otherwise unrelated source-job receipt; all behavioural serialization
-    # remains compared against the base golden.
-    def without_reviewed_authority_pins(value):
-        if isinstance(value, dict):
-            return {key: without_reviewed_authority_pins(item)
-                    for key, item in value.items()
-                    if key not in {"executorVersion", "formatContractVersion",
-                                   "engineRegistryHash", "engineProfileHash", "jobRequestHash"}}
-        if isinstance(value, list):
-            return [without_reviewed_authority_pins(item) for item in value]
-        return value
-
-    assert without_reviewed_authority_pins(captured) == without_reviewed_authority_pins(golden)
+    # #315 changed the shared registry when Burnt moved to its own UGC
+    # footage and retired its lyric lane. Exact 61e capture changes only
+    # these two stored registry hashes. The fixture page's executor,
+    # contract, profile and request hashes remain byte-identical to BASE.
+    # Keep the historical golden and apply only the reviewed substitutions
+    # at these exact paths; never discard authority fields recursively.
+    for phase in ("job", "completedJob"):
+        assert golden[phase]["engineRegistryHash"] == (
+            "4c8de21caa2e3fefbfc6b2ba659a3e029321e576ef0291f9213497043a4f31ed"
+        )
+        golden[phase]["engineRegistryHash"] = (
+            "640e8bacfd94a9b6d7ecde9924a84bb622caacfc2aab2819d6170ba80055310e"
+        )
+    assert captured == golden
 
 
 # ---------------------------------------------------------------------------
