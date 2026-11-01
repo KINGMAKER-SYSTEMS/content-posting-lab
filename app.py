@@ -274,32 +274,36 @@ async def lifespan(app: FastAPI):
     # Read-only readiness diagnostics may resolve remote masters. Keep their
     # bounded owned process off startup's critical path; enqueue still enforces
     # every existing Scrambler requirement.
-    from services.scrambler_preflight import run_startup_preflight
+    from services.scrambler_preflight import run_startup_preflight, stop_startup_preflight
     preflight_task = asyncio.create_task(run_startup_preflight())
-    yield
-    preflight_task.cancel()
+    body_error = None
     try:
-        await preflight_task
-    except asyncio.CancelledError:
-        pass
-    from routers.control_plane import shutdown_dossier_generation, stop_compaction_scheduler
-    stop_compaction_scheduler()
-    from services.scrambler_feed_pull import stop_feed_pull_scheduler
-    stop_feed_pull_scheduler()
-    await shutdown_dossier_generation()
-    if post_render_jobs is not None:
-        post_render_jobs.stop()
+        yield
+    except BaseException as error:
+        body_error = error
+        raise
+    finally:
+        cancellation = await stop_startup_preflight(preflight_task)
+        from routers.control_plane import shutdown_dossier_generation, stop_compaction_scheduler
+        stop_compaction_scheduler()
+        from services.scrambler_feed_pull import stop_feed_pull_scheduler
+        stop_feed_pull_scheduler()
+        await shutdown_dossier_generation()
+        if post_render_jobs is not None:
+            post_render_jobs.stop()
 
-    # Stop Telegram bot
-    try:
-        await stop_tg_bot()
-    except Exception:
-        pass
-    try:
-        await stop_sounds_bot()
-    except Exception:
-        pass
-    log.info("Content Posting Lab shutting down...")
+        # Stop Telegram bot
+        try:
+            await stop_tg_bot()
+        except Exception:
+            pass
+        try:
+            await stop_sounds_bot()
+        except Exception:
+            pass
+        log.info("Content Posting Lab shutting down...")
+        if body_error is None and cancellation is not None:
+            raise cancellation
 
 
 app = FastAPI(

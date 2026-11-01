@@ -40,6 +40,27 @@ VOLUME_ENV = "RAILWAY_VOLUME_MOUNT_PATH"
 STARTUP_DIAGNOSTIC_TIMEOUT_S = 10.0
 
 
+async def stop_startup_preflight(task: asyncio.Task) -> asyncio.CancelledError | None:
+    """Drain diagnostics, distinguishing its cancellation from its owner's."""
+    owner = asyncio.current_task()
+    owner_cancels = owner.cancelling()
+    cancellation = None
+    task.cancel()
+    while True:
+        try:
+            await asyncio.shield(task)
+            break
+        except asyncio.CancelledError as error:
+            # The cancelled child is expected. A fresh cancellation of the
+            # lifespan owner must survive this join, including repeated ones.
+            if owner.cancelling() > owner_cancels:
+                cancellation = cancellation or error
+                owner_cancels = owner.cancelling()
+            if task.done():
+                break
+    return cancellation
+
+
 async def run_startup_preflight() -> None:
     """Observe pilot readiness without blocking startup or retaining stuck I/O.
 
