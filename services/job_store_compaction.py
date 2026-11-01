@@ -52,6 +52,8 @@ ARCHIVE_INDEX_KEY = "archiveIndex"
 ARCHIVE_INDEX_VERSION = 1
 DEFAULT_RETENTION_DAYS = 30
 DEFAULT_BATCH_SIZE = 2000
+# Match the existing six-hour compaction cadence without persisting a cursor.
+COMPACTION_ROTATION_SECONDS = 6 * 60 * 60
 DEFAULT_SIZE_THRESHOLD_BYTES = 50 * 1024 * 1024
 # §42 (lab-provider-selfreport-criteria.md) needs at least 8 days of per-attempt
 # rows. The default retention above comfortably exceeds this; the constant is
@@ -504,7 +506,17 @@ def compact_job_store(
     jobs are the original dicts moved out of ``jobs``.
     """
     cutoff = now - timedelta(days=retention_days)
-    archived_ids = archivable_job_ids(store, cutoff)[:batch_size]
+    candidates = archivable_job_ids(store, cutoff)
+    # Extract at most one batch per pass, while advancing the examined window
+    # on the existing cadence so retained malformed rows cannot monopolize it.
+    # For a stable candidate set every index is visited over successive turns;
+    # no cursor or malformed-record state is written to the job store.
+    if len(candidates) > batch_size > 0:
+        turn = int(now.timestamp()) // COMPACTION_ROTATION_SECONDS
+        start = (turn * batch_size) % len(candidates)
+        archived_ids = (candidates[start:] + candidates[:start])[:batch_size]
+    else:
+        archived_ids = candidates[:batch_size]
 
     jobs = dict(store.get("jobs", {}))
     by_idem = dict(store.get("byIdempotency", {}))
@@ -531,7 +543,7 @@ def compact_job_store(
         except ValueError as error:
             # Keep opaque records intact; they must not starve valid peers in
             # this bounded batch or publish partial reservation evidence.
-            log.warning("compaction retained malformed job %s: %s", job_id, error)
+            log.warning("ALERT-LABJOBSTORE compaction retained malformed job %s: %s", job_id, error)
             continue
         fold_into_index(index, job, entries=entries)
         archived.append(job)
