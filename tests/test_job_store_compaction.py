@@ -1065,3 +1065,52 @@ def test_nonpositive_batch_is_noop_without_cursor_or_write(job_path, monkeypatch
     assert result['archived'] == 0 and job_path.read_bytes() == before
     assert cp._load_jobs() == store
     assert not c.archive_path_for(job_path, now).exists()
+
+
+@pytest.mark.parametrize('source_cuts', [None, 7, True, {}, 'opaque'],
+                         ids=['null', 'integer', 'boolean', 'dict', 'string'])
+def test_completed_nonlist_sourcecuts_hold_row_and_advance_cursor(tmp_path, source_cuts, caplog):
+    old = _old()
+    store = _empty()
+    store['jobs'] = {
+        'bad': {'jobId': 'bad', 'pageId': 'acct:p', 'sourceKind': 'dossier_source_dna',
+                'status': 'completed', 'createdAt': old, 'completedAt': old,
+                'sourceCuts': source_cuts, 'clips': []},
+        'good': {'jobId': 'good', 'pageId': 'acct:p', 'status': 'failed', 'createdAt': old},
+    }
+    store['byIdempotency'] = {'bad-key': 'bad', 'good-key': 'good'}
+    path = tmp_path / 'jobs.json'
+    atomic_save(path, store)
+    stored = path.read_bytes()
+    snapshot = atomic_load(path, default={})
+    original = json.loads(json.dumps(snapshot))
+    with caplog.at_level(logging.WARNING, logger='job_store_compaction'):
+        first, archived = c.compact_job_store(snapshot, _now(), batch_size=1)
+    assert archived == [] and first['jobs']['bad'] == original['jobs']['bad']
+    assert first[c.COMPACTION_SCAN_NEXT_KEY] == 'good'
+    assert 'completed_source_cuts_not_a_list' in caplog.text
+    second, archived = c.compact_job_store(first, _now(), batch_size=1)
+    assert [row['jobId'] for row in archived] == ['good']
+    assert set(second['jobs']) == {'bad'}
+    assert second[c.COMPACTION_SCAN_NEXT_KEY] == 'bad'
+    assert second['byIdempotency']['bad-key'] == 'bad'
+    assert snapshot == original and path.read_bytes() == stored
+
+
+@pytest.mark.parametrize('kind,status', [('generated', 'completed'), ('dossier_source_dna', 'failed')])
+def test_sourcecuts_container_validation_does_not_change_other_kind_or_status(kind, status):
+    store = _empty()
+    store['jobs']['j'] = {'jobId': 'j', 'pageId': 'acct:p', 'sourceKind': kind,
+                          'status': status, 'createdAt': _old(), 'sourceCuts': None}
+    result, archived = c.compact_job_store(store, _now())
+    assert [row['jobId'] for row in archived] == ['j']
+    assert result['jobs'] == {} and result[c.ARCHIVE_INDEX_KEY]['sourceDnaCuts'] == []
+
+
+def test_valid_sourcecuts_list_keeps_legacy_per_entry_filtering():
+    job = {'sourceKind': 'dossier_source_dna', 'status': 'completed',
+           'sourceCuts': [None, 7, False, 'legacy', {}, {'slotId': 'slot', 'durationMs': 6000}]}
+    entries = c.extract_index_entries(job)
+    assert len(entries['sourceDnaCuts']) == 2
+    assert [row['cutIndex'] for row in entries['sourceDnaCuts']] == [4, 5]
+    assert entries['sourceDnaCuts'][1]['slotId'] == 'slot'
