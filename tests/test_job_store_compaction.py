@@ -924,6 +924,7 @@ def test_malformed_exposed_job_does_not_block_other_compaction(kind, caplog):
     good = {"jobId": "good", "pageId": "acct:p", "status": "failed", "createdAt": old}
     store = _empty()
     store["jobs"] = {"bad": bad, "good": good}
+    original_bad = json.loads(json.dumps(bad))
     failure = None
     try:
         with caplog.at_level(logging.WARNING, logger="job_store_compaction"):
@@ -931,6 +932,8 @@ def test_malformed_exposed_job_does_not_block_other_compaction(kind, caplog):
     except ValueError as error:
         failure = error
     assert failure is None, f"malformed job stopped compaction: {failure}"
-    assert result["jobs"]["bad"] == bad
+    assert result["jobs"]["bad"] == original_bad
+    assert "good" not in result["jobs"]
     assert [row["jobId"] for row in archived] == ["good"]
+    assert result[c.ARCHIVE_INDEX_KEY] == c.empty_index()
     assert "bad" in caplog.text
