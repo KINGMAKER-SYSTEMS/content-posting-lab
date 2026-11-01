@@ -382,7 +382,7 @@ def test_restartable_import_snapshot_never_deletes_a_new_retry(tmp_path, retry_t
            'error': 'source_import_runtime_restarted',
            'completedAt': (NOW - timedelta(days=3)).isoformat(), 'clips': []}
     worker, _ = sweeper(True)
-    original_plan = worker.plan
+    original_units = worker._units
 
     def create_retry():
         fresh.parent.mkdir(parents=True)
@@ -391,11 +391,11 @@ def test_restartable_import_snapshot_never_deletes_a_new_retry(tmp_path, retry_t
     if retry_timing == 'before_plan':
         create_retry()
     else:
-        def plan_then_retry(*args, **kwargs):
-            plan = original_plan(*args, **kwargs)
-            create_retry()
-            return plan
-        worker.plan = plan_then_retry
+        def units_then_retry(*args, **kwargs):
+            for unit in original_units(*args, **kwargs):
+                create_retry()
+                yield unit
+        worker._units = units_then_retry
     worker.sweep({'jobs': {job_id: job}}, root, NOW)
     assert fresh.read_bytes() == b'fresh retry media'
     assert not old.exists()
@@ -418,3 +418,174 @@ def test_definitively_failed_import_cleans_old_attempts(tmp_path):
     worker, _ = sweeper(True)
     worker.sweep({'jobs': {job_id: job}}, root, NOW)
     assert not old.exists() and not current.exists()
+
+
+@pytest.mark.parametrize(('budget', 'expected'), [(2.0, 2), (10.0, 4)])
+def test_one_multiclip_job_respects_time_budget(tmp_path, budget, expected):
+    root = tmp_path / 'gen'
+    clips = tuple((f'{n:064x}', f'renders/hailuo/c{n}.mp4') for n in range(1, 5))
+    directory, job = make_job(root, clips=clips, extra_files=())
+    before = {str(path.relative_to(directory)): path.read_bytes()
+              for path in directory.rglob('*') if path.is_file()}
+    clock = [0.0]
+    asked = []
+    def confirm(sha, size):
+        asked.append((sha, size))
+        clock[0] += 1.0
+        return False
+    worker = retention.GeneratedMediaRetention(confirm=confirm, monotonic=lambda: clock[0])
+    plan = worker.plan({'jobs': {'j': job}}, root, NOW, time_budget=budget)
+    after = {str(path.relative_to(directory)): path.read_bytes()
+             for path in directory.rglob('*') if path.is_file()}
+    assert after == before and plan.clip_files == []
+    assert len(asked) == expected, f'probe count exceeded deadline: {len(asked)} at budget {budget}'
+
+
+@pytest.mark.parametrize('confirm_cost', [1.0, 2.0, 3.0])
+def test_sweep_finishes_confirmed_unit_then_makes_progress_next_pass(tmp_path, monkeypatch, confirm_cost):
+    root = tmp_path / 'gen'
+    clips = tuple((f'{n:064x}', f'renders/hailuo/c{n}.mp4') for n in range(1, 4))
+    directory, job = make_job(root, clips=clips, extra_files=())
+    clock = [0.0]
+    asked = []
+    def confirm(sha, size):
+        asked.append(sha)
+        clock[0] += confirm_cost
+        return True
+    original_unlink = type(directory).unlink
+    def timed_unlink(path, *args, **kwargs):
+        clock[0] += 1.0
+        return original_unlink(path, *args, **kwargs)
+    monkeypatch.setattr(type(directory), 'unlink', timed_unlink)
+    worker = retention.GeneratedMediaRetention(confirm=confirm, monotonic=lambda: clock[0])
+    first = worker.sweep({'jobs': {'j': job}}, root, NOW, time_budget=2.0)
+    assert first['clip_files'] == 2 and len(asked) == 1  # video and thumbnail are one unit
+    assert (directory / clips[1][1]).exists() and (directory / clips[2][1]).exists()
+    second = worker.sweep({'jobs': {'j': job}}, root, NOW, time_budget=2.0)
+    assert second['clip_files'] == 2 and len(asked) == 2
+    assert (directory / clips[2][1]).exists()
+
+
+def test_expired_global_protection_scan_never_deletes(tmp_path, monkeypatch):
+    root = tmp_path / 'gen'
+    directory, terminal = make_job(root, extra_files=())
+    early = tmp_path / 'earlier-active-root'
+    early.mkdir()
+    clock = [0.0]
+    observed = []
+    original = type(early).resolve
+    def timed_resolve(path, *args, **kwargs):
+        result = original(path, *args, **kwargs)
+        if path == early:
+            observed.append(True)
+            clock[0] = 2.0
+        return result
+    monkeypatch.setattr(type(early), 'resolve', timed_resolve)
+    asked = []
+    worker = retention.GeneratedMediaRetention(confirm=lambda *a: asked.append(a) or True,
+                                               monotonic=lambda: clock[0])
+    before = files(directory)
+    store = {'jobs': {'terminal': terminal,
+                      'early': {'status': 'running', 'artifactRoot': str(early)},
+                      'late': {'status': 'running', 'artifactRoot': str(directory)}}}
+    summary = worker.sweep(store, root, NOW, time_budget=2.0)
+    assert observed == [True]  # expired during protection scan, before late owner
+    assert files(directory) == before and asked == []
+    assert summary['clip_files'] == summary['stray_files'] == 0
+
+
+def test_active_recovery_references_do_not_block_unrelated_cleanup(tmp_path):
+    root = tmp_path / 'gen'
+    master, master_job = make_job(root, name='master', age=timedelta(days=30))
+    shared, shared_job = make_job(root, name='shared', age=timedelta(days=30))
+    other, other_job = make_job(root, name='other', age=timedelta(hours=3), extra_files=())
+    active = {'status': 'running', 'sourceKind': 'truck_master_recovery',
+              'artifactRoot': str(shared), 'recoveryMasters': [{'artifactRoot': str(master)}]}
+    worker, asked = sweeper(True)
+    result = worker.sweep({'jobs': {'master': master_job, 'shared': shared_job,
+                                    'active': active, 'other': other_job}}, root, NOW)
+    assert len(files(master)) == 3 and len(files(shared)) == 3
+    assert asked == [(A, 100)] and result['clip_files'] == 2
+    assert not other.exists() or files(other) == []
+
+
+def test_stray_deletion_stops_at_deadline_and_resumes(tmp_path, monkeypatch):
+    root = tmp_path / 'gen'
+    directory, job = make_job(root, age=timedelta(days=3), clips=(),
+                              extra_files=tuple(f'scratch/{n}.bin' for n in range(4)))
+    clock = [0.0]
+    original_unlink = type(directory).unlink
+    def timed_unlink(path, *args, **kwargs):
+        clock[0] += 1.0
+        return original_unlink(path, *args, **kwargs)
+    monkeypatch.setattr(type(directory), 'unlink', timed_unlink)
+    worker = retention.GeneratedMediaRetention(confirm=lambda *_: False, monotonic=lambda: clock[0])
+    first = worker.sweep({'jobs': {'j': job}}, root, NOW, time_budget=2.0)
+    assert first['stray_files'] == 2 and len(files(directory)) == 2
+    second = worker.sweep({'jobs': {'j': job}}, root, NOW, time_budget=2.0)
+    assert second['stray_files'] == 2
+    assert not directory.exists() or files(directory) == []
+
+
+@pytest.mark.parametrize('budget', [-1, float('inf'), float('nan'), True])
+def test_invalid_time_budget_rejected_without_mutation(tmp_path, budget):
+    root = tmp_path / 'gen'
+    directory, job = make_job(root)
+    before = files(directory)
+    worker, asked = sweeper(True)
+    with pytest.raises(ValueError, match='time_budget'):
+        worker.sweep({'jobs': {'j': job}}, root, NOW, time_budget=budget)
+    assert files(directory) == before and asked == []
+
+
+def test_zero_time_budget_does_not_touch_files_or_probe(tmp_path):
+    root = tmp_path / 'gen'
+    directory, job = make_job(root)
+    worker, asked = sweeper(True)
+    before = files(directory)
+    assert worker.sweep({'jobs': {'j': job}}, root, NOW, time_budget=0)['bytes_freed'] == 0
+    assert files(directory) == before and asked == []
+
+
+def test_malformed_active_recovery_references_abort_cleanup(tmp_path):
+    root = tmp_path / 'gen'
+    directory, job = make_job(root)
+    active = {'status': 'running', 'sourceKind': 'truck_master_recovery',
+              'recoveryMasters': [{'artifactRoot': None}]}
+    worker, asked = sweeper(True)
+    before = files(directory)
+    result = worker.sweep({'jobs': {'active': active, 'terminal': job}}, root, NOW)
+    assert files(directory) == before and asked == [] and result['bytes_freed'] == 0
+
+
+def test_expiry_during_public_path_scan_deletes_no_part_of_job(tmp_path, monkeypatch):
+    root = tmp_path / 'gen'
+    clips = tuple((f'{n:064x}', f'renders/hailuo/c{n}.mp4') for n in range(1, 4))
+    directory, job = make_job(root, clips=clips, extra_files=())
+    clock = [0.0]
+    original = retention._inside
+    def slow_inside(*args):
+        result = original(*args)
+        clock[0] = 1.0
+        return result
+    monkeypatch.setattr(retention, '_inside', slow_inside)
+    asked = []
+    worker = retention.GeneratedMediaRetention(confirm=lambda *a: asked.append(a) or True,
+                                                monotonic=lambda: clock[0])
+    before = files(directory)
+    result = worker.sweep({'jobs': {'j': job}}, root, NOW, time_budget=1.0)
+    assert files(directory) == before and asked == [] and result['bytes_freed'] == 0
+
+
+def test_old_unconfirmed_clip_is_never_a_stray(tmp_path):
+    root = tmp_path / 'gen'
+    directory, job = make_job(root, age=timedelta(days=3), extra_files=('scratch/old.bin',))
+    worker, asked = sweeper(False)
+    result = worker.sweep({'jobs': {'j': job}}, root, NOW)
+    assert asked == [(A, 100)]
+    assert (directory / 'renders/hailuo/c0.mp4').exists(), 'unconfirmed video was deleted as stray'
+    assert (directory / 'thumbnails/0000.jpg').exists(), 'unconfirmed thumbnail was deleted as stray'
+    assert (directory / 'renders/hailuo/c0.mp4').read_bytes() == b'c' * 100
+    assert (directory / 'thumbnails/0000.jpg').read_bytes() == b't'
+    assert not (directory / 'scratch/old.bin').exists()
+    assert result['stray_files'] == 1 and result['clip_files'] == 0
