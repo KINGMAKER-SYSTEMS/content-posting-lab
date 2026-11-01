@@ -671,3 +671,29 @@ def test_valid_absent_artifact_paths_remain_eligible_for_peer_cleanup(tmp_path, 
     assert plan.clip_files == [thumbnail if missing == 'primary' else primary]
     assert plan.stray_files == []
     assert asked == [(A, 100)]
+
+
+@pytest.mark.parametrize('kind', ['fifo', 'permission'])
+def test_nonregular_or_unreadable_declared_artifact_holds_only_its_job(tmp_path, monkeypatch, kind):
+    import os
+    from pathlib import Path
+    root = tmp_path / 'gen'
+    bad_dir, bad = make_job(root, name='bad', age=timedelta(days=3), extra_files=())
+    good_dir, good = make_job(root, name='good', clips=((B, 'renders/good.mp4'),), extra_files=())
+    primary = bad_dir / bad['clips'][0]['path']
+    if kind == 'fifo':
+        primary.unlink()
+        os.mkfifo(primary)
+    else:
+        original_stat = Path.stat
+        def denied_stat(path, *args, **kwargs):
+            if path == primary:
+                raise PermissionError('owned test artifact type unavailable')
+            return original_stat(path, *args, **kwargs)
+        monkeypatch.setattr(Path, 'stat', denied_stat)
+    worker, asked = sweeper(True)
+    plan = worker.plan({'jobs': {'bad': bad, 'good': good}}, root, NOW)
+    assert not any(bad_dir in p.parents for p in plan.clip_files + plan.stray_files)
+    assert plan.clip_files == [good_dir / 'renders/good.mp4', good_dir / 'thumbnails/0000.jpg']
+    assert asked == [(B, 100)]
+    assert (bad_dir / 'thumbnails/0000.jpg').read_bytes() == b't'
