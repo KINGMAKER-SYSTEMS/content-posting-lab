@@ -593,7 +593,10 @@ def test_old_unconfirmed_clip_is_never_a_stray(tmp_path):
     assert result['stray_files'] == 1 and result['clip_files'] == 0
 
 
-@pytest.mark.parametrize('shape', ['scalar', 'null', 'dict', 'string', 'bool', 'invalid_only', 'invalid_later'])
+@pytest.mark.parametrize('shape', ['scalar', 'null', 'dict', 'string', 'bool', 'invalid_only', 'invalid_later',
+                                        'missing_path', 'null_path', 'outside_path',
+                                        'thumbnail_scalar', 'thumbnail_missing_path',
+                                        'thumbnail_null_path', 'thumbnail_outside_path'])
 def test_persisted_malformed_clips_hold_job_without_blocking_other_cleanup(tmp_path, monkeypatch, shape):
     import routers.control_plane as cp
     root = tmp_path / 'gen'
@@ -602,6 +605,12 @@ def test_persisted_malformed_clips_hold_job_without_blocking_other_cleanup(tmp_p
     bad['clips'] = {
         'scalar': 1, 'null': None, 'dict': {}, 'string': 'bad', 'bool': True,
         'invalid_only': [1], 'invalid_later': [bad['clips'][0], 1],
+        'missing_path': [{}], 'null_path': [{'path': None}],
+        'outside_path': [{'path': '../outside.mp4'}],
+        'thumbnail_scalar': [{**bad['clips'][0], 'thumbnail': 'unknown'}],
+        'thumbnail_missing_path': [{**bad['clips'][0], 'thumbnail': {}}],
+        'thumbnail_null_path': [{**bad['clips'][0], 'thumbnail': {'path': None}}],
+        'thumbnail_outside_path': [{**bad['clips'][0], 'thumbnail': {'path': '../outside.jpg'}}],
     }[shape]
     store_path = tmp_path / 'jobs.json'
     monkeypatch.setattr(cp, '_jobs_path', lambda: store_path)
@@ -630,3 +639,18 @@ def test_missing_clips_key_keeps_legacy_no_clips_cleanup(tmp_path):
     result = worker.sweep({'jobs': {'j': job}}, root, NOW)
     assert asked == [] and result['stray_files'] == 1
     assert not directory.exists()
+
+
+@pytest.mark.parametrize('thumbnail', [None, 'absent'])
+def test_optional_unclaimed_thumbnail_does_not_hold_valid_primary(tmp_path, thumbnail):
+    root = tmp_path / 'gen'
+    directory, job = make_job(root, age=timedelta(hours=3), extra_files=())
+    if thumbnail == 'absent':
+        del job['clips'][0]['thumbnail']
+    else:
+        job['clips'][0]['thumbnail'] = None
+    worker, asked = sweeper(True)
+    plan = worker.plan({'jobs': {'j': job}}, root, NOW)
+    assert plan.clip_files == [directory / 'renders/hailuo/c0.mp4']
+    assert plan.stray_files == []
+    assert asked == [(A, 100)]

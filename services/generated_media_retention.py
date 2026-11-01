@@ -390,10 +390,18 @@ class GeneratedMediaRetention:
                 if not isinstance(clip, dict):
                     malformed = True
                     break
+                # A nonempty manifest must identify every claimed artifact.
+                # Otherwise an unidentified video/thumbnail could become a stray.
+                primary = inside(artifact_directory, clip.get("path"))
+                thumbnail = clip.get("thumbnail")
+                if (primary is None or (thumbnail is not None and
+                        (not isinstance(thumbnail, dict) or
+                         inside(artifact_directory, thumbnail.get("path")) is None))):
+                    malformed = True
+                    break
                 files = []
                 for relative in (clip.get("path"),
-                                 (clip.get("thumbnail") or {}).get("path")
-                                 if isinstance(clip.get("thumbnail"), dict) else None):
+                                 thumbnail.get("path") if isinstance(thumbnail, dict) else None):
                     if expired():
                         return
                     path = inside(artifact_directory, relative)
