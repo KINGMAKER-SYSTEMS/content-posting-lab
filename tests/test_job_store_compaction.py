@@ -913,3 +913,19 @@ def test_generation_view_keeps_archived_truck_jobs(job_path, tmp_path, monkeypat
     _, _, generation_view = _views(job_path, new_store)
     after = cp._truck_master_candidates(generation_view, "acct:p", 10, **kwargs)
     assert [x["sha256"] for x in after] == [SHA]
+
+
+@pytest.mark.parametrize("kind", ["syzygy_slideshow", "truck_master_recovery"])
+def test_malformed_exposed_job_does_not_block_other_compaction(kind, caplog):
+    old = _old()
+    bad = {"jobId": "bad", "pageId": "acct:p", "sourceKind": kind,
+           "status": "failed", "createdAt": old, "clips": [{"sha256": "invalid"}],
+           "slideshowPlan": [], "recoveryMasters": []}
+    good = {"jobId": "good", "pageId": "acct:p", "status": "failed", "createdAt": old}
+    store = _empty()
+    store["jobs"] = {"bad": bad, "good": good}
+    with caplog.at_level(logging.WARNING, logger="job_store_compaction"):
+        result, archived = c.compact_job_store(store, _now(), batch_size=2)
+    assert result["jobs"]["bad"] == bad
+    assert [row["jobId"] for row in archived] == ["good"]
+    assert "bad" in caplog.text

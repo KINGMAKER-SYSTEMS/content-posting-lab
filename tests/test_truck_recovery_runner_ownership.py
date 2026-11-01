@@ -194,7 +194,9 @@ async def test_foreign_recovery_requires_marked_free_owner(lab, monkeypatch, leg
     else:
         response = client.post('/api/control-plane/v1/jobs', json=job_body(quantity=1), headers=HEADERS)
     assert response.status_code == 200
-    assert response.json()['status'] == ('queued' if legacy else 'failed')
+    assert response.json()['status'] == 'failed'
+    if door == 'status':
+        assert response.json()['error'] == 'generation_runtime_restarted'
 
 
 @pytest.mark.asyncio

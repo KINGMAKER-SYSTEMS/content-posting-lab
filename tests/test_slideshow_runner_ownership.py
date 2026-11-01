@@ -158,7 +158,9 @@ async def test_foreign_recovery_requires_claim_evidence(lab, monkeypatch, legacy
         result = client.post('/api/control-plane/v1/jobs', json=request,
                              headers=headers('ownership-orphan-check'))
     assert result.status_code == 200
-    assert result.json()['status'] == ('queued' if legacy else 'failed')
+    assert result.json()['status'] == 'failed'
+    if door == 'status':
+        assert result.json()['error'] == 'generation_runtime_restarted'
 
 
 @pytest.mark.asyncio
