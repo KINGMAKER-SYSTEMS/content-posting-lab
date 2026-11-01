@@ -133,6 +133,11 @@ async def test_failed_partial_clip_remains_reserved_and_archived(lab, monkeypatc
     assert any(row['jobId'] == job_id for row in archived)
     assert signature in cp._slideshow_unavailable_signatures(compacted, recipe, job['pageId'])
     cp.atomic_save(cp._jobs_path(), compacted)
+    # A fresh pass sees the compacted live store, without a cached negative R2
+    # result. Archive-only local media is an existing cleanup completeness gap.
+    fresh_sweeper = GeneratedMediaRetention(confirm=confirm, monotonic=lambda: 0.0)
+    fresh_sweeper.sweep(cp._load_jobs(), cp._generation_root(), now + timedelta(days=1))
+    assert signature in cp._slideshow_unavailable_signatures(cp._load_jobs(), recipe, job['pageId'])
     assert job['clips'][0]['sha256'] in compacted[cp.compaction.ARCHIVE_INDEX_KEY]['usedClipSha256'][job['pageId']]
     assert media.exists() is (not confirmed) and thumbnail.exists() is (not confirmed)
     with pytest.raises(RuntimeError, match='duplicate_slideshow_artifact'):
