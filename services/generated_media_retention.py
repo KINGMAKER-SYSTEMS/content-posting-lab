@@ -390,15 +390,54 @@ class GeneratedMediaRetention:
                 if not isinstance(clip, dict):
                     malformed = True
                     break
-                files = []
-                for relative in (clip.get("path"),
-                                 (clip.get("thumbnail") or {}).get("path")
-                                 if isinstance(clip.get("thumbnail"), dict) else None):
+                # A nonempty manifest must identify every claimed artifact.
+                # Otherwise an unidentified video/thumbnail could become a stray.
+                try:
+                    primary = inside(artifact_directory, clip.get("path"))
+                except (ValueError, OSError, RuntimeError):
+                    # Invalid bytes, unavailable paths or symlink loops leave
+                    # this public descriptor's footprint unknown. Hold its job.
+                    primary = None
+                if expired():
+                    return
+                if primary is None:
+                    malformed = True
+                    break
+                files = [primary]
+                thumbnail = clip.get("thumbnail")
+                if thumbnail is not None:
+                    if not isinstance(thumbnail, dict):
+                        malformed = True
+                        break
+                    try:
+                        thumbnail_path = inside(artifact_directory, thumbnail.get("path"))
+                    except (ValueError, OSError, RuntimeError):
+                        thumbnail_path = None
                     if expired():
                         return
-                    path = inside(artifact_directory, relative)
-                    if path is not None:
-                        files.append(path)
+                    if thumbnail_path is None:
+                        malformed = True
+                        break
+                    files.append(thumbnail_path)
+                # Missing artifacts may have been cleaned previously. Present
+                # directories/special files or unknown types cannot identify clips.
+                for path in files:
+                    if expired():
+                        return
+                    valid_type = True
+                    try:
+                        valid_type = stat.S_ISREG(path.stat().st_mode)
+                    except FileNotFoundError:
+                        pass
+                    except OSError:
+                        valid_type = False
+                    if expired():
+                        return
+                    if not valid_type:
+                        malformed = True
+                        break
+                if malformed:
+                    break
                 clip_paths.update(files)
                 descriptors.append((clip, files))
             if malformed:
