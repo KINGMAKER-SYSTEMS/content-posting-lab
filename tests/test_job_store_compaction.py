@@ -937,3 +937,38 @@ def test_malformed_exposed_job_does_not_block_other_compaction(kind, caplog):
     assert [row["jobId"] for row in archived] == ["good"]
     assert result[c.ARCHIVE_INDEX_KEY] == c.empty_index()
     assert "bad" in caplog.text
+
+
+def test_full_malformed_prefix_cannot_starve_later_valid_job(monkeypatch, caplog):
+    import copy
+    now = datetime(2026, 11, 1, tzinfo=timezone.utc)
+    stamp = (now - timedelta(days=60)).isoformat()
+    store = _empty()
+    for i in range(c.DEFAULT_BATCH_SIZE):
+        ident = f'bad-{i:04d}'
+        store['jobs'][ident] = {'jobId': ident, 'pageId': 'acct:p',
+            'status': 'failed', 'sourceKind': 'syzygy_slideshow', 'createdAt': stamp,
+            'clips': [{'sha256': 'invalid'}], 'slideshowPlan': []}
+        store['byIdempotency'][f'key-{ident}'] = ident
+    store['jobs']['good'] = {'jobId': 'good', 'pageId': 'acct:p',
+        'status': 'failed', 'createdAt': stamp}
+    store['byIdempotency']['key-good'] = 'good'
+    original = copy.deepcopy(store)
+    calls = []
+    extract = c.extract_index_entries
+    def counted(job):
+        calls.append(job['jobId'])
+        return extract(job)
+    monkeypatch.setattr(c, 'extract_index_entries', counted)
+    with caplog.at_level(logging.WARNING, logger='job_store_compaction'):
+        first, archived1 = c.compact_job_store(store, now)
+        first_calls = len(calls)
+        second, archived2 = c.compact_job_store(first, now + timedelta(hours=6))
+    assert first_calls <= c.DEFAULT_BATCH_SIZE and len(calls) - first_calls <= c.DEFAULT_BATCH_SIZE
+    assert any(row['jobId'] == 'good' for row in archived1 + archived2), 'valid job starved behind malformed prefix'
+    assert 'good' not in second['jobs']
+    assert second['byIdempotency'] == original['byIdempotency']
+    assert all(second['jobs'][f'bad-{i:04d}'] == original['jobs'][f'bad-{i:04d}'] for i in range(c.DEFAULT_BATCH_SIZE))
+    assert second[c.ARCHIVE_INDEX_KEY] == c.empty_index()
+    assert store == original
+    assert 'ALERT-LABJOBSTORE' in caplog.text
