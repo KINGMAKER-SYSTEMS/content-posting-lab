@@ -172,7 +172,9 @@ def test_only_files_inside_a_job_directory_inside_the_root_are_eligible(tmp_path
     plan = worker.plan({"jobs": {"j": job, "page": page_level}}, root, NOW)
 
     assert (outside / "keep.mp4").exists()
-    assert plan.clip_files == [directory / "thumbnails/0000.jpg"]
+    assert plan.clip_files == [], "escaped primary holds the whole job"
+    assert (directory / "thumbnails/0000.jpg").read_bytes() == b"t"
+    assert (directory / "renders/hailuo/c0.mp4").read_bytes() == b"c" * 100
     assert plan.stray_files == []
 
 
