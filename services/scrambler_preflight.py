@@ -6,7 +6,7 @@ requirements into a list of named problems, read from the environment and the
 files it points at. It never writes, never bootstraps the private history and
 adds nothing to any HTTP response; it is used by
 
-* the app startup log line (``log_startup_preflight``, cheap checks only), and
+* a bounded background startup observation (``run_startup_preflight``), and
 * ``python tools/scrambler_report.py --preflight`` (full checks, including a
   real parse of the originality feed), which exits non-zero on any problem, and
 * ``python tools/scrambler_report.py --preflight --as-enabled``
@@ -18,10 +18,13 @@ The pilot environment is documented in docs/SCRAMBLER.md ("Pilot environment").
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
 import re
+import subprocess
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Mapping
@@ -34,6 +37,66 @@ FEED_R2_PREFIX_ENV = "SCRAMBLER_FEED_R2_PREFIX"
 FEED_USAGE_FILE_NAME = "usage.jsonl"  # the name services/scrambler_feed_pull.py writes
 HISTORY_PATH_ENV = "SCRAMBLER_HISTORY_PATH"
 VOLUME_ENV = "RAILWAY_VOLUME_MOUNT_PATH"
+STARTUP_DIAGNOSTIC_TIMEOUT_S = 10.0
+
+
+async def stop_startup_preflight(task: asyncio.Task) -> asyncio.CancelledError | None:
+    """Drain diagnostics, distinguishing its cancellation from its owner's."""
+    owner = asyncio.current_task()
+    owner_cancels = owner.cancelling()
+    cancellation = None
+    task.cancel()
+    while True:
+        try:
+            await asyncio.shield(task)
+            break
+        except asyncio.CancelledError as error:
+            # The cancelled child is expected. A fresh cancellation of the
+            # lifespan owner must survive this join, including repeated ones.
+            if owner.cancelling() > owner_cancels:
+                cancellation = cancellation or error
+                owner_cancels = owner.cancelling()
+            if task.done():
+                break
+    return cancellation
+
+
+async def run_startup_preflight() -> None:
+    """Observe pilot readiness without blocking startup or retaining stuck I/O.
+
+    Resolution may read a remote manifest. A thread timeout cannot stop that
+    read, so reuse the owned process lifecycle and reap it at the total deadline
+    or on app shutdown. This is diagnostic only: enqueue checks remain intact.
+    """
+    from services.owned_import_process import create_import_subprocess
+
+    logger = logging.getLogger("scrambler.preflight")
+    deadline = asyncio.get_running_loop().time() + STARTUP_DIAGNOSTIC_TIMEOUT_S
+    try:
+        async with asyncio.timeout_at(deadline):
+            process = await create_import_subprocess(
+                sys.executable, "-m", "services.scrambler_preflight",
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            )
+            output, _ = await process.communicate()
+        if process.returncode:
+            logger.warning("scrambler preflight: diagnostic process failed (exit=%s)",
+                           process.returncode)
+        else:
+            # Keep child diagnostic output bounded; no new HTTP/status fields.
+            if len(output) > 8192:
+                logger.warning("scrambler preflight: diagnostic output truncated")
+            for line in output.decode("utf-8", errors="replace")[-8192:].splitlines():
+                if line.startswith("scrambler preflight:"):
+                    logger.log(logging.WARNING if "NOT READY" in line else logging.INFO,
+                               "%s", line)
+    except TimeoutError:
+        logger.warning("scrambler preflight: readiness unknown (diagnostic deadline exceeded)")
+    except asyncio.CancelledError:
+        raise
+    except Exception as error:
+        logger.warning("scrambler preflight: readiness unknown (diagnostic %s)",
+                       type(error).__name__)
 
 # The roster integration_id the Worker sends as the page id: Notion-sourced
 # pages are ``acct:`` + the handle slugged to [a-z0-9-] (services/notion_pages.py
@@ -401,3 +464,8 @@ def log_startup_preflight(logger: logging.Logger | None = None,
         logger.info("scrambler preflight: ready pages=%s",
                     ",".join(sorted(core._page_list(env.get(core.SCRAMBLER_PAGES_ENV)))))
     return problems
+
+
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
+    log_startup_preflight()
