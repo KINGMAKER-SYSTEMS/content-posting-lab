@@ -50,6 +50,7 @@ def test_noniterable_completed_clips_hold_row_and_allow_bounded_peer_progress(tm
         second, archived = compaction.compact_job_store(first, NOW, batch_size=1)
         assert [job['jobId'] for job in archived] == ['good']
         assert set(second['jobs']) == {'bad'}
+        assert second['jobs']['bad'] == original['jobs']['bad']
         assert second[compaction.COMPACTION_SCAN_NEXT_KEY] == 'bad'
         assert second['byIdempotency']['bad-key'] == 'bad'
     finally:
@@ -68,6 +69,7 @@ def test_iterable_nonlist_completed_clips_refuse_opaque_fact_extraction(tmp_path
         except ValueError as error:
             refused = error
         assert isinstance(refused, ValueError), 'opaque non-list completed clips must refuse archive fact extraction'
+        assert str(refused), 'the typed refusal must carry a fixed nonempty reason'
     finally:
         assert store == original and path.read_bytes() == disk
         assert private.read_bytes() == b'owned-private-artifact'
