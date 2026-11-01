@@ -25,7 +25,7 @@ def _stored_pair(tmp_path, source_cuts):
     }, 'byIdempotency': {'bad-key': 'bad', 'good-key': 'good'}}
     path = tmp_path / 'jobs.json'
     atomic_save(path, store)
-    return path, private, atomic_load(path, {})
+    return path, private, atomic_load(path, default={})
 
 
 @pytest.mark.parametrize('shape', [None, 7, True], ids=['null', 'integer', 'boolean'])
@@ -40,7 +40,7 @@ def test_noniterable_sourcecuts_holds_row_and_preserves_cursor_peer_progress(tmp
         except TypeError as caught:
             frames = traceback.extract_tb(caught.__traceback__)
             assert any(Path(f.filename).resolve() == Path(compaction.__file__).resolve()
-                       and f.name == 'extract_index_entries' and f.lineno == 233 for f in frames)
+                       and f.name == 'extract_index_entries' and f.lineno == 235 for f in frames)
             assert 'not iterable' in str(caught)
             error = caught
         assert error is None, 'opaque sourceCuts must hold only that row and allow cursor progress'
