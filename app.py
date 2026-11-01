@@ -169,14 +169,6 @@ async def lifespan(app: FastAPI):
     # Initialize structured logging before anything else
     debug_logger.setup_logging()
 
-    # One line naming every missing Scrambler pilot setting (OFF logs "OFF").
-    try:
-        from services.scrambler_preflight import log_startup_preflight
-        log_startup_preflight()
-    except Exception as e:
-        import logging
-        logging.getLogger(__name__).warning(f"scrambler preflight failed: {e}")
-
     # main.py runs one process, and imports cannot start before this sweep.
     # Hard-killed imports skip finally; their private scratch copies are stale.
     # Keep this before imports, not in individual workers or request handlers.
@@ -279,7 +271,17 @@ async def lifespan(app: FastAPI):
     start_compaction_scheduler()
     from services.scrambler_feed_pull import start_feed_pull_scheduler
     start_feed_pull_scheduler()
+    # Read-only readiness diagnostics may resolve remote masters. Keep their
+    # bounded owned process off startup's critical path; enqueue still enforces
+    # every existing Scrambler requirement.
+    from services.scrambler_preflight import run_startup_preflight
+    preflight_task = asyncio.create_task(run_startup_preflight())
     yield
+    preflight_task.cancel()
+    try:
+        await preflight_task
+    except asyncio.CancelledError:
+        pass
     from routers.control_plane import shutdown_dossier_generation, stop_compaction_scheduler
     stop_compaction_scheduler()
     from services.scrambler_feed_pull import stop_feed_pull_scheduler
