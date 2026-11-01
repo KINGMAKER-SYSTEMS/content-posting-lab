@@ -1810,6 +1810,16 @@ def run_compaction_once(
             )
             raise
         if not archived:
+            # Persist scan-only progress without publishing a synthetic empty
+            # archive index or appending an empty archive batch.
+            cursor_key = compaction.COMPACTION_SCAN_NEXT_KEY
+            if (cursor_key in store) != (cursor_key in new_store) or store.get(cursor_key) != new_store.get(cursor_key):
+                cursor_only = dict(store)
+                if cursor_key in new_store:
+                    cursor_only[cursor_key] = new_store[cursor_key]
+                else:
+                    cursor_only.pop(cursor_key, None)
+                _save_jobs(cursor_only)
             return {"archived": 0, "jobs_before": before, "jobs_after": before,
                     "tmp_swept": _sweep_stale_compaction_tmps(path)}
         compaction.append_archive_records(path, archived, now)
