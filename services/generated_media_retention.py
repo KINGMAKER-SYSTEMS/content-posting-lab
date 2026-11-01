@@ -393,20 +393,24 @@ class GeneratedMediaRetention:
                 # A nonempty manifest must identify every claimed artifact.
                 # Otherwise an unidentified video/thumbnail could become a stray.
                 primary = inside(artifact_directory, clip.get("path"))
-                thumbnail = clip.get("thumbnail")
-                if (primary is None or (thumbnail is not None and
-                        (not isinstance(thumbnail, dict) or
-                         inside(artifact_directory, thumbnail.get("path")) is None))):
+                if expired():
+                    return
+                if primary is None:
                     malformed = True
                     break
-                files = []
-                for relative in (clip.get("path"),
-                                 thumbnail.get("path") if isinstance(thumbnail, dict) else None):
+                files = [primary]
+                thumbnail = clip.get("thumbnail")
+                if thumbnail is not None:
+                    if not isinstance(thumbnail, dict):
+                        malformed = True
+                        break
+                    thumbnail_path = inside(artifact_directory, thumbnail.get("path"))
                     if expired():
                         return
-                    path = inside(artifact_directory, relative)
-                    if path is not None:
-                        files.append(path)
+                    if thumbnail_path is None:
+                        malformed = True
+                        break
+                    files.append(thumbnail_path)
                 clip_paths.update(files)
                 descriptors.append((clip, files))
             if malformed:
