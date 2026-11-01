@@ -596,7 +596,8 @@ def test_old_unconfirmed_clip_is_never_a_stray(tmp_path):
 @pytest.mark.parametrize('shape', ['scalar', 'null', 'dict', 'string', 'bool', 'invalid_only', 'invalid_later',
                                         'missing_path', 'null_path', 'outside_path',
                                         'thumbnail_scalar', 'thumbnail_missing_path',
-                                        'thumbnail_null_path', 'thumbnail_outside_path'])
+                                        'thumbnail_null_path', 'thumbnail_outside_path',
+                                        'primary_directory', 'thumbnail_directory'])
 def test_persisted_malformed_clips_hold_job_without_blocking_other_cleanup(tmp_path, monkeypatch, shape):
     import routers.control_plane as cp
     root = tmp_path / 'gen'
@@ -611,6 +612,8 @@ def test_persisted_malformed_clips_hold_job_without_blocking_other_cleanup(tmp_p
         'thumbnail_missing_path': [{**bad['clips'][0], 'thumbnail': {}}],
         'thumbnail_null_path': [{**bad['clips'][0], 'thumbnail': {'path': None}}],
         'thumbnail_outside_path': [{**bad['clips'][0], 'thumbnail': {'path': '../outside.jpg'}}],
+        'primary_directory': [{**bad['clips'][0], 'path': 'renders'}],
+        'thumbnail_directory': [{**bad['clips'][0], 'thumbnail': {'path': 'thumbnails'}}],
     }[shape]
     store_path = tmp_path / 'jobs.json'
     monkeypatch.setattr(cp, '_jobs_path', lambda: store_path)
@@ -652,5 +655,19 @@ def test_optional_unclaimed_thumbnail_does_not_hold_valid_primary(tmp_path, thum
     worker, asked = sweeper(True)
     plan = worker.plan({'jobs': {'j': job}}, root, NOW)
     assert plan.clip_files == [directory / 'renders/hailuo/c0.mp4']
+    assert plan.stray_files == []
+    assert asked == [(A, 100)]
+
+
+@pytest.mark.parametrize('missing', ['primary', 'thumbnail'])
+def test_valid_absent_artifact_paths_remain_eligible_for_peer_cleanup(tmp_path, missing):
+    root = tmp_path / 'gen'
+    directory, job = make_job(root, age=timedelta(hours=3), extra_files=())
+    primary = directory / job['clips'][0]['path']
+    thumbnail = directory / job['clips'][0]['thumbnail']['path']
+    (primary if missing == 'primary' else thumbnail).unlink()
+    worker, asked = sweeper(True)
+    plan = worker.plan({'jobs': {'j': job}}, root, NOW)
+    assert plan.clip_files == [thumbnail if missing == 'primary' else primary]
     assert plan.stray_files == []
     assert asked == [(A, 100)]

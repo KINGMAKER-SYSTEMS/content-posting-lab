@@ -411,6 +411,25 @@ class GeneratedMediaRetention:
                         malformed = True
                         break
                     files.append(thumbnail_path)
+                # Missing artifacts may have been cleaned previously. Present
+                # directories/special files or unknown types cannot identify clips.
+                for path in files:
+                    if expired():
+                        return
+                    valid_type = True
+                    try:
+                        valid_type = stat.S_ISREG(path.stat().st_mode)
+                    except FileNotFoundError:
+                        pass
+                    except OSError:
+                        valid_type = False
+                    if expired():
+                        return
+                    if not valid_type:
+                        malformed = True
+                        break
+                if malformed:
+                    break
                 clip_paths.update(files)
                 descriptors.append((clip, files))
             if malformed:
