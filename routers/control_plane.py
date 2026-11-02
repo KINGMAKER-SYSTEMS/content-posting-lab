@@ -4402,9 +4402,13 @@ async def _run_dossier_source_inner(job_id: str) -> None:
                 previous_variant = (cut_speed, cut_crop)
                 # A backup master's declared brightness replaces the recipe's
                 # before the jitter (source_dna_registry.GRADE_OVERRIDE_BOUNDS).
+                # The page look is the recipe's own brightness; cut_grade clamps
+                # a darker-only page's cut back to it so an override can never
+                # brighten a cut above the look.
+                recipe_filters = recipe.recipe_spec["renderTreatment"]["filters"]
                 cut_filters = cut_grade(job["pageId"], f"{master.sha256}:{start_ms}:{duration_ms}",
-                                        {**recipe.recipe_spec["renderTreatment"]["filters"],
-                                         **(master.grade_override or {})})
+                                        {**recipe_filters, **(master.grade_override or {})},
+                                        look=float(recipe_filters.get("brightness", 1.0)))
                 cut_cc = filters_to_color_correction(cut_filters)
             # A scrambler cut renders the drawn sub-window (the offset head of
             # the reserved span is skipped) at the drawn EFFECTIVE speed; the
