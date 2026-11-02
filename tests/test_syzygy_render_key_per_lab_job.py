@@ -51,5 +51,5 @@ async def test_empty_lab_job_id_is_refused_before_any_post(monkeypatch):
 def test_the_slideshow_runner_passes_its_lab_job_id():
     import inspect
     from routers import control_plane as cp
-    src = inspect.getsource(cp._run_syzygy_slideshow)
+    src = inspect.getsource(cp._run_owned_syzygy_slideshow)
     assert "lab_job_id=job_id" in src

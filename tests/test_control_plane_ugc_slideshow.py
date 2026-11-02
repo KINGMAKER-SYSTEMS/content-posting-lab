@@ -517,7 +517,9 @@ async def test_curated_runner_refuses_changed_sha_or_generic_plan_shape(monkeypa
         "engine": recipe.engine, "recipeVersion": "dossier-test", "recipeSpecHash": "a" * 64,
         "artifactRoot": str(tmp_path / "job"), "sourceLibraryId": recipe.library_id,
         "formatContractVersion": recipe.format_contract_version, "executorVersion": recipe.executor_version,
-        "materialSource": recipe.material_source, "assetType": recipe.asset_type, "slideshowPlan": [plan]}
+        "materialSource": recipe.material_source, "assetType": recipe.asset_type, "slideshowPlan": [plan],
+        "sourceKind": "syzygy_slideshow", "status": "queued", "slideshowClaimVersion": 1,
+        "slideshowAttemptId": "test-attempt", "runtimeId": cp._GENERATION_RUNTIME_ID}
     updates = []
     calls = []
     monkeypatch.setattr(cp, "_get_job_or_404", lambda *_: job)
@@ -525,7 +527,13 @@ async def test_curated_runner_refuses_changed_sha_or_generic_plan_shape(monkeypa
     monkeypatch.setattr(cp, "load_registered_recipe", lambda *_: {})
     monkeypatch.setattr(cp, "resolve_slideshow_recipe", lambda *_: recipe)
     monkeypatch.setattr(cp, "job_profile_authority_matches", lambda *_: True)
-    monkeypatch.setattr(cp, "_update_job", lambda _id, **kwargs: updates.append(kwargs))
+    monkeypatch.setattr(cp, "_jobs_path", lambda: tmp_path / "jobs.json")
+    def update(_id, attempt, runtime, **kwargs):
+        assert _id == job["jobId"] and attempt == job["slideshowAttemptId"] and runtime == job["runtimeId"]
+        updates.append(kwargs)
+        job.update(kwargs)
+        return dict(job)
+    monkeypatch.setattr(cp, "_update_slideshow_job", update)
     monkeypatch.setattr(cp, "load_recipe_library", lambda *_: library)
     async def observe(*_):
         pins = {w["key"]: w for w in approved_plan["windows"]}
