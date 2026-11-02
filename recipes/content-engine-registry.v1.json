@@ -228,6 +228,18 @@
       "executorVersion": "sha256:fee820be22a84f50cfa80330c5c0d6006b456a468a0bfa0373f9a652d25d599c",
       "formatContractVersion": "sha256:26717c7ce89fa7a89c8286a9ec1fac9184613b514867daf641352f6c97f9a917",
       "maxQuantity": 1
+    },
+    "coffee-slideshow": {
+      "contentNiche": "Coffee",
+      "contentEngine": "sourced_slideshow",
+      "materialSource": "image_library",
+      "assetType": "video/mp4",
+      "executionStatus": "commissioned",
+      "executorKind": "slideshow_renderer",
+      "executorId": "syzygy-slideshow",
+      "executorVersion": "sha256:142f7a9d740b701df44dc9c340556c5a051c9cb5c30b37a6853d967b335414d4",
+      "formatContractVersion": "sha256:ea4bc62707346f7c2d11bfde0678248d455a447c91124ab40d3590b72a6923e2",
+      "maxQuantity": 10
     }
   }
 }
