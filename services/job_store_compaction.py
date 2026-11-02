@@ -232,7 +232,10 @@ def extract_index_entries(job: dict[str, Any]) -> dict[str, Any]:
         # recent ones and prefer the least recently cut footage. Entries
         # archived before they existed simply count as the oldest.
         used_at = job.get("completedAt") or job.get("createdAt")
-        for cut_index, cut in enumerate(job.get("sourceCuts", [])):
+        source_cuts = job.get("sourceCuts", [])
+        if not isinstance(source_cuts, list):
+            raise ValueError("completed_source_cuts_not_a_list")
+        for cut_index, cut in enumerate(source_cuts):
             if not isinstance(cut, dict):
                 continue
             entries["sourceDnaCuts"].append({
