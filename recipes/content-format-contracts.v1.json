@@ -1500,6 +1500,83 @@
         "sounds": "page_binding_required"
       },
       "definitionGaps": []
+    },
+    "coffee-slideshow": {
+      "contentNiche": "Coffee",
+      "contentEngine": "sourced_slideshow",
+      "materialSource": "image_library",
+      "assetType": "video/mp4",
+      "definitionStatus": "complete",
+      "creativeAuthority": {
+        "kind": "slideshow_renderer",
+        "id": "syzygy-slideshow",
+        "version": "sha256:142f7a9d740b701df44dc9c340556c5a051c9cb5c30b37a6853d967b335414d4"
+      },
+      "dimensions": {
+        "subject": {
+          "status": "defined",
+          "rule": "Every frame comes from the exact page-owned coffee library of licensed caf\u00e9, coffee-making and tabletop photography; another page's media may not substitute.",
+          "authority": "production.sourceLibraryId"
+        },
+        "setting": {
+          "status": "defined",
+          "rule": "Settings remain those present in the approved page-scoped R2 photos or clips selected for the render.",
+          "authority": "artifact.source.media"
+        },
+        "shotGrammar": {
+          "status": "defined",
+          "rule": "A vertical five-photo caf\u00e9 sequence uses the clean-slideshow template. The existing deterministic planner varies ordered selections without repeating a completed plan.",
+          "authority": "syzygy-coffee-slideshow.formats.coffee-slideshow.templates"
+        },
+        "lighting": {
+          "status": "defined",
+          "rule": "Lighting comes from the selected approved media and the locked Dossier colour treatment; the renderer does not invent a different visual source.",
+          "authority": "artifact.source.media+dossier.treatment"
+        },
+        "motion": {
+          "status": "defined",
+          "rule": "Motion is limited to the selected source clips and the chosen Syzygy slideshow template transitions.",
+          "authority": "syzygy-slideshow.selection"
+        },
+        "duration": {
+          "status": "defined",
+          "rule": "The Syzygy executor renders the closed template sequence as a vertical short-form video and records its exact output duration in technical QA.",
+          "authority": "syzygy-slideshow.output"
+        },
+        "textPolicy": {
+          "status": "defined",
+          "rule": "The Syzygy visual has an explicitly blank hook, empty lyrics and no captions or original audio. Control Plane retains the page caption and Coffee sound selection downstream.",
+          "authority": "syzygy-coffee-slideshow.output.audioPolicy"
+        },
+        "negativeRules": {
+          "status": "defined",
+          "rule": "Use the page's own licensed source library, retain source provenance, reserve completed plan identities, and introduce no caption, hook, lyric or original audio into the neutral background.",
+          "authority": "syzygy-slideshow.reservation+reviewGates"
+        },
+        "referenceExamples": {
+          "status": "defined",
+          "rule": "The exact object keys, byte counts, ETags when available, and SHA-256 observations used by each render are preserved in its artifact source manifest.",
+          "authority": "artifact.source.media"
+        }
+      },
+      "output": {
+        "aspectRatio": "9:16",
+        "container": "video/mp4",
+        "durationPolicy": "executor_bound",
+        "audioPolicy": "campaign_sound_bound_downstream"
+      },
+      "reviewAuthority": "syzygy-slideshow.output+artifact.source.media",
+      "reviewGates": [
+        "technical_video",
+        "rights_and_provenance",
+        "text_layout",
+        "duplicate_and_never_reuse"
+      ],
+      "distribution": {
+        "captions": "page_binding_required",
+        "sounds": "page_binding_required"
+      },
+      "definitionGaps": []
     }
   }
 }

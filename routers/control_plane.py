@@ -136,6 +136,7 @@ from services.control_plane_slideshows import (
     SyzygyError,
     UGC_FORMAT_SLUG,
     CLEAN_VIDEO_FORMATS,
+    COFFEE_FORMAT_SLUG,
     curated_plan_for_recipe,
     curated_plan_signature,
     curated_variant_number,
@@ -4973,7 +4974,7 @@ async def _run_owned_syzygy_slideshow(job_id: str, attempt: str, runtime: str) -
             destination = treated_root / f"slideshow-{index:04d}.mp4"
             encode_args = (
                 ugc_encode_args(recipe.encode_preset)
-                if recipe.format_slug in CLEAN_VIDEO_FORMATS or recipe.format_slug in IMAGE_VIDEO_FORMATS
+                if recipe.format_slug in CLEAN_VIDEO_FORMATS or recipe.format_slug in IMAGE_VIDEO_FORMATS or recipe.format_slug == COFFEE_FORMAT_SLUG
                 else delivery_encode_args(recipe.encode_preset)
             )
             await run_color_correct(

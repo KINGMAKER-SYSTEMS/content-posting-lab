@@ -40,6 +40,8 @@ EXECUTOR_PATH = (
 # the scoped copy.
 UGC_FORMAT_SLUG = "ugc-slideshow"
 LYRIC_VIDEO_FORMAT_SLUG = "lyric-video"
+COFFEE_FORMAT_SLUG = "coffee-slideshow"
+COFFEE_EXECUTOR_PATH = Path(__file__).resolve().parents[1] / "recipes/executors/syzygy-coffee-slideshow.v1.json"
 CLEAN_VIDEO_FORMATS = frozenset({UGC_FORMAT_SLUG, LYRIC_VIDEO_FORMAT_SLUG})
 LYRIC_VIDEO_EXECUTOR_PATH = Path(__file__).resolve().parents[1] / "recipes/executors/syzygy-slideshow-lyric-video.v1.json"
 # Lab plan identity, not an applied Syzygy builtin template.
@@ -465,7 +467,8 @@ def _executor_contract(format_slug: str | None = None) -> tuple[dict[str, Any], 
     if format_slug in IMAGE_VIDEO_FORMATS:
         from services.control_plane_image_video import slideshow_executor_adapter
         return slideshow_executor_adapter(format_slug)
-    path = (LYRIC_VIDEO_EXECUTOR_PATH if format_slug == LYRIC_VIDEO_FORMAT_SLUG else
+    path = (COFFEE_EXECUTOR_PATH if format_slug == COFFEE_FORMAT_SLUG else
+            LYRIC_VIDEO_EXECUTOR_PATH if format_slug == LYRIC_VIDEO_FORMAT_SLUG else
             UGC_EXECUTOR_PATH if format_slug == UGC_FORMAT_SLUG else EXECUTOR_PATH)
     raw = path.read_bytes()
     value = json.loads(raw)
@@ -1290,7 +1293,7 @@ async def submit_syzygy_render(
         "media": media,
         "audio": {"section_start": 0, "section_end": 15},
     }
-    if format_slug == UGC_FORMAT_SLUG:
+    if format_slug in {UGC_FORMAT_SLUG, COFFEE_FORMAT_SLUG}:
         # The neutral UGC background must carry no baked copy or source audio.
         # Syzygy's builtin template style fills absent keys, so these explicit
         # blank values suppress hook/lyric/caption text and original audio.

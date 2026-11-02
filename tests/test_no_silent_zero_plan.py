@@ -83,6 +83,7 @@ SWEEP = {
     # stride/start permutation slideshows.
     "lyric-edits": ("slideshow", False, reasons.SLIDESHOW_PERMUTATIONS_EXHAUSTED),
     "meme-slideshow": ("slideshow", False, reasons.SLIDESHOW_PERMUTATIONS_EXHAUSTED),
+    "coffee-slideshow": ("slideshow", False, reasons.SLIDESHOW_PERMUTATIONS_EXHAUSTED),
     # source-DNA recuts: windows per master are terminal; a new master refills.
     "pov-dirt-bike": ("source-dna", True, reasons.SOURCE_WINDOWS_EXHAUSTED),
     "pov-club": ("source-dna", True, reasons.SOURCE_WINDOWS_EXHAUSTED),

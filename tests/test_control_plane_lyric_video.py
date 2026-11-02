@@ -92,11 +92,11 @@ def test_lyric_executor_and_timing_authority_remain_loadable_after_retirement():
 def test_legacy_authority_maps_match_reviewed_burnt_retirement(filename, key, expected):
     # #315 deliberately changed the UGC authority for Burnt's own footage.
     # Pin the resulting legacy maps, rather than deleting their drift guard
-    # or restoring the retired lyric page. The four additive formats retain
+    # or restoring the retired lyric page. The additive formats retain
     # their separate contract tests, as in the original legacy-map guard.
     root = Path(__file__).resolve().parents[1]
     current = json.loads((root / "recipes" / filename).read_bytes())[key]
-    for slug in ("lyric-video", "image-video", "single-image-video", "meme"):
+    for slug in ("lyric-video", "image-video", "single-image-video", "meme", "coffee-slideshow"):
         current.pop(slug)
     encoded = json.dumps(current, sort_keys=True, separators=(",", ":"),
                          ensure_ascii=False).encode()

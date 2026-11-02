@@ -224,6 +224,11 @@
   contract module so the router and the service read one definition.
   The shared external-owner constant also governs the exact ShipStream
   null-Notion-id manifest exception.
+- `coffee-slideshow` is the optional Syzygy replacement for Coffee AI loops.
+  It retains the `Coffee` niche, uses `sourced_slideshow` and the page's own
+  `coffee/<handle-slug>` library, and composes five photos with `clean-slideshow`.
+  Its render has no baked text or source audio; existing captions, Coffee sounds
+  and page treatment apply downstream. `coffee-tok` remains available unchanged.
 - `services/control_plane_source_imports.py` owns bounded public-HTTPS download,
   exact-byte hashing, media probing, and refillable-master normalization for
   page-scoped source-link intake.
@@ -827,7 +832,7 @@
 - Run `pytest -q tests/test_shipstream_source_manifest.py` for exact page-source
   projection, including the external-page null-Notion-id exception and every
   shape it still refuses.
-- Run `pytest -q tests/test_northstar_slideshow_library.py tests/test_control_plane_slideshow_execution.py`
+- Run `pytest -q tests/test_northstar_slideshow_library.py tests/test_control_plane_slideshow_execution.py tests/test_coffee_slideshow.py`
   for page-owned Syzygy library subjects: an external page's ingredients and
   jobs address `syzygy:<lane>:<reserved exact-page subject>` on both commissioned lanes, a
   Rising Tides page keeps its handle subject, and registration refuses a
