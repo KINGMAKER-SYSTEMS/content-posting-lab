@@ -38,6 +38,7 @@ from services.control_plane_source_libraries import (
 )
 from services.dossier_catalog_version import dossier_catalog_version
 from services.master_pages_contract import exact_intent
+from services.pool_supplied_pages import is_pool_supplied
 from services.source_dna_registry import (
     MANIFEST_DIR as SOURCE_DNA_MANIFEST_DIR,
     RETIRED_MASTER_SHAS,
@@ -58,6 +59,10 @@ from services.shipstream_source_manifest import (
 
 SCHEMA = "content-lab.dossier-ingredient-catalog.v1"
 SELECTION_AUTHORITY_SCHEMA = "content-lab.dossier-selection-authority.v1"
+# Lab-supply-only ingredients the Worker's vault pool replaces for listed pages.
+POOL_SUPPLIED_INGREDIENT_IDS = frozenset(
+    {"image-library", "slideshow-treatment", "lyric-timing"}
+)
 DOSSIER_LIBRARY_TIMEOUT_SECONDS = 2.0
 PINNED_LEGACY_DOSSIER_CATALOG_VERSIONS_BY_PUBLICATION = {
     # Exact active v3 publications inventoried through the live dossier
@@ -347,7 +352,7 @@ def _selection_catalog_version(
         ), None)
         if selected_source is None:
             return None
-    elif source is not None:
+    elif source is not None and source.get("status") != "pool_supplied":
         return None
 
     treatment = next((
@@ -438,6 +443,16 @@ def _production_selections(format_entry: dict[str, Any]) -> list[dict[str, Any]]
             "modelId": None,
             "sourceLibraryId": option.get("libraryId"),
         } for option in source.get("options", [])]
+        if source.get("status") == "pool_supplied":
+            # A pool-supplied page registers with no Lab library id; keep any
+            # explicit library options beside it so an explicit id still has
+            # to match an advertised option at registration.
+            identities.append({
+                **base,
+                "providerId": None,
+                "modelId": None,
+                "sourceLibraryId": None,
+            })
     else:
         identities = []
     timing = (ingredients.get("lyric-timing") or {}).get("binding")
@@ -937,6 +952,15 @@ def _format_entry(
     if contract.format_slug == "lyric-video":
         from services.control_plane_lyric_video import lyric_ingredient
         ingredients.append(lyric_ingredient(page_id=page_id, master_pages=master_pages))
+    if is_pool_supplied(page_id):
+        # The Worker's vault pool supplies the finished clips for this page, so
+        # the Lab image library and its treatment/timing are not required and
+        # must not block Save & apply. Only the listed page ids are affected;
+        # every other page keeps today's catalog bytes and versions exactly.
+        for ingredient in ingredients:
+            if ingredient["ingredientId"] in POOL_SUPPLIED_INGREDIENT_IDS:
+                ingredient["required"] = False
+                ingredient["status"] = "pool_supplied"
     ingredients.extend([
         _ingredient("caption-bank", "caption_bank", required=True, status="page_binding_required"),
         _ingredient("sound-collection", "sound_collection", required=True, status="page_binding_required"),
