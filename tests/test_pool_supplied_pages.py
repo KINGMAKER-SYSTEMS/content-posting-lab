@@ -272,21 +272,32 @@ def test_malformed_list_fails_closed_and_logs_alert(monkeypatch, tmp_path, caplo
 
 
 def test_wrong_schema_or_duplicate_page_fails_closed(monkeypatch, tmp_path):
+    # Each round breaks exactly one rule, so each fail-closed check in the
+    # loader is the only thing that can turn its round into an empty list.
     for bad in (
+        [LISTED_PAGE],  # top level is not an object
         {"schema": "wrong", "pages": [LISTED_PAGE]},
-        {"schema": psp.SCHEMA, "pages": "not-a-list"},
-        {"schema": psp.SCHEMA, "pages": [LISTED_PAGE, LISTED_PAGE]},
-        {"schema": psp.SCHEMA, "pages": ["../not-safe"]},
         {"schema": psp.SCHEMA, "pages": [LISTED_PAGE], "extra": 1},
+        {"schema": psp.SCHEMA, "pages": {LISTED_PAGE: True}},  # not a list
+        {"schema": psp.SCHEMA, "pages": [1]},  # id is not a string
+        {"schema": psp.SCHEMA, "pages": ["../not-safe"]},
+        {"schema": psp.SCHEMA, "pages": [LISTED_PAGE, LISTED_PAGE]},
     ):
         path = tmp_path / "pool-supplied-pages.v1.json"
         path.write_text(json.dumps(bad), encoding="utf-8")
         monkeypatch.setattr(psp, "_PATH", path)
         # The list is cached per path, so drop the cache each round; otherwise
-        # rounds 2-5 would only see round 1's cached answer.
+        # later rounds would only see round 1's cached answer.
         psp.reset_pool_supplied_page_ids_cache()
         assert psp._load_pool_supplied_page_ids_uncached() == frozenset(), bad
         assert psp.load_pool_supplied_page_ids() == frozenset(), bad
+
+
+def test_missing_list_file_fails_closed(monkeypatch, tmp_path):
+    monkeypatch.setattr(psp, "_PATH", tmp_path / "no-such-list.json")
+    psp.reset_pool_supplied_page_ids_cache()
+    assert psp.load_pool_supplied_page_ids() == frozenset()
+    assert psp.is_pool_supplied(LISTED_PAGE) is False
 
 
 def test_invalid_utf8_list_fails_closed_with_alert(monkeypatch, tmp_path, caplog):
