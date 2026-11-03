@@ -57,6 +57,9 @@ SLIDESHOW_RUNTIME_UNAVAILABLE = "slideshow_runtime_unavailable"
 RECIPE_UNRESOLVED = "recipe_unresolved"
 # A source master has no canonical HTTPS source identity.
 SOURCE_IDENTITY_MISSING = "source_identity_missing"
+# A listed pool-supplied page posts finished clips from the Worker's vault pool;
+# the Lab never renders it, so its capability is terminal at zero by design.
+POOL_SUPPLIED = "pool_supplied"
 
 
 # code -> (family, terminal_by_design, remedy in plain words).
@@ -153,6 +156,10 @@ REASONS: dict[str, tuple[str, bool, str]] = {
     SOURCE_WINDOWS_RESERVED_ELSEWHERE: (
         "source-dna", False,
         "Never-cut windows remain but other pages reserved them; retry later.",
+    ),
+    POOL_SUPPLIED: (
+        "pool", True,
+        "The Worker supplies this page's finished clips from its vault pool; the Lab never renders it.",
     ),
 }
 

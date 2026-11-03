@@ -26,10 +26,12 @@ from services.json_store import lock_for
 from services.roster import ROSTER_PATH
 from services.master_pages_contract import exact_intent, intent_hash
 from services.dossier_ingredients import (
+    POOL_SUPPLIED_INGREDIENT_IDS,
     build_dossier_ingredient_catalog,
     catalog_selection_version,
     is_pinned_legacy_catalog_version,
 )
+from services.pool_supplied_pages import is_pool_supplied
 from services.caption_discipline import validate_caption_discipline
 from services.source_controls import source_start_ms
 from services.page_frame import frame_fit
@@ -386,7 +388,17 @@ def _validate_production_selection(
         None,
     )
     if required_source is not None and source_id is None:
-        raise HTTPException(409, "sourceLibraryId is required for sourced master DNA")
+        # Pool-supplied pages post finished clips from the Worker's vault pool,
+        # so their Lab image library (and its treatment/timing) is never a
+        # required source. This list check is defence in depth: the dossier
+        # catalog already emits those ingredients as required=False /
+        # pool_supplied, so required_source is normally None here. An explicit
+        # sourceLibraryId still has to match an advertised option above.
+        if not (
+            is_pool_supplied(page_id)
+            and required_source.get("ingredientId") in POOL_SUPPLIED_INGREDIENT_IDS
+        ):
+            raise HTTPException(409, "sourceLibraryId is required for sourced master DNA")
 
     variations = production.get("variationValues", {})
     groups = (prompt or {}).get("binding", {}).get("variationGroups", {})

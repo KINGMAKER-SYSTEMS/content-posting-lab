@@ -126,6 +126,7 @@ from services.control_plane_plan_reasons import (
     INSUFFICIENT_INVENTORY,
     LIBRARY_LOAD_FAILED,
     MATERIAL_PROFILE_MISSING,
+    POOL_SUPPLIED,
     PROMPT_INVENTORY_EXHAUSTED,
     RECIPE_UNRESOLVED,
     SLIDESHOW_RUNTIME_UNAVAILABLE,
@@ -176,6 +177,7 @@ from services.ffmpeg import (
 )
 from services.master_pages_contract import SCHEMA as MASTER_PAGES_SCHEMA, canonical_intent, exact_intent, intent_hash
 from services.page_frame import VERTICAL_FRAME, resolved_frame
+from services.pool_supplied_pages import is_pool_supplied
 from services import generation_budget, moderation_retry
 from services.roster_public import require_roster_auth
 from services import clip_similarity
@@ -672,6 +674,23 @@ def safety_controls(response: Response) -> dict[str, Any]:
     return snapshot(post_renders._started_service)
 
 
+def _pool_supplied_recipe_without_library(publication: dict[str, Any]) -> bool:
+    """A listed pool-supplied page whose production carries no Lab library id.
+
+    The Worker posts these pages' finished clips from its vault pool, so the
+    Lab advertises the recipe at zero (replenish blocked) instead of trying to
+    resolve a renderable slideshow recipe that can never bind a library.
+    """
+    spec = typed_recipe_spec(publication)
+    if spec is None:
+        return False
+    production = spec.get("production")
+    return (
+        isinstance(production, dict)
+        and production.get("sourceLibraryId") is None
+    )
+
+
 @router.get("/v1/capabilities", dependencies=[Depends(_require_capabilities_bearer)])
 def capabilities(
     x_rt_page_id: str | None = Header(default=None),
@@ -822,26 +841,42 @@ def capabilities(
     # all available. Registration alone never becomes a capability.
     for _, publication in registered_bindings:
         publication_engine = publication.get("engine")
-        if publication_engine == "ai_video":
-            generation_recipe, generation_unavailable_reason = (
-                resolve_generation_recipe_with_reason(publication)
-            )
-        else:
+        # A listed pool-supplied page with no Lab library id still advertises
+        # its registered recipe, but at zero: the Worker supplies the finished
+        # clips from its vault pool, so the Lab never renders it.
+        pool_supplied_zero = (
+            publication_engine in _SLIDESHOW_ENGINES
+            and is_pool_supplied(page_id)
+            and _pool_supplied_recipe_without_library(publication)
+        )
+        if pool_supplied_zero:
             generation_recipe = None
             generation_unavailable_reason = None
-        source_refusal_reasons: list[str] = []
-        source_recipe = (
-            _dossier_source_recipe(publication, source_refusal_reasons)
-            if publication_engine == "sourced_video"
-            else None
-        )
-        slideshow_recipe = (
-            resolve_slideshow_recipe(publication)
-            if publication_engine in _SLIDESHOW_ENGINES
-            else None
-        )
+            source_refusal_reasons: list[str] = []
+            source_recipe = None
+            slideshow_recipe = None
+        else:
+            if publication_engine == "ai_video":
+                generation_recipe, generation_unavailable_reason = (
+                    resolve_generation_recipe_with_reason(publication)
+                )
+            else:
+                generation_recipe = None
+                generation_unavailable_reason = None
+            source_refusal_reasons: list[str] = []
+            source_recipe = (
+                _dossier_source_recipe(publication, source_refusal_reasons)
+                if publication_engine == "sourced_video"
+                else None
+            )
+            slideshow_recipe = (
+                resolve_slideshow_recipe(publication)
+                if publication_engine in _SLIDESHOW_ENGINES
+                else None
+            )
         if (
-            generation_recipe is None
+            not pool_supplied_zero
+            and generation_recipe is None
             and source_recipe is None
             and slideshow_recipe is None
         ):
@@ -858,7 +893,9 @@ def capabilities(
                 _zero_plan_recipe(publication, unresolved_reason, unresolved_detail)
             )
             continue
-        if slideshow_recipe is not None:
+        if pool_supplied_zero:
+            max_quantity = 0
+        elif slideshow_recipe is not None:
             try:
                 library = load_syzygy_library(slideshow_recipe_profile := (
                     resolve_material_profile(publication, slideshow_recipe.recipe_spec)
@@ -918,7 +955,9 @@ def capabilities(
             source_identities = sorted(set(identities))
         zero_reason = None
         if max_quantity == 0:
-            if slideshow_recipe is not None:
+            if pool_supplied_zero:
+                zero_reason = POOL_SUPPLIED
+            elif slideshow_recipe is not None:
                 zero_reason = explain_empty_slideshow_plan(
                     slideshow_recipe, library, slideshow_recipe.max_quantity, unavailable,
                 )
