@@ -937,3 +937,180 @@ def test_malformed_exposed_job_does_not_block_other_compaction(kind, caplog):
     assert [row["jobId"] for row in archived] == ["good"]
     assert result[c.ARCHIVE_INDEX_KEY] == c.empty_index()
     assert "bad" in caplog.text
+
+
+def test_full_malformed_prefix_cannot_starve_later_valid_job(monkeypatch, caplog):
+    import copy
+    now = datetime(2026, 11, 1, tzinfo=timezone.utc)
+    stamp = (now - timedelta(days=60)).isoformat()
+    store = _empty()
+    for i in range(c.DEFAULT_BATCH_SIZE):
+        ident = f'bad-{i:04d}'
+        store['jobs'][ident] = {'jobId': ident, 'pageId': 'acct:p',
+            'status': 'failed', 'sourceKind': 'syzygy_slideshow', 'createdAt': stamp,
+            'clips': [{'sha256': 'invalid'}], 'slideshowPlan': []}
+        store['byIdempotency'][f'key-{ident}'] = ident
+    store['jobs']['good'] = {'jobId': 'good', 'pageId': 'acct:p',
+        'status': 'failed', 'createdAt': stamp}
+    store['byIdempotency']['key-good'] = 'good'
+    original = copy.deepcopy(store)
+    calls = []
+    extract = c.extract_index_entries
+    def counted(job):
+        calls.append(job['jobId'])
+        return extract(job)
+    monkeypatch.setattr(c, 'extract_index_entries', counted)
+    with caplog.at_level(logging.WARNING, logger='job_store_compaction'):
+        first, archived1 = c.compact_job_store(store, now)
+        first_calls = len(calls)
+        second, archived2 = c.compact_job_store(first, now)
+    assert first_calls <= c.DEFAULT_BATCH_SIZE and len(calls) - first_calls <= c.DEFAULT_BATCH_SIZE
+    assert any(row['jobId'] == 'good' for row in archived1 + archived2), 'valid job starved behind malformed prefix'
+    assert 'good' not in second['jobs']
+    assert second['byIdempotency'] == original['byIdempotency']
+    assert all(second['jobs'][f'bad-{i:04d}'] == original['jobs'][f'bad-{i:04d}'] for i in range(c.DEFAULT_BATCH_SIZE))
+    assert second[c.ARCHIVE_INDEX_KEY] == c.empty_index()
+    assert store == original
+    assert 'ALERT-LABJOBSTORE' in caplog.text
+
+
+def test_cursor_only_pass_persists_then_next_same_clock_archives(job_path, monkeypatch):
+    now = datetime(2026, 11, 1, tzinfo=timezone.utc)
+    stamp = (now - timedelta(days=60)).isoformat()
+    store = _empty()
+    bad = {'jobId': 'bad', 'pageId': 'acct:p', 'status': 'failed',
+           'sourceKind': 'syzygy_slideshow', 'createdAt': stamp,
+           'clips': [{'sha256': 'invalid'}], 'slideshowPlan': []}
+    good = {'jobId': 'good', 'pageId': 'acct:p', 'status': 'failed', 'createdAt': stamp}
+    store['jobs'] = {'bad': bad, 'good': good}
+    store['byIdempotency'] = {'bad-key': 'bad', 'good-key': 'good'}
+    store['futureMeta'] = {'keep': 1}
+    _write(job_path, store)
+    appended = []
+    original_append = c.append_archive_records
+    def record_append(*args):
+        appended.append([j['jobId'] for j in args[1]])
+        return original_append(*args)
+    monkeypatch.setattr(c, 'append_archive_records', record_append)
+    first = cp.run_compaction_once(job_path, now, batch_size=1)
+    saved = cp._load_jobs()
+    assert first['archived'] == 0 and appended == []
+    assert saved.get('compactionScanNextJobId') == 'good'
+    assert c.ARCHIVE_INDEX_KEY not in saved
+    assert saved['jobs'] == store['jobs'] and saved['byIdempotency'] == store['byIdempotency']
+    assert saved['futureMeta'] == store['futureMeta']
+    second = cp.run_compaction_once(job_path, now, batch_size=1)
+    final = cp._load_jobs()
+    assert second['archived'] == 1 and appended == [['good']]
+    assert final['jobs'] == {'bad': bad} and final['byIdempotency'] == store['byIdempotency']
+    assert final[c.ARCHIVE_INDEX_KEY] == c.empty_index()
+
+
+@pytest.mark.parametrize('cursor', [None, 3, '', 'missing'])
+def test_compaction_invalid_cursor_falls_back_to_first_eligible(cursor):
+    store = _empty(); old = _old()
+    store['jobs'] = {str(i): {'jobId': str(i), 'pageId': 'acct:p', 'status': 'failed', 'createdAt': old} for i in range(3)}
+    store['compactionScanNextJobId'] = cursor
+    result, archived = c.compact_job_store(store, _now(), batch_size=1)
+    assert [j['jobId'] for j in archived] == ['0']
+    assert result['compactionScanNextJobId'] == '1'
+
+
+def test_cursor_only_save_failure_retries_without_archive(job_path, monkeypatch):
+    now = _now(); old = _old(); store = _empty()
+    store['jobs'] = {'bad': {'jobId': 'bad', 'pageId': 'acct:p', 'status': 'failed',
+        'sourceKind': 'syzygy_slideshow', 'createdAt': old, 'clips': [{'sha256': 'invalid'}], 'slideshowPlan': []},
+        'good': _old_completed('good')}
+    _write(job_path, store); before = job_path.read_bytes(); real_save = cp._save_jobs
+    def fail_save(_store): raise OSError('injected save failure')
+    monkeypatch.setattr(cp, '_save_jobs', fail_save)
+    with pytest.raises(OSError, match='injected save failure'):
+        cp.run_compaction_once(job_path, now, batch_size=1)
+    assert job_path.read_bytes() == before
+    assert not c.archive_path_for(job_path, now).exists()
+    monkeypatch.setattr(cp, '_save_jobs', real_save)
+    assert cp.run_compaction_once(job_path, now, batch_size=1)['archived'] == 0
+    assert cp.run_compaction_once(job_path, now, batch_size=1)['archived'] == 1
+
+
+def test_cursor_archive_append_save_failure_retries_without_duplicate(job_path, monkeypatch):
+    now = _now(); store = _empty(); store[c.ARCHIVE_INDEX_KEY] = c.empty_index()
+    store['jobs'] = {'first': _old_completed('first'), 'second': _old_completed('second')}
+    store['compactionScanNextJobId'] = 'second'
+    _write(job_path, store); before = job_path.read_bytes(); real_save = cp._save_jobs
+    def fail_save(_store): raise OSError('injected save failure')
+    monkeypatch.setattr(cp, '_save_jobs', fail_save)
+    with pytest.raises(OSError, match='injected save failure'):
+        cp.run_compaction_once(job_path, now, batch_size=1)
+    assert job_path.read_bytes() == before
+    archive = c.archive_path_for(job_path, now)
+    assert [json.loads(x)['jobId'] for x in archive.read_text().splitlines()] == ['second']
+    monkeypatch.setattr(cp, '_save_jobs', real_save)
+    assert cp.run_compaction_once(job_path, now, batch_size=1)['archived'] == 1
+    assert [json.loads(x)['jobId'] for x in archive.read_text().splitlines()] == ['second']
+    assert cp._load_jobs()['compactionScanNextJobId'] == 'first'
+
+
+@pytest.mark.parametrize('batch_size', [0, -1])
+def test_nonpositive_batch_is_noop_without_cursor_or_write(job_path, monkeypatch, batch_size):
+    now = _now(); store = _empty()
+    store['jobs'] = {'old': _old_completed('old')}
+    store['futureMeta'] = {'keep': 1}
+    _write(job_path, store); before = job_path.read_bytes()
+    def unexpected(*_args, **_kwargs):
+        pytest.fail('nonpositive batch must not save or append')
+    monkeypatch.setattr(cp, '_save_jobs', unexpected)
+    monkeypatch.setattr(c, 'append_archive_records', unexpected)
+    result = cp.run_compaction_once(job_path, now, batch_size=batch_size)
+    assert result['archived'] == 0 and job_path.read_bytes() == before
+    assert cp._load_jobs() == store
+    assert not c.archive_path_for(job_path, now).exists()
+
+
+@pytest.mark.parametrize('source_cuts', [None, 7, True, {}, 'opaque'],
+                         ids=['null', 'integer', 'boolean', 'dict', 'string'])
+def test_completed_nonlist_sourcecuts_hold_row_and_advance_cursor(tmp_path, source_cuts, caplog):
+    old = _old()
+    store = _empty()
+    store['jobs'] = {
+        'bad': {'jobId': 'bad', 'pageId': 'acct:p', 'sourceKind': 'dossier_source_dna',
+                'status': 'completed', 'createdAt': old, 'completedAt': old,
+                'sourceCuts': source_cuts, 'clips': []},
+        'good': {'jobId': 'good', 'pageId': 'acct:p', 'status': 'failed', 'createdAt': old},
+    }
+    store['byIdempotency'] = {'bad-key': 'bad', 'good-key': 'good'}
+    path = tmp_path / 'jobs.json'
+    atomic_save(path, store)
+    stored = path.read_bytes()
+    snapshot = atomic_load(path, default={})
+    original = json.loads(json.dumps(snapshot))
+    with caplog.at_level(logging.WARNING, logger='job_store_compaction'):
+        first, archived = c.compact_job_store(snapshot, _now(), batch_size=1)
+    assert archived == [] and first['jobs']['bad'] == original['jobs']['bad']
+    assert first[c.COMPACTION_SCAN_NEXT_KEY] == 'good'
+    assert 'completed_source_cuts_not_a_list' in caplog.text
+    second, archived = c.compact_job_store(first, _now(), batch_size=1)
+    assert [row['jobId'] for row in archived] == ['good']
+    assert set(second['jobs']) == {'bad'}
+    assert second[c.COMPACTION_SCAN_NEXT_KEY] == 'bad'
+    assert second['byIdempotency']['bad-key'] == 'bad'
+    assert snapshot == original and path.read_bytes() == stored
+
+
+@pytest.mark.parametrize('kind,status', [('generated', 'completed'), ('dossier_source_dna', 'failed')])
+def test_sourcecuts_container_validation_does_not_change_other_kind_or_status(kind, status):
+    store = _empty()
+    store['jobs']['j'] = {'jobId': 'j', 'pageId': 'acct:p', 'sourceKind': kind,
+                          'status': status, 'createdAt': _old(), 'sourceCuts': None}
+    result, archived = c.compact_job_store(store, _now())
+    assert [row['jobId'] for row in archived] == ['j']
+    assert result['jobs'] == {} and result[c.ARCHIVE_INDEX_KEY]['sourceDnaCuts'] == []
+
+
+def test_valid_sourcecuts_list_keeps_legacy_per_entry_filtering():
+    job = {'sourceKind': 'dossier_source_dna', 'status': 'completed',
+           'sourceCuts': [None, 7, False, 'legacy', {}, {'slotId': 'slot', 'durationMs': 6000}]}
+    entries = c.extract_index_entries(job)
+    assert len(entries['sourceDnaCuts']) == 2
+    assert [row['cutIndex'] for row in entries['sourceDnaCuts']] == [4, 5]
+    assert entries['sourceDnaCuts'][1]['slotId'] == 'slot'
