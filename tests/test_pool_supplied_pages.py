@@ -282,6 +282,10 @@ def test_wrong_schema_or_duplicate_page_fails_closed(monkeypatch, tmp_path):
         path = tmp_path / "pool-supplied-pages.v1.json"
         path.write_text(json.dumps(bad), encoding="utf-8")
         monkeypatch.setattr(psp, "_PATH", path)
+        # The list is cached per path, so drop the cache each round; otherwise
+        # rounds 2-5 would only see round 1's cached answer.
+        psp.reset_pool_supplied_page_ids_cache()
+        assert psp._load_pool_supplied_page_ids_uncached() == frozenset(), bad
         assert psp.load_pool_supplied_page_ids() == frozenset(), bad
 
 
