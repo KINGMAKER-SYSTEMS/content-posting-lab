@@ -2,7 +2,9 @@
 
 Source: the LIVE Worker twin, `worker-src-live-a963a12d.tgz`
 (`control-plane-worker/src` at commit `a963a12d`), which is byte-identical for
-`contentLabClient.js` to the PR#340 candidate 9717cd2f. GitHub
+`contentLabClient.js` to tonight's Worker candidate. The live Worker now
+running in production (0920bcd8) also carries a byte-identical
+`contentLabClient.js`, so this vendored copy matches both. GitHub
 `rotational-posting-agent` main is STALE and must never be used as this source.
 
 These files are an unmodified byte-copy of the Worker validator closure needed

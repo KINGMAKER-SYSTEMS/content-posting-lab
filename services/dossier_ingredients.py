@@ -963,9 +963,23 @@ def _format_entry(
         # must not block Save & apply. Only the listed page ids are affected;
         # every other page keeps today's catalog bytes and versions exactly.
         for ingredient in ingredients:
-            if ingredient["ingredientId"] in POOL_SUPPLIED_INGREDIENT_IDS:
-                ingredient["required"] = False
-                ingredient["status"] = "pool_supplied"
+            if ingredient["ingredientId"] not in POOL_SUPPLIED_INGREDIENT_IDS:
+                continue
+            if (
+                contract.format_slug == "lyric-video"
+                and ingredient["ingredientId"] == "lyric-timing"
+                and ingredient.get("binding") is None
+            ):
+                # An unbound lyric timing cannot be supplied by the vault pool:
+                # the Worker only takes finished timed clips for this page, so
+                # without a bound timing set there is no valid selection and
+                # Save & apply would hit DOSSIER_RECIPE_SELECTION_REQUIRED.
+                # Keep the base lyric-video honesty here (required + missing
+                # blocker) while the slideshow family stays unblocked. A bound
+                # timing below still yields exactly one valid selection.
+                continue
+            ingredient["required"] = False
+            ingredient["status"] = "pool_supplied"
     ingredients.extend([
         _ingredient("caption-bank", "caption_bank", required=True, status="page_binding_required"),
         _ingredient("sound-collection", "sound_collection", required=True, status="page_binding_required"),

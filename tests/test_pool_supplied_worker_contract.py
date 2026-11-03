@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -37,12 +38,18 @@ WORKER_VALIDATOR_SHA256 = "fbc02ac3e42840e9c755c7fb0b5f73babdc4177fe8aaac583cc86
 LISTED_PAGES = sorted(load_pool_supplied_page_ids())
 UNLISTED_PAGE = "acct:unlisted-truck"
 
-# Real niche/engine for the two pages the class-c review proved, plus a lyric
-# default for the rest (the bug is niche-independent: the lyric-video format
-# carries the pool-supplied timing for every listed page).
+# Real niche/engine pairs, one per family the class-c matrix proved: the two
+# original pages plus Coffee, meme slideshow, POV single-image and TRUCK. The
+# bug is niche-independent (the lyric-video format carries the pool-supplied
+# timing for every listed page), but pinning the other slideshow families keeps
+# the contract honest for the formats those niches select.
 _NICHE_BY_PAGE = {
     "acct:chemically-lit": ("lyric-edits", "lyrics_slideshows"),
     "acct:wildflower993": ("ugc-slideshow", "sourced_slideshow"),
+    "acct:living-our-lives6": ("Coffee", "sourced_slideshow"),
+    "acct:fly-baby76": ("meme", "sourced_slideshow"),
+    "acct:cody-szn6": ("POV", "sourced_image"),
+    "acct:all-i-want-for-xma": ("TRUCK", "ai_video"),
 }
 
 
@@ -62,12 +69,33 @@ def _node_available() -> bool:
     return shutil.which("node") is not None
 
 
+def _node_required() -> bool:
+    return os.environ.get("CI") not in (None, "", "0") or os.environ.get("RT_REQUIRE_NODE") == "1"
+
+
+def _require_node_or_skip():
+    """In CI (or with RT_REQUIRE_NODE=1) a missing node is a failure, not a skip.
+
+    The vendored Worker validator is the only guard against CONTENT_LAB_SCHEMA_
+    MISMATCH regressions; letting it silently skip in CI would green a run that
+    never exercised it.
+    """
+    if _node_available():
+        return
+    if _node_required():
+        pytest.fail(
+            "node is not installed on this host but the Worker contract test "
+            "is required (CI/RT_REQUIRE_NODE=1); refusing to skip",
+        )
+    pytest.skip("node is not installed on this host")
+
+
 def test_vendored_worker_validator_matches_live_sha():
     assert hashlib.sha256(VENDORED.read_bytes()).hexdigest() == WORKER_VALIDATOR_SHA256
 
 
-@pytest.mark.skipif(not _node_available(), reason="node is not installed on this host")
 def test_worker_accepts_catalog_for_every_listed_and_one_unlisted_page(tmp_path):
+    _require_node_or_skip()
     assert len(LISTED_PAGES) == 12, LISTED_PAGES
     for page_id in [*LISTED_PAGES, UNLISTED_PAGE]:
         intent, revision = _intent(page_id)

@@ -144,9 +144,12 @@ def test_listed_page_lab_ingredients_are_pool_supplied_and_not_blockers():
 
     video = _format(catalog, "lyric-video")
     timing = _ingredient(video, "lyric-timing")
-    assert timing["required"] is False
-    assert timing["status"] == "pool_supplied"
-    assert "lyric-timing:missing" not in video["blockers"]
+    # LOW-1: an unbound lyric timing cannot come from the vault pool; the
+    # lyric-video format stays honest about it (base required/missing blocker)
+    # so an operator is blocked up front instead of at Save & apply.
+    assert timing["required"] is True
+    assert timing["status"] == "missing"
+    assert "lyric-timing:missing" in video["blockers"]
 
     # caption-bank / sound-collection page_binding_required are unchanged.
     assert _ingredient(edits, "caption-bank") == {
@@ -275,7 +278,7 @@ def test_wrong_schema_or_duplicate_page_fails_closed(monkeypatch, tmp_path):
     # Each round breaks exactly one rule, so each fail-closed check in the
     # loader is the only thing that can turn its round into an empty list.
     for bad in (
-        [LISTED_PAGE],  # top level is not an object
+        ["schema", "pages"],  # top level is not an object
         {"schema": "wrong", "pages": [LISTED_PAGE]},
         {"schema": psp.SCHEMA, "pages": [LISTED_PAGE], "extra": 1},
         {"schema": psp.SCHEMA, "pages": {LISTED_PAGE: True}},  # not a list
@@ -343,6 +346,47 @@ def test_list_is_loaded_once_and_alerts_once_per_process(monkeypatch, tmp_path, 
 
     alerts = [r for r in caplog.records if "ALERT pool-supplied-pages" in r.getMessage()]
     assert len(alerts) == 1, [r.getMessage() for r in caplog.records]
+
+
+def test_concurrent_cold_start_alerts_exactly_once(monkeypatch, tmp_path, caplog):
+    """LOW-2: a racing cold start must share one fail-closed decision.
+
+    Without the lock, N threads that all miss the cache each parse the bad file
+    and each log an ALERT; the class-c review observed 3 alerts from 16 racing
+    threads. With _cache_lock the first thread in does the load and the rest
+    reuse the cached decision: exactly one ALERT for the whole cold start.
+    """
+    import logging
+    import threading
+
+    path = tmp_path / "pool-supplied-pages.v1.json"
+    path.write_text("{not json", encoding="utf-8")
+    monkeypatch.setattr(psp, "_PATH", path)
+    psp.reset_pool_supplied_page_ids_cache()
+    caplog.set_level(logging.ERROR)
+
+    threads: list[threading.Thread] = []
+    results: list[frozenset] = []
+    results_lock = threading.Lock()
+    start = threading.Barrier(16)
+
+    def cold_start() -> None:
+        start.wait()
+        ids = psp.load_pool_supplied_page_ids()
+        with results_lock:
+            results.append(ids)
+
+    for _ in range(16):
+        thread = threading.Thread(target=cold_start)
+        threads.append(thread)
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=30)
+
+    assert len(results) == 16
+    assert all(ids == frozenset() for ids in results)
+    alerts = [r for r in caplog.records if "ALERT pool-supplied-pages" in r.getMessage()]
+    assert len(alerts) == 1, [r.getMessage() for r in alerts]
 
 
 # ── registration list check is authoritative even if the catalog drifts ─────
