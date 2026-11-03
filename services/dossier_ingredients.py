@@ -361,7 +361,7 @@ def _selection_catalog_version(
     ), None)
     timing = ingredients.get("lyric-timing")
     timing_binding = (timing or {}).get("binding")
-    if timing is not None:
+    if timing is not None and (timing or {}).get("status") != "pool_supplied":
         if not isinstance(timing_binding, dict):
             return None
         controls = production.get("controls", {})
@@ -455,9 +455,15 @@ def _production_selections(format_entry: dict[str, Any]) -> list[dict[str, Any]]
             })
     else:
         identities = []
-    timing = (ingredients.get("lyric-timing") or {}).get("binding")
+    timing_ingredient = ingredients.get("lyric-timing")
+    timing = (timing_ingredient or {}).get("binding")
     if isinstance(timing, dict):
         identities = [{**identity, "controls": {"lyricTimingSetId": timing["id"]}} for identity in identities]
+    elif timing_ingredient is not None and timing_ingredient.get("status") == "pool_supplied":
+        # A pool-supplied lyric-video page posts finished clips, so it has no
+        # timing selector: production.controls stays {} and must still resolve
+        # to an advertised selection (identity_fields includes controls).
+        identities = [{**identity, "controls": {}} for identity in identities]
     selections: list[dict[str, Any]] = []
     for identity in identities:
         version = _selection_catalog_version(format_entry, identity)

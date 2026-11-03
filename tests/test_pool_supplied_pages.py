@@ -172,6 +172,19 @@ def test_listed_page_registration_accepts_null_source_library(lab):
     assert response.json()["status"] == "registered"
 
 
+def test_listed_lyric_video_registration_accepts_null_source_and_no_timing(lab):
+    intent, revision = _listed_intent()
+    body = _v3_body(
+        LISTED_PAGE, intent=intent, revision=revision,
+        format_id="lyric-video", source_library_id=None,
+    )
+    response = lab.post(
+        "/api/control-plane/v1/recipes", json=body, headers=_headers(),
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "registered"
+
+
 def test_listed_page_explicit_source_library_must_match_an_advertised_option(lab):
     intent, revision = _listed_intent()
     body = _v3_body(
@@ -258,7 +271,75 @@ def test_wrong_schema_or_duplicate_page_fails_closed(monkeypatch, tmp_path):
         assert psp.load_pool_supplied_page_ids() == frozenset(), bad
 
 
-# ── capability advertises the recipe at zero for a listed page ───────────────
+# ── registration list check is authoritative even if the catalog drifts ─────
+def _registration_unit_test(monkeypatch, page_id):
+    """Drive _validate_production_selection with a crafted catalog whose image
+    library is still required=True (the pre-fix dossier view), so the null
+    sourceLibraryId decision is made by the registration list check itself."""
+    from fastapi import HTTPException
+
+    catalog = {
+        "currentFormatCandidates": ["lyric-edits"],
+        "formats": [{
+            "formatId": "lyric-edits",
+            "ingredients": [{
+                "ingredientId": "image-library",
+                "kind": "image_library",
+                "required": True,
+                "status": "missing",
+                "binding": None,
+                "options": [],
+            }],
+            "productionSelections": [{
+                "catalogVersion": "sha256:unit",
+                "providerId": None,
+                "modelId": None,
+                "promptModuleId": None,
+                "referenceSetId": None,
+                "sourceLibraryId": None,
+            }],
+        }],
+    }
+    monkeypatch.setattr(
+        recipes, "build_dossier_ingredient_catalog",
+        lambda *a, **k: catalog,
+    )
+    spec = {
+        "schema": "dossier.recipe-spec.v3",
+        "masterPages": {"pageId": page_id},
+        "masterPagesHash": "sha256:" + "ab" * 32,
+        "renderTreatment": {"stylePreset": None, "filters": {}, "captionStyle": {}},
+        "demand": {"formatMix": {"lyric-edits": 1}},
+        "production": {
+            "catalogVersion": "sha256:unit",
+            "providerId": None, "modelId": None, "promptModuleId": None,
+            "referenceSetId": None, "sourceLibraryId": None,
+            "variationValues": {}, "controls": {},
+        },
+    }
+    try:
+        recipes._validate_production_selection(
+            spec, page_id=page_id, recipe_id="lyric-edits:master",
+            recipe_version="v1", dossier_revision="r1",
+            recipe_spec_hash="sha256:" + "cd" * 32,
+        )
+    except HTTPException as error:
+        return error.status_code, error.detail
+    return None, None
+
+
+def test_registration_list_check_accepts_only_listed_pages(monkeypatch):
+    listed_status, _ = _registration_unit_test(monkeypatch, LISTED_PAGE)
+    assert listed_status is None
+
+    unlisted_status, unlisted_detail = _registration_unit_test(
+        monkeypatch, "acct:unlisted-page",
+    )
+    assert unlisted_status == 409
+    assert unlisted_detail == "sourceLibraryId is required for sourced master DNA"
+
+
+
 def test_listed_page_capability_advertises_zero(monkeypatch, tmp_path):
     monkeypatch.setenv("CONTENT_LAB_ADVERTISE_ZERO_REASONS", "1")
     from routers import control_plane as cp
