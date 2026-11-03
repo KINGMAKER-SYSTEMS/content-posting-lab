@@ -63,6 +63,15 @@ SELECTION_AUTHORITY_SCHEMA = "content-lab.dossier-selection-authority.v1"
 POOL_SUPPLIED_INGREDIENT_IDS = frozenset(
     {"image-library", "slideshow-treatment", "lyric-timing"}
 )
+# Formats on LISTED pool-supplied pages that advertise the Look-only grade
+# dials (Worker Dossier draws the 7 dials only for kind render_treatment).
+# Speed and crop are not offered: the binding carries filters only, every
+# default is the identity, so a page that never touches a dial keeps posting
+# the clip exactly as the pool supplies it.
+POOL_LOOK_TREATMENT_FORMATS = frozenset({
+    "lyric-edits", "coffee-slideshow", "image-video", "meme-slideshow",
+    "single-image-video", "ugc-slideshow",
+})
 DOSSIER_LIBRARY_TIMEOUT_SECONDS = 2.0
 PINNED_LEGACY_DOSSIER_CATALOG_VERSIONS_BY_PUBLICATION = {
     # Exact active v3 publications inventoried through the live dossier
@@ -966,6 +975,41 @@ def _format_entry(
             if ingredient["ingredientId"] in POOL_SUPPLIED_INGREDIENT_IDS:
                 ingredient["required"] = False
                 ingredient["status"] = "pool_supplied"
+        # Look-only grade dials for the pool pages (F-LAB-POOL-LOOK-DIALS-1103):
+        # the Worker's pool cutter (pixel89) applies the saved grade, so the
+        # channels are exactly the shared render_treatment filters with their
+        # advertised ranges and identity defaults — never an auto-darkened
+        # clip. clipSpeed and clipCrop are advertised but pinned to the identity
+        # (the same key shapes the full capability uses, with min == max ==
+        # default), so the Worker Dossier does not draw speed/framing/crop dials
+        # the Lab never applies on pool pages.
+        if contract.format_slug in POOL_LOOK_TREATMENT_FORMATS:
+            capability = render_treatment_capability()
+            ingredients.append(_ingredient(
+                "clip-treatment", "render_treatment", required=False,
+                status="bound",
+                binding={
+                    "filters": capability["filters"],
+                    "clipSpeed": {
+                        **capability["clipSpeed"],
+                        "minimum": 1.0, "maximum": 1.0, "default": 1.0,
+                    },
+                    "clipCrop": {
+                        "zoom": {
+                            **capability["clipCrop"]["zoom"],
+                            "minimum": 1.0, "maximum": 1.0, "default": 1.0,
+                        },
+                        "focusX": {
+                            **capability["clipCrop"]["focusX"],
+                            "minimum": 0.5, "maximum": 0.5, "default": 0.5,
+                        },
+                        "focusY": {
+                            **capability["clipCrop"]["focusY"],
+                            "minimum": 0.5, "maximum": 0.5, "default": 0.5,
+                        },
+                    },
+                },
+            ))
     ingredients.extend([
         _ingredient("caption-bank", "caption_bank", required=True, status="page_binding_required"),
         _ingredient("sound-collection", "sound_collection", required=True, status="page_binding_required"),

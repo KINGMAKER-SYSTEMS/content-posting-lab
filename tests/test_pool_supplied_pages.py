@@ -66,7 +66,8 @@ def _ingredient(format_entry, ingredient_id):
     )
 
 
-def _v3_body(page_id, *, intent, revision, format_id, source_library_id):
+def _v3_body(page_id, *, intent, revision, format_id, source_library_id, filters=None,
+              clip_speed=None, clip_crop=None):
     catalog = build_dossier_ingredient_catalog(page_id, intent, revision)
     production = {
         "catalogVersion": "",
@@ -82,15 +83,20 @@ def _v3_body(page_id, *, intent, revision, format_id, source_library_id):
         catalog_selection_version(catalog, format_id, production)
         or catalog["catalogVersion"]
     )
+    render = {
+        "stylePreset": None,
+        "filters": {} if filters is None else filters,
+        "captionStyle": {},
+    }
+    if clip_speed is not None:
+        render["clipSpeed"] = clip_speed
+    if clip_crop is not None:
+        render["clipCrop"] = clip_crop
     spec = {
         "schema": "dossier.recipe-spec.v3",
         "masterPages": intent,
         "masterPagesHash": revision,
-        "renderTreatment": {
-            "stylePreset": None,
-            "filters": {},
-            "captionStyle": {},
-        },
+        "renderTreatment": render,
         "demand": {"formatMix": {format_id: 1}},
         "production": production,
     }
@@ -107,6 +113,43 @@ def _v3_body(page_id, *, intent, revision, format_id, source_library_id):
         "recipeSpecCanonical": canonical,
     }
     return body
+
+
+def _truck_v2_body(*, clip_speed=None, clip_crop=None):
+    """Unlisted ai_video truck-scenic publication (v2, no production selection)."""
+    page_id = UNLISTED_TRUCK
+    intent, revision = master_pages(
+        page_id, handle="truck.page",
+        content_niche="TRUCK", content_engine="ai_video",
+    )
+    render = {
+        "stylePreset": "warm-truck",
+        "filters": {"brightness": 1.03},
+        "captionStyle": {},
+    }
+    if clip_speed is not None:
+        render["clipSpeed"] = clip_speed
+    if clip_crop is not None:
+        render["clipCrop"] = clip_crop
+    spec = {
+        "schema": "dossier.recipe-spec.v2",
+        "masterPages": intent,
+        "masterPagesHash": revision,
+        "renderTreatment": render,
+        "demand": {"formatMix": {"truck-scenic": 1}},
+    }
+    canonical = json.dumps(spec, sort_keys=True, separators=(",", ":"))
+    return {
+        "schema": recipes.REQUEST_SCHEMA,
+        "pageId": page_id,
+        "lane": recipes.LANE,
+        "recipeId": "truck-scenic:master",
+        "engine": "ai_video",
+        "recipeVersion": "dossier-1234567890abcdef",
+        "dossierRevision": "rev-1",
+        "recipeSpecHash": "sha256:" + hashlib.sha256(canonical.encode()).hexdigest(),
+        "recipeSpecCanonical": canonical,
+    }
 
 
 @pytest.fixture
@@ -461,3 +504,196 @@ def test_listed_page_capability_advertises_zero(monkeypatch, tmp_path):
         "maxQuantity": 0,
         "zeroReason": reasons.POOL_SUPPLIED,
     }]
+
+
+# ── Look-only grade dials on LISTED pool pages (F-LAB-POOL-LOOK-DIALS-1103) ──
+LOOK_FORMATS = {
+    "lyric-edits", "coffee-slideshow", "image-video", "meme-slideshow",
+    "single-image-video", "ugc-slideshow",
+}
+IDENTITY_FILTER_DEFAULTS = {
+    "brightness": 1.0, "contrast": 1.0, "saturation": 1.0,
+    "warmth": 0.0, "fade": 0.0, "grain": 0.0, "vignette": 0.0,
+}
+
+
+def _look_treatment(catalog, format_id):
+    edits = _format(catalog, format_id)
+    return next(
+        (entry for entry in edits["ingredients"]
+         if entry["ingredientId"] == "clip-treatment"),
+        None,
+    )
+
+
+def test_listed_pages_advertise_look_only_treatment_dials():
+    from services.control_plane_generation import render_treatment_capability
+
+    intent, revision = _listed_intent()
+    catalog = build_dossier_ingredient_catalog(LISTED_PAGE, intent, revision)
+
+    # ai_video / sourced_video formats keep their own required clip-treatment
+    # (base behavior); only the slideshow family gains the pool Look dial.
+    slideshow_family = LOOK_FORMATS | {"lyric-video"}
+    carrying = set()
+    for entry in catalog["formats"]:
+        if entry["formatId"] not in slideshow_family:
+            continue
+        treatment = next(
+            (i for i in entry["ingredients"] if i["ingredientId"] == "clip-treatment"),
+            None,
+        )
+        if treatment is not None:
+            carrying.add(entry["formatId"])
+            assert treatment["kind"] == "render_treatment", treatment
+            assert treatment["required"] is False, treatment
+            assert treatment["status"] == "bound", treatment
+            binding = treatment["binding"]
+            capability = render_treatment_capability()
+            # Speed and crop are advertised but pinned to the identity (min ==
+            # max == default) so the Worker Dossier draws no speed/framing/crop
+            # dials the Lab never applies on pool pages.
+            assert set(binding) == {"filters", "clipSpeed", "clipCrop"}, binding
+            assert binding["filters"] == capability["filters"]
+            assert binding["clipSpeed"] == {
+                **capability["clipSpeed"],
+                "minimum": 1.0, "maximum": 1.0, "default": 1.0,
+            }
+            assert binding["clipCrop"]["zoom"] == {
+                **capability["clipCrop"]["zoom"],
+                "minimum": 1.0, "maximum": 1.0, "default": 1.0,
+            }
+            assert binding["clipCrop"]["focusX"] == {
+                **capability["clipCrop"]["focusX"],
+                "minimum": 0.5, "maximum": 0.5, "default": 0.5,
+            }
+            assert binding["clipCrop"]["focusY"] == {
+                **capability["clipCrop"]["focusY"],
+                "minimum": 0.5, "maximum": 0.5, "default": 0.5,
+            }
+            for name, default in IDENTITY_FILTER_DEFAULTS.items():
+                assert binding["filters"][name]["default"] == default, (
+                    f"{name} default must stay the identity ({default}), "
+                    "never an auto-graded clip"
+                )
+            assert not any(
+                blocker.startswith("clip-treatment:") for blocker in entry["blockers"]
+            )
+    assert carrying == LOOK_FORMATS, sorted(carrying)
+
+
+def test_unlisted_lyric_page_has_no_look_dials_and_base_bytes():
+    page_id = "acct:unlisted-lyric"
+    intent, revision = master_pages(
+        page_id, handle="unlisted.lyric",
+        content_niche="lyric-edits", content_engine="lyrics_slideshows",
+    )
+    catalog = build_dossier_ingredient_catalog(page_id, intent, revision)
+    for entry in catalog["formats"]:
+        if entry["formatId"] not in LOOK_FORMATS | {"lyric-video"}:
+            continue
+        assert not any(
+            i["ingredientId"] == "clip-treatment" for i in entry["ingredients"]
+        ), entry["formatId"]
+    # Unlisted pages keep base's exact catalog bytes and version.
+    assert hashlib.sha256(
+        di.canonical_catalog_bytes(page_id, intent, revision)
+    ).hexdigest() == "c2a81506c15c72e1234efa6b94b123206ce8f9826b0d072463174276f45487eb"
+    assert catalog["catalogVersion"] == (
+        "sha256:bca7bf78551b57d087133ae390e5eaf190e7b7bb8a95ec5c74acd8efe69934b9"
+    )
+
+
+def test_listed_page_look_registration_accepts_in_range_filters(lab):
+    intent, revision = _listed_intent()
+    body = _v3_body(
+        LISTED_PAGE, intent=intent, revision=revision,
+        format_id="lyric-edits", source_library_id=None,
+        filters={"brightness": 0.7},
+    )
+    response = lab.post(
+        "/api/control-plane/v1/recipes", json=body, headers=_headers(),
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "registered"
+
+
+def test_listed_page_look_registration_refuses_out_of_range_filter(lab):
+    intent, revision = _listed_intent()
+    body = _v3_body(
+        LISTED_PAGE, intent=intent, revision=revision,
+        format_id="lyric-edits", source_library_id=None,
+        filters={"brightness": 3.5},
+    )
+    response = lab.post(
+        "/api/control-plane/v1/recipes", json=body, headers=_headers(),
+    )
+    assert response.status_code == 400, response.text
+    assert "brightness" in response.json()["detail"]
+
+
+def test_listed_page_look_registration_refuses_unknown_filter_channel(lab):
+    intent, revision = _listed_intent()
+    body = _v3_body(
+        LISTED_PAGE, intent=intent, revision=revision,
+        format_id="lyric-edits", source_library_id=None,
+        filters={"sepia": 0.2},
+    )
+    response = lab.post(
+        "/api/control-plane/v1/recipes", json=body, headers=_headers(),
+    )
+    assert response.status_code == 400, response.text
+    assert "sepia" in response.json()["detail"]
+
+
+def test_listed_page_look_registration_refuses_speed(lab):
+    intent, revision = _listed_intent()
+    body = _v3_body(
+        LISTED_PAGE, intent=intent, revision=revision,
+        format_id="lyric-edits", source_library_id=None,
+        clip_speed=0.7,
+    )
+    response = lab.post(
+        "/api/control-plane/v1/recipes", json=body, headers=_headers(),
+    )
+    assert response.status_code == 400, response.text
+    assert response.json()["detail"] == "speed and framing are not used on pool pages"
+
+
+def test_listed_page_look_registration_refuses_crop_zoom(lab):
+    intent, revision = _listed_intent()
+    body = _v3_body(
+        LISTED_PAGE, intent=intent, revision=revision,
+        format_id="lyric-edits", source_library_id=None,
+        clip_crop={"zoom": 1.35, "focusX": 0.5, "focusY": 0.5},
+    )
+    response = lab.post(
+        "/api/control-plane/v1/recipes", json=body, headers=_headers(),
+    )
+    assert response.status_code == 400, response.text
+    assert response.json()["detail"] == "speed and framing are not used on pool pages"
+
+
+def test_listed_page_look_registration_accepts_neutral_speed_and_crop(lab):
+    intent, revision = _listed_intent()
+    body = _v3_body(
+        LISTED_PAGE, intent=intent, revision=revision,
+        format_id="lyric-edits", source_library_id=None,
+        clip_speed=1.0,
+        clip_crop={"zoom": 1.0, "focusX": 0.5, "focusY": 0.5},
+    )
+    response = lab.post(
+        "/api/control-plane/v1/recipes", json=body, headers=_headers(),
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "registered"
+
+
+def test_unlisted_truck_scenic_still_accepts_speed(lab):
+    body = _truck_v2_body(clip_speed=0.7)
+    response = lab.post(
+        "/api/control-plane/v1/recipes", json=body,
+        headers=_headers(page_id=UNLISTED_TRUCK),
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "registered"
