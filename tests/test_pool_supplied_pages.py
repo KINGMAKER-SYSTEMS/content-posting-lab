@@ -288,7 +288,10 @@ def test_wrong_schema_or_duplicate_page_fails_closed(monkeypatch, tmp_path):
 def test_invalid_utf8_list_fails_closed_with_alert(monkeypatch, tmp_path, caplog):
     import logging
     path = tmp_path / "pool-supplied-pages.v1.json"
-    path.write_bytes(b"\xff\xfe{\"schema\": \"" + psp.SCHEMA.encode() + b"\"}")
+    # A lone 0xff byte inside the JSON string: json.loads(bytes) decodes UTF-8
+    # and raises UnicodeDecodeError (a ValueError), which the base loader did
+    # not catch and crashed every request on.
+    path.write_bytes(b'{"schema": "\xff"}')
     monkeypatch.setattr(psp, "_PATH", path)
     caplog.set_level(logging.ERROR)
 
@@ -300,7 +303,9 @@ def test_invalid_utf8_list_fails_closed_with_alert(monkeypatch, tmp_path, caplog
 def test_deeply_nested_list_fails_closed_with_alert(monkeypatch, tmp_path, caplog):
     import logging
     path = tmp_path / "pool-supplied-pages.v1.json"
-    path.write_text("[" * 10000 + "]" * 10000, encoding="utf-8")
+    # 200k nested arrays raise RecursionError in CPython 3.14's json parser
+    # (verified); base did not catch it and crashed every request on.
+    path.write_text("[" * 200_000 + "]" * 200_000, encoding="utf-8")
     monkeypatch.setattr(psp, "_PATH", path)
     caplog.set_level(logging.ERROR)
 
