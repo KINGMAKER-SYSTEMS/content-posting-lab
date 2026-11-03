@@ -390,10 +390,10 @@ def _validate_production_selection(
     if required_source is not None and source_id is None:
         # Pool-supplied pages post finished clips from the Worker's vault pool,
         # so their Lab image library (and its treatment/timing) is never a
-        # required source. This list check is the registration-side authority;
-        # the dossier catalog independently emits those ingredients as
-        # required=False / pool_supplied. An explicit sourceLibraryId still has
-        # to match an advertised option above.
+        # required source. This list check is defence in depth: the dossier
+        # catalog already emits those ingredients as required=False /
+        # pool_supplied, so required_source is normally None here. An explicit
+        # sourceLibraryId still has to match an advertised option above.
         if not (
             is_pool_supplied(page_id)
             and required_source.get("ingredientId") in POOL_SUPPLIED_INGREDIENT_IDS

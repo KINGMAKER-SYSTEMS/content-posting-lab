@@ -24,8 +24,15 @@ SCHEMA = "content-lab.pool-supplied-pages.v1"
 _PATH = Path(__file__).resolve().parents[1] / "recipes" / "pool-supplied-pages.v1.json"
 
 # Same closed charset as routers/control_plane.PAGE_ID_RE: page ids are bound
-# the same way here so a hostile list value cannot flow into a log line.
+# the same way here so a hostile list value stays a short, escaped %r token in
+# the ALERT log line rather than flowing verbatim into structured output.
 _PAGE_ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
+
+# The committed list is loaded once per process (per _PATH). A missing/malformed
+# file then alerts exactly once (on first load), not once per catalog/capabilities
+# call. The path is part of the cache key so a test that points _PATH at a fresh
+# fixture gets a fresh fail-closed decision instead of a stale cached one.
+_cache: tuple[Path, frozenset[str]] | None = None
 
 
 def _alert(message: str, *args: Any) -> None:
@@ -33,7 +40,28 @@ def _alert(message: str, *args: Any) -> None:
 
 
 def load_pool_supplied_page_ids() -> frozenset[str]:
-    """Return the unique safe page ids, or an empty set when the file fails closed."""
+    """Return the unique safe page ids, or an empty set when the file fails closed.
+
+    Cached per process path: the committed list is read and parsed once, so
+    callers (dossier catalog build, recipe registration, capabilities) share
+    one fail-closed decision and a malformed file alerts once instead of per
+    call.
+    """
+    global _cache
+    if _cache is not None and _cache[0] == _PATH:
+        return _cache[1]
+    ids = _load_pool_supplied_page_ids_uncached()
+    _cache = (_PATH, ids)
+    return ids
+
+
+def reset_pool_supplied_page_ids_cache() -> None:
+    """Drop the cached list so tests can point _PATH at a fresh fixture."""
+    global _cache
+    _cache = None
+
+
+def _load_pool_supplied_page_ids_uncached() -> frozenset[str]:
     try:
         raw = _PATH.read_bytes()
     except OSError as error:
@@ -41,7 +69,9 @@ def load_pool_supplied_page_ids() -> frozenset[str]:
         return frozenset()
     try:
         data = json.loads(raw)
-    except (json.JSONDecodeError, TypeError) as error:
+    except (ValueError, RecursionError) as error:
+        # JSONDecodeError and UnicodeDecodeError are both ValueError subclasses;
+        # a deeply nested file raises RecursionError. All fail closed + ALERT.
         _alert("list is not valid JSON: %s", error)
         return frozenset()
     if (

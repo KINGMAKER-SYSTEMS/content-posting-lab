@@ -172,7 +172,14 @@ def test_listed_page_registration_accepts_null_source_library(lab):
     assert response.json()["status"] == "registered"
 
 
-def test_listed_lyric_video_registration_accepts_null_source_and_no_timing(lab):
+def test_listed_lyric_video_registration_without_timing_is_refused_like_base(lab):
+    """A listed page with no bound lyricTimingSetId cannot register lyric-video.
+
+    Base refused this (no expressible selection, so the stale-catalog 409 fires).
+    A timing-less lyric-video selection can never be expressed on the wire (the
+    Worker requires controls exactly {lyricTimingSetId}), so the fix restores
+    base behavior: no selection, registration refused.
+    """
     intent, revision = _listed_intent()
     body = _v3_body(
         LISTED_PAGE, intent=intent, revision=revision,
@@ -181,21 +188,28 @@ def test_listed_lyric_video_registration_accepts_null_source_and_no_timing(lab):
     response = lab.post(
         "/api/control-plane/v1/recipes", json=body, headers=_headers(),
     )
-    assert response.status_code == 200, response.text
-    assert response.json()["status"] == "registered"
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"] == "production selection uses a stale Content Lab catalog"
 
 
-def test_listed_page_explicit_source_library_must_match_an_advertised_option(lab):
+def test_listed_page_explicit_source_library_must_match_an_advertised_option(lab, monkeypatch):
     intent, revision = _listed_intent()
     body = _v3_body(
         LISTED_PAGE, intent=intent, revision=revision,
         format_id="lyric-edits", source_library_id="syzygy:not-advertised",
     )
+    # Bypass only the stale-catalog gate (as a pinned legacy publication would)
+    # so the explicit-source check is the one that fires. Its exact message must
+    # be the advertised-option 409, proving that check runs rather than the
+    # stale-catalog one.
+    monkeypatch.setattr(
+        recipes, "is_pinned_legacy_catalog_version", lambda *a, **k: True,
+    )
     response = lab.post(
         "/api/control-plane/v1/recipes", json=body, headers=_headers(),
     )
     assert response.status_code == 409
-    assert "source library" in response.json()["detail"] or "stale" in response.json()["detail"]
+    assert response.json()["detail"] == "selected source library is not registered as master source DNA"
 
 
 # ── (b) unlisted page: catalog bytes + versions + registration 409 unchanged ─
@@ -269,6 +283,46 @@ def test_wrong_schema_or_duplicate_page_fails_closed(monkeypatch, tmp_path):
         path.write_text(json.dumps(bad), encoding="utf-8")
         monkeypatch.setattr(psp, "_PATH", path)
         assert psp.load_pool_supplied_page_ids() == frozenset(), bad
+
+
+def test_invalid_utf8_list_fails_closed_with_alert(monkeypatch, tmp_path, caplog):
+    import logging
+    path = tmp_path / "pool-supplied-pages.v1.json"
+    path.write_bytes(b"\xff\xfe{\"schema\": \"" + psp.SCHEMA.encode() + b"\"}")
+    monkeypatch.setattr(psp, "_PATH", path)
+    caplog.set_level(logging.ERROR)
+
+    assert psp.load_pool_supplied_page_ids() == frozenset()
+    assert psp.is_pool_supplied(LISTED_PAGE) is False
+    assert any("ALERT pool-supplied-pages" in r.getMessage() for r in caplog.records)
+
+
+def test_deeply_nested_list_fails_closed_with_alert(monkeypatch, tmp_path, caplog):
+    import logging
+    path = tmp_path / "pool-supplied-pages.v1.json"
+    path.write_text("[" * 10000 + "]" * 10000, encoding="utf-8")
+    monkeypatch.setattr(psp, "_PATH", path)
+    caplog.set_level(logging.ERROR)
+
+    assert psp.load_pool_supplied_page_ids() == frozenset()
+    assert psp.is_pool_supplied(LISTED_PAGE) is False
+    assert any("ALERT pool-supplied-pages" in r.getMessage() for r in caplog.records)
+
+
+def test_list_is_loaded_once_and_alerts_once_per_process(monkeypatch, tmp_path, caplog):
+    import logging
+    path = tmp_path / "pool-supplied-pages.v1.json"
+    path.write_text("{not json", encoding="utf-8")
+    monkeypatch.setattr(psp, "_PATH", path)
+    psp.reset_pool_supplied_page_ids_cache()
+    caplog.set_level(logging.ERROR)
+
+    assert psp.load_pool_supplied_page_ids() == frozenset()
+    assert psp.load_pool_supplied_page_ids() == frozenset()
+    assert psp.is_pool_supplied(LISTED_PAGE) is False
+
+    alerts = [r for r in caplog.records if "ALERT pool-supplied-pages" in r.getMessage()]
+    assert len(alerts) == 1, [r.getMessage() for r in caplog.records]
 
 
 # ── registration list check is authoritative even if the catalog drifts ─────
