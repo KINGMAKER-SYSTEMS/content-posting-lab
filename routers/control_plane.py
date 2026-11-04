@@ -1907,7 +1907,9 @@ def _compaction_loop() -> None:
 _MEDIA_RETENTION_THREAD: threading.Thread | None = None
 # Pressure is re-read every minute; a pass runs when its pressure's interval is up.
 _MEDIA_RETENTION_TICK_SECONDS = 60
-_MEDIA_RETENTION_INTERVAL_SECONDS = {"normal": 10 * 60, "tight": 2 * 60, "floor": 60}
+# Every pressure waits 10 min: a near-full volume must not run a 60 s pass cycle
+# whose probes hammer the control plane's D1 (2026-11-04 probe storm).
+_MEDIA_RETENTION_INTERVAL_SECONDS = {"normal": 10 * 60, "tight": 10 * 60, "floor": 10 * 60}
 _MEDIA_RETENTION = generated_media_retention.GeneratedMediaRetention()
 
 
