@@ -252,6 +252,8 @@ def per_gen_cost_usd(
         if not params.get("image_data_uri"):
             params["image_data_uri"] = "pricing-only"
     payload = builder("", params)
+    if model == "minimax/h3-highspeed":
+        return charged_cost_per_gen(info.get("cost_per_run_usd"))
     if model == "prunaai/p-video":
         rate = (info.get("cost_per_second_usd_by_resolution") or {}).get(payload["resolution"])
         return round(charged_cost_per_gen(rate) * payload["duration"], 4)

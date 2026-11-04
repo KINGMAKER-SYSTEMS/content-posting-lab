@@ -5,6 +5,7 @@ import logging
 import math
 import os
 import re
+import subprocess
 import time
 from pathlib import Path
 
@@ -357,6 +358,20 @@ def slugify(text: str, max_len: int = 40) -> str:
     return s[:max_len] or "untitled"
 
 
+def _strip_video_audio(path: Path) -> None:
+    silent = path.with_suffix(".silent.mp4")
+    try:
+        subprocess.run(
+            ["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
+             "-i", str(path), "-map", "0:v:0", "-an", "-c:v", "copy",
+             "-movflags", "+faststart", str(silent)],
+            check=True, capture_output=True, timeout=60,
+        )
+        silent.replace(path)
+    finally:
+        silent.unlink(missing_ok=True)
+
+
 async def generate_one(
     job_id: str,
     index: int,
@@ -441,6 +456,8 @@ async def generate_one(
                 entry["provider_image_url"] = f"{url_prefix}/{rel_dir}/{image_name}"
             else:
                 await download_media(client, media_url, dest)
+                if provider_info.get("strip_audio") is True:
+                    await asyncio.to_thread(_strip_video_audio, dest)
 
             # Multi-crop mode: split one 16:9 into multiple 9:16 crops.
             # Complete-subject dossier recipes instead use ``contain`` so a
