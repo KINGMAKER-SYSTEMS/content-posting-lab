@@ -177,7 +177,10 @@ def _catalog_path() -> Path:
 
 
 def load_prompt_catalog(format_slug: str | None = None) -> tuple[dict[str, Any], str]:
-    raw = _catalog_path().read_bytes()
+    path = _catalog_path()
+    if format_slug == "pov-seasonal" and path == CATALOG_PATH.resolve():
+        path = CATALOG_PATH.with_name("christmas_pov.v1.json")
+    raw = path.read_bytes()
     catalog = json.loads(raw)
     if not isinstance(catalog, dict):
         raise ValueError("prompt catalog must be an object")
@@ -188,7 +191,7 @@ def load_prompt_catalog(format_slug: str | None = None) -> tuple[dict[str, Any],
     # Keep unrelated saved recipes bound to their unchanged catalog bytes.
     # A custom catalog is self-contained; only the bundled catalog has this
     # separately versioned silhouette replacement.
-    if _catalog_path() == CATALOG_PATH.resolve():
+    if path == CATALOG_PATH.resolve():
         still_raw = CATALOG_PATH.with_name("silhouette_stills.v1.json").read_bytes()
         still = json.loads(still_raw)
         for field, names in {
@@ -201,7 +204,7 @@ def load_prompt_catalog(format_slug: str | None = None) -> tuple[dict[str, Any],
             catalog[field].update(still[field])
         if format_slug == "silhouette-truck":
             version = hashlib.sha256(still_raw).hexdigest()
-    if _catalog_path() == CATALOG_PATH.resolve():
+    if path == CATALOG_PATH.resolve():
         boat_raw = CATALOG_PATH.with_name("boat_minimax.v1.json").read_bytes()
         boat = json.loads(boat_raw)
         for field, names in {

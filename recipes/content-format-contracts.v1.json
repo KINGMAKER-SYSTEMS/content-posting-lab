@@ -1577,6 +1577,83 @@
         "sounds": "page_binding_required"
       },
       "definitionGaps": []
+    },
+    "pov-seasonal": {
+      "contentNiche": "XMAS",
+      "contentEngine": "ai_video",
+      "materialSource": "generated_video",
+      "assetType": "video/mp4",
+      "definitionStatus": "complete",
+      "creativeAuthority": {
+        "kind": "prompt_family",
+        "id": "christmas-pov",
+        "version": "sha256:2edbc8d080653192d72031889b874c85247a40002472adc22ab4b2d2b969421c"
+      },
+      "dimensions": {
+        "subject": {
+          "status": "defined",
+          "rule": "First-person walk through a quiet Christmas pedestrian lane, market, snowy park, footbridge, or cabin approach.",
+          "authority": "promptCatalog.families.christmas-pov.slots.scene"
+        },
+        "setting": {
+          "status": "defined",
+          "rule": "Snowy holiday streets, timber villages and human-scale paths with warm lights and evergreen decorations.",
+          "authority": "promptCatalog.families.christmas-pov.slots.scene"
+        },
+        "shotGrammar": {
+          "status": "defined",
+          "rule": "One continuous portrait phone shot at walking eye height, with a visible pedestrian path and forward travel throughout.",
+          "authority": "promptCatalog.families.christmas-pov.template"
+        },
+        "lighting": {
+          "status": "defined",
+          "rule": "Blue winter twilight or dark winter night with controlled practical lights and readable snow and shadow detail.",
+          "authority": "promptCatalog.families.christmas-pov.slots.light"
+        },
+        "motion": {
+          "status": "defined",
+          "rule": "A calm human stride with slight step sway, natural parallax, stable geometry, and physically plausible snow.",
+          "authority": "promptCatalog.families.christmas-pov.quality_guards"
+        },
+        "duration": {
+          "status": "defined",
+          "rule": "Seven-second native vertical generation with one clip per provider call.",
+          "authority": "promptCatalog.providers.pruna-pvideo-vertical.base_input.duration"
+        },
+        "textPolicy": {
+          "status": "defined",
+          "rule": "Raw footage has no captions, overlays, logos, or watermarks.",
+          "authority": "promptCatalog.families.christmas-pov.quality_guards"
+        },
+        "negativeRules": {
+          "status": "defined",
+          "rule": "Reject cuts, fades, strobing, warped geometry, unnatural camera movement, and near duplicates.",
+          "authority": "promptCatalog.families.christmas-pov.visual_reference.reject"
+        },
+        "referenceExamples": {
+          "status": "defined",
+          "rule": "Review the shot against the scene, light and camera movement described by the selected prompt.",
+          "authority": "promptCatalog.families.christmas-pov.slots.scene"
+        }
+      },
+      "output": {
+        "aspectRatio": "9:16",
+        "container": "video/mp4",
+        "durationPolicy": "executor_bound",
+        "audioPolicy": "campaign_sound_bound_downstream"
+      },
+      "reviewAuthority": "promptCatalog.families.christmas-pov.visual_reference",
+      "reviewGates": [
+        "technical_video",
+        "ocr_text",
+        "visual_dna",
+        "duplicate_and_never_reuse"
+      ],
+      "distribution": {
+        "captions": "page_binding_required",
+        "sounds": "page_binding_required"
+      },
+      "definitionGaps": []
     }
   }
 }

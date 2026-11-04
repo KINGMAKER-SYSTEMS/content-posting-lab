@@ -1,0 +1,62 @@
+{
+  "formats": {
+    "pov-seasonal": {
+      "family": "christmas-pov"
+    }
+  },
+  "families": {
+    "christmas-pov": {
+      "method": "t2v",
+      "provider": "pruna-pvideo-vertical",
+      "template": "One continuous vertical smartphone POV of walking on foot. {scene} {light} {weather} {guards}",
+      "quality_guards": "Start already walking. Keep the phone at natural eye height with a calm human stride, slight step sway and a steady horizon. The nearest objects pass gently beside the lens while the destination approaches slowly. Keep buildings, paths, ornaments and light strings stable through the last frame. Use natural phone exposure, readable shadows and believable snow. No visible camera or hands, vehicle, lane markings, crowd, zoom, abrupt turn, cut, fade, text, logo or watermark.",
+      "slots": {
+        "scene": [
+          "Walk along a narrow snow-dusted cobblestone pedestrian lane in an old village. Pass a stone shopfront, a pine garland and a warm lantern at arm's length. A decorated Christmas tree in the small square ahead grows slowly larger.",
+          "Walk around a gentle bend in a snowy residential footpath. Pass a waist-high picket fence, wooden houses with warm roofline lights and a decorated evergreen at the corner. The curve gradually reveals the next lit porch.",
+          "Walk between wooden Christmas market stalls on a pedestrian cobblestone aisle. Pass a fir wreath, a warm bulb string and a stall counter with wrapped gifts. A decorated tree anchors the open square ahead.",
+          "Walk slowly down a snow-covered park path at eye height. Pass two small lit fir trees and an iron lamppost. A string of warm lights leads down the path between tall snowy trees.",
+          "Walk through a small alpine village on a snowy stone footpath. Pass a low planter and timber chalets with warm balcony lights. A distant church steeple stays ahead along the pedestrian lane.",
+          "Walk across a short stone footbridge toward a decorated village square. A snow-capped railing passes close on the right, warm light reflects in the narrow creek, and the tree in the square gradually comes closer.",
+          "Walk along a quiet brick main street at eye height. Pass shop windows with soft holiday displays, evergreen wreaths, and glowing lamps. Keep the snowy sidewalk open ahead.",
+          "Walk up a short snowy lane toward a timber cabin at eye height. Pass a low fence wrapped with warm white lights. A wreath and amber porch light mark the cabin door.",
+          "Walk along a snow-lined path beside a pine fence. Pass a decorated spruce and a red ribbon tied to a fencepost. A cluster of farmhouse windows glows ahead around a shallow bend.",
+          "Walk through a small town square at eye height. Pass a low stone fountain filled with snow as a tall decorated Christmas tree grows larger ahead. Warm windows frame the square.",
+          "Walk slowly beneath a single arch of warm holiday lights at eye height. Frosted evergreen branches frame the path and snowy stone houses sit beyond the arch.",
+          "Walk on a narrow snowy boardwalk through a lakeside village. Pass a low railing wrapped in warm lights and two decorated evergreens. The dark lake stays visible between the glowing houses."
+        ],
+        "light": [
+          "Deep blue winter twilight with restrained amber window light and detail in the snow.",
+          "Quiet winter night under a dark navy sky, with warm practical lights and visible shadow detail."
+        ],
+        "weather": [
+          "Sparse small snowflakes drift naturally past the lens.",
+          "Fresh settled snow, clear air, and still evergreen branches.",
+          "A light snowfall brushes across the path in a gentle crosswind."
+        ]
+      },
+      "clips_per_gen": 1,
+      "keepers_per_gen": 0.7,
+      "visual_reference": {
+        "reject": [
+          "camera motion that feels like a drone, a zoom, or a sliding still",
+          "architecture, roads, or decorations that warp during the shot",
+          "strobing lights, blizzard effects, baked text, fades, or cuts",
+          "repeated source or near-identical composition"
+        ]
+      }
+    }
+  },
+  "providers": {
+    "pruna-pvideo-vertical": {
+      "replicate_model": "prunaai/p-video",
+      "base_input": {
+        "aspect_ratio": "9:16",
+        "duration": 7,
+        "resolution": "720p",
+        "optimize_prompt": false
+      },
+      "cost_per_gen_usd": 0.14
+    }
+  }
+}
