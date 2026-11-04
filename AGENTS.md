@@ -296,6 +296,15 @@
   signature. Signature-only legacy archives cannot prove disjoint media and
   hold generic replenishment until reconciled; do not infer disjointness from
   changed sorted offsets or a new signature alone.
+- `POST /api/control-plane/v1/photo-plan-reservations` reserves one PenPal or
+  Twin plan for a direct renderer. It requires the Control Plane bearer,
+  page/lane headers, a registered recipe and the exact Master Pages intent.
+  The existing job-store lock serializes both routes against live, archived,
+  and direct holds. The receipt carries the exact ordered photo plan, library
+  snapshot hash, and page and recipe identities. The same request and key
+  replay the stored receipt without reading the library again. The hold
+  creates no render job or artifact and survives compaction. Holds remain
+  reserved indefinitely, including when the remote result is ambiguous.
 
 - `services/abn_factory.py` kinetic-template parameters remain inert JSON inside
   the HTML script. Escape HTML script delimiters while preserving decoded values.
@@ -826,6 +835,9 @@
   unavailable providers, exact-byte binding, and cached-decision behavior.
 
 - Run `pytest -q tests/test_control_plane_capability_auth.py` for the capability Bearer boundary and unchanged authorized response.
+- Run `pytest -q tests/test_managed_photo_reservations.py tests/test_control_plane_image_video_execution.py tests/test_job_store_compaction.py`
+  for authenticated photo holds, exact replay, concurrent legacy planning,
+  exhaustion, and archived reservations.
 - Run `pytest -q tests/test_control_plane_external_pages.py` for external-page
   auth, refusals, real-roster resolution by source imports, clip jobs and
   capabilities, Notion sync survival, fleet projection exclusion and DELETE scope.
