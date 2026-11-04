@@ -68,8 +68,8 @@ def test_vendored_worker_validator_matches_live_sha():
 
 @pytest.mark.skipif(not _node_available(), reason="node is not installed on this host")
 def test_worker_accepts_catalog_for_every_listed_and_one_unlisted_page(tmp_path):
-    # 12 original pages + 3 replacement Warner pages (11-03).
-    assert len(LISTED_PAGES) == 15, LISTED_PAGES
+    # 12 original pages + 3 replacement Warner pages + Goldford sunsetsoul46 (11-03).
+    assert len(LISTED_PAGES) == 16, LISTED_PAGES
     for page_id in [*LISTED_PAGES, UNLISTED_PAGE]:
         intent, revision = _intent(page_id)
         catalog = build_dossier_ingredient_catalog(page_id, intent, revision)
