@@ -1587,12 +1587,12 @@
       "creativeAuthority": {
         "kind": "prompt_family",
         "id": "christmas-pov",
-        "version": "sha256:e16e51cb2f440616988ad5afb64a3f331732e8e361adc2e9977f9e0afc7a94fd"
+        "version": "sha256:2edbc8d080653192d72031889b874c85247a40002472adc22ab4b2d2b969421c"
       },
       "dimensions": {
         "subject": {
           "status": "defined",
-          "rule": "First-person village driving or walking through a quiet Christmas street, market, park, or cabin approach.",
+          "rule": "First-person walk through a quiet Christmas pedestrian lane, market, snowy park, footbridge, or cabin approach.",
           "authority": "promptCatalog.families.christmas-pov.slots.scene"
         },
         "setting": {
@@ -1602,7 +1602,7 @@
         },
         "shotGrammar": {
           "status": "defined",
-          "rule": "One continuous portrait phone shot at eye height with a clear forward path and no transitions.",
+          "rule": "One continuous portrait phone shot at walking eye height, with a visible pedestrian path and forward travel throughout.",
           "authority": "promptCatalog.families.christmas-pov.template"
         },
         "lighting": {
@@ -1612,7 +1612,7 @@
         },
         "motion": {
           "status": "defined",
-          "rule": "Slow forward travel with natural parallax, stable geometry, and physically plausible snow.",
+          "rule": "A calm human stride with slight step sway, natural parallax, stable geometry, and physically plausible snow.",
           "authority": "promptCatalog.families.christmas-pov.quality_guards"
         },
         "duration": {

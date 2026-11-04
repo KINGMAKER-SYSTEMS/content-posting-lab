@@ -749,7 +749,8 @@
 - `XMAS` pages using `ai_video` resolve to `pov-seasonal:master` through the
   format registry. The first seasonal prompt module is `christmas-pov`.
   `recipes/generation/christmas_pov.v1.json` owns the versioned Christmas scene,
-  light, and weather variations. The existing replenishment
+  light, and weather variations for continuous eye-height walking shots. The
+  existing replenishment
   executor requests one silent native vertical seven-second 720p P-Video clip
   per call, with the prompt optimizer off. Its Dossier advertises the fixed
   provider settings and requires no source library or reference image. Keep

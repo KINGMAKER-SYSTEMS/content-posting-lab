@@ -249,8 +249,8 @@
       "executionStatus": "commissioned",
       "executorKind": "prompt_family",
       "executorId": "christmas-pov",
-      "executorVersion": "sha256:e16e51cb2f440616988ad5afb64a3f331732e8e361adc2e9977f9e0afc7a94fd",
-      "formatContractVersion": "sha256:628c9e43f1c6c1e2a4318f18a23a807ced2545064da2b91d4f09329b87af0061",
+      "executorVersion": "sha256:2edbc8d080653192d72031889b874c85247a40002472adc22ab4b2d2b969421c",
+      "formatContractVersion": "sha256:ccd28de0f68dcbe0a07b372d2590fb48b8ea0bdab49b0c21dc723d904f9472e2",
       "maxQuantity": 10
     }
   }
