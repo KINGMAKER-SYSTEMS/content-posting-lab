@@ -1587,38 +1587,38 @@
       "creativeAuthority": {
         "kind": "prompt_family",
         "id": "christmas-pov",
-        "version": "sha256:2edbc8d080653192d72031889b874c85247a40002472adc22ab4b2d2b969421c"
+        "version": "sha256:bcae8d47ecdd0f86aed25deb52af4155a6ac6fd80289cf46ea3b10b607586f25"
       },
       "dimensions": {
         "subject": {
           "status": "defined",
-          "rule": "First-person walk through a quiet Christmas pedestrian lane, market, snowy park, footbridge, or cabin approach.",
+          "rule": "First-person Christmas village walks, slow drives past decorated homes, and fixed Swiss Alpine overlooks.",
           "authority": "promptCatalog.families.christmas-pov.slots.scene"
         },
         "setting": {
           "status": "defined",
-          "rule": "Snowy holiday streets, timber villages and human-scale paths with warm lights and evergreen decorations.",
+          "rule": "Snowy Christmas markets, decorated neighborhoods, and alpine villages with warm practical holiday lights.",
           "authority": "promptCatalog.families.christmas-pov.slots.scene"
         },
         "shotGrammar": {
           "status": "defined",
-          "rule": "One continuous portrait phone shot at walking eye height, with a visible pedestrian path and forward travel throughout.",
+          "rule": "One continuous portrait shot with the eye-level camera movement or fixed terrace viewpoint defined by the scene.",
           "authority": "promptCatalog.families.christmas-pov.template"
         },
         "lighting": {
           "status": "defined",
           "rule": "Blue winter twilight or dark winter night with controlled practical lights and readable snow and shadow detail.",
-          "authority": "promptCatalog.families.christmas-pov.slots.light"
+          "authority": "promptCatalog.families.christmas-pov.slots.light_detail"
         },
         "motion": {
           "status": "defined",
-          "rule": "A calm human stride with slight step sway, natural parallax, stable geometry, and physically plausible snow.",
+          "rule": "Natural pedestrian sway, restrained passenger-seat parallax, or a slight handheld settle at a fixed overlook.",
           "authority": "promptCatalog.families.christmas-pov.quality_guards"
         },
         "duration": {
           "status": "defined",
-          "rule": "Seven-second native vertical generation with one clip per provider call.",
-          "authority": "promptCatalog.providers.pruna-pvideo-vertical.base_input.duration"
+          "rule": "Eight-second portrait generation with one clip per H3 Highspeed call. Remove provider audio without re-encoding video.",
+          "authority": "promptCatalog.providers.h3-highspeed.base_input.duration"
         },
         "textPolicy": {
           "status": "defined",
