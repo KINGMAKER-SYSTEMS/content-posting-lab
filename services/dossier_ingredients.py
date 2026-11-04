@@ -943,7 +943,7 @@ def _format_entry(
     master_pages: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if profile.content_engine == "ai_video":
-        if contract.format_slug == "christmas-pov":
+        if contract.format_slug == "pov-seasonal":
             catalog, _ = load_prompt_catalog(contract.format_slug)
             # The seven-second 720p pilot defines this route's provider settings.
             model_options = [dict(option, controls={}) for option in _model_options(catalog)]

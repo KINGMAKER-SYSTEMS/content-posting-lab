@@ -1578,7 +1578,7 @@
       },
       "definitionGaps": []
     },
-    "christmas-pov": {
+    "pov-seasonal": {
       "contentNiche": "XMAS",
       "contentEngine": "ai_video",
       "materialSource": "generated_video",
@@ -1587,7 +1587,7 @@
       "creativeAuthority": {
         "kind": "prompt_family",
         "id": "christmas-pov",
-        "version": "sha256:075510ccb708040391f6fc4d78d6ba0c8734842d2ffa542f2124c3637b9f397f"
+        "version": "sha256:e16e51cb2f440616988ad5afb64a3f331732e8e361adc2e9977f9e0afc7a94fd"
       },
       "dimensions": {
         "subject": {

@@ -178,7 +178,7 @@ def _catalog_path() -> Path:
 
 def load_prompt_catalog(format_slug: str | None = None) -> tuple[dict[str, Any], str]:
     path = _catalog_path()
-    if format_slug == "christmas-pov" and path == CATALOG_PATH.resolve():
+    if format_slug == "pov-seasonal" and path == CATALOG_PATH.resolve():
         path = CATALOG_PATH.with_name("christmas_pov.v1.json")
     raw = path.read_bytes()
     catalog = json.loads(raw)

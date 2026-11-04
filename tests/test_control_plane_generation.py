@@ -127,12 +127,12 @@ def test_typed_v3_truck_recipe_uses_the_exact_advertised_dossier_catalog_version
 
 
 def test_christmas_dossier_routes_to_native_vertical_generation_without_a_source_library():
-    payload = publication(pageId="acct:christmas-test", recipeId="christmas-pov:master")
+    payload = publication(pageId="acct:christmas-test", recipeId="pov-seasonal:master")
     spec = json.loads(payload["recipeSpecCanonical"])
     intent, revision = master_pages(payload["pageId"], content_niche="XMAS")
     catalog = build_dossier_ingredient_catalog(payload["pageId"], intent, revision)
-    assert catalog["currentFormatCandidates"] == ["christmas-pov"]
-    christmas = next(entry for entry in catalog["formats"] if entry["formatId"] == "christmas-pov")
+    assert catalog["currentFormatCandidates"] == ["pov-seasonal"]
+    christmas = next(entry for entry in catalog["formats"] if entry["formatId"] == "pov-seasonal")
     model = next(entry for entry in christmas["ingredients"] if entry["ingredientId"] == "visual-model")
     assert model["options"][0]["controls"] == {}
     selection, = christmas["productionSelections"]
@@ -142,7 +142,7 @@ def test_christmas_dossier_routes_to_native_vertical_generation_without_a_source
         schema="dossier.recipe-spec.v3",
         masterPages=intent,
         masterPagesHash=revision,
-        demand={"formatMix": {"christmas-pov": 1.0}},
+        demand={"formatMix": {"pov-seasonal": 1.0}},
         production={**selection, "variationValues": {}, "controls": {}},
     )
     payload["recipeSpecCanonical"] = json.dumps(spec, sort_keys=True, separators=(",", ":"))
