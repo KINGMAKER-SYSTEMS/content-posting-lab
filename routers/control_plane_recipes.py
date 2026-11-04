@@ -26,6 +26,7 @@ from services.json_store import lock_for
 from services.roster import ROSTER_PATH
 from services.master_pages_contract import exact_intent, intent_hash
 from services.dossier_ingredients import (
+    POOL_LOOK_TREATMENT_FORMATS,
     POOL_SUPPLIED_INGREDIENT_IDS,
     build_dossier_ingredient_catalog,
     catalog_selection_version,
@@ -33,6 +34,7 @@ from services.dossier_ingredients import (
 )
 from services.pool_supplied_pages import is_pool_supplied
 from services.caption_discipline import validate_caption_discipline
+from services.control_plane_generation import FILTER_RANGES, SUPPORTED_FILTERS
 from services.source_controls import source_start_ms
 from services.page_frame import frame_fit
 
@@ -194,6 +196,28 @@ def _validate_spec(
         raise HTTPException(400, "recipe demand schema mismatch")
     if not isinstance(render.get("filters"), dict) or not isinstance(render.get("captionStyle"), dict):
         raise HTTPException(400, "render treatment objects are required")
+    # The strict recipe decoder (services.control_plane_generation) already
+    # refuses an out-of-range or unknown grade channel at execution time; the
+    # publish door must agree, or a draft the Dossier saved (e.g. brightness
+    # 0.7 from the new pool-page Look dials) registers fine and then can never
+    # execute. Same source of truth: SUPPORTED_FILTERS / FILTER_RANGES.
+    for name, value in render["filters"].items():
+        if name not in SUPPORTED_FILTERS:
+            raise HTTPException(400, f"render treatment filter {name} is not advertised")
+        if value is None:
+            # The strict decoder treats an explicit null as unset/neutral.
+            continue
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(float(value))
+        ):
+            raise HTTPException(400, f"render treatment filter {name} must be a finite number")
+        lower, upper = FILTER_RANGES[name]
+        if not lower <= float(value) <= upper:
+            raise HTTPException(
+                400, f"render treatment filter {name} must be from {lower} through {upper}",
+            )
     if not isinstance(demand.get("formatMix"), dict):
         raise HTTPException(400, "formatMix must be an object")
     preset = render.get("stylePreset")
@@ -236,6 +260,24 @@ def _validate_spec(
                 400,
                 "clipCrop must use 1-3x zoom and normalized 0-1 focal points",
             )
+    if is_pool_supplied(page_id):
+        # Pool pages never apply speed or framing (the Worker posts finished
+        # clips); the Look-only render_treatment advertises both controls pinned
+        # to the identity, so a Dossier that still posts a non-identity value
+        # must be refused here rather than registered and never executed.
+        look_format = _single_pool_look_format(demand["formatMix"])
+        if look_format is not None and (
+            float(clip_speed) != 1.0
+            or (
+                clip_crop is not None
+                and (
+                    float(clip_crop["zoom"]) != 1.0
+                    or float(clip_crop["focusX"]) != 0.5
+                    or float(clip_crop["focusY"]) != 0.5
+                )
+            )
+        ):
+            raise HTTPException(400, "speed and framing are not used on pool pages")
     if any(key.lower() in {"prompt", "instruction", "instructions", "message", "messages"}
            for key in _walk_keys(spec)):
         raise HTTPException(400, "free-form instruction fields are not accepted")
@@ -267,6 +309,17 @@ def _single_format(spec: dict[str, Any]) -> str:
     if len(selected) != 1 or float(selected[0][1]) != 1.0:
         raise HTTPException(409, "recipe must select one Content Lab format at weight 1")
     return selected[0][0]
+
+
+def _single_pool_look_format(format_mix: dict[str, Any]) -> str | None:
+    """The selected format slug when it is one weight-1 pool-page Look format."""
+    selected = [
+        key for key, value in format_mix.items()
+        if isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0
+    ]
+    if len(selected) != 1 or float(format_mix[selected[0]]) != 1.0:
+        return None
+    return selected[0] if selected[0] in POOL_LOOK_TREATMENT_FORMATS else None
 
 
 def _valid_control_value(value: Any, control: dict[str, Any]) -> bool:
