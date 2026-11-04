@@ -240,6 +240,18 @@
       "executorVersion": "sha256:142f7a9d740b701df44dc9c340556c5a051c9cb5c30b37a6853d967b335414d4",
       "formatContractVersion": "sha256:ea4bc62707346f7c2d11bfde0678248d455a447c91124ab40d3590b72a6923e2",
       "maxQuantity": 10
+    },
+    "christmas-pov": {
+      "contentNiche": "XMAS",
+      "contentEngine": "ai_video",
+      "materialSource": "generated_video",
+      "assetType": "video/mp4",
+      "executionStatus": "commissioned",
+      "executorKind": "prompt_family",
+      "executorId": "christmas-pov",
+      "executorVersion": "sha256:075510ccb708040391f6fc4d78d6ba0c8734842d2ffa542f2124c3637b9f397f",
+      "formatContractVersion": "sha256:44f05dab3a2625ea83de7f6d72cda2da7f4f9de6aa9c9bc6aa61e9e8e192a15a",
+      "maxQuantity": 10
     }
   }
 }

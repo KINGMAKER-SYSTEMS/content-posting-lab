@@ -746,6 +746,14 @@
   `recipes/generation/boat_minimax.v1.json` changes only boat generation;
   preserve unrelated prompt/provider versions and use the existing boat inventory.
 
+- `XMAS` pages using `ai_video` resolve to `christmas-pov:master` through the
+  format registry. `recipes/generation/christmas_pov.v1.json` owns the versioned
+  Christmas scene, light, and weather variations. The existing replenishment
+  executor requests one silent native vertical seven-second 720p P-Video clip
+  per call, with the prompt optimizer off. Its Dossier advertises the fixed
+  provider settings and requires no source library or reference image. Keep
+  the shared prompt catalog and the slideshow source contracts independent.
+
 - `GET /api/health` reports the most recently completed ffmpeg/yt-dlp
   executable check. Startup checks both off the event loop before serving.
   A request after the 60-second freshness interval starts at most one

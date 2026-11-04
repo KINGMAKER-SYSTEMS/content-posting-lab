@@ -5,8 +5,9 @@ import json
 
 import pytest
 
+from providers import PROVIDERS
 from providers.base import API_KEYS
-from providers.replicate import _build_flux_2_pro_input
+from providers.replicate import _build_flux_2_pro_input, _build_pvideo_input
 from services.control_plane_generation import (
     GenerationRecipe,
     compose_prompt,
@@ -123,6 +124,44 @@ def test_typed_v3_truck_recipe_uses_the_exact_advertised_dossier_catalog_version
     assert recipe is not None
     assert recipe.recipe_spec["production"]["catalogVersion"] == production["catalogVersion"]
     assert recipe.recipe_spec["production"]["controls"]["crop_mode"] == "both"
+
+
+def test_christmas_dossier_routes_to_native_vertical_generation_without_a_source_library():
+    payload = publication(pageId="acct:christmas-test", recipeId="christmas-pov:master")
+    spec = json.loads(payload["recipeSpecCanonical"])
+    intent, revision = master_pages(payload["pageId"], content_niche="XMAS")
+    catalog = build_dossier_ingredient_catalog(payload["pageId"], intent, revision)
+    assert catalog["currentFormatCandidates"] == ["christmas-pov"]
+    christmas = next(entry for entry in catalog["formats"] if entry["formatId"] == "christmas-pov")
+    model = next(entry for entry in christmas["ingredients"] if entry["ingredientId"] == "visual-model")
+    assert model["options"][0]["controls"] == {}
+    selection, = christmas["productionSelections"]
+    assert selection["sourceLibraryId"] is None
+    assert selection["referenceSetId"] is None
+    spec.update(
+        schema="dossier.recipe-spec.v3",
+        masterPages=intent,
+        masterPagesHash=revision,
+        demand={"formatMix": {"christmas-pov": 1.0}},
+        production={**selection, "variationValues": {}, "controls": {}},
+    )
+    payload["recipeSpecCanonical"] = json.dumps(spec, sort_keys=True, separators=(",", ":"))
+
+    recipe = resolve_generation_recipe(payload)
+    assert recipe is not None
+    assert recipe.planned_provider_calls(3) == 3
+    prompt, _ = compose_prompt(recipe, "christmas-test", 0)
+    options = new_generation_options(recipe)
+    assert "crop_mode" not in options
+    provider_input = _build_pvideo_input(
+        prompt, {**options, "variant": PROVIDERS[recipe.engine]["variant"]},
+    )
+    assert provider_input["aspect_ratio"] == "9:16"
+    assert provider_input["duration"] == 7
+    assert provider_input["resolution"] == "720p"
+    assert provider_input["save_audio"] is False
+    assert provider_input["prompt_upsampling"] is False
+    assert "image" not in provider_input
 
 
 def test_typed_v4_truck_recipe_preserves_the_control_plane_caption_selection():

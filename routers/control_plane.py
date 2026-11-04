@@ -557,19 +557,17 @@ def _contracts_freshness_signature() -> tuple[str, int, int, int, int]:
 def _prompt_catalog_freshness_signature() -> tuple[tuple[str, int, int, int, int], ...]:
     """Collision-safe stat signature for EVERY file load_prompt_catalog can
     read for ANY format_slug: the base catalog, plus (when using the
-    default, non-overridden catalog path) the silhouette and boat overlays
-    it unconditionally reads and merges in regardless of which format_slug
-    was asked for (services/control_plane_generation.py's
-    load_prompt_catalog). Not per-format-slug precise — it always includes
-    all three files, not just the one(s) a given format_slug's resolution
-    would actually touch — which can only over-invalidate, never under-.
+    default catalog path) the silhouette and boat overlays and the separate
+    Christmas catalog. The signature includes all of them for any AI-video
+    binding so a catalog change cannot leave stale capabilities in the cache.
     """
     configured = os.environ.get("CONTENT_LAB_PROMPT_CATALOG", "").strip()
     base = Path(configured).resolve() if configured else CATALOG_PATH
     paths = [base]
-    if not configured:
+    if base == CATALOG_PATH.resolve():
         paths.append(base.with_name("silhouette_stills.v1.json"))
         paths.append(base.with_name("boat_minimax.v1.json"))
+        paths.append(base.with_name("christmas_pov.v1.json"))
     return tuple(_file_stat_signature(path) for path in paths)
 
 
