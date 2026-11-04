@@ -41,9 +41,45 @@ from services import slot_source_regeneration as slot_source
 def render_prepared_post(source, output, request, **kwargs):
     if isinstance(request, TimedPostRenderRequest):
         return render_timed_post(source, output, request, **kwargs)
-    return render_post(source, output, request, **kwargs)
+    return render_post(source, output, request,
+                       allow_burned_fallback=not refuse_caption_burn(), **kwargs)
 
 log = logging.getLogger("content_lab.post_render_jobs")
+
+# Eric 11-03 22:3x standing rule: "Please don't do burn text on any of the pages
+# in this system" (card F-NO-BURN-FLEETWIDE-1103). This is the Lab-side backstop:
+# default OFF keeps today's behaviour byte-identical; when ON the Lab never
+# produces burned caption pixels. Two doors enforce it:
+#   1. enqueue + _execute refuse a burned (no ``captionDelivery``) v1 request
+#      fail-closed before any media work with the stable reason code
+#      "caption_burn_refused" (HTTP 409 on submit, terminal ``failed`` for jobs
+#      that were queued while OFF and only ran after the flip).
+#   2. ``render_prepared_post`` renders an ``captionDelivery: "in_app"`` request
+#      as the clean asset only, with no ``burned_fallback`` copy or receipt key.
+# Timed lyric renders (lyric text IS the format) stay untouched.
+CONTENT_LAB_REFUSE_CAPTION_BURN = "CONTENT_LAB_REFUSE_CAPTION_BURN"
+
+
+def refuse_caption_burn() -> bool:
+    """True when the Lab must refuse prepared-post caption burns."""
+    return os.environ.get(CONTENT_LAB_REFUSE_CAPTION_BURN, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _caption_burn_requested(request) -> bool:
+    """True when this prepared-post request would burn its caption into video.
+
+    ``TimedPostRenderRequest`` is the timed-lyric renderer whose phrase text IS
+    the format (not a caption burn), so it is exempt. A v1 request burns its
+    caption unless it opts into ``captionDelivery: "in_app"``. An invalid
+    ``captionDelivery`` value already fails closed as ``caption_delivery_invalid``
+    during rendering and is not reclassified here.
+    """
+    if isinstance(request, TimedPostRenderRequest):
+        return False
+    try:
+        return _caption_delivery(request) is None
+    except PostRenderError:
+        return False
 
 JOB_SCHEMA = "content-lab.post-render-job.v1"
 OUTPUT_AUTHORITY_SCHEMA = "content-lab.post-render-output-authority.v1"
@@ -498,6 +534,24 @@ class PostRenderJobs:
         return "/output-identity/v1/" + identity
 
     @staticmethod
+    def _output_identity(request, authority: dict) -> str:
+        """The permanent dedupe identity for a verified output.
+
+        A pair is identified by its burned fallback (distinct captions still
+        share the same clean bytes). A clean-only in_app output has no fallback,
+        so its identity must bind the slot rather than the clean bytes alone:
+        two distinct slots with the same source+look legitimately produce the
+        same clean final and must not collide as duplicate_output (H2).
+        """
+        fallback = authority.get("burned_fallback")
+        if fallback:
+            return fallback["artifact"]["final_sha256"]
+        primary = authority["final_sha256"]
+        if _caption_delivery(request) == "in_app":
+            return sha256((request.slot_id + "\0" + request.slot_payload_sha256 + "\0" + primary).encode())
+        return primary
+
+    @staticmethod
     def _ordinary_history(submission_json: str) -> bool:
         """Recognize burned history without applying today's submission schema.
 
@@ -591,8 +645,7 @@ class PostRenderJobs:
                         log.warning("post render identity backfill skipped invalid authority job=%s", candidate["id"])
                     continue
                 authority = self._validate_output_authority(candidate, self._load_output_authority(candidate))
-                fallback = authority.get("burned_fallback")
-                identity = fallback["artifact"]["final_sha256"] if fallback else authority["final_sha256"]
+                identity = self._output_identity(request, authority)
             except (ValueError, TypeError, AttributeError, KeyError, RecursionError):
                 if self._ordinary_history(candidate["submission_json"]):
                     log.warning("post render identity backfill skipped invalid ordinary submission job=%s", candidate["id"])
@@ -633,6 +686,8 @@ class PostRenderJobs:
         request, now = submission.request, self.clock_ms()
         if request.created_at_ms > now:
             raise RenderJobError("request_future_dated")
+        if refuse_caption_burn() and _caption_burn_requested(request):
+            raise RenderJobError("caption_burn_refused")
         job_id = "render_" + sha256((request.slot_id + "\0" + request.slot_payload_sha256).encode())[:32]
         with self._db() as db:
             db.execute("BEGIN IMMEDIATE")
@@ -720,7 +775,7 @@ class PostRenderJobs:
                 result["final_sha256"] = authority["final_sha256"]
                 result["qa_frame_sha256"] = authority["qa_frame_sha256"]
             result["artifacts"] = {kind: f"/api/control-plane/v1/post-renders/{job_id}/artifacts/{kind}" for kind in (("final", "qa", "receipt", "burned_final", "burned_qa")
-                    if authority is not None and not self._legacy_clean_output(row, authority)
+                    if authority is not None and not refuse_caption_burn() and not self._legacy_clean_output(row, authority)
                     and _caption_delivery(RenderJobSubmission.model_validate_json(row["submission_json"]).request) == "in_app"
                     else ("final", "qa", "receipt"))}
         return result
@@ -1088,34 +1143,19 @@ class PostRenderJobs:
                 or type(receipt.get("duration_ms")) not in (int, float)
                 or receipt["duration_ms"] <= 0):
             raise RenderJobError("decode_evidence_missing")
-        if _caption_delivery(request) == "in_app" and not self._legacy_clean_output(row, authority):
-            fallback = receipt.get("burned_fallback")
-            burned = authority.get("burned_fallback")
-            if (receipt.get("caption_delivery") != "in_app" or not isinstance(fallback, dict)
-                    or not isinstance(burned, dict) or fallback != burned.get("artifact")
-                    or set(fallback) != {"final_sha256", "final_byte_length", "final_object_key", "qa_frame_sha256"}
-                    or any(not re.fullmatch(r"[0-9a-f]{64}", str(fallback.get(key, "")))
-                           for key in ("final_sha256", "qa_frame_sha256"))
-                    or type(fallback.get("final_byte_length")) is not int
-                    or not 0 < fallback["final_byte_length"] <= MAX_FINAL_BYTES
-                    or fallback["final_sha256"] in {final_sha, request.source_sha256}
-                    or fallback["final_object_key"] != f"posting/dual-final/{fallback['final_sha256']}.mp4"):
+        if _caption_delivery(request) == "in_app":
+            if receipt.get("caption_delivery") != "in_app":
                 raise RenderJobError("burned_fallback_invalid")
-            decode = burned.get("decode")
-            if not isinstance(decode, dict):
-                raise RenderJobError("burned_fallback_decode_missing")
-            probe = decode.get("final_probe")
-            if (decode.get("final_sha256") != fallback["final_sha256"]
-                    or decode.get("qa_frame_sha256") != fallback["qa_frame_sha256"]
-                    or type(decode.get("decoded_video_frames")) not in (int, float)
-                    or decode["decoded_video_frames"] <= 0
-                    or not isinstance(probe, dict)
-                    or not _paired_duration_matches(
-                        receipt.get("duration_ms"), probe.get("duration_ms"),
-                        evidence.get("decoded_video_frames"), decode.get("decoded_video_frames"))
-                    or (probe.get("width"), probe.get("height"), probe.get("video_codec"), probe.get("pixel_format"))
-                       != (1080, 1920, "h264", "yuv420p")):
-                raise RenderJobError("burned_fallback_decode_missing")
+            if "burned_fallback" in receipt or "burned_fallback" in authority:
+                # A valid OFF-era clean+burned pair stays readable under the
+                # flag (H3). The backstop refuses to PRODUCE new burned bytes;
+                # it does not invalidate history that already succeeded.
+                self._validate_burned_fallback_pair(receipt, authority, final_sha, evidence)
+            elif not (refuse_caption_burn() or self._legacy_clean_output(row, authority)):
+                # OFF requires the pair (a clean-only render under OFF is only
+                # legitimate as an already-committed legacy success). ON accepts
+                # the clean-only render_prepared_post shape with no fallback.
+                raise RenderJobError("burned_fallback_invalid")
         elif _caption_delivery(request) != "in_app" and ("burned_fallback" in receipt or "caption_delivery" in receipt):
             raise RenderJobError("burned_fallback_invalid")
         receipt_sha = authority.get("receipt_sha256")
@@ -1128,6 +1168,42 @@ class PostRenderJobs:
         if _caption_delivery(request) == "in_app":
             self._authenticate_receipt(row, authority)
         return authority
+
+    @staticmethod
+    def _validate_burned_fallback_pair(receipt, authority, final_sha, evidence) -> None:
+        """Validate the durable clean+burned pair facts for an in_app receipt.
+
+        The receipt's ``burned_fallback`` summary must agree exactly with the
+        authority's full fallback decode, never share the clean or source bytes,
+        and prove paired duration/decode facts.
+        """
+        fallback = receipt.get("burned_fallback")
+        burned = authority.get("burned_fallback")
+        if (not isinstance(fallback, dict)
+                or not isinstance(burned, dict) or fallback != burned.get("artifact")
+                or set(fallback) != {"final_sha256", "final_byte_length", "final_object_key", "qa_frame_sha256"}
+                or any(not re.fullmatch(r"[0-9a-f]{64}", str(fallback.get(key, "")))
+                       for key in ("final_sha256", "qa_frame_sha256"))
+                or type(fallback.get("final_byte_length")) is not int
+                or not 0 < fallback["final_byte_length"] <= MAX_FINAL_BYTES
+                or fallback["final_sha256"] in {final_sha, receipt.get("source_sha256")}
+                or fallback["final_object_key"] != f"posting/dual-final/{fallback['final_sha256']}.mp4"):
+            raise RenderJobError("burned_fallback_invalid")
+        decode = burned.get("decode")
+        if not isinstance(decode, dict):
+            raise RenderJobError("burned_fallback_decode_missing")
+        probe = decode.get("final_probe")
+        if (decode.get("final_sha256") != fallback["final_sha256"]
+                or decode.get("qa_frame_sha256") != fallback["qa_frame_sha256"]
+                or type(decode.get("decoded_video_frames")) not in (int, float)
+                or decode["decoded_video_frames"] <= 0
+                or not isinstance(probe, dict)
+                or not _paired_duration_matches(
+                    receipt.get("duration_ms"), probe.get("duration_ms"),
+                    evidence.get("decoded_video_frames"), decode.get("decoded_video_frames"))
+                or (probe.get("width"), probe.get("height"), probe.get("video_codec"), probe.get("pixel_format"))
+                   != (1080, 1920, "h264", "yuv420p")):
+            raise RenderJobError("burned_fallback_decode_missing")
 
     @staticmethod
     def _load_output_authority(row) -> dict:
@@ -1182,7 +1258,8 @@ class PostRenderJobs:
         }
         if _caption_delivery(request) == "in_app":
             authority["receipt_bytes_b64"] = base64.b64encode(receipt_bytes).decode("ascii")
-        if _caption_delivery(request) == "in_app" and not self._legacy_clean_output(row, authority):
+        if (_caption_delivery(request) == "in_app" and "burned_fallback" in receipt
+                and not self._legacy_clean_output(row, authority)):
             try:
                 burned_sha, burned_length = _file_hash(output / "burned/final.mp4", MAX_FINAL_BYTES)
                 burned_qa, _ = _file_hash(output / "burned/qa.jpg", MAX_QA_BYTES)
@@ -1216,8 +1293,8 @@ class PostRenderJobs:
         """
         primary = authority["final_sha256"]
         fallback = authority.get("burned_fallback")
-        identity = fallback["artifact"]["final_sha256"] if fallback else primary
         request = RenderJobSubmission.model_validate_json(row["submission_json"]).request
+        identity = self._output_identity(request, authority)
         if _caption_delivery(request) == "in_app":
             self._validate_output_authority(row, authority)
             duplicate = db.execute("SELECT id FROM jobs WHERE id<>? AND final_sha256=? LIMIT 1",
@@ -1251,7 +1328,7 @@ class PostRenderJobs:
                 raise RenderJobError("duplicate_output")
         owner = db.execute("SELECT id FROM jobs WHERE final_sha256=? AND id<>?",
                            (primary, row["id"])).fetchone()
-        if owner and not fallback:
+        if owner and not fallback and _caption_delivery(request) != "in_app":
             raise RenderJobError("duplicate_output")
         return None if owner else primary
 
@@ -1743,7 +1820,27 @@ class PostRenderJobs:
     def _execute(self, old):
         if not self._has_workspace_capacity(job_id=old["id"]):
             return
-        now, attempt_id = self.clock_ms(), uuid.uuid4().hex
+        now = self.clock_ms()
+        # Render-time no-burn guard (H2). Enqueue refuses burned requests while
+        # the flag is ON, but every path that can still reach the renderer
+        # funnels through here: a fresh claim, automatic transient requeue, the
+        # Worker's retry(), provide_provenance, and restart recovery of running
+        # rows. A job queued while OFF and rendered after the flip must end
+        # terminal (failed, reason caption_burn_refused, not requeued) before any
+        # attempt directory, fetch or media work, so no burned pixels are made.
+        try:
+            guard_request = RenderJobSubmission.model_validate_json(old["submission_json"]).request
+        except Exception:
+            guard_request = None
+        if guard_request is not None and refuse_caption_burn() and _caption_burn_requested(guard_request):
+            with self._db() as db:
+                if old["state"] == "running" and old["attempt_id"]:
+                    db.execute("UPDATE attempts SET state='interrupted',ended_at_ms=?,error_code='caption_burn_refused' WHERE id=?",
+                               (now, old["attempt_id"]))
+                db.execute("UPDATE jobs SET state='failed',error_code='caption_burn_refused',attempts=?,updated_at_ms=? WHERE id=?",
+                           (MAX_ATTEMPTS, now, old["id"]))
+            return
+        attempt_id = uuid.uuid4().hex
         with self._db() as db:
             if old["attempts"] >= MAX_ATTEMPTS:
                 db.execute("UPDATE jobs SET state='failed',error_code='retry_budget_exhausted',updated_at_ms=? WHERE id=?", (now, old["id"]))

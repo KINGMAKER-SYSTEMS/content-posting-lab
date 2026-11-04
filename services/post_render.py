@@ -504,16 +504,22 @@ def _render_post_single(source_path: Path, output_directory: Path, request: Post
 
 def render_post(source_path: Path, output_directory: Path, request: PostRenderRequest, *,
                 font_dir: Path | None = None, tools: RenderTools = RenderTools(),
-                clock_ms: Callable[[], int] = lambda: time.time_ns() // 1_000_000) -> RenderedPost:
-    """Publish both clean and captioned assets with job-level verification for an in-app slot.
+                clock_ms: Callable[[], int] = lambda: time.time_ns() // 1_000_000,
+                allow_burned_fallback: bool = True) -> RenderedPost:
+    """Publish the clean (and, by default, burned-fallback) assets for a slot.
 
-    Both variants use the identical source, caption and requested treatment.
-    A failed fallback invalidates the entire attempt; the durable job retry
-    handles transient errors before either asset can become ready.
+    The clean primary is always rendered and verified. For an ``in_app`` slot
+    the default also renders a second burned-fallback copy the Worker may post
+    when the phone refuses to type the text. ``allow_burned_fallback=False``
+    (the Lab's fleet-wide no-burn flag) renders the clean asset only and returns
+    a receipt with ``caption_delivery: "in_app"`` and no ``burned_fallback``
+    key — the exact 3-artifact shape the Worker already admits.
     """
     result = _render_post_single(source_path, output_directory, request,
                                  font_dir=font_dir, tools=tools, clock_ms=clock_ms)
     if _caption_delivery(request) != CAPTION_DELIVERY_IN_APP:
+        return result
+    if not allow_burned_fallback:
         return result
     try:
         fallback = _render_post_single(source_path, Path(output_directory) / "burned", request,

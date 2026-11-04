@@ -64,20 +64,25 @@ def snapshot(started_service):
         effective = provider._provider_download_deadline()
         download_seconds["value"] = (effective if math.isfinite(effective)
                                      and abs(effective) <= _MAX_JSON_INTEGER else None)
+    render = {
+        "configured_workers": worker_config,
+        "started_worker_count": active_workers,
+        "minimum_free_bytes": min_free,
+        "claim_floor_bytes": floor,
+        "max_attempts": post_render_jobs.MAX_ATTEMPTS,
+        "source_bytes": post_render.MAX_SOURCE_BYTES,
+        "final_bytes": post_render.MAX_FINAL_BYTES,
+        "qa_bytes": post_render.MAX_QA_BYTES,
+        "overlay_bytes": post_render.MAX_OVERLAY_BYTES,
+    }
+    # The no-burn flag is observed only when it is ON, so the OFF snapshot stays
+    # byte-identical to base (nothing in the Worker reads this surface).
+    if post_render_jobs.refuse_caption_burn():
+        render["refuse_caption_burn"] = True
     return {
         "schema": "content-lab.safety-controls.v1",
         "scope": "this_process_configuration_observation",
-        "render": {
-            "configured_workers": worker_config,
-            "started_worker_count": active_workers,
-            "minimum_free_bytes": min_free,
-            "claim_floor_bytes": floor,
-            "max_attempts": post_render_jobs.MAX_ATTEMPTS,
-            "source_bytes": post_render.MAX_SOURCE_BYTES,
-            "final_bytes": post_render.MAX_FINAL_BYTES,
-            "qa_bytes": post_render.MAX_QA_BYTES,
-            "overlay_bytes": post_render.MAX_OVERLAY_BYTES,
-        },
+        "render": render,
         "moderation_retry_daily_per_page": moderation,
         "source_import": {
             "source_bytes": control_plane_source_imports.MAX_SOURCE_IMPORT_BYTES,

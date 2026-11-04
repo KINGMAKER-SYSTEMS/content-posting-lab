@@ -108,5 +108,5 @@ def test_static_renderer_retains_reviewed_768p_pin():
     # #328's caption-module change did not change this prepared renderer.
     root = Path(__file__).resolve().parents[1]
     assert hashlib.sha256((root / "services/post_render.py").read_bytes()).hexdigest() == (
-        "017c619ab1b58df982b8a9ec908110c18f8c5ee7363d5c0d5f528af5d7c380ab"
+        "19eeb39928e9810590f85073fa7896b1cd76e5f32b25c56900f72715b9d3fafb"
     )
