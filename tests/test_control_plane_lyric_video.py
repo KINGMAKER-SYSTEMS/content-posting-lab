@@ -85,15 +85,20 @@ def test_lyric_executor_and_timing_authority_remain_loadable_after_retirement():
 
 @pytest.mark.parametrize("filename,key,expected", [
     ("content-engine-registry.v1.json", "profiles",
-     "1e1179e56de576a360aa2cdb1592304c387bc7878c9087560bdbe0c68cf94f44"),
+     "4579e158e58fb3e134408b50fc63919b7d3ee3092b02ac0ab3797df1383fd1cb"),
     ("content-format-contracts.v1.json", "contracts",
-     "b69353fefd9ebca4e2464df76714f91dc64a1f7f379a2212c0dbfec90a17c186"),
+     "60ea56e69db4b64302e5d9b7d40289b94eff322cbe219e1e66a8548ab1de52fc"),
 ])
 def test_legacy_authority_maps_match_reviewed_burnt_retirement(filename, key, expected):
-    # #315 deliberately changed the UGC authority for Burnt's own footage.
-    # Pin the resulting legacy maps, rather than deleting their drift guard
-    # or restoring the retired lyric page. The additive formats retain
-    # their separate contract tests, as in the original legacy-map guard.
+    # #315 deliberately changed the UGC authority for Burnt's own footage;
+    # F-LAB-CHOPPY-CUTS-BURNT-CULTURE-1104's merged windows re-pinned it again,
+    # and main 291fc5c3 (#348's additive pov-seasonal profile/contract) did so
+    # once more on rebase, and fix3 (Culture pins only its 7 used clips) moved
+    # the ugc-slideshow pins again, and fix5 (no same-clip neighbours, 0.75 s clip-end margin on
+    # the base plan) moved them once more. Pin the resulting legacy maps, rather than deleting
+    # their drift guard or restoring the retired lyric page. The additive
+    # formats retain their separate contract tests, as in the original
+    # legacy-map guard.
     root = Path(__file__).resolve().parents[1]
     current = json.loads((root / "recipes" / filename).read_bytes())[key]
     for slug in ("lyric-video", "image-video", "single-image-video", "meme", "coffee-slideshow"):

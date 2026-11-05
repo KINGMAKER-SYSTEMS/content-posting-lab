@@ -19,7 +19,9 @@ from tests.test_control_plane_ugc_slideshow import _culture_library, _culture_re
 # Kept as a compatibility export for older plan-family imports.  Burnt's
 # active UGC authority is intentionally regenerated from the reviewed clips.
 BURNT_CANONICAL = None
-CULTURE_CANONICAL = "5c1924553e69420398fe2fb7e79f97d189bbc76678881d0a65357f36277a3126"
+# Culture re-pinned for F-LAB-CHOPPY-CUTS-BURNT-CULTURE-1104 (19 windows merged to 8; value from plan_slideshows on this tree).
+# fix5: re-derived again (windows 2 and 3 swapped so no neighbours share a clip; last windows moved 0.75 s clear of clip ends).
+CULTURE_CANONICAL = "4fbd41adccf41ee9f17d725b91d102e797817b4d00dca8249a15b402b7ae1c94"
 
 
 def _burnt():
