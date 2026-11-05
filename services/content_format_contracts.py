@@ -233,3 +233,26 @@ def load_format_contracts() -> tuple[dict[str, FormatContract], str]:
         for format_slug, contract in value["contracts"].items()
     }
     return contracts, hashlib.sha256(raw).hexdigest()
+
+
+# F-XMAS-SLIDESHOW-CANDIDATES-1104. A seasonal niche spans engines. A Christmas
+# page on the sourced slideshow engine (tis.the.szn7, all.i.want.for.xma: Notion
+# Content Niche = XMAS, engine = sourced_slideshow) posts the plain slideshow
+# formats (image-video, ugc-slideshow), exactly like the slideshow niche it had
+# before the retag. The Worker projects the same pair the same way
+# (notionAccountProjection.js, F-XMAS-ENGINE-AWARE-1104). The AI Christmas page
+# (XMAS + ai_video) keeps its own pov-seasonal contract by exact niche match.
+SEASONAL_NICHE_FORMAT_NICHES: dict[tuple[str, str], str] = {
+    ("XMAS", "sourced_slideshow"): "slideshow",
+}
+
+
+def page_niche_admits(contract_niche: object, page_niche: object, page_engine: object) -> bool:
+    """Whether a format contract's niche is selectable for a page's niche + engine."""
+    if not isinstance(contract_niche, str) or not isinstance(page_niche, str):
+        return False
+    if contract_niche == page_niche:
+        return True
+    if not isinstance(page_engine, str):
+        return False
+    return SEASONAL_NICHE_FORMAT_NICHES.get((page_niche, page_engine)) == contract_niche
