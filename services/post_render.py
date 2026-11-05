@@ -27,6 +27,7 @@ from burn_quality_gate import overlay_geometry_reasons
 from services.caption_render import CaptionRenderRequest, CaptionStyle, render_caption_overlay
 from services.ffmpeg import delivery_encode_args
 from services.page_frame import frame_band_height, frame_band_rows, frame_fit, letterbox_filter
+from services.pool_supplied_pages import is_pool_supplied
 from services.source_treatment import normalized_visual_treatment
 
 REQUEST_SCHEMA = "content-lab.post-render-request.v1"
@@ -374,9 +375,17 @@ def _encode_final(source: Path, overlay: Path | None, final: Path, source_probe:
     raise PostRenderError("delivery_budget_exceeded", "both bounded encodes exceeded the byte or duration contract")
 
 
-def source_visual_matches(request: PostRenderRequest) -> bool:
+def source_visual_matches(request: PostRenderRequest, *,
+                          allow_pool_supplied_without_provenance: bool = False) -> bool:
+    """Return whether the source has the requested visual treatment.
+
+    Pool clips are already-finished source media and deliberately have no
+    producer receipt.  The durable job runner is the only caller allowed to
+    opt into that exception after it has checked both the submission and the
+    closed pool-page list.
+    """
     if request.source_visual_treatment_json is None:
-        return False
+        return allow_pool_supplied_without_provenance and is_pool_supplied(request.page_id)
     actual = normalized_visual_treatment(json.loads(request.source_visual_treatment_json))
     desired = normalized_visual_treatment(json.loads(request.render_treatment_json))
     return actual == desired
@@ -385,7 +394,8 @@ def source_visual_matches(request: PostRenderRequest) -> bool:
 def _render_post_single(source_path: Path, output_directory: Path, request: PostRenderRequest, *,
                 font_dir: Path | None = None, tools: RenderTools = RenderTools(),
                 clock_ms: Callable[[], int] = lambda: time.time_ns() // 1_000_000,
-                burned_fallback: bool = False) -> RenderedPost:
+                burned_fallback: bool = False,
+                allow_pool_supplied_without_provenance: bool = False) -> RenderedPost:
     """Render one prepared artifact; create a new output directory or leave none on failure.
 
     The source must already be upright vertical video with the exact requested
@@ -398,7 +408,8 @@ def _render_post_single(source_path: Path, output_directory: Path, request: Post
     phone types it in TikTok); its receipt says caption_delivery "in_app".
     """
     request = PostRenderRequest.model_validate(request.model_dump(by_alias=True))
-    if not source_visual_matches(request):
+    if not source_visual_matches(
+            request, allow_pool_supplied_without_provenance=allow_pool_supplied_without_provenance):
         raise PostRenderError("regeneration_required", "source treatment provenance is unknown or differs from the requested treatment")
     if request.created_at_ms > clock_ms():
         raise PostRenderError("request_future_dated", "render request is future-dated")
@@ -504,7 +515,8 @@ def _render_post_single(source_path: Path, output_directory: Path, request: Post
 
 def render_post(source_path: Path, output_directory: Path, request: PostRenderRequest, *,
                 font_dir: Path | None = None, tools: RenderTools = RenderTools(),
-                clock_ms: Callable[[], int] = lambda: time.time_ns() // 1_000_000) -> RenderedPost:
+                clock_ms: Callable[[], int] = lambda: time.time_ns() // 1_000_000,
+                allow_pool_supplied_without_provenance: bool = False) -> RenderedPost:
     """Publish both clean and captioned assets with job-level verification for an in-app slot.
 
     Both variants use the identical source, caption and requested treatment.
@@ -512,13 +524,15 @@ def render_post(source_path: Path, output_directory: Path, request: PostRenderRe
     handles transient errors before either asset can become ready.
     """
     result = _render_post_single(source_path, output_directory, request,
-                                 font_dir=font_dir, tools=tools, clock_ms=clock_ms)
+                                 font_dir=font_dir, tools=tools, clock_ms=clock_ms,
+                                 allow_pool_supplied_without_provenance=allow_pool_supplied_without_provenance)
     if _caption_delivery(request) != CAPTION_DELIVERY_IN_APP:
         return result
     try:
         fallback = _render_post_single(source_path, Path(output_directory) / "burned", request,
                                       font_dir=font_dir, tools=tools, clock_ms=clock_ms,
-                                      burned_fallback=True)
+                                      burned_fallback=True,
+                                      allow_pool_supplied_without_provenance=allow_pool_supplied_without_provenance)
         receipt = json.loads(result.receipt_json)
         burned_receipt = json.loads(fallback.receipt_json)
         receipt["burned_fallback"] = {key: burned_receipt[key] for key in (

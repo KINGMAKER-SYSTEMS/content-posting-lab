@@ -111,7 +111,9 @@ def test_legacy_authority_maps_match_reviewed_burnt_retirement(filename, key, ex
 def test_static_renderer_retains_reviewed_768p_pin():
     # #282 changed the upright minimum to 768p. #315's recipe retirement and
     # #328's caption-module change did not change this prepared renderer.
+    # F-LAB-POOL-RENDER-NO-PROVENANCE-1105 adds only the pool-page no-provenance
+    # flag path (no change to the 768p minimum or any dimension logic).
     root = Path(__file__).resolve().parents[1]
     assert hashlib.sha256((root / "services/post_render.py").read_bytes()).hexdigest() == (
-        "017c619ab1b58df982b8a9ec908110c18f8c5ee7363d5c0d5f528af5d7c380ab"
+        "f8b0645015d4bc021291d2d8f9acf90dd747c537038a624b5b0a53f8becac233"
     )
