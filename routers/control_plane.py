@@ -171,7 +171,7 @@ from services.content_engine_registry import (
     load_engine_registry,
     resolve_material_profile,
 )
-from services.content_format_contracts import CONTRACTS_PATH, load_format_contracts
+from services.content_format_contracts import CONTRACTS_PATH, load_format_contracts, page_niche_admits
 from services.ffmpeg import (
     FrameGeometryUnavailable, delivery_encode_args, probe_display_size, run_color_correct,
     _COLOR_CORRECT_GATE, _probe_input_duration_seconds as probe_source_output_duration_seconds,
@@ -813,7 +813,7 @@ def capabilities(
     intent_niche = master_pages.get("contentNiche")
     intent_engine = master_pages.get("contentEngine")
     bootstrap = next((profile for profile in profiles.values()
-                      if profile.content_niche == intent_niche
+                      if page_niche_admits(profile.content_niche, intent_niche, intent_engine)
                       and profile.content_engine == intent_engine
                       and profile.execution_status == "commissioned"), None)
     if bootstrap is not None and not registered_bindings:
