@@ -96,7 +96,10 @@ def test_legacy_authority_maps_match_reviewed_burnt_retirement(filename, key, ex
     # their separate contract tests, as in the original legacy-map guard.
     root = Path(__file__).resolve().parents[1]
     current = json.loads((root / "recipes" / filename).read_bytes())[key]
-    for slug in ("lyric-video", "image-video", "single-image-video", "meme", "coffee-slideshow"):
+    for slug in (
+        "lyric-video", "image-video", "single-image-video", "meme",
+        "coffee-slideshow", "pov-seasonal",
+    ):
         current.pop(slug)
     encoded = json.dumps(current, sort_keys=True, separators=(",", ":"),
                          ensure_ascii=False).encode()
