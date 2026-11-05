@@ -41,15 +41,13 @@ def test_christmas_ai_page_keeps_only_pov_seasonal(monkeypatch):
 def test_selected_version_resolves_image_video_for_a_christmas_slideshow_page(monkeypatch):
     ingredients, intent, revision, catalog = _catalog(monkeypatch, "XMAS", "sourced_slideshow")
     entry = next(e for e in catalog["formats"] if e["formatId"] == "image-video")
-    selection = entry["productionSelections"][0] if entry.get("productionSelections") else None
-    if selection is None:
-        return  # no default selection to resolve in this registry; the candidate list is the gate
-    production = selection.get("production") if isinstance(selection, dict) else None
-    if production is None:
-        return
+    assert entry["productionSelections"], "image-video must offer a production selection"
+    selection = entry["productionSelections"][0]
+    production = {key: value for key, value in selection.items() if key != "catalogVersion"}
+    # Before the fix the exact niche check returned None here (no selectable format).
     assert ingredients.selected_dossier_catalog_version(
         PAGE_ID, intent, revision, "image-video", production,
-    ) is not None
+    ) == selection["catalogVersion"]
 
 
 def test_niche_alias_is_exactly_xmas_on_the_sourced_slideshow_engine():
