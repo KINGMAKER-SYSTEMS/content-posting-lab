@@ -1932,8 +1932,24 @@ def run_generated_media_retention_once(now: datetime | None = None, *, pressure:
     )
 
 
+_MEDIA_RETENTION_ENV = "CONTENT_LAB_MEDIA_RETENTION"
+
+
+def _media_retention_paused() -> bool:
+    """Operator kill switch: CONTENT_LAB_MEDIA_RETENTION=off pauses every pass.
+
+    Each pass probes the Control Plane once per unconfirmed clip, and each probe
+    is a production D1 read. When D1 is overloaded the operator sets this to
+    "off" (case and spaces ignored) so the Lab adds no reads at all; nothing is
+    deleted while paused. Any other value, or no value, runs normally.
+    """
+    return os.environ.get(_MEDIA_RETENTION_ENV, "").strip().lower() == "off"
+
+
 def _media_retention_tick(last_run: float, now: float) -> float:
     """Run one pass if the current pressure's interval has elapsed; return the last-run time."""
+    if _media_retention_paused():
+        return last_run
     pressure = _generated_volume_pressure()
     if now - last_run < _MEDIA_RETENTION_INTERVAL_SECONDS[pressure]:
         return last_run
@@ -1942,7 +1958,10 @@ def _media_retention_tick(last_run: float, now: float) -> float:
 
 
 def _media_retention_loop() -> None:
-    last_run = float("-inf")
+    # Start the clock at boot instead of -inf: the first pass waits one full
+    # interval, so a deploy or restart no longer fires a burst of probes
+    # (one D1 read each) the moment the process comes up.
+    last_run = time.monotonic()
     while True:
         try:
             last_run = _media_retention_tick(last_run, time.monotonic())
