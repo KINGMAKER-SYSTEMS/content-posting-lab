@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Annotated, Callable, Literal
 
 from PIL import Image
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator, model_serializer
 
 from burn_quality_gate import overlay_geometry_reasons
 from services.caption_render import CaptionRenderRequest, CaptionStyle, render_caption_overlay
@@ -68,7 +68,8 @@ class PostRenderRequest(BaseModel):
     device_serial: Identity
     account: Identity
     source_sha256: Hash
-    caption: str = Field(min_length=1, max_length=4000)
+    caption: str = Field(max_length=4000)
+    source_text_mode: Literal["lyric"] | None = None
     caption_sha256: Hash
     render_treatment_json: str = Field(min_length=2, max_length=64 * 1024)
     treatment_sha256: Hash
@@ -85,6 +86,14 @@ class PostRenderRequest(BaseModel):
             raise ValueError("invalid render identity")
         return value
 
+    @model_serializer(mode="wrap")
+    def preserve_ordinary_request_bytes(self, handler):
+        # Old durable request/idempotency hashes must not gain a null field.
+        result = handler(self)
+        if self.source_text_mode is None:
+            result.pop("source_text_mode", None)
+        return result
+
     @model_validator(mode="after")
     def hashes_match(self) -> "PostRenderRequest":
         if sha256(self.caption.encode()) != self.caption_sha256:
@@ -100,7 +109,13 @@ class PostRenderRequest(BaseModel):
             if not isinstance(actual_visual, dict) or set(actual_visual) != {"filters", "clipSpeed", "clipCrop"}:
                 raise ValueError("source visual evidence must contain only filters, clipSpeed and clipCrop")
             normalized_visual_treatment(actual_visual)
-        _caption_request(self)
+        if self.source_text_mode == "lyric":
+            if self.caption != "" or self.renderer_version != "1":
+                raise ValueError("lyric source requires an empty v1 caption")
+            _caption_style(self)
+            _caption_delivery(self)
+        else:
+            _caption_request(self)
         return self
 
 
@@ -181,9 +196,9 @@ def _frame_band_height(request: PostRenderRequest) -> int | None:
 
 
 def _caption_delivery(request: PostRenderRequest) -> str | None:
-    """Return "in_app" when the slot opts into app-side text, else None (burned).
+    """Return "in_app" for app-side text; None for burned or existing lyric pixels.
 
-    Absent means today's burned behaviour. Only the exact string "in_app" is
+    Absent retains burned delivery for ordinary captions. Only the exact string "in_app" is
     accepted; any other value is a closed refusal so the Worker can fall back
     to a burned render.
     """
@@ -193,10 +208,11 @@ def _caption_delivery(request: PostRenderRequest) -> str | None:
     value = treatment["captionDelivery"]
     if not isinstance(value, str) or value != CAPTION_DELIVERY_IN_APP:
         raise PostRenderError("caption_delivery_invalid", "captionDelivery must be 'in_app' when present")
-    return value
+    # Existing lyrics are source pixels, never phone text or a burned fallback.
+    return None if request.source_text_mode == "lyric" else value
 
 
-def _caption_request(request: PostRenderRequest) -> CaptionRenderRequest:
+def _caption_style(request: PostRenderRequest) -> CaptionStyle:
     treatment = _slot_treatment(request)
     style = CaptionStyle.model_validate(treatment["captionStyle"])
     if frame_band_height(treatment) is not None:
@@ -204,6 +220,11 @@ def _caption_request(request: PostRenderRequest) -> CaptionRenderRequest:
         # (owner decision, 2026-09-28): a top or bottom placement would land
         # on the black bars. Font, size, colour and line breaks are unchanged.
         style = style.model_copy(update={"position": "middle", "offset_pct": 0})
+    return style
+
+
+def _caption_request(request: PostRenderRequest) -> CaptionRenderRequest:
+    style = _caption_style(request)
     return CaptionRenderRequest.model_validate({
         "schema": "content-lab.caption-render-request.v1",
         "caption": request.caption,
@@ -403,7 +424,8 @@ def _render_post_single(source_path: Path, output_directory: Path, request: Post
     Unknown or different treatment provenance requires regeneration.
     This function adds only the typed caption, the page frame's letterbox
     (a centred band on plain black, still 1080x1920) and delivery encoding;
-    it never repeats the source's grade, speed or focal crop. A slot whose
+    it never repeats the source's grade, speed or focal crop. A bound lyric source
+    receives delivery encoding only, without new caption pixels or a fallback. A slot whose
     treatment says captionDelivery "in_app" gets no caption drawn at all (the
     phone types it in TikTok); its receipt says caption_delivery "in_app".
     """
@@ -413,7 +435,11 @@ def _render_post_single(source_path: Path, output_directory: Path, request: Post
         raise PostRenderError("regeneration_required", "source treatment provenance is unknown or differs from the requested treatment")
     if request.created_at_ms > clock_ms():
         raise PostRenderError("request_future_dated", "render request is future-dated")
+    lyric_source = request.source_text_mode == "lyric"
+    if lyric_source and burned_fallback:
+        raise PostRenderError("lyric_caption_forbidden", "lyric source cannot have a burned fallback")
     in_app = _caption_delivery(request) == CAPTION_DELIVERY_IN_APP and not burned_fallback
+    no_overlay = in_app or lyric_source
     if in_app and _caption_request(request).style.inverted:
         raise PostRenderError("in_app_inverted_unsupported", "in_app caption delivery cannot be inverted")
     source_path, output_directory = Path(source_path).absolute(), Path(output_directory).absolute()
@@ -432,9 +458,9 @@ def _render_post_single(source_path: Path, output_directory: Path, request: Post
         if (source_probe.height < 768 or source_probe.sample_aspect_ratio not in {"1:1", "", "N/A", "0:1"}
                 or source_probe.rotation != 0 or not near_vertical):
             raise PostRenderError("regeneration_required", "source must be upright square-pixel near-9:16 video at least 768 pixels high")
-        caption_request = _caption_request(request)
+        caption_request = None if lyric_source else _caption_request(request)
         band_height = _frame_band_height(request)
-        if in_app:
+        if no_overlay:
             # The caption stays bound (caption_sha256 is required and validated
             # on the request) but is not drawn: the ffmpeg graph has no [1:v]
             # overlay input and no caption-render evidence is produced.
@@ -457,7 +483,7 @@ def _render_post_single(source_path: Path, output_directory: Path, request: Post
             overlay_path = output_directory / "overlay.png"
             overlay_path.write_bytes(overlay_bytes)
         final_path = output_directory / "final.mp4"
-        final_probe = _encode_final(source, overlay_path, final_path, source_probe, tools, band_height, in_app=in_app)
+        final_probe = _encode_final(source, overlay_path, final_path, source_probe, tools, band_height, in_app=no_overlay)
         if (final_probe.width, final_probe.height, final_probe.video_codec, final_probe.pixel_format,
             final_probe.sample_aspect_ratio, final_probe.rotation) != (1080, 1920, "h264", "yuv420p", "1:1", 0):
             raise PostRenderError("final_probe_mismatch", "encoded final media facts do not match delivery contract")
@@ -497,7 +523,7 @@ def _render_post_single(source_path: Path, output_directory: Path, request: Post
         receipt_json = json.dumps(receipt, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
         receipt_path = output_directory / "receipt.json"
         receipt_path.write_bytes(receipt_json)
-        if not in_app:
+        if not no_overlay:
             (output_directory / "caption-render.json").write_text(overlay.model_dump_json(by_alias=True))
         (output_directory / "request.json").write_text(request.model_dump_json(by_alias=True))
         (output_directory / "decode.json").write_text(json.dumps({

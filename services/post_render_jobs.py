@@ -256,6 +256,13 @@ class RenderJobSubmission(BaseModel):
                     and slot.get("caption", {}).get("text") == request.caption)
         if not required:
             raise ValueError("render request does not match immutable slot")
+        # The request marker alone is not authority to omit a caption. Bind it
+        # to the exact hashed slot's lyric source and already-empty text.
+        lyric_source = slot["caption"].get("source") == "lyric"
+        if (request.source_text_mode == "lyric") != lyric_source:
+            raise ValueError("lyric source marker does not match immutable slot")
+        if lyric_source and slot["caption"].get("text") != "":
+            raise ValueError("lyric source must not contain caption text")
         if "program_id" in slot and slot["program_id"] != request.program_id:
             raise ValueError("slot program mismatch")
         # Structural equality only. Cross-language treatment hashing uses original request bytes.

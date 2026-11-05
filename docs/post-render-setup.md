@@ -192,3 +192,26 @@ calculated claim floor are unknown. Invalid configuration is marked explicitly,
 including the consumer's fallback where representable. This view is an
 observation, not a readiness check or fleet-wide assertion. It does not report
 secrets, paths, current disk space, job counts, or provider outcomes.
+
+
+### Existing lyric pixels
+
+The Worker may send `source_text_mode: "lyric"` on a v1 render request only
+with `caption: ""` and the SHA-256 of those empty bytes. The durable submission
+must bind the marker to the exact immutable slot's `caption.source: "lyric"`
+and empty `caption.text`, together with its existing source/identity/treatment
+hash checks. A marker cannot turn an ordinary blank or nonempty caption into a
+lyric source. Timed v2 phrase rendering remains a separate contract.
+
+This path validates the saved style and source treatment, then delivery-encodes
+without a caption overlay, in-app text, or a burned fallback. Source-byte checks,
+1080x1920 final probing, full decode and final QA extraction remain required.
+Its receipt retains the existing v1 fields: the marker is request-only, and no
+new `caption_delivery` value is introduced. Ordinary requests omit the absent
+marker when serialized, preserving existing durable idempotency hashes.
+
+A Worker preparation already marked terminal `POST_RENDER_HTTP_422` has not
+created a Lab job. Deploying compatibility alone does not resume that terminal
+Worker preparation. Releases must use the existing authorized refresh/retry
+workflow and verify a fresh successful preparation; this branch performs no
+Worker state changes, render submission, phone action, or deployment.
