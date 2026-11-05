@@ -329,7 +329,8 @@ def _file_hash(path: Path, limit: int) -> tuple[str, int]:
     return digest.hexdigest(), total
 
 
-def _video_graph(source_probe: MediaProbe, frame_height: int | None = None, *, in_app: bool = False) -> str:
+def _video_graph(source_probe: MediaProbe, frame_height: int | None = None, *, in_app: bool = False,
+                 normalize_pair_timing: bool = False) -> str:
     chain = []
     if (source_probe.width, source_probe.height) != (1080, 1920):
         if abs(source_probe.width * 16 - source_probe.height * 9) <= 32:
@@ -348,6 +349,10 @@ def _video_graph(source_probe: MediaProbe, frame_height: int | None = None, *, i
         # The delivery frame is exactly 1080x1920 here. A page frame keeps its
         # centred band and letterboxes it in plain black on the same canvas.
         chain.append(letterbox_filter(frame_height))
+    if normalize_pair_timing:
+        # Resample before the paths diverge. FFmpeg 5.1 can round a half-frame
+        # at EOF differently with an overlay if only the encoder sets 30 fps.
+        chain.append("fps=30")
     if in_app:
         # No caption overlay input: the clean clip is delivery-only. The
         # encoder's -pix_fmt yuv420p still turns the chain into the delivery
@@ -361,8 +366,9 @@ def _video_graph(source_probe: MediaProbe, frame_height: int | None = None, *, i
 
 
 def _encode_final(source: Path, overlay: Path | None, final: Path, source_probe: MediaProbe,
-                  tools: RenderTools, frame_height: int | None = None, *, in_app: bool = False) -> MediaProbe:
-    graph = _video_graph(source_probe, frame_height, in_app=in_app)
+                  tools: RenderTools, frame_height: int | None = None, *, in_app: bool = False,
+                  normalize_pair_timing: bool = False) -> MediaProbe:
+    graph = _video_graph(source_probe, frame_height, in_app=in_app, normalize_pair_timing=normalize_pair_timing)
     base = [tools.ffmpeg, "-nostdin", "-v", "error", "-xerror", "-protocol_whitelist", "file,pipe",
             "-noautorotate", "-f", "mov", "-i", str(source)]
     if in_app:
@@ -438,7 +444,8 @@ def _render_post_single(source_path: Path, output_directory: Path, request: Post
     lyric_source = request.source_text_mode == "lyric"
     if lyric_source and burned_fallback:
         raise PostRenderError("lyric_caption_forbidden", "lyric source cannot have a burned fallback")
-    in_app = _caption_delivery(request) == CAPTION_DELIVERY_IN_APP and not burned_fallback
+    paired_caption = _caption_delivery(request) == CAPTION_DELIVERY_IN_APP
+    in_app = paired_caption and not burned_fallback
     no_overlay = in_app or lyric_source
     if in_app and _caption_request(request).style.inverted:
         raise PostRenderError("in_app_inverted_unsupported", "in_app caption delivery cannot be inverted")
@@ -483,7 +490,8 @@ def _render_post_single(source_path: Path, output_directory: Path, request: Post
             overlay_path = output_directory / "overlay.png"
             overlay_path.write_bytes(overlay_bytes)
         final_path = output_directory / "final.mp4"
-        final_probe = _encode_final(source, overlay_path, final_path, source_probe, tools, band_height, in_app=no_overlay)
+        final_probe = _encode_final(source, overlay_path, final_path, source_probe, tools, band_height,
+                                    in_app=no_overlay, normalize_pair_timing=paired_caption)
         if (final_probe.width, final_probe.height, final_probe.video_codec, final_probe.pixel_format,
             final_probe.sample_aspect_ratio, final_probe.rotation) != (1080, 1920, "h264", "yuv420p", "1:1", 0):
             raise PostRenderError("final_probe_mismatch", "encoded final media facts do not match delivery contract")

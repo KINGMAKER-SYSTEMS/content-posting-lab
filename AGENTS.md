@@ -581,6 +581,8 @@
   from the final MP4. Exact receipt bytes bind the final/source/caption/treatment
   and QA hashes to the slot, page, program, account and device. The control-plane
   artifact store owns admission; a renderer receipt alone is not ready authority.
+  In-app caption pairs share a 30 fps filter clock before the clean and burned
+  paths diverge, so the same fractional source tail yields the same frames.
 - Prepared delivery caps final video at 22 MiB and QA JPEG at 2 MiB. One automatic
   bitrate retry may fit the video budget without changing content or treatment.
   Persistent overflow or failed decode yields no artifact result. Subprocesses
