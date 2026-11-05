@@ -748,13 +748,12 @@
 
 - `XMAS` pages using `ai_video` resolve to `pov-seasonal:master` through the
   format registry. The first seasonal prompt module is `christmas-pov`.
-  `recipes/generation/christmas_pov.v1.json` owns the versioned Christmas scene,
-  light, and weather variations for continuous eye-height walking shots. The
-  existing replenishment
-  executor requests one silent native vertical seven-second 720p P-Video clip
-  per call, with the prompt optimizer off. Its Dossier advertises the fixed
-  provider settings and requires no source library or reference image. Keep
-  the shared prompt catalog and the slideshow source contracts independent.
+  `recipes/generation/christmas_pov.v1.json` owns the Christmas village walks,
+  neighborhood drives, and Alpine overlooks. Replenishment requests one
+  eight-second portrait clip per MiniMax H3 Highspeed Replicate call, reserves
+  $0.24 against the existing budget, and removes provider audio with a video
+  stream copy before delivery. Dossier advertises the fixed settings without
+  a source library or reference image. The slideshow source contracts are separate.
 
 - `GET /api/health` reports the most recently completed ffmpeg/yt-dlp
   executable check. Startup checks both off the event loop before serving.

@@ -189,8 +189,8 @@
       "executionStatus": "commissioned",
       "executorKind": "slideshow_renderer",
       "executorId": "syzygy-slideshow",
-      "executorVersion": "sha256:1097ebe82d9a955c63c9f89c4e840c70eeacb0fab62f6c848891c96ca6dffc09",
-      "formatContractVersion": "sha256:8ce242f638e2b146e5ea080dc74afa5478408965ee01ac2e20abae2330640525",
+      "executorVersion": "sha256:b768617dadee60d52e6bb4b5990d94902b54b54ad00af467ec23038025fc498d",
+      "formatContractVersion": "sha256:edd7279ab1968bbf96293c49dcd7e63cd8b22e4ef375f2812ed9446ac5f21336",
       "maxQuantity": 10
     },
     "lyric-video": {
@@ -249,8 +249,8 @@
       "executionStatus": "commissioned",
       "executorKind": "prompt_family",
       "executorId": "christmas-pov",
-      "executorVersion": "sha256:2edbc8d080653192d72031889b874c85247a40002472adc22ab4b2d2b969421c",
-      "formatContractVersion": "sha256:ccd28de0f68dcbe0a07b372d2590fb48b8ea0bdab49b0c21dc723d904f9472e2",
+      "executorVersion": "sha256:bcae8d47ecdd0f86aed25deb52af4155a6ac6fd80289cf46ea3b10b607586f25",
+      "formatContractVersion": "sha256:1a3b58b16de3dd039f00054d4f4af8b3b5e3c0c8d3c4a6b5ab465098e7ffe10d",
       "maxQuantity": 10
     }
   }

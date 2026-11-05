@@ -139,6 +139,7 @@ from services.control_plane_slideshows import (
     CLEAN_VIDEO_FORMATS,
     COFFEE_FORMAT_SLUG,
     curated_plan_for_recipe,
+    retired_ugc_recipe,
     curated_plan_signature,
     curated_variant_number,
     requires_curated_video_plan,
@@ -4802,6 +4803,11 @@ async def _run_owned_syzygy_slideshow(job_id: str, attempt: str, runtime: str) -
         if isinstance(publication, dict)
         else None
     )
+    # A job planned before an ugc-slideshow executor change still runs the plan
+    # it was given: a version in the closed retired map resolves to that exact
+    # file. Any other mismatch still fails closed below.
+    if recipe is not None:
+        recipe = retired_ugc_recipe(recipe, job) or recipe
     if (
         recipe is None
         or job.get("sourceLibraryId") != recipe.library_id
