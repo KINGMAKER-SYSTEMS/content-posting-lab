@@ -7,8 +7,14 @@ grew it by about 10 GB a day. Each clip the Worker delivers is copied into R2 as
 * **A clip file** (``clips[*].path`` and that clip's thumbnail) is deleted once
   the Control Plane confirms it holds that exact clip: its
   ``/staging-video/<sha>.mp4`` door answers 200 with the clip's byte length.
-  A clip the Worker has not copied is never deleted; it is re-checked after
-  ``UNCONFIRMED_RECHECK_SECONDS``.
+  A clip the Worker has not copied is never deleted. A definitive "not
+  confirmed" answer (404, or a 200 whose length differs) backs the sha off for
+  1 h, then 2 h, 4 h ... up to 24 h; an errored probe (unknown answer) retries
+  on the next pass and backs off only if it keeps failing; a clip record that
+  can never be probed (malformed sha or byte count) is held for 24 h. A pass
+  probes the NEWEST jobs' clips first (4/5 of its probe cap) plus the least
+  recently probed old ones (1/5, at least 1), so no number of permanent
+  failures can starve newer clips and old admitted clips still free over time.
 * **Private Scrambler checkpoints** retain their produced clip and thumbnail
   paths. A matching public clip still uses the R2-confirmed cleanup above;
   malformed or conflicting private metadata holds the whole job.
@@ -37,6 +43,7 @@ import os
 import re
 import shutil
 import stat
+import threading
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -53,10 +60,26 @@ log = logging.getLogger("content_lab.generated_media_retention")
 STRAY_RETENTION = {"normal": timedelta(hours=48), "tight": timedelta(hours=24), "floor": timedelta(hours=6)}
 # A confirmed clip is already in R2; this only lets a just-finished job settle.
 CONFIRMED_SETTLE = timedelta(hours=1)
-UNCONFIRMED_RECHECK_SECONDS = 6 * 60 * 60
 DEFAULT_JOB_LIMIT = 400
-DEFAULT_PROBE_LIMIT = 600
 DEFAULT_TIME_BUDGET_SECONDS = 120
+# How many clips one pass may probe at each volume pressure (the caller's own
+# probe_limit still wins). A near-full volume must not turn every 60 s pass
+# into ~600 control-plane D1 reads (2026-11-04 probe storm).
+PROBE_LIMITS = {"normal": 100, "tight": 60, "floor": 30}
+# A definitive "not confirmed" answer (a 404, or a 200 whose length differs)
+# means the clip is not in R2 yet: the sha is not re-probed for an hour, then
+# the back-off doubles on each repeat, up to a day.
+NEGATIVE_CACHE_SECONDS = 60 * 60
+NEGATIVE_CACHE_MAX_SECONDS = 24 * 60 * 60
+# An errored probe (None) is retried at once the first time, then backs off
+# 10 min, 20 min ... up to an hour while it keeps failing.
+TRANSIENT_BACKOFF_SECONDS = 10 * 60
+TRANSIENT_BACKOFF_MAX_SECONDS = 60 * 60
+# A malformed sha / byte count can never be probed: hold it for a day.
+MALFORMED_BACKOFF_SECONDS = 24 * 60 * 60
+# Only a safety net: entries are dropped as soon as their clip file is gone,
+# and the newest-first order never reads the cache, so eviction cannot starve anyone.
+NEGATIVE_CACHE_MAX_ENTRIES = 200_000
 # <page>/<group>/<job>: a job directory is exactly three levels below the root.
 JOB_DIR_DEPTH = 3
 
@@ -92,6 +115,11 @@ def confirm_admitted_clip(sha256: Any, byte_count: Any, *,
     if status != 200:
         return None
     return length.isdigit() and int(length) == byte_count
+
+
+def _identity_is_probeable(sha256: Any, byte_count: Any) -> bool:
+    return (isinstance(sha256, str) and re.fullmatch(r"[0-9a-f]{64}", sha256) is not None
+            and isinstance(byte_count, int) and not isinstance(byte_count, bool))
 
 
 def _job_dir(root: Path, value: Any) -> Path | None:
@@ -277,11 +305,54 @@ class GeneratedMediaRetention:
                  monotonic: Callable[[], float] = time.monotonic):
         self.confirm = confirm
         self.monotonic = monotonic
-        self._recheck_after: dict[str, float] = {}
+        # sha -> monotonic time before which it is not probed again, and
+        # sha -> (last probe time, consecutive failures, failure kind). Both are
+        # touched by the scheduler thread and the remedy pass: hold the lock.
+        self._negative_cache: dict[str, float] = {}
+        self._probe_meta: dict[str, tuple[float, int, str]] = {}
+        self._lock = threading.Lock()
+
+    def _backed_off(self, key: str) -> bool:
+        with self._lock:
+            return self._negative_cache.get(key, float("-inf")) > self.monotonic()
+
+    def _record_failure(self, key: str, kind: str, *, probed: bool = True) -> None:
+        now = self.monotonic()
+        with self._lock:
+            last, fails, old_kind = self._probe_meta.get(key, (float("-inf"), 0, kind))
+            fails = min(fails + 1, 30) if old_kind == kind else 1
+            if kind == "missing":
+                delay = min(NEGATIVE_CACHE_SECONDS * 2 ** (fails - 1), NEGATIVE_CACHE_MAX_SECONDS)
+            elif kind == "error":
+                delay = 0 if fails == 1 else min(
+                    TRANSIENT_BACKOFF_SECONDS * 2 ** (fails - 2), TRANSIENT_BACKOFF_MAX_SECONDS)
+            else:
+                delay = MALFORMED_BACKOFF_SECONDS
+            self._negative_cache[key] = now + delay
+            self._probe_meta[key] = (now if probed else last, fails, kind)
+            while len(self._negative_cache) > NEGATIVE_CACHE_MAX_ENTRIES:
+                # Evict the entry that expires first, not the one inserted first.
+                victim = min(self._negative_cache, key=self._negative_cache.__getitem__)
+                del self._negative_cache[victim]
+                self._probe_meta.pop(victim, None)
+
+    def _prune(self, live: set[str]) -> None:
+        with self._lock:
+            for key in [key for key in self._negative_cache if key not in live]:
+                del self._negative_cache[key]
+            for key in [key for key in self._probe_meta if key not in live]:
+                del self._probe_meta[key]
+
+    def _forget(self, key: str) -> None:
+        with self._lock:
+            self._negative_cache.pop(key, None)
+            self._probe_meta.pop(key, None)
 
     def plan(self, store: dict[str, Any], root: Path, now: datetime, *, pressure: str = "normal",
-             job_limit: int = DEFAULT_JOB_LIMIT, probe_limit: int = DEFAULT_PROBE_LIMIT,
+             job_limit: int = DEFAULT_JOB_LIMIT, probe_limit: int | None = None,
              time_budget: float = DEFAULT_TIME_BUDGET_SECONDS) -> Plan:
+        if probe_limit is None:
+            probe_limit = PROBE_LIMITS[pressure]
         root = root.resolve()
         jobs = store.get("jobs", {}) if isinstance(store, dict) else {}
         protected: set[Path] = set()
@@ -325,10 +396,14 @@ class GeneratedMediaRetention:
         candidates.sort(key=lambda item: (item[0], item[1]))
 
         plan = Plan()
+        pending: list[tuple[int, Any, Any, list[Path], int, datetime]] = []
+        owners: list[bool] = []
         started = self.monotonic()
         stray_cutoff = now - STRAY_RETENTION[pressure]
+        stopped = False
         for finished, _job_id, directory, artifact_directory, job, flat_import in candidates:
             if plan.jobs >= job_limit or self.monotonic() - started > time_budget:
+                stopped = True
                 break
             private_paths = _private_scrambler_paths(root, artifact_directory, _job_id, job)
             if private_paths is None:
@@ -348,19 +423,8 @@ class GeneratedMediaRetention:
                 present = [path for path in files if path.is_file()]
                 if not present:
                     continue
-                sha = clip.get("sha256")
-                if (plan.probes >= probe_limit or not isinstance(sha, str)
-                        or self._recheck_after.get(sha, float("-inf")) > self.monotonic()):
-                    plan.unconfirmed_bytes += sum(_size(path) for path in present)
-                    continue
-                plan.probes += 1
-                if self.confirm(sha, clip.get("bytes")) is True:
-                    plan.clip_files.extend(present)
-                    self._recheck_after.pop(sha, None)
-                    work = True
-                else:
-                    plan.unconfirmed_bytes += sum(_size(path) for path in present)
-                    self._recheck_after[sha] = self.monotonic() + UNCONFIRMED_RECHECK_SECONDS
+                pending.append((len(pending), clip.get("sha256"), clip.get("bytes"), present, len(owners), finished))
+            owners.append(False)
             if finished <= stray_cutoff:
                 if flat_import:
                     # A flat group can gain a private retry at any point. Never
@@ -382,6 +446,70 @@ class GeneratedMediaRetention:
                         plan.stray_files.append(path)
                         work = True
             plan.jobs += work
+            owners[-1] = work
+        walked_all = not stopped
+        # Classify every present clip. Malformed records and backed-off shas
+        # spend no probe; the rest are eligible.
+        seen: set[str] = set()
+        eligible: list[tuple[int, str, int, list[Path], int, datetime]] = []
+        for index, sha, size, present, owner, finished in pending:
+            kept = sum(_size(path) for path in present)
+            if not isinstance(sha, str):
+                plan.unconfirmed_bytes += kept
+                continue
+            if not _identity_is_probeable(sha, size):
+                key = f"!{sha}|{size!r}"
+                seen.add(key)
+                if not self._backed_off(key):  # no probe is spent on it; the hold is bookkeeping
+                    self._record_failure(key, "malformed", probed=False)
+                plan.unconfirmed_bytes += kept
+                continue
+            seen.add(sha)
+            if self._backed_off(sha):
+                plan.unconfirmed_bytes += kept
+                continue
+            eligible.append((index, sha, size, present, owner, finished))
+        if walked_all:
+            # A clip whose file is gone no longer needs a back-off entry.
+            self._prune(seen)
+        # Which clips to probe this pass. Most of the cap goes to the NEWEST
+        # jobs first: the freshest clips are the likeliest to be in R2 and the
+        # most valuable to free, and old permanent 404s cannot crowd them out
+        # however many there are or whether this process just restarted. A
+        # small share goes to the least recently probed OLD clips, so old
+        # admitted clips also free over time. The newest share never reads the
+        # cache, so evicting a cache entry cannot change who is probed first.
+        with self._lock:
+            last_probe = {item[1]: self._probe_meta[item[1]][0] for item in eligible if item[1] in self._probe_meta}
+        old_share = max(1, probe_limit // 5) if probe_limit >= 2 else 0
+        by_newest = sorted(eligible, key=lambda item: (-item[5].timestamp(), item[0]))
+        chosen = by_newest[:max(probe_limit - old_share, 0)]
+        taken = {item[0] for item in chosen}
+        rest = sorted((item for item in eligible if item[0] not in taken),
+                      key=lambda item: (last_probe.get(item[1], float("-inf")), item[5].timestamp(), item[0]))
+        chosen += rest[:max(probe_limit - len(chosen), 0)]
+        taken = {item[0] for item in chosen}
+        for item in eligible:
+            if item[0] not in taken:
+                plan.unconfirmed_bytes += sum(_size(path) for path in item[3])
+        for position, (_index, sha, size, present, owner, _finished) in enumerate(chosen):
+            if self.monotonic() - started > time_budget:
+                # Out of time: the rest wait for the next pass.
+                for later in chosen[position:]:
+                    plan.unconfirmed_bytes += sum(_size(path) for path in later[3])
+                break
+            plan.probes += 1
+            answer = self.confirm(sha, size)
+            if answer is True:
+                plan.clip_files.extend(present)
+                self._forget(sha)
+                if not owners[owner]:
+                    owners[owner] = True
+                    plan.jobs += 1
+            else:
+                plan.unconfirmed_bytes += sum(_size(path) for path in present)
+                # False: not confirmed (404 or wrong length); None: unknown. Both back off.
+                self._record_failure(sha, "missing" if answer is False else "error")
         return plan
 
     def sweep(self, store: dict[str, Any], root: Path, now: datetime, *, pressure: str = "normal",

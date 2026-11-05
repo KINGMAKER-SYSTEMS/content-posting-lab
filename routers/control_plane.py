@@ -139,6 +139,7 @@ from services.control_plane_slideshows import (
     CLEAN_VIDEO_FORMATS,
     COFFEE_FORMAT_SLUG,
     curated_plan_for_recipe,
+    retired_ugc_recipe,
     curated_plan_signature,
     curated_variant_number,
     requires_curated_video_plan,
@@ -1907,7 +1908,9 @@ def _compaction_loop() -> None:
 _MEDIA_RETENTION_THREAD: threading.Thread | None = None
 # Pressure is re-read every minute; a pass runs when its pressure's interval is up.
 _MEDIA_RETENTION_TICK_SECONDS = 60
-_MEDIA_RETENTION_INTERVAL_SECONDS = {"normal": 10 * 60, "tight": 2 * 60, "floor": 60}
+# Every pressure waits 10 min: a near-full volume must not run a 60 s pass cycle
+# whose probes hammer the control plane's D1 (2026-11-04 probe storm).
+_MEDIA_RETENTION_INTERVAL_SECONDS = {"normal": 10 * 60, "tight": 10 * 60, "floor": 10 * 60}
 _MEDIA_RETENTION = generated_media_retention.GeneratedMediaRetention()
 
 
@@ -4800,6 +4803,11 @@ async def _run_owned_syzygy_slideshow(job_id: str, attempt: str, runtime: str) -
         if isinstance(publication, dict)
         else None
     )
+    # A job planned before an ugc-slideshow executor change still runs the plan
+    # it was given: a version in the closed retired map resolves to that exact
+    # file. Any other mismatch still fails closed below.
+    if recipe is not None:
+        recipe = retired_ugc_recipe(recipe, job) or recipe
     if (
         recipe is None
         or job.get("sourceLibraryId") != recipe.library_id
