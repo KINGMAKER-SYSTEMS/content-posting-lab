@@ -113,7 +113,9 @@ def test_static_renderer_retains_reviewed_768p_pin():
     # #328's caption-module change did not change this prepared renderer.
     # F-LAB-POOL-RENDER-NO-PROVENANCE-1105 adds only the pool-page no-provenance
     # flag path (no change to the 768p minimum or any dimension logic).
+    # Lyric-source compatibility permits only bound empty captions and skips
+    # new text overlays/fallbacks; source dimensions, delivery and QA stay fixed.
     root = Path(__file__).resolve().parents[1]
     assert hashlib.sha256((root / "services/post_render.py").read_bytes()).hexdigest() == (
-        "f8b0645015d4bc021291d2d8f9acf90dd747c537038a624b5b0a53f8becac233"
+        "a1bc45f37dda1df6508e4c255b735d30805d02606ad068ee7ba84d071c0d1f29"
     )
