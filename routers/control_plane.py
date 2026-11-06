@@ -5616,6 +5616,79 @@ async def create_source_import(
     return {"schema": RESPONSE_SCHEMA, "jobId": job_id, "status": "queued"}
 
 
+def _replay_existing_job(
+    store: dict[str, Any], idempotency_key: str, job_request_hash: str,
+) -> dict[str, Any] | None:
+    """Replay a validated job while the durable jobs-store lock is held."""
+    existing_id = _idempotency_job_id(store, idempotency_key)
+    if not existing_id or existing_id not in store["jobs"]:
+        return None
+    existing = store["jobs"][existing_id]
+    # Legacy rows predate request fingerprints; preserve their replay
+    # behavior, but never let a hashed row be reused for new bytes.
+    if existing.get("jobRequestHash") not in (None, job_request_hash):
+        raise HTTPException(status_code=409, detail="idempotency_key_reused_with_different_request")
+    if (_checkpointed_generation(existing)
+            and existing.get("status") in GENERATION_ACTIVE_STATUSES):
+        if _needs_generation_resume(existing):
+            _start_dossier_generation(existing["jobId"])
+        return {"schema": RESPONSE_SCHEMA, "jobId": existing["jobId"], "status": existing["status"]}
+    if (
+        existing.get("sourceKind") in ASYNC_SOURCE_KINDS
+        and existing.get("status") in GENERATION_ACTIVE_STATUSES
+        and existing.get("runtimeId") != _GENERATION_RUNTIME_ID
+    ):
+        if existing.get("sourceKind") == "truck_master_recovery":
+            if _has_truck_recovery_claim(existing):
+                with runner_lock(_jobs_path(), existing["jobId"]) as acquired:
+                    if acquired:
+                        existing.update({"status": "failed", "error": "generation_runtime_restarted",
+                                         "completedAt": datetime.now(timezone.utc).isoformat()})
+                        _save_jobs(store)
+            else:
+                existing.update({"status": "failed", "error": "generation_runtime_restarted",
+                                 "completedAt": datetime.now(timezone.utc).isoformat()})
+                _save_jobs(store)
+        elif existing.get("sourceKind") == "syzygy_slideshow":
+            if _has_slideshow_runner_claim(existing):
+                with runner_lock(_jobs_path(), existing["jobId"]) as acquired:
+                    if acquired:
+                        existing.update({"status": "failed", "error": "generation_runtime_restarted",
+                                         "completedAt": datetime.now(timezone.utc).isoformat()})
+                        _save_jobs(store)
+            else:
+                existing.update({"status": "failed", "error": "generation_runtime_restarted",
+                                 "completedAt": datetime.now(timezone.utc).isoformat()})
+                _save_jobs(store)
+        elif existing.get("sourceKind") == "dossier_source_dna" and not _has_source_runner_claim(existing):
+            # A legacy runner never took the claim; its liveness is
+            # unknown, so its windows must remain reserved.
+            pass
+        elif existing.get("sourceKind") == "dossier_source_dna":
+            # A different runtime may still be cutting these windows.
+            # A claim acquired first also fences a queued runner, which
+            # rechecks the terminal state after it acquires the claim.
+            with runner_lock(_jobs_path(), existing["jobId"]) as acquired:
+                if acquired:
+                    existing.update({
+                        "status": "failed", "error": "generation_runtime_restarted",
+                        "completedAt": datetime.now(timezone.utc).isoformat(),
+                    })
+                    _save_jobs(store)
+                    if any(isinstance(cut, dict) and "scrambler" in cut
+                           for cut in existing.get("sourceCuts", ())):
+                        release_job_reservations(existing["pageId"], existing["jobId"],
+                                                 reason="generation_runtime_restarted")
+        else:
+            existing.update({
+                "status": "failed",
+                "error": "generation_runtime_restarted",
+                "completedAt": datetime.now(timezone.utc).isoformat(),
+            })
+            _save_jobs(store)
+    return {"schema": RESPONSE_SCHEMA, "jobId": existing["jobId"], "status": existing["status"]}
+
+
 async def _create_job_impl(
     request: Request,
     x_rt_page_id: str | None = Header(default=None),
@@ -5729,8 +5802,22 @@ async def _create_job_impl(
             provider_calls = generation_recipe.planned_provider_calls(quantity)
         except ValueError as error:
             raise HTTPException(status_code=400, detail=str(error)) from error
+    # Fingerprint only the validated, immutable job contract. Jobs written by
+    # older runtimes have no hash; those legacy rows remain replay-compatible.
+    job_request_hash = _job_request_hash(
+        body, page_id=page_id, lane=x_rt_lane, master_pages=master_pages,
+    )
     slideshow_library = None
     if slideshow_recipe is not None:
+        # A retry must recover its existing receipt even when the library is
+        # temporarily unavailable. The locked check below still closes races
+        # with a concurrent creator after this lock is released.
+        with lock_for(_jobs_path()):
+            replay = _replay_existing_job(
+                _load_jobs(), idempotency_key, job_request_hash,
+            )
+            if replay is not None:
+                return replay
         # The live library read is network I/O and must happen before the
         # durable jobs-store lock is held; the reservation itself is planned
         # and persisted atomically inside the lock below.
@@ -5742,12 +5829,6 @@ async def _create_job_impl(
             raise HTTPException(
                 status_code=409, detail="recipe_executor_unavailable",
             ) from error
-
-    # Fingerprint only the validated, immutable job contract.  Jobs written by
-    # older runtimes have no hash; those legacy rows remain replay-compatible.
-    job_request_hash = _job_request_hash(
-        body, page_id=page_id, lane=x_rt_lane, master_pages=master_pages,
-    )
 
     start_generation = False
     start_source = False
@@ -5764,72 +5845,9 @@ async def _create_job_impl(
             preloaded_originality = error
     with lock_for(_jobs_path()):
         store = _load_jobs()
-        existing_id = _idempotency_job_id(store, idempotency_key)
-        if existing_id and existing_id in store["jobs"]:
-            existing = store["jobs"][existing_id]
-            # Legacy rows predate request fingerprints; preserve their replay
-            # behavior, but never let a hashed row be reused for new bytes.
-            if existing.get("jobRequestHash") not in (None, job_request_hash):
-                raise HTTPException(status_code=409, detail="idempotency_key_reused_with_different_request")
-            if (_checkpointed_generation(existing)
-                    and existing.get("status") in GENERATION_ACTIVE_STATUSES):
-                if _needs_generation_resume(existing):
-                    _start_dossier_generation(existing["jobId"])
-                return {"schema": RESPONSE_SCHEMA, "jobId": existing["jobId"], "status": existing["status"]}
-            if (
-                existing.get("sourceKind") in ASYNC_SOURCE_KINDS
-                and existing.get("status") in GENERATION_ACTIVE_STATUSES
-                and existing.get("runtimeId") != _GENERATION_RUNTIME_ID
-            ):
-                if existing.get("sourceKind") == "truck_master_recovery":
-                    if _has_truck_recovery_claim(existing):
-                        with runner_lock(_jobs_path(), existing["jobId"]) as acquired:
-                            if acquired:
-                                existing.update({"status": "failed", "error": "generation_runtime_restarted",
-                                                 "completedAt": datetime.now(timezone.utc).isoformat()})
-                                _save_jobs(store)
-                    else:
-                        existing.update({"status": "failed", "error": "generation_runtime_restarted",
-                                         "completedAt": datetime.now(timezone.utc).isoformat()})
-                        _save_jobs(store)
-                elif existing.get("sourceKind") == "syzygy_slideshow":
-                    if _has_slideshow_runner_claim(existing):
-                        with runner_lock(_jobs_path(), existing["jobId"]) as acquired:
-                            if acquired:
-                                existing.update({"status": "failed", "error": "generation_runtime_restarted",
-                                                 "completedAt": datetime.now(timezone.utc).isoformat()})
-                                _save_jobs(store)
-                    else:
-                        existing.update({"status": "failed", "error": "generation_runtime_restarted",
-                                         "completedAt": datetime.now(timezone.utc).isoformat()})
-                        _save_jobs(store)
-                elif existing.get("sourceKind") == "dossier_source_dna" and not _has_source_runner_claim(existing):
-                    # A legacy runner never took the claim; its liveness is
-                    # unknown, so its windows must remain reserved.
-                    pass
-                elif existing.get("sourceKind") == "dossier_source_dna":
-                    # A different runtime may still be cutting these windows.
-                    # A claim acquired first also fences a queued runner, which
-                    # rechecks the terminal state after it acquires the claim.
-                    with runner_lock(_jobs_path(), existing["jobId"]) as acquired:
-                        if acquired:
-                            existing.update({
-                                "status": "failed", "error": "generation_runtime_restarted",
-                                "completedAt": datetime.now(timezone.utc).isoformat(),
-                            })
-                            _save_jobs(store)
-                            if any(isinstance(cut, dict) and "scrambler" in cut
-                                   for cut in existing.get("sourceCuts", ())):
-                                release_job_reservations(existing["pageId"], existing["jobId"],
-                                                         reason="generation_runtime_restarted")
-                else:
-                    existing.update({
-                        "status": "failed",
-                        "error": "generation_runtime_restarted",
-                        "completedAt": datetime.now(timezone.utc).isoformat(),
-                    })
-                    _save_jobs(store)
-            return {"schema": RESPONSE_SCHEMA, "jobId": existing["jobId"], "status": existing["status"]}
+        replay = _replay_existing_job(store, idempotency_key, job_request_hash)
+        if replay is not None:
+            return replay
 
         job_id = JOB_ID_PREFIX + _secrets.token_hex(8)
         common = {

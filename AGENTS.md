@@ -235,6 +235,11 @@
   contract module so the router and the service read one definition.
   The shared external-owner constant also governs the exact ShipStream
   null-Notion-id manifest exception.
+- `POST /api/control-plane/v1/jobs` checks a validated slideshow request's
+  durable idempotency key before reading its live library. An identical retry
+  returns the existing job even during a library outage; a changed request
+  still conflicts. The same locked replay and runtime-recovery rules run again
+  after the library read so concurrent creators cannot reserve twice.
 - `coffee-slideshow` is the optional Syzygy replacement for Coffee AI loops.
   It retains the `Coffee` niche, uses `sourced_slideshow` and the page's own
   `coffee/<handle-slug>` library, and composes five photos with `clean-slideshow`.
