@@ -506,6 +506,66 @@ def test_listed_page_capability_advertises_zero(monkeypatch, tmp_path):
     }]
 
 
+def test_bootstrap_pool_inventory_uses_real_http_registry_and_job_snapshot(monkeypatch, tmp_path):
+    """First-publication discovery must not advertise Lab render inventory."""
+    from routers import control_plane as cp
+    from services.content_engine_registry import load_engine_registry
+    from services.json_store import atomic_save
+
+    unlisted_page = "acct:unlisted-lyric"
+    intents = {
+        LISTED_PAGE: _listed_intent(),
+        unlisted_page: master_pages(
+            unlisted_page, handle="unlisted.lyric",
+            content_niche="lyric-edits", content_engine="lyrics_slideshows",
+        ),
+    }
+    profiles, _ = load_engine_registry()
+    ceiling = profiles["lyric-edits"].max_quantity
+    assert ceiling > 0
+
+    monkeypatch.setenv("CONTROL_PLANE_TOKEN", TOKEN)
+    monkeypatch.setenv("CONTENT_LAB_ADVERTISE_ZERO_REASONS", "1")
+    monkeypatch.setenv("CONTENT_LAB_RECIPE_ROOT", str(tmp_path / "recipes"))
+    monkeypatch.setattr(
+        cp, "_current_master_pages_intent",
+        lambda page_id, asserted=None: intents.get(page_id),
+    )
+    jobs_path = tmp_path / "jobs.json"
+    atomic_save(jobs_path, {"jobs": {}, "version": 1, "byIdempotency": {}, "served": {}})
+    monkeypatch.setattr(cp, "_jobs_path", lambda: jobs_path)
+    monkeypatch.setattr(cp, "_jobs_snapshot", None)
+    cp._jobs_decode_pending.clear()
+    cp._capabilities_cache.clear()
+
+    app = FastAPI()
+    app.include_router(cp.router, prefix="/api/control-plane")
+    url = "/api/control-plane/v1/capabilities"
+    with TestClient(app) as client:
+        assert client.get(url, headers={"X-RT-Page-Id": LISTED_PAGE}).status_code == 401
+
+        def capability(page_id):
+            response = client.get(url, headers={
+                "X-RT-Page-Id": page_id,
+                "Authorization": f"Bearer {TOKEN}",
+            })
+            assert response.status_code == 200, response.text
+            rows = response.json()["capabilities"]
+            assert len(rows) == 1, rows
+            return rows[0]
+
+        listed = capability(LISTED_PAGE)
+        assert capability(LISTED_PAGE) == listed  # cached read
+        unlisted = capability(unlisted_page)
+
+    assert listed["recipeId"] == "lyric-edits:master"
+    assert listed["maxQuantity"] == 0
+    assert listed["zeroReason"] == reasons.POOL_SUPPLIED
+    assert unlisted["maxQuantity"] == ceiling
+    assert "zeroReason" not in unlisted
+    cp._capabilities_cache.clear()
+
+
 # ── Look-only grade dials on LISTED pool pages (F-LAB-POOL-LOOK-DIALS-1103) ──
 LOOK_FORMATS = {
     "lyric-edits", "coffee-slideshow", "image-video", "meme-slideshow",

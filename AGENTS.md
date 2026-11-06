@@ -89,6 +89,11 @@
   including fractional looks, and remains within the Worker's 0.04 lower
   admission band. Other grade channels retain nearest rounding.
 - `GET /api/control-plane/v1/capabilities` requires the existing `CONTROL_PLANE_TOKEN` Bearer credential before reading page intent or job state. A missing server token returns 503; missing, invalid, or browser `APP_API_KEY` credentials return 401. The authorized Worker request and capability response schema stay unchanged.
+- Before a recipe is registered, a commissioned slideshow page on the committed
+  pool-supplied list keeps its discovery capability at `maxQuantity: 0` because
+  its finished clips come from the Worker pool, not Lab inventory. With zero
+  reasons enabled it reports `pool_supplied`. Unlisted pages keep the registry
+  ceiling, and a registered recipe's version takes precedence over bootstrap.
 - Source cut planning honors the immutable original 60-second minimum for raw
   source libraries and the Worker-supplied global source-window exclusions
   before rendering. Exact page-bound ShipStream masters are already extracted
@@ -837,6 +842,9 @@
   unavailable providers, exact-byte binding, and cached-decision behavior.
 
 - Run `pytest -q tests/test_control_plane_capability_auth.py` for the capability Bearer boundary and unchanged authorized response.
+- Run `pytest -q tests/test_pool_bootstrap_capabilities.py tests/test_pool_supplied_pages.py`
+  for pool slideshow discovery, registered recipe priority, the real HTTP
+  registry and job snapshot path, and unlisted page capacity.
 - Run `pytest -q tests/test_control_plane_external_pages.py` for external-page
   auth, refusals, real-roster resolution by source imports, clip jobs and
   capabilities, Notion sync survival, fleet projection exclusion and DELETE scope.
