@@ -4,8 +4,8 @@ The Worker posts FINISHED clips for a small committed list of pages from
 ``vault/<handle>/pool``, not from a Lab-rendered image library. Those pages
 must still Save & apply their recipe (registration accepts ``sourceLibraryId``
 null) and still appear in getCapabilities (at zero, so replenish is blocked),
-while every unlisted page keeps today's catalog bytes and registration rules
-byte-for-byte.
+while every unlisted page keeps the same catalog it would have with the pool
+classifier disabled, and its registration rules stay unchanged.
 """
 
 from __future__ import annotations
@@ -32,10 +32,8 @@ TOKEN = "test-control-plane-token"
 LISTED_PAGE = "acct:chemically-lit"
 UNLISTED_TRUCK = "acct:truck-page"
 
-# Base (origin/main 08db4f5) byte-identity pins for an unlisted ai_video page.
-# These must stay byte-identical after the pool-supplied change.
-BASE_TRUCK_CATALOG_VERSION = "sha256:1ed143705f3c69627d88d6889eb12e01d70d28081699416a5541db2b8a6e8d57"
-BASE_TRUCK_CANONICAL_SHA256 = "68858d5b102d2b49493aa9440496f55c158a945a5be62701897baadf4203a3bf"
+# The truck selection is scoped to its own format and should not drift when
+# other formats are added to the global catalog.
 BASE_TRUCK_SELECTION_VERSION = "sha256:2b853d4639dc71241435790429d1cfd1b8508c311ec447bcfab4254d9275c442"
 
 
@@ -255,8 +253,8 @@ def test_listed_page_explicit_source_library_must_match_an_advertised_option(lab
     assert response.json()["detail"] == "selected source library is not registered as master source DNA"
 
 
-# ── (b) unlisted page: catalog bytes + versions + registration 409 unchanged ─
-def test_unlisted_page_catalog_bytes_and_versions_match_base():
+# ── (b) unlisted page: pool isolation + registration 409 unchanged ─────────
+def test_unlisted_page_catalog_ignores_pool_classifier(monkeypatch):
     intent, revision = master_pages(
         UNLISTED_TRUCK, handle="truck.page",
         content_niche="TRUCK", content_engine="ai_video",
@@ -264,8 +262,16 @@ def test_unlisted_page_catalog_bytes_and_versions_match_base():
     catalog = build_dossier_ingredient_catalog(UNLISTED_TRUCK, intent, revision)
     raw = di.canonical_catalog_bytes(UNLISTED_TRUCK, intent, revision)
 
-    assert hashlib.sha256(raw).hexdigest() == BASE_TRUCK_CANONICAL_SHA256
-    assert catalog["catalogVersion"] == BASE_TRUCK_CATALOG_VERSION
+    assert not psp.is_pool_supplied(UNLISTED_TRUCK)
+    with monkeypatch.context() as disabled:
+        disabled.setattr(di, "is_pool_supplied", lambda _page_id: False)
+        without_pool = di.canonical_catalog_bytes(UNLISTED_TRUCK, intent, revision)
+    assert raw == without_pool
+    assert not any(
+        ingredient.get("status") == "pool_supplied"
+        for entry in catalog["formats"]
+        for ingredient in entry["ingredients"]
+    )
 
     production = {
         "catalogVersion": "",
@@ -649,7 +655,7 @@ def test_listed_pages_advertise_look_only_treatment_dials():
     assert carrying == LOOK_FORMATS, sorted(carrying)
 
 
-def test_unlisted_lyric_page_has_no_look_dials_and_base_bytes():
+def test_unlisted_lyric_page_has_no_look_dials_or_pool_catalog_changes(monkeypatch):
     page_id = "acct:unlisted-lyric"
     intent, revision = master_pages(
         page_id, handle="unlisted.lyric",
@@ -662,12 +668,20 @@ def test_unlisted_lyric_page_has_no_look_dials_and_base_bytes():
         assert not any(
             i["ingredientId"] == "clip-treatment" for i in entry["ingredients"]
         ), entry["formatId"]
-    # Unlisted pages keep base's exact catalog bytes and version.
-    assert hashlib.sha256(
-        di.canonical_catalog_bytes(page_id, intent, revision)
-    ).hexdigest() == "c2a81506c15c72e1234efa6b94b123206ce8f9826b0d072463174276f45487eb"
-    assert catalog["catalogVersion"] == (
-        "sha256:bca7bf78551b57d087133ae390e5eaf190e7b7bb8a95ec5c74acd8efe69934b9"
+    assert not psp.is_pool_supplied(page_id)
+    raw = di.canonical_catalog_bytes(page_id, intent, revision)
+    with monkeypatch.context() as disabled:
+        disabled.setattr(di, "is_pool_supplied", lambda _page_id: False)
+        without_pool = di.canonical_catalog_bytes(page_id, intent, revision)
+    assert raw == without_pool
+    with monkeypatch.context() as listed:
+        listed.setattr(di, "is_pool_supplied", lambda _page_id: True)
+        as_pool_page = di.canonical_catalog_bytes(page_id, intent, revision)
+    assert raw != as_pool_page
+    assert not any(
+        ingredient.get("status") == "pool_supplied"
+        for entry in catalog["formats"]
+        for ingredient in entry["ingredients"]
     )
 
 
