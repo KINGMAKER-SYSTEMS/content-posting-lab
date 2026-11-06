@@ -311,16 +311,15 @@ def test_curated_executor_change_is_scoped_to_the_two_pages():
             "acct:culture-core-1": "b6e168045cf77c59703e9ffa793a5a3be3807092f7490fdd9603b523c5071e78",
         }[page]
         assert hashlib.sha256(canonical.encode()).hexdigest() == pinned, page
-    # Every authority entry for other pages is byte-identical: only the
-    # ugc-slideshow version pins moved. Re-pinned for main 291fc5c3 (#348
-    # added the pov-seasonal profile/contract to both maps, additively).
+    # Compare every other format with the base of #351, which already
+    # included the H3 Highspeed POV Seasonal recipe from #350.
     contracts_doc = json.loads(
         (UGC_EXECUTOR_PATH.parents[1] / "content-format-contracts.v1.json").read_bytes()
     )
     others = {slug: entry for slug, entry in contracts_doc["contracts"].items() if slug != "ugc-slideshow"}
     assert hashlib.sha256(json.dumps(
         others, sort_keys=True, separators=(",", ":")).encode()).hexdigest() == (
-        "c27b5a43c235fe6eb02e5c8ed9df4b79e9d8c36f2d3b828ed661a033270a0e59"
+        "753a86b41a737ad3b922829c3b6db3cc7481c2752e1c412f52382cfdd06b2051"
     )
     registry_doc = json.loads(
         (UGC_EXECUTOR_PATH.parents[1] / "content-engine-registry.v1.json").read_bytes()
@@ -328,7 +327,7 @@ def test_curated_executor_change_is_scoped_to_the_two_pages():
     profiles = {slug: entry for slug, entry in registry_doc["profiles"].items() if slug != "ugc-slideshow"}
     assert hashlib.sha256(json.dumps(
         profiles, sort_keys=True, separators=(",", ":")).encode()).hexdigest() == (
-        "28b4d7cc40f35c025611dbe411ecff30360faa49da8c758a5a4c0da603021ba9"
+        "ba81c64a62c0f2c662bc8330ac4d44094100840df26ce58cbd5a1c726ae31743"
     )
 
 
