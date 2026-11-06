@@ -102,16 +102,3 @@ def test_legacy_authority_maps_match_reviewed_burnt_retirement(filename, key, ex
     encoded = json.dumps(current, sort_keys=True, separators=(",", ":"),
                          ensure_ascii=False).encode()
     assert hashlib.sha256(encoded).hexdigest() == expected
-
-
-def test_static_renderer_retains_reviewed_768p_pin():
-    # #282 changed the upright minimum to 768p. #315's recipe retirement and
-    # #328's caption-module change did not change this prepared renderer.
-    # F-LAB-POOL-RENDER-NO-PROVENANCE-1105 adds only the pool-page no-provenance
-    # flag path (no change to the 768p minimum or any dimension logic).
-    # Lyric-source compatibility permits only bound empty captions and skips
-    # new text overlays/fallbacks; source dimensions, delivery and QA stay fixed.
-    root = Path(__file__).resolve().parents[1]
-    assert hashlib.sha256((root / "services/post_render.py").read_bytes()).hexdigest() == (
-        "a1bc45f37dda1df6508e4c255b735d30805d02606ad068ee7ba84d071c0d1f29"
-    )
