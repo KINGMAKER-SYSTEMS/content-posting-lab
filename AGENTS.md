@@ -533,6 +533,11 @@
   coordinate downstream consumers before applying it.
 - A publishable caption render requires exact caption text and a complete page
   style: font, size, color, position, alignment, and line balance.
+- Caption rendering checks the selected installed font's character table before
+  drawing. A missing glyph refuses the entire caption as
+  `CAPTION_GLYPH_MISSING`; text without a letter or digit refuses as
+  `CAPTION_NO_TEXT`. Never drop unsupported characters or draw a missing-glyph
+  box into a publishable overlay.
 - Resolve fonts only from Content Lab's installed, advertised TikTokSans files.
   Unsupported, missing, or unreadable font bytes fail closed.
 - `/fonts` supplies explicit font MIME types and strong SHA-256 ETags, with a
@@ -889,8 +894,10 @@
   Run `pytest -q tests/test_pipeline_api.py` for the intake-password 503 path.
 
 - Run `pytest -q tests/test_caption_render_contract.py` for the typed caption
-  contract and `pytest -q tests/test_burn_and_captions_api.py` for Burn API
-  regressions. Run `pytest -q tests/test_burn_quality_gate.py` for legacy and
+  contract, `pytest -q tests/test_caption_glyph_admission.py` for exact
+  font coverage and ordinary-caption byte parity, and
+  `pytest -q tests/test_burn_and_captions_api.py` for Burn API regressions.
+  Run `pytest -q tests/test_burn_quality_gate.py` for legacy and
   typed overlay placement gates. Run the control-plane recipe, generation, and
   source-execution test files together when changing a Dossier recipe schema.
 - Run `node --test tools/gh-capture/target_policy.test.cjs` for GitHub URL,
