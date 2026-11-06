@@ -1384,6 +1384,8 @@ async def poll_syzygy_render(job_id: str) -> str:
             "GET", f"/api/v1/render/{quote(job_id)}", timeout=30.0,
         )
         status = value.get("status")
+        if not isinstance(status, str) or not status.strip():
+            raise SyzygyError("Syzygy response is invalid")
         if status == "done":
             result = value.get("result")
             play_url = result.get("play_url") if isinstance(result, dict) else None
