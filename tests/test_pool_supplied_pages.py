@@ -169,7 +169,7 @@ def _headers(page_id=LISTED_PAGE):
 
 
 # ── (a) listed page: no image-library blocker + registration accepts null ────
-def test_listed_page_lab_ingredients_are_pool_supplied_and_not_blockers():
+def test_listed_page_pool_supply_keeps_missing_lyric_video_timing_visible():
     intent, revision = _listed_intent()
     catalog = build_dossier_ingredient_catalog(LISTED_PAGE, intent, revision)
 
@@ -185,9 +185,9 @@ def test_listed_page_lab_ingredients_are_pool_supplied_and_not_blockers():
 
     video = _format(catalog, "lyric-video")
     timing = _ingredient(video, "lyric-timing")
-    assert timing["required"] is False
-    assert timing["status"] == "pool_supplied"
-    assert "lyric-timing:missing" not in video["blockers"]
+    assert timing["required"] is True
+    assert timing["status"] == "missing"
+    assert "lyric-timing:missing" in video["blockers"]
 
     # caption-bank / sound-collection page_binding_required are unchanged.
     assert _ingredient(edits, "caption-bank") == {
@@ -392,6 +392,38 @@ def test_list_is_loaded_once_and_alerts_once_per_process(monkeypatch, tmp_path, 
 
     alerts = [r for r in caplog.records if "ALERT pool-supplied-pages" in r.getMessage()]
     assert len(alerts) == 1, [r.getMessage() for r in caplog.records]
+
+
+def test_concurrent_cold_start_alerts_exactly_once(monkeypatch, tmp_path, caplog):
+    import logging
+    import threading
+
+    path = tmp_path / "pool-supplied-pages.v1.json"
+    path.write_text("{not json", encoding="utf-8")
+    monkeypatch.setattr(psp, "_PATH", path)
+    psp.reset_pool_supplied_page_ids_cache()
+    caplog.set_level(logging.ERROR)
+
+    start = threading.Barrier(16)
+    results: list[frozenset[str]] = []
+    results_lock = threading.Lock()
+
+    def cold_start() -> None:
+        start.wait()
+        ids = psp.load_pool_supplied_page_ids()
+        with results_lock:
+            results.append(ids)
+
+    threads = [threading.Thread(target=cold_start) for _ in range(16)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=30)
+
+    assert len(results) == 16
+    assert all(ids == frozenset() for ids in results)
+    alerts = [r for r in caplog.records if "ALERT pool-supplied-pages" in r.getMessage()]
+    assert len(alerts) == 1, [r.getMessage() for r in alerts]
 
 
 # ── registration list check is authoritative even if the catalog drifts ─────

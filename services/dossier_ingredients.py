@@ -971,14 +971,20 @@ def _format_entry(
         from services.control_plane_lyric_video import lyric_ingredient
         ingredients.append(lyric_ingredient(page_id=page_id, master_pages=master_pages))
     if is_pool_supplied(page_id):
-        # The Worker's vault pool supplies the finished clips for this page, so
-        # the Lab image library and its treatment/timing are not required and
-        # must not block Save & apply. Only the listed page ids are affected;
-        # every other page keeps today's catalog bytes and versions exactly.
+        # The Worker's vault pool supplies finished clips for this page, so a
+        # Lab image library and slideshow treatment must not block Save & apply.
+        # Lyric-video still needs a bound timing set to produce a valid selection.
         for ingredient in ingredients:
-            if ingredient["ingredientId"] in POOL_SUPPLIED_INGREDIENT_IDS:
-                ingredient["required"] = False
-                ingredient["status"] = "pool_supplied"
+            if ingredient["ingredientId"] not in POOL_SUPPLIED_INGREDIENT_IDS:
+                continue
+            if (
+                contract.format_slug == "lyric-video"
+                and ingredient["ingredientId"] == "lyric-timing"
+                and ingredient.get("binding") is None
+            ):
+                continue
+            ingredient["required"] = False
+            ingredient["status"] = "pool_supplied"
         # Look-only grade dials for the pool pages (F-LAB-POOL-LOOK-DIALS-1103):
         # the Worker's pool cutter (pixel89) applies the saved grade, so the
         # channels are exactly the shared render_treatment filters with their
