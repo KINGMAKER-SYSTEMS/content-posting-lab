@@ -94,6 +94,12 @@
   its finished clips come from the Worker pool, not Lab inventory. With zero
   reasons enabled it reports `pool_supplied`. Unlisted pages keep the registry
   ceiling, and a registered recipe's version takes precedence over bootstrap.
+- Pool-supplied Dossier pages waive Lab image-library and slideshow-treatment
+  requirements, but `lyric-video` without a bound lyric timing set remains
+  required and missing. The Worker cannot express a timing-less lyric-video
+  selection, so Dossier must show that blocker before Save & apply. The
+  committed pool-page list is loaded once per process, including concurrent
+  first reads; malformed input fails closed with one alert.
 - Source cut planning honors the immutable original 60-second minimum for raw
   source libraries and the Worker-supplied global source-window exclusions
   before rendering. Exact page-bound ShipStream masters are already extracted
