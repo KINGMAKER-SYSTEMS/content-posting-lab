@@ -555,7 +555,14 @@ def test_bootstrap_pool_inventory_uses_real_http_registry_and_job_snapshot(monke
             return rows[0]
 
         listed = capability(LISTED_PAGE)
-        assert capability(LISTED_PAGE) == listed  # cached read
+        job_views = cp._capabilities_job_views
+
+        def fail_on_cache_miss(*_args):
+            raise AssertionError("cached capability request recomputed job views")
+
+        monkeypatch.setattr(cp, "_capabilities_job_views", fail_on_cache_miss)
+        assert capability(LISTED_PAGE) == listed
+        monkeypatch.setattr(cp, "_capabilities_job_views", job_views)
         unlisted = capability(unlisted_page)
 
     assert listed["recipeId"] == "lyric-edits:master"
