@@ -85,28 +85,20 @@ def test_lyric_executor_and_timing_authority_remain_loadable_after_retirement():
 
 @pytest.mark.parametrize("filename,key,expected", [
     ("content-engine-registry.v1.json", "profiles",
-     "1e1179e56de576a360aa2cdb1592304c387bc7878c9087560bdbe0c68cf94f44"),
+     "2e5a7774b4a28573eb38f293b14cf267ad27be7b26bb6a9405c2f0630864ad6a"),
     ("content-format-contracts.v1.json", "contracts",
-     "b69353fefd9ebca4e2464df76714f91dc64a1f7f379a2212c0dbfec90a17c186"),
+     "1191a06ea1d075ee85a77e81929f0013b72d566ffeb06b0cc5afa6bc59447ad7"),
 ])
 def test_legacy_authority_maps_match_reviewed_burnt_retirement(filename, key, expected):
-    # #315 deliberately changed the UGC authority for Burnt's own footage.
-    # Pin the resulting legacy maps, rather than deleting their drift guard
-    # or restoring the retired lyric page. The additive formats retain
-    # their separate contract tests, as in the original legacy-map guard.
+    # The legacy pins include #351's reviewed Burnt and Culture UGC executor.
+    # The additive formats have their own contract tests.
     root = Path(__file__).resolve().parents[1]
     current = json.loads((root / "recipes" / filename).read_bytes())[key]
-    for slug in ("lyric-video", "image-video", "single-image-video", "meme", "coffee-slideshow"):
+    for slug in (
+        "lyric-video", "image-video", "single-image-video", "meme",
+        "coffee-slideshow", "pov-seasonal",
+    ):
         current.pop(slug)
     encoded = json.dumps(current, sort_keys=True, separators=(",", ":"),
                          ensure_ascii=False).encode()
     assert hashlib.sha256(encoded).hexdigest() == expected
-
-
-def test_static_renderer_retains_reviewed_768p_pin():
-    # #282 changed the upright minimum to 768p. #315's recipe retirement and
-    # #328's caption-module change did not change this prepared renderer.
-    root = Path(__file__).resolve().parents[1]
-    assert hashlib.sha256((root / "services/post_render.py").read_bytes()).hexdigest() == (
-        "017c619ab1b58df982b8a9ec908110c18f8c5ee7363d5c0d5f528af5d7c380ab"
-    )

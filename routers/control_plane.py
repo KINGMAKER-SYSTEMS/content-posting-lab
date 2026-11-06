@@ -143,6 +143,7 @@ from services.control_plane_slideshows import (
     CLEAN_VIDEO_FORMATS,
     COFFEE_FORMAT_SLUG,
     curated_plan_for_recipe,
+    retired_ugc_recipe,
     curated_plan_signature,
     curated_variant_number,
     requires_curated_video_plan,
@@ -174,7 +175,7 @@ from services.content_engine_registry import (
     load_engine_registry,
     resolve_material_profile,
 )
-from services.content_format_contracts import CONTRACTS_PATH, load_format_contracts
+from services.content_format_contracts import CONTRACTS_PATH, load_format_contracts, page_niche_admits
 from services.ffmpeg import (
     FrameGeometryUnavailable, delivery_encode_args, probe_display_size, run_color_correct,
     _COLOR_CORRECT_GATE, _probe_input_duration_seconds as probe_source_output_duration_seconds,
@@ -561,19 +562,17 @@ def _contracts_freshness_signature() -> tuple[str, int, int, int, int]:
 def _prompt_catalog_freshness_signature() -> tuple[tuple[str, int, int, int, int], ...]:
     """Collision-safe stat signature for EVERY file load_prompt_catalog can
     read for ANY format_slug: the base catalog, plus (when using the
-    default, non-overridden catalog path) the silhouette and boat overlays
-    it unconditionally reads and merges in regardless of which format_slug
-    was asked for (services/control_plane_generation.py's
-    load_prompt_catalog). Not per-format-slug precise — it always includes
-    all three files, not just the one(s) a given format_slug's resolution
-    would actually touch — which can only over-invalidate, never under-.
+    default catalog path) the silhouette and boat overlays and the separate
+    Christmas catalog. The signature includes all of them for any AI-video
+    binding so a catalog change cannot leave stale capabilities in the cache.
     """
     configured = os.environ.get("CONTENT_LAB_PROMPT_CATALOG", "").strip()
     base = Path(configured).resolve() if configured else CATALOG_PATH
     paths = [base]
-    if not configured:
+    if base == CATALOG_PATH.resolve():
         paths.append(base.with_name("silhouette_stills.v1.json"))
         paths.append(base.with_name("boat_minimax.v1.json"))
+        paths.append(base.with_name("christmas_pov.v1.json"))
     return tuple(_file_stat_signature(path) for path in paths)
 
 
@@ -823,15 +822,23 @@ def capabilities(
     intent_niche = master_pages.get("contentNiche")
     intent_engine = master_pages.get("contentEngine")
     bootstrap = next((profile for profile in profiles.values()
-                      if profile.content_niche == intent_niche
+                      if page_niche_admits(profile.content_niche, intent_niche, intent_engine)
                       and profile.content_engine == intent_engine
                       and profile.execution_status == "commissioned"), None)
     if bootstrap is not None and not registered_bindings:
+        # Keep the first-publication discovery row, but do not advertise Lab
+        # render inventory for a listed pool slideshow. Match the registered
+        # pool route below; other engines retain their commissioned ceiling.
+        bootstrap_pool_supplied = (
+            bootstrap.content_engine in _SLIDESHOW_ENGINES
+            and is_pool_supplied(page_id)
+        )
         entries.append({
             "recipeId": f"{bootstrap.format_slug}:master",
             "engine": bootstrap.content_engine,
             "recipeVersion": bootstrap.format_contract_version,
-            "maxQuantity": bootstrap.max_quantity,
+            "maxQuantity": 0 if bootstrap_pool_supplied else bootstrap.max_quantity,
+            **({"zeroReason": POOL_SUPPLIED} if bootstrap_pool_supplied else {}),
             **({"sourceIdentities": completed_import_identities}
                if bootstrap.content_engine == "sourced_video" and completed_import_identities
                else {}),
@@ -919,9 +926,12 @@ def capabilities(
                     _zero_plan_recipe(publication, MATERIAL_PROFILE_MISSING)
                 )
                 continue
-            unavailable = _slideshow_unavailable_signatures(
-                page_jobs_view, slideshow_recipe, page_id,
-            )
+            try:
+                unavailable = _slideshow_unavailable_signatures(
+                    page_jobs_view, slideshow_recipe, page_id,
+                )
+            except ValueError as error:
+                raise HTTPException(status_code=503, detail="photo reservation history unavailable") from error
             reserved_keys, opaque_media = _generic_clean_video_reserved_media(
                 page_jobs_view, slideshow_recipe, page_id,
             )
@@ -1920,7 +1930,9 @@ def _compaction_loop() -> None:
 _MEDIA_RETENTION_THREAD: threading.Thread | None = None
 # Pressure is re-read every minute; a pass runs when its pressure's interval is up.
 _MEDIA_RETENTION_TICK_SECONDS = 60
-_MEDIA_RETENTION_INTERVAL_SECONDS = {"normal": 10 * 60, "tight": 2 * 60, "floor": 60}
+# Every pressure waits 10 min: a near-full volume must not run a 60 s pass cycle
+# whose probes hammer the control plane's D1 (2026-11-04 probe storm).
+_MEDIA_RETENTION_INTERVAL_SECONDS = {"normal": 10 * 60, "tight": 10 * 60, "floor": 10 * 60}
 _MEDIA_RETENTION = generated_media_retention.GeneratedMediaRetention()
 
 
@@ -1942,8 +1954,24 @@ def run_generated_media_retention_once(now: datetime | None = None, *, pressure:
     )
 
 
+_MEDIA_RETENTION_ENV = "CONTENT_LAB_MEDIA_RETENTION"
+
+
+def _media_retention_paused() -> bool:
+    """Operator kill switch: CONTENT_LAB_MEDIA_RETENTION=off pauses every pass.
+
+    Each pass probes the Control Plane once per unconfirmed clip, and each probe
+    is a production D1 read. When D1 is overloaded the operator sets this to
+    "off" (case and spaces ignored) so the Lab adds no reads at all; nothing is
+    deleted while paused. Any other value, or no value, runs normally.
+    """
+    return os.environ.get(_MEDIA_RETENTION_ENV, "").strip().lower() == "off"
+
+
 def _media_retention_tick(last_run: float, now: float) -> float:
     """Run one pass if the current pressure's interval has elapsed; return the last-run time."""
+    if _media_retention_paused():
+        return last_run
     pressure = _generated_volume_pressure()
     if now - last_run < _MEDIA_RETENTION_INTERVAL_SECONDS[pressure]:
         return last_run
@@ -1952,7 +1980,10 @@ def _media_retention_tick(last_run: float, now: float) -> float:
 
 
 def _media_retention_loop() -> None:
-    last_run = float("-inf")
+    # Start the clock at boot instead of -inf: the first pass waits one full
+    # interval, so a deploy or restart no longer fires a burst of probes
+    # (one D1 read each) the moment the process comes up.
+    last_run = time.monotonic()
     while True:
         try:
             last_run = _media_retention_tick(last_run, time.monotonic())
@@ -2157,7 +2188,8 @@ def _slideshow_unavailable_signatures(
 ) -> set[str]:
     """Reserve every slideshow plan that may already have crossed the API."""
     signatures: set[str] = set()
-    if getattr(recipe, "format_slug", None) in IMAGE_VIDEO_FORMATS:
+    photo_recipe = getattr(recipe, "format_slug", None) in IMAGE_VIDEO_FORMATS
+    if photo_recipe:
         for record in _photo_reservations(store).values():
             receipt = _photo_reservation_receipt(record)
             if receipt["pageId"] == page_id and receipt["sourceLibraryId"] == recipe.library_id:
@@ -2176,10 +2208,21 @@ def _slideshow_unavailable_signatures(
                 signatures.add(signature)
     # Archived slideshow plans keep their permanent reservations.
     for entry in (store.get(compaction.ARCHIVE_INDEX_KEY, {}) or {}).get("slideshow", []):
+        if photo_recipe and (
+            not isinstance(entry, dict)
+            or not isinstance(entry.get("pageId"), str) or not entry["pageId"]
+            or not isinstance(entry.get("sourceLibraryId"), str) or not entry["sourceLibraryId"]
+        ):
+            raise ValueError("slideshow_archive_scope_invalid")
         if not isinstance(entry, dict):
             continue
+        signature = entry.get("signature")
+        if photo_recipe and (
+            not isinstance(signature, str)
+            or not re.fullmatch(r"[0-9a-f]{64}", signature)
+        ):
+            raise ValueError("slideshow_archive_signature_invalid")
         if entry.get("pageId") == page_id and entry.get("sourceLibraryId") == recipe.library_id:
-            signature = entry.get("signature")
             if isinstance(signature, str) and re.fullmatch(r"[0-9a-f]{64}", signature):
                 signatures.add(signature)
     return signatures
@@ -4848,6 +4891,11 @@ async def _run_owned_syzygy_slideshow(job_id: str, attempt: str, runtime: str) -
         if isinstance(publication, dict)
         else None
     )
+    # A job planned before an ugc-slideshow executor change still runs the plan
+    # it was given: a version in the closed retired map resolves to that exact
+    # file. Any other mismatch still fails closed below.
+    if recipe is not None:
+        recipe = retired_ugc_recipe(recipe, job) or recipe
     if (
         recipe is None
         or job.get("sourceLibraryId") != recipe.library_id
@@ -6276,9 +6324,12 @@ async def _create_job_impl(
             }
             start_source = True
         elif slideshow_recipe is not None:
-            unavailable_signatures = _slideshow_unavailable_signatures(
-                store, slideshow_recipe, page_id,
-            )
+            try:
+                unavailable_signatures = _slideshow_unavailable_signatures(
+                    store, slideshow_recipe, page_id,
+                )
+            except ValueError as error:
+                raise HTTPException(status_code=503, detail="photo reservation history unavailable") from error
             reserved_keys, opaque_media = _generic_clean_video_reserved_media(
                 store, slideshow_recipe, page_id,
             )

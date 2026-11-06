@@ -89,6 +89,17 @@
   including fractional looks, and remains within the Worker's 0.04 lower
   admission band. Other grade channels retain nearest rounding.
 - `GET /api/control-plane/v1/capabilities` requires the existing `CONTROL_PLANE_TOKEN` Bearer credential before reading page intent or job state. A missing server token returns 503; missing, invalid, or browser `APP_API_KEY` credentials return 401. The authorized Worker request and capability response schema stay unchanged.
+- Before a recipe is registered, a commissioned slideshow page on the committed
+  pool-supplied list keeps its discovery capability at `maxQuantity: 0` because
+  its finished clips come from the Worker pool, not Lab inventory. With zero
+  reasons enabled it reports `pool_supplied`. Unlisted pages keep the registry
+  ceiling, and a registered recipe's version takes precedence over bootstrap.
+- Pool-supplied Dossier pages waive Lab image-library and slideshow-treatment
+  requirements, but `lyric-video` without a bound lyric timing set remains
+  required and missing. The Worker cannot express a timing-less lyric-video
+  selection, so Dossier must show that blocker before Save & apply. The
+  committed pool-page list is loaded once per process, including concurrent
+  first reads; malformed input fails closed with one alert.
 - Source cut planning honors the immutable original 60-second minimum for raw
   source libraries and the Worker-supplied global source-window exclusions
   before rendering. Exact page-bound ShipStream masters are already extracted
@@ -305,6 +316,8 @@
   replay the stored receipt without reading the library again. The hold
   creates no render job or artifact and survives compaction. Holds remain
   reserved indefinitely, including when the remote result is ambiguous.
+  Malformed archived slideshow evidence refuses new direct or ordinary photo
+  plans and capacity reads instead of treating a possibly used plan as available.
 
 - `services/abn_factory.py` kinetic-template parameters remain inert JSON inside
   the HTML script. Escape HTML script delimiters while preserving decoded values.
@@ -590,6 +603,8 @@
   from the final MP4. Exact receipt bytes bind the final/source/caption/treatment
   and QA hashes to the slot, page, program, account and device. The control-plane
   artifact store owns admission; a renderer receipt alone is not ready authority.
+  In-app caption pairs share a 30 fps filter clock before the clean and burned
+  paths diverge, so the same fractional source tail yields the same frames.
 - Prepared delivery caps final video at 22 MiB and QA JPEG at 2 MiB. One automatic
   bitrate retry may fit the video budget without changing content or treatment.
   Persistent overflow or failed decode yields no artifact result. Subprocesses
@@ -755,6 +770,15 @@
   `recipes/generation/boat_minimax.v1.json` changes only boat generation;
   preserve unrelated prompt/provider versions and use the existing boat inventory.
 
+- `XMAS` pages using `ai_video` resolve to `pov-seasonal:master` through the
+  format registry. The first seasonal prompt module is `christmas-pov`.
+  `recipes/generation/christmas_pov.v1.json` owns the Christmas village walks,
+  neighborhood drives, and Alpine overlooks. Replenishment requests one
+  eight-second portrait clip per MiniMax H3 Highspeed Replicate call, reserves
+  $0.24 against the existing budget, and removes provider audio with a video
+  stream copy before delivery. Dossier advertises the fixed settings without
+  a source library or reference image. The slideshow source contracts are separate.
+
 - `GET /api/health` reports the most recently completed ffmpeg/yt-dlp
   executable check. Startup checks both off the event loop before serving.
   A request after the 60-second freshness interval starts at most one
@@ -838,6 +862,9 @@
 - Run `pytest -q tests/test_managed_photo_reservations.py tests/test_control_plane_image_video_execution.py tests/test_job_store_compaction.py`
   for authenticated photo holds, exact replay, concurrent legacy planning,
   exhaustion, and archived reservations.
+- Run `pytest -q tests/test_pool_bootstrap_capabilities.py tests/test_pool_supplied_pages.py`
+  for pool slideshow discovery, registered recipe priority, the real HTTP
+  registry and job snapshot path, and unlisted page capacity.
 - Run `pytest -q tests/test_control_plane_external_pages.py` for external-page
   auth, refusals, real-roster resolution by source imports, clip jobs and
   capabilities, Notion sync survival, fleet projection exclusion and DELETE scope.

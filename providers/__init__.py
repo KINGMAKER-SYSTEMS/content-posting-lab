@@ -1,6 +1,16 @@
 from . import grok, replicate
 
 PROVIDERS = {
+    "h3-highspeed": {
+        "name": "H3 Highspeed",
+        "group": "MiniMax",
+        "key_id": "replicate",
+        "pricing": "$0.24 per eight-second portrait clip",
+        "cost_per_run_usd": 0.24,
+        "models": ["minimax/h3-highspeed"],
+        "module": replicate,
+        "strip_audio": True,
+    },
     "grok": {
         "name": "Grok",
         "group": "xAI",

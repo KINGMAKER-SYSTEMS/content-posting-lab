@@ -280,7 +280,8 @@ def _verify_edge_phrase_frames(final: Path, pngs: list[Path], phrases: list[dict
 
 def render_timed_post(source_path: Path, output_directory: Path, request: TimedPostRenderRequest, *,
                       font_dir: Path | None = None, tools: RenderTools = RenderTools(),
-                      clock_ms: Callable[[], int] = lambda: time.time_ns() // 1_000_000) -> RenderedPost:
+                      clock_ms: Callable[[], int] = lambda: time.time_ns() // 1_000_000,
+                      allow_pool_supplied_without_provenance: bool = False) -> RenderedPost:
     """Render one timed-lyric prepared artifact; create a new output directory or leave none on failure.
 
     The source must already be upright, silent, 1080x1920 video with the exact
@@ -291,7 +292,8 @@ def render_timed_post(source_path: Path, output_directory: Path, request: TimedP
     regrades, re-speeds, re-crops, or fabricates operator/generation receipts.
     """
     request = TimedPostRenderRequest.model_validate(request.model_dump(by_alias=True))
-    if not source_visual_matches(request):
+    if not source_visual_matches(
+            request, allow_pool_supplied_without_provenance=allow_pool_supplied_without_provenance):
         raise PostRenderError("regeneration_required", "source treatment provenance is unknown or differs from the requested treatment")
     if request.created_at_ms > clock_ms():
         raise PostRenderError("request_future_dated", "render request is future-dated")

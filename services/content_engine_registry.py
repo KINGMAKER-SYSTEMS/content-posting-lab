@@ -16,7 +16,7 @@ from pathlib import Path
 import re
 from typing import Any
 
-from services.content_format_contracts import FormatContract, load_format_contracts
+from services.content_format_contracts import FormatContract, load_format_contracts, page_niche_admits
 
 
 REGISTRY_PATH = (
@@ -234,7 +234,7 @@ def resolve_material_profile(
         not isinstance(master_pages, dict)
         or publication.get("engine") != profile.content_engine
         or master_pages.get("contentEngine") != profile.content_engine
-        or master_pages.get("contentNiche") != profile.content_niche
+        or not page_niche_admits(profile.content_niche, master_pages.get("contentNiche"), master_pages.get("contentEngine"))
     ):
         return None
     demand = spec.get("demand")

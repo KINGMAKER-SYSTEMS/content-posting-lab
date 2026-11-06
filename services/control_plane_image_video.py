@@ -821,8 +821,14 @@ def recipe_image_video_plan_for_variant(recipe, library, variant):
     return None
 
 def required_image_video_treatment(spec, page_id):
-    """Refuse recipes whose actual treatment would contradict the closed grade."""
-    from services.source_treatment import normalized_visual_treatment, NEUTRAL_FILTERS, NEUTRAL_CROP
+    """Accept any well-formed grade once speed and focal crop stay neutral.
+
+    The closed plan's ``brightnessGainFromOriginals`` is provenance for the
+    later managed source-treatment boundary, not the one grade a Dossier may
+    save: any filter values the visual normalizer admits are accepted here, but
+    a non-1 speed or non-neutral crop still changes cut semantics and is refused.
+    """
+    from services.source_treatment import normalized_visual_treatment, NEUTRAL_CROP
     plan = image_video_plan(page_id)
     if plan is None:
         return False
@@ -830,9 +836,7 @@ def required_image_video_treatment(spec, page_id):
         actual = normalized_visual_treatment(spec.get("renderTreatment"))
     except (ValueError, TypeError):
         return False
-    expected = {"filters": {**NEUTRAL_FILTERS, "brightness": plan["brightnessGainFromOriginals"]},
-                "clipSpeed": 1., "clipCrop": NEUTRAL_CROP}
-    return actual == expected
+    return actual["clipSpeed"] == 1.0 and actual["clipCrop"] == NEUTRAL_CROP
 
 def slideshow_executor_adapter(format_slug=FORMAT_SLUG):
     """Existing executor vocabulary; original legacy JSON stays byte-identical."""

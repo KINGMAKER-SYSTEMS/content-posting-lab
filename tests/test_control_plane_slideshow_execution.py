@@ -580,6 +580,68 @@ async def test_runner_uses_real_syzygy_http_adapter(lab, monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("response", [
+    {},
+    {"status": None},
+    {"status": 17},
+    {"status": ""},
+    {"status": "   "},
+])
+async def test_syzygy_render_poll_rejects_invalid_status_without_sleep(response, monkeypatch):
+    from services import control_plane_slideshows as slideshows
+
+    requests = []
+
+    async def fake_request_json(method, endpoint, *, timeout=60.0, **_kwargs):
+        requests.append((method, endpoint))
+        return response
+
+    async def forbidden_sleep(_seconds):
+        pytest.fail("malformed Syzygy status must not be polled again")
+
+    monkeypatch.setattr(slideshows, "_request_json", fake_request_json)
+    monkeypatch.setattr(slideshows.asyncio, "sleep", forbidden_sleep)
+
+    with pytest.raises(slideshows.SyzygyError) as error:
+        await slideshows.poll_syzygy_render("render-job")
+
+    assert error.type is slideshows.SyzygyError
+    assert str(error.value) == "Syzygy response is invalid"
+    assert requests == [("GET", "/api/v1/render/render-job")]
+
+
+@pytest.mark.asyncio
+async def test_syzygy_render_poll_keeps_polling_unknown_nonempty_status(monkeypatch):
+    from services import control_plane_slideshows as slideshows
+
+    responses = iter([
+        {"status": "future_render_phase"},
+        {"status": "done", "result": {"play_url": "/render-file/render-job.mp4"}},
+    ])
+    requests = []
+    sleeps = []
+
+    async def fake_request_json(method, endpoint, *, timeout=60.0, **_kwargs):
+        requests.append((method, endpoint))
+        return next(responses)
+
+    async def fake_sleep(seconds):
+        sleeps.append(seconds)
+
+    monkeypatch.setattr(slideshows, "_request_json", fake_request_json)
+    monkeypatch.setattr(slideshows.asyncio, "sleep", fake_sleep)
+
+    result = await slideshows.poll_syzygy_render("render-job")
+
+    assert result == "/render-file/render-job.mp4"
+    assert requests == [
+        ("GET", "/api/v1/render/render-job"),
+        ("GET", "/api/v1/render/render-job"),
+    ]
+    assert sleeps == [slideshows.POLL_SECONDS]
+
+
+@pytest.mark.asyncio
 async def test_runner_completes_with_strict_syzygy_provenance(lab, monkeypatch):
     client, tmp_path, _, library, payload = lab
     response = client.post(

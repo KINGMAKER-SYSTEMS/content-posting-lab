@@ -19,7 +19,7 @@ from providers import PROVIDERS
 from routers.video import PROVIDER_SCHEMAS
 from services.content_engine_registry import MaterialProfile, load_engine_registry
 from services.control_plane_image_video import IMAGE_VIDEO_FORMATS, image_video_plan_for_format
-from services.content_format_contracts import FormatContract, load_format_contracts
+from services.content_format_contracts import FormatContract, load_format_contracts, page_niche_admits
 from services.control_plane_generation import (
     load_prompt_catalog,
     render_treatment_capability,
@@ -943,6 +943,10 @@ def _format_entry(
     master_pages: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if profile.content_engine == "ai_video":
+        if contract.format_slug == "pov-seasonal":
+            catalog, _ = load_prompt_catalog(contract.format_slug)
+            # The selected H3 portrait preset defines this route's provider settings.
+            model_options = [dict(option, controls={}) for option in _model_options(catalog)]
         ingredients = _generated_ingredients(contract.format_slug, catalog, model_options)
     elif profile.content_engine == "sourced_video":
         ingredients = _sourced_ingredients(
@@ -958,7 +962,7 @@ def _format_entry(
         current_slideshow_page = (
             master_pages
             if isinstance(master_pages, dict)
-            and contract.content_niche == master_pages.get("contentNiche")
+            and page_niche_admits(contract.content_niche, master_pages.get("contentNiche"), master_pages.get("contentEngine"))
             and contract.content_engine == master_pages.get("contentEngine")
             else None
         )
@@ -967,14 +971,20 @@ def _format_entry(
         from services.control_plane_lyric_video import lyric_ingredient
         ingredients.append(lyric_ingredient(page_id=page_id, master_pages=master_pages))
     if is_pool_supplied(page_id):
-        # The Worker's vault pool supplies the finished clips for this page, so
-        # the Lab image library and its treatment/timing are not required and
-        # must not block Save & apply. Only the listed page ids are affected;
-        # every other page keeps today's catalog bytes and versions exactly.
+        # The Worker's vault pool supplies finished clips for this page, so a
+        # Lab image library and slideshow treatment must not block Save & apply.
+        # Lyric-video still needs a bound timing set to produce a valid selection.
         for ingredient in ingredients:
-            if ingredient["ingredientId"] in POOL_SUPPLIED_INGREDIENT_IDS:
-                ingredient["required"] = False
-                ingredient["status"] = "pool_supplied"
+            if ingredient["ingredientId"] not in POOL_SUPPLIED_INGREDIENT_IDS:
+                continue
+            if (
+                contract.format_slug == "lyric-video"
+                and ingredient["ingredientId"] == "lyric-timing"
+                and ingredient.get("binding") is None
+            ):
+                continue
+            ingredient["required"] = False
+            ingredient["status"] = "pool_supplied"
         # Look-only grade dials for the pool pages (F-LAB-POOL-LOOK-DIALS-1103):
         # the Worker's pool cutter (pixel89) applies the saved grade, so the
         # channels are exactly the shared render_treatment filters with their
@@ -1068,7 +1078,7 @@ def build_dossier_ingredient_catalog(
     current_source_formats = [
         format_slug
         for format_slug, contract in contracts.items()
-        if contract.content_niche == intent["contentNiche"]
+        if page_niche_admits(contract.content_niche, intent["contentNiche"], intent["contentEngine"])
         and contract.content_engine == intent["contentEngine"]
     ]
     expected_source_format = (
@@ -1098,7 +1108,7 @@ def build_dossier_ingredient_catalog(
     current_format_candidates = [
         entry["formatId"]
         for entry in formats
-        if entry["contentNiche"] == intent["contentNiche"]
+        if page_niche_admits(entry["contentNiche"], intent["contentNiche"], intent["contentEngine"])
         and entry["contentEngine"] == intent["contentEngine"]
     ]
     for entry in formats:
@@ -1143,7 +1153,7 @@ def selected_dossier_catalog_version(
     if (
         contract is None
         or profile is None
-        or contract.content_niche != intent["contentNiche"]
+        or not page_niche_admits(contract.content_niche, intent["contentNiche"], intent["contentEngine"])
         or contract.content_engine != intent["contentEngine"]
     ):
         return None

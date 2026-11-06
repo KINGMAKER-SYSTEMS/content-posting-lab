@@ -1202,7 +1202,7 @@
       "creativeAuthority": {
         "kind": "slideshow_renderer",
         "id": "syzygy-slideshow",
-        "version": "sha256:1097ebe82d9a955c63c9f89c4e840c70eeacb0fab62f6c848891c96ca6dffc09"
+        "version": "sha256:b768617dadee60d52e6bb4b5990d94902b54b54ad00af467ec23038025fc498d"
       },
       "dimensions": {
         "subject": {
@@ -1570,6 +1570,83 @@
         "technical_video",
         "rights_and_provenance",
         "text_layout",
+        "duplicate_and_never_reuse"
+      ],
+      "distribution": {
+        "captions": "page_binding_required",
+        "sounds": "page_binding_required"
+      },
+      "definitionGaps": []
+    },
+    "pov-seasonal": {
+      "contentNiche": "XMAS",
+      "contentEngine": "ai_video",
+      "materialSource": "generated_video",
+      "assetType": "video/mp4",
+      "definitionStatus": "complete",
+      "creativeAuthority": {
+        "kind": "prompt_family",
+        "id": "christmas-pov",
+        "version": "sha256:bcae8d47ecdd0f86aed25deb52af4155a6ac6fd80289cf46ea3b10b607586f25"
+      },
+      "dimensions": {
+        "subject": {
+          "status": "defined",
+          "rule": "First-person Christmas village walks, slow drives past decorated homes, and fixed Swiss Alpine overlooks.",
+          "authority": "promptCatalog.families.christmas-pov.slots.scene"
+        },
+        "setting": {
+          "status": "defined",
+          "rule": "Snowy Christmas markets, decorated neighborhoods, and alpine villages with warm practical holiday lights.",
+          "authority": "promptCatalog.families.christmas-pov.slots.scene"
+        },
+        "shotGrammar": {
+          "status": "defined",
+          "rule": "One continuous portrait shot with the eye-level camera movement or fixed terrace viewpoint defined by the scene.",
+          "authority": "promptCatalog.families.christmas-pov.template"
+        },
+        "lighting": {
+          "status": "defined",
+          "rule": "Blue winter twilight or dark winter night with controlled practical lights and readable snow and shadow detail.",
+          "authority": "promptCatalog.families.christmas-pov.slots.light_detail"
+        },
+        "motion": {
+          "status": "defined",
+          "rule": "Natural pedestrian sway, restrained passenger-seat parallax, or a slight handheld settle at a fixed overlook.",
+          "authority": "promptCatalog.families.christmas-pov.quality_guards"
+        },
+        "duration": {
+          "status": "defined",
+          "rule": "Eight-second portrait generation with one clip per H3 Highspeed call. Remove provider audio without re-encoding video.",
+          "authority": "promptCatalog.providers.h3-highspeed.base_input.duration"
+        },
+        "textPolicy": {
+          "status": "defined",
+          "rule": "Raw footage has no captions, overlays, logos, or watermarks.",
+          "authority": "promptCatalog.families.christmas-pov.quality_guards"
+        },
+        "negativeRules": {
+          "status": "defined",
+          "rule": "Reject cuts, fades, strobing, warped geometry, unnatural camera movement, and near duplicates.",
+          "authority": "promptCatalog.families.christmas-pov.visual_reference.reject"
+        },
+        "referenceExamples": {
+          "status": "defined",
+          "rule": "Review the shot against the scene, light and camera movement described by the selected prompt.",
+          "authority": "promptCatalog.families.christmas-pov.slots.scene"
+        }
+      },
+      "output": {
+        "aspectRatio": "9:16",
+        "container": "video/mp4",
+        "durationPolicy": "executor_bound",
+        "audioPolicy": "campaign_sound_bound_downstream"
+      },
+      "reviewAuthority": "promptCatalog.families.christmas-pov.visual_reference",
+      "reviewGates": [
+        "technical_video",
+        "ocr_text",
+        "visual_dna",
         "duplicate_and_never_reuse"
       ],
       "distribution": {

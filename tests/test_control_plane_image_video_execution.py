@@ -173,9 +173,12 @@ async def test_wrong_pinned_source_refuses_before_provider(image_lab,monkeypatch
     await cp._run_syzygy_slideshow(response.json()['jobId']);job=cp._load_jobs()['jobs'][response.json()['jobId']]
     assert job['status']=='failed' and job['error']=='slideshow_source_sha_mismatch';assert called==[]
 
-def test_recipe_requires_exact_once_grade(image_lab):
+def test_recipe_accepts_any_in_range_brightness(image_lab):
     _,_,payload,_=image_lab;assert ss.resolve_slideshow_recipe(payload)is not None
-    spec=json.loads(payload['recipeSpecCanonical']);spec['renderTreatment']['filters']['brightness']=1.;canonical=json.dumps(spec,sort_keys=True,separators=(',',':'));payload.update(recipeSpecCanonical=canonical,recipeSpecHash='sha256:'+hashlib.sha256(canonical.encode()).hexdigest());assert ss.resolve_slideshow_recipe(payload)is None
+    # The closed grade is no longer the only legal brightness: any value the
+    # visual normalizer accepts (0..3) is admitted once speed/crop stay neutral.
+    spec=json.loads(payload['recipeSpecCanonical']);spec['renderTreatment']['filters']['brightness']=1.;canonical=json.dumps(spec,sort_keys=True,separators=(',',':'));payload.update(recipeSpecCanonical=canonical,recipeSpecHash='sha256:'+hashlib.sha256(canonical.encode()).hexdigest());assert ss.resolve_slideshow_recipe(payload)is not None
+    spec=json.loads(payload['recipeSpecCanonical']);spec['renderTreatment']['filters']['brightness']=3.5;canonical=json.dumps(spec,sort_keys=True,separators=(',',':'));payload.update(recipeSpecCanonical=canonical,recipeSpecHash='sha256:'+hashlib.sha256(canonical.encode()).hexdigest());assert ss.resolve_slideshow_recipe(payload)is None
 
 
 @pytest.mark.asyncio

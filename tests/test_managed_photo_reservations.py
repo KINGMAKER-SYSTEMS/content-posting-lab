@@ -3,6 +3,7 @@
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 import json
+import pytest
 
 from fastapi.testclient import TestClient
 
@@ -164,6 +165,39 @@ def test_missing_archive_index_never_reopens_a_photo_plan(image_lab):
     response = _post(client, RESERVE, publication, "managed-photo-missing-index")
     assert response.status_code == 503, response.text
     assert not path.exists()
+
+
+@pytest.mark.parametrize("corruption", (
+    "invalid_signature", "other_scope_invalid_signature", "missing_scope", "empty_scope", "non_dict",
+))
+def test_malformed_archive_entry_never_reopens_a_photo_plan(image_lab, corruption):
+    client, _, publication, approved = image_lab
+    archive = cp.compaction.empty_index()
+    entry = {
+        "pageId": publication["pageId"],
+        "sourceLibraryId": approved["libraryId"],
+        "signature": "invalid",
+    }
+    if corruption == "missing_scope":
+        entry.pop("sourceLibraryId")
+    elif corruption == "empty_scope":
+        entry["sourceLibraryId"] = ""
+    elif corruption == "other_scope_invalid_signature":
+        entry["pageId"] = "acct:other"
+    elif corruption == "non_dict":
+        entry = "invalid"
+    archive["slideshow"] = [entry]
+    path = cp._jobs_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({**cp._empty_jobs(), cp.compaction.ARCHIVE_INDEX_KEY: archive}))
+    broken = path.read_bytes()
+
+    for index, route in enumerate((RESERVE, JOBS)):
+        response = _post(client, route, publication, f"managed-photo-{corruption}-{index}")
+        assert response.status_code == 503, response.text
+    response = client.get(CAPABILITIES, headers=slideshow.headers())
+    assert response.status_code == 503, response.text
+    assert path.read_bytes() == broken
 
 
 def test_corrupt_receipt_does_not_release_a_photo_plan(image_lab):

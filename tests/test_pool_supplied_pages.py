@@ -4,8 +4,8 @@ The Worker posts FINISHED clips for a small committed list of pages from
 ``vault/<handle>/pool``, not from a Lab-rendered image library. Those pages
 must still Save & apply their recipe (registration accepts ``sourceLibraryId``
 null) and still appear in getCapabilities (at zero, so replenish is blocked),
-while every unlisted page keeps today's catalog bytes and registration rules
-byte-for-byte.
+while every unlisted page keeps the same catalog it would have with the pool
+classifier disabled, and its registration rules stay unchanged.
 """
 
 from __future__ import annotations
@@ -32,10 +32,8 @@ TOKEN = "test-control-plane-token"
 LISTED_PAGE = "acct:chemically-lit"
 UNLISTED_TRUCK = "acct:truck-page"
 
-# Base (origin/main 08db4f5) byte-identity pins for an unlisted ai_video page.
-# These must stay byte-identical after the pool-supplied change.
-BASE_TRUCK_CATALOG_VERSION = "sha256:1ed143705f3c69627d88d6889eb12e01d70d28081699416a5541db2b8a6e8d57"
-BASE_TRUCK_CANONICAL_SHA256 = "68858d5b102d2b49493aa9440496f55c158a945a5be62701897baadf4203a3bf"
+# The truck selection is scoped to its own format and should not drift when
+# other formats are added to the global catalog.
 BASE_TRUCK_SELECTION_VERSION = "sha256:2b853d4639dc71241435790429d1cfd1b8508c311ec447bcfab4254d9275c442"
 
 
@@ -171,7 +169,7 @@ def _headers(page_id=LISTED_PAGE):
 
 
 # ── (a) listed page: no image-library blocker + registration accepts null ────
-def test_listed_page_lab_ingredients_are_pool_supplied_and_not_blockers():
+def test_listed_page_pool_supply_keeps_missing_lyric_video_timing_visible():
     intent, revision = _listed_intent()
     catalog = build_dossier_ingredient_catalog(LISTED_PAGE, intent, revision)
 
@@ -187,9 +185,9 @@ def test_listed_page_lab_ingredients_are_pool_supplied_and_not_blockers():
 
     video = _format(catalog, "lyric-video")
     timing = _ingredient(video, "lyric-timing")
-    assert timing["required"] is False
-    assert timing["status"] == "pool_supplied"
-    assert "lyric-timing:missing" not in video["blockers"]
+    assert timing["required"] is True
+    assert timing["status"] == "missing"
+    assert "lyric-timing:missing" in video["blockers"]
 
     # caption-bank / sound-collection page_binding_required are unchanged.
     assert _ingredient(edits, "caption-bank") == {
@@ -255,8 +253,8 @@ def test_listed_page_explicit_source_library_must_match_an_advertised_option(lab
     assert response.json()["detail"] == "selected source library is not registered as master source DNA"
 
 
-# ── (b) unlisted page: catalog bytes + versions + registration 409 unchanged ─
-def test_unlisted_page_catalog_bytes_and_versions_match_base():
+# ── (b) unlisted page: pool isolation + registration 409 unchanged ─────────
+def test_unlisted_page_catalog_ignores_pool_classifier(monkeypatch):
     intent, revision = master_pages(
         UNLISTED_TRUCK, handle="truck.page",
         content_niche="TRUCK", content_engine="ai_video",
@@ -264,8 +262,16 @@ def test_unlisted_page_catalog_bytes_and_versions_match_base():
     catalog = build_dossier_ingredient_catalog(UNLISTED_TRUCK, intent, revision)
     raw = di.canonical_catalog_bytes(UNLISTED_TRUCK, intent, revision)
 
-    assert hashlib.sha256(raw).hexdigest() == BASE_TRUCK_CANONICAL_SHA256
-    assert catalog["catalogVersion"] == BASE_TRUCK_CATALOG_VERSION
+    assert not psp.is_pool_supplied(UNLISTED_TRUCK)
+    with monkeypatch.context() as disabled:
+        disabled.setattr(di, "is_pool_supplied", lambda _page_id: False)
+        without_pool = di.canonical_catalog_bytes(UNLISTED_TRUCK, intent, revision)
+    assert raw == without_pool
+    assert not any(
+        ingredient.get("status") == "pool_supplied"
+        for entry in catalog["formats"]
+        for ingredient in entry["ingredients"]
+    )
 
     production = {
         "catalogVersion": "",
@@ -388,6 +394,38 @@ def test_list_is_loaded_once_and_alerts_once_per_process(monkeypatch, tmp_path, 
     assert len(alerts) == 1, [r.getMessage() for r in caplog.records]
 
 
+def test_concurrent_cold_start_alerts_exactly_once(monkeypatch, tmp_path, caplog):
+    import logging
+    import threading
+
+    path = tmp_path / "pool-supplied-pages.v1.json"
+    path.write_text("{not json", encoding="utf-8")
+    monkeypatch.setattr(psp, "_PATH", path)
+    psp.reset_pool_supplied_page_ids_cache()
+    caplog.set_level(logging.ERROR)
+
+    start = threading.Barrier(16)
+    results: list[frozenset[str]] = []
+    results_lock = threading.Lock()
+
+    def cold_start() -> None:
+        start.wait()
+        ids = psp.load_pool_supplied_page_ids()
+        with results_lock:
+            results.append(ids)
+
+    threads = [threading.Thread(target=cold_start) for _ in range(16)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=30)
+
+    assert len(results) == 16
+    assert all(ids == frozenset() for ids in results)
+    alerts = [r for r in caplog.records if "ALERT pool-supplied-pages" in r.getMessage()]
+    assert len(alerts) == 1, [r.getMessage() for r in alerts]
+
+
 # ── registration list check is authoritative even if the catalog drifts ─────
 def _registration_unit_test(monkeypatch, page_id):
     """Drive _validate_production_selection with a crafted catalog whose image
@@ -506,6 +544,73 @@ def test_listed_page_capability_advertises_zero(monkeypatch, tmp_path):
     }]
 
 
+def test_bootstrap_pool_inventory_uses_real_http_registry_and_job_snapshot(monkeypatch, tmp_path):
+    """First-publication discovery must not advertise Lab render inventory."""
+    from routers import control_plane as cp
+    from services.content_engine_registry import load_engine_registry
+    from services.json_store import atomic_save
+
+    unlisted_page = "acct:unlisted-lyric"
+    intents = {
+        LISTED_PAGE: _listed_intent(),
+        unlisted_page: master_pages(
+            unlisted_page, handle="unlisted.lyric",
+            content_niche="lyric-edits", content_engine="lyrics_slideshows",
+        ),
+    }
+    profiles, _ = load_engine_registry()
+    ceiling = profiles["lyric-edits"].max_quantity
+    assert ceiling > 0
+
+    monkeypatch.setenv("CONTROL_PLANE_TOKEN", TOKEN)
+    monkeypatch.setenv("CONTENT_LAB_ADVERTISE_ZERO_REASONS", "1")
+    monkeypatch.setenv("CONTENT_LAB_RECIPE_ROOT", str(tmp_path / "recipes"))
+    monkeypatch.setattr(
+        cp, "_current_master_pages_intent",
+        lambda page_id, asserted=None: intents.get(page_id),
+    )
+    jobs_path = tmp_path / "jobs.json"
+    atomic_save(jobs_path, {"jobs": {}, "version": 1, "byIdempotency": {}, "served": {}})
+    monkeypatch.setattr(cp, "_jobs_path", lambda: jobs_path)
+    monkeypatch.setattr(cp, "_jobs_snapshot", None)
+    cp._jobs_decode_pending.clear()
+    cp._capabilities_cache.clear()
+
+    app = FastAPI()
+    app.include_router(cp.router, prefix="/api/control-plane")
+    url = "/api/control-plane/v1/capabilities"
+    with TestClient(app) as client:
+        assert client.get(url, headers={"X-RT-Page-Id": LISTED_PAGE}).status_code == 401
+
+        def capability(page_id):
+            response = client.get(url, headers={
+                "X-RT-Page-Id": page_id,
+                "Authorization": f"Bearer {TOKEN}",
+            })
+            assert response.status_code == 200, response.text
+            rows = response.json()["capabilities"]
+            assert len(rows) == 1, rows
+            return rows[0]
+
+        listed = capability(LISTED_PAGE)
+        job_views = cp._capabilities_job_views
+
+        def fail_on_cache_miss(*_args):
+            raise AssertionError("cached capability request recomputed job views")
+
+        monkeypatch.setattr(cp, "_capabilities_job_views", fail_on_cache_miss)
+        assert capability(LISTED_PAGE) == listed
+        monkeypatch.setattr(cp, "_capabilities_job_views", job_views)
+        unlisted = capability(unlisted_page)
+
+    assert listed["recipeId"] == "lyric-edits:master"
+    assert listed["maxQuantity"] == 0
+    assert listed["zeroReason"] == reasons.POOL_SUPPLIED
+    assert unlisted["maxQuantity"] == ceiling
+    assert "zeroReason" not in unlisted
+    cp._capabilities_cache.clear()
+
+
 # ── Look-only grade dials on LISTED pool pages (F-LAB-POOL-LOOK-DIALS-1103) ──
 LOOK_FORMATS = {
     "lyric-edits", "coffee-slideshow", "image-video", "meme-slideshow",
@@ -582,7 +687,7 @@ def test_listed_pages_advertise_look_only_treatment_dials():
     assert carrying == LOOK_FORMATS, sorted(carrying)
 
 
-def test_unlisted_lyric_page_has_no_look_dials_and_base_bytes():
+def test_unlisted_lyric_page_has_no_look_dials_or_pool_catalog_changes(monkeypatch):
     page_id = "acct:unlisted-lyric"
     intent, revision = master_pages(
         page_id, handle="unlisted.lyric",
@@ -595,12 +700,20 @@ def test_unlisted_lyric_page_has_no_look_dials_and_base_bytes():
         assert not any(
             i["ingredientId"] == "clip-treatment" for i in entry["ingredients"]
         ), entry["formatId"]
-    # Unlisted pages keep base's exact catalog bytes and version.
-    assert hashlib.sha256(
-        di.canonical_catalog_bytes(page_id, intent, revision)
-    ).hexdigest() == "c2a81506c15c72e1234efa6b94b123206ce8f9826b0d072463174276f45487eb"
-    assert catalog["catalogVersion"] == (
-        "sha256:bca7bf78551b57d087133ae390e5eaf190e7b7bb8a95ec5c74acd8efe69934b9"
+    assert not psp.is_pool_supplied(page_id)
+    raw = di.canonical_catalog_bytes(page_id, intent, revision)
+    with monkeypatch.context() as disabled:
+        disabled.setattr(di, "is_pool_supplied", lambda _page_id: False)
+        without_pool = di.canonical_catalog_bytes(page_id, intent, revision)
+    assert raw == without_pool
+    with monkeypatch.context() as listed:
+        listed.setattr(di, "is_pool_supplied", lambda _page_id: True)
+        as_pool_page = di.canonical_catalog_bytes(page_id, intent, revision)
+    assert raw != as_pool_page
+    assert not any(
+        ingredient.get("status") == "pool_supplied"
+        for entry in catalog["formats"]
+        for ingredient in entry["ingredients"]
     )
 
 

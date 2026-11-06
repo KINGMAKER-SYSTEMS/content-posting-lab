@@ -36,6 +36,7 @@ from services.post_render_timed import (
 )
 
 from services import slot_source_regeneration as slot_source
+from services.pool_supplied_pages import is_pool_supplied
 
 
 def render_prepared_post(source, output, request, **kwargs):
@@ -255,6 +256,13 @@ class RenderJobSubmission(BaseModel):
                     and slot.get("caption", {}).get("text") == request.caption)
         if not required:
             raise ValueError("render request does not match immutable slot")
+        # The request marker alone is not authority to omit a caption. Bind it
+        # to the exact hashed slot's lyric source and already-empty text.
+        lyric_source = slot["caption"].get("source") == "lyric"
+        if (request.source_text_mode == "lyric") != lyric_source:
+            raise ValueError("lyric source marker does not match immutable slot")
+        if lyric_source and slot["caption"].get("text") != "":
+            raise ValueError("lyric source must not contain caption text")
         if "program_id" in slot and slot["program_id"] != request.program_id:
             raise ValueError("slot program mismatch")
         # Structural equality only. Cross-language treatment hashing uses original request bytes.
@@ -645,7 +653,8 @@ class PostRenderJobs:
                 raise RenderJobError("idempotency_conflict")
             if not existing:
                 has_provenance = submission.source_provenance is not None
-                matches = has_provenance and source_visual_matches(request)
+                pool_without_provenance = not has_provenance and is_pool_supplied(request.page_id)
+                matches = pool_without_provenance or (has_provenance and source_visual_matches(request))
                 state = "queued" if matches else "regeneration_needed"
                 reason = None if matches else "source_treatment_mismatch" if has_provenance else "source_treatment_provenance_missing"
                 planned_at_ms = _planned_at_ms(submission.slot_payload_json)
@@ -1759,7 +1768,12 @@ class PostRenderJobs:
         try:
             submission = RenderJobSubmission.model_validate_json(row["submission_json"])
             self.fetcher(submission.request, source)
-            self.renderer(source, self._output(row), submission.request, clock_ms=self.clock_ms)
+            renderer_kwargs = {"clock_ms": self.clock_ms}
+            if submission.source_provenance is None and is_pool_supplied(submission.request.page_id):
+                # A listed pool page supplies a finished clip, so this is the
+                # one path permitted to cross the renderer's no-receipt gate.
+                renderer_kwargs["allow_pool_supplied_without_provenance"] = True
+            self.renderer(source, self._output(row), submission.request, **renderer_kwargs)
             authority = self._verify_output(row)
             self._finish(row, authority)
         except Exception as error:
