@@ -817,11 +817,19 @@ def capabilities(
                       and profile.content_engine == intent_engine
                       and profile.execution_status == "commissioned"), None)
     if bootstrap is not None and not registered_bindings:
+        # Keep the first-publication discovery row, but do not advertise Lab
+        # render inventory for a listed pool slideshow. Match the registered
+        # pool route below; other engines retain their commissioned ceiling.
+        bootstrap_pool_supplied = (
+            bootstrap.content_engine in _SLIDESHOW_ENGINES
+            and is_pool_supplied(page_id)
+        )
         entries.append({
             "recipeId": f"{bootstrap.format_slug}:master",
             "engine": bootstrap.content_engine,
             "recipeVersion": bootstrap.format_contract_version,
-            "maxQuantity": bootstrap.max_quantity,
+            "maxQuantity": 0 if bootstrap_pool_supplied else bootstrap.max_quantity,
+            **({"zeroReason": POOL_SUPPLIED} if bootstrap_pool_supplied else {}),
             **({"sourceIdentities": completed_import_identities}
                if bootstrap.content_engine == "sourced_video" and completed_import_identities
                else {}),
