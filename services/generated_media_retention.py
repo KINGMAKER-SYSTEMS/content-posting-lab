@@ -498,6 +498,9 @@ class GeneratedMediaRetention:
                 for later in chosen[position:]:
                     plan.unconfirmed_bytes += sum(_size(path) for path in later[3])
                 break
+            if plan.jobs >= job_limit and not owners[owner]:
+                plan.unconfirmed_bytes += sum(_size(path) for path in present)
+                continue
             plan.probes += 1
             answer = self.confirm(sha, size)
             if answer is True:

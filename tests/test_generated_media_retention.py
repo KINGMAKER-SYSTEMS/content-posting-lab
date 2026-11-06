@@ -244,6 +244,24 @@ def test_one_run_is_bounded_newest_first_plus_one_old_slot(tmp_path):
     assert sorted(path.name for path in (root / "acct:page" / "dossier-1").iterdir()) == ["cpl-1", "cpl-2"]
 
 
+def test_a_probe_pass_respects_the_job_limit_and_finishes_the_selected_job(tmp_path):
+    root = tmp_path / "gen"
+    other_sha = "c" * 64
+    older_dir, older = make_job(root, name="older", age=timedelta(hours=8),
+                               clips=((other_sha, "clip.mp4"),), extra_files=())
+    newer_dir, newer = make_job(root, name="newer", age=timedelta(hours=3),
+                               clips=((A, "first.mp4"), (B, "second.mp4")), extra_files=())
+    worker, asked = sweeper(True)
+
+    summary = worker.sweep({"jobs": {"older": older, "newer": newer}}, root, NOW, job_limit=1)
+
+    assert asked == [(A, 100), (B, 100)]
+    assert summary["clip_files"] == 4
+    assert summary["unconfirmed_bytes_kept"] == 101
+    assert not newer_dir.exists()
+    assert files(older_dir) == ["clip.mp4", "thumbnails/0000.jpg"]
+
+
 def test_a_failed_delete_is_counted_and_the_rest_continue(tmp_path, monkeypatch):
     root = tmp_path / "gen"
     first, first_job = make_job(root, name="a", extra_files=(), age=timedelta(hours=9))
