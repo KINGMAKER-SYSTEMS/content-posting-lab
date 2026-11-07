@@ -49,6 +49,7 @@ from routers.upload import router as upload_router
 from routers.video import router as video_router
 from routers.agenticnews import router as agenticnews_router
 import services.agenticnews as agenticnews_db
+from services.post_render import source_duration_repair_enabled
 
 load_dotenv()
 
@@ -423,6 +424,9 @@ async def health_check():
         "status": "ok" if ffmpeg_ok and ytdlp_ok else "degraded",
         "ffmpeg": ffmpeg_ok,
         "ytdlp": ytdlp_ok,
+        "capabilities": {
+            "source_duration_repair_v1": source_duration_repair_enabled(),
+        },
         "providers": providers,
         # This route is deliberately unauthenticated. Keep only the integrity
         # signal public; exact spend and configured limits are omitted from this

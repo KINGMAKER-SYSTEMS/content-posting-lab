@@ -11,7 +11,9 @@ from fastapi import APIRouter, Body, Header, HTTPException
 from fastapi.responses import FileResponse
 
 from routers.control_plane_recipes import require_control_plane_bearer
+from services.post_render import source_duration_repair_enabled
 from services.post_render_jobs import PostRenderJobs, RenderJobError, RenderJobSubmission
+from services.post_render_timed import TimedPostRenderRequest
 from services.slot_source_regeneration import SourceAckRequest, SourceRegenerationRequest
 
 router = APIRouter()
@@ -129,6 +131,12 @@ def _http_error(error: RenderJobError):
 def submit(body: RenderJobSubmission, authorization: str | None = Header(default=None),
            idempotency_key: str = Header(default=""), x_rt_page_id: str | None = Header(default=None)):
     _authorize(authorization, x_rt_page_id, expected=body.request.page_id)
+    repair = body.request.source_duration_repair
+    if repair is not None:
+        if isinstance(body.request, TimedPostRenderRequest):
+            raise HTTPException(422, "TIMED_REPAIR_UNSUPPORTED")
+        if not source_duration_repair_enabled():
+            raise HTTPException(422, "SOURCE_DURATION_REPAIR_UNSUPPORTED")
     try:
         return service().enqueue(body, idempotency_key)
     except RenderJobError as error:
