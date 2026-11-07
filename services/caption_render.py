@@ -9,12 +9,13 @@ fonts, and turns the effective style into a transparent 1080x1920 PNG.
 from __future__ import annotations
 
 import base64
+import functools
 import hashlib
 import io
 import json
-import logging
 import math
 import re
+import struct
 import unicodedata
 from pathlib import Path
 from typing import Callable, Literal
@@ -61,16 +62,6 @@ _BACKGROUNDS_NEEDING_COLOR = ("box", "highlight")
 # Where an inverted caption always sits (see CaptionStyle.center_inverted_caption).
 _INVERTED_PLACEMENT = {"position": "middle", "offset_pct": 0}
 
-# A guaranteed noncharacter: no conforming cmap maps it, so Pillow draws it as
-# the font's .notdef box. Its mask is the reference "missing glyph" for the
-# unsupported-character detection below.
-_NOTDEF_PROBE = "\U0010ffff"
-# Emoji joiners and modifiers that only make sense attached to an emoji. Once
-# the emoji they modified is dropped they are orphans, so they are dropped too.
-_EMOJI_JOINER_VS_SKINTONE = frozenset(
-    "\u200d\ufe0e\ufe0f" + "".join(chr(codepoint) for codepoint in range(0x1F3FB, 0x1F400))
-)
-_LOGGER = logging.getLogger(__name__)
 # Fit inside the visible picture (owner rule, 2026-10-04). The style's size is
 # the maximum: a caption that stays inside the picture is drawn exactly as
 # styled, however big, and one that would leave it only shrinks. The picture is
@@ -185,8 +176,9 @@ def caption_style_contract() -> dict:
     (contracts/caption-style.v1.json) lets the Worker check in its own CI that
     every caption style it can send is one this renderer takes. Not in it:
     render-time refusals that depend on the installed fonts and the rendered
-    size (CAPTION_FONT_UNAVAILABLE, italic fonts, and CAPTION_OUT_OF_FRAME for a
-    caption that cannot fit the visible picture even at 12 pt), and the request rule that line_breaks must spell
+    size (CAPTION_FONT_UNAVAILABLE, italic fonts, CAPTION_GLYPH_MISSING,
+    CAPTION_NO_TEXT, and CAPTION_OUT_OF_FRAME for a caption that cannot fit the
+    visible picture even at 12 pt), and the request rule that line_breaks must spell
     the caption. tests/test_caption_transforms.py fails when the copy drifts;
     regenerate it with ``python scripts/export_caption_style_contract.py``.
     """
@@ -572,75 +564,82 @@ def _load_font(font_path: Path, size_px: int) -> ImageFont.FreeTypeFont:
         ) from error
 
 
-def _missing_glyph_mask(font: ImageFont.FreeTypeFont) -> bytes:
-    """The bytes Pillow draws for a codepoint absent from the font's cmap (.notdef)."""
-    return bytes(font.getmask(_NOTDEF_PROBE))
+@functools.lru_cache(maxsize=32)
+def _font_codepoints(font_bytes: bytes) -> frozenset[int]:
+    """Read real glyph coverage from the installed font's cmap, not Pillow's layout."""
+
+    def u16(offset: int) -> int:
+        return struct.unpack_from(">H", font_bytes, offset)[0]
+
+    def u32(offset: int) -> int:
+        return struct.unpack_from(">I", font_bytes, offset)[0]
+
+    try:
+        table = None
+        for index in range(u16(4)):
+            record = 12 + 16 * index
+            if font_bytes[record:record + 4] == b"cmap":
+                table = u32(record + 8)
+        if table is None:
+            raise ValueError("missing cmap")
+        covered: set[int] = set()
+        for index in range(u16(table + 2)):
+            record = table + 4 + 8 * index
+            platform, encoding, offset = u16(record), u16(record + 2), u32(record + 4)
+            if not (platform == 0 or (platform == 3 and encoding in (1, 10))):
+                continue
+            subtable = table + offset
+            fmt = u16(subtable)
+            if fmt == 4:
+                segments = u16(subtable + 6) // 2
+                ends = subtable + 14
+                starts = subtable + 16 + 2 * segments
+                deltas = starts + 2 * segments
+                ranges = starts + 4 * segments
+                for segment in range(segments):
+                    end = u16(ends + 2 * segment)
+                    start = u16(starts + 2 * segment)
+                    delta = u16(deltas + 2 * segment)
+                    range_offset = u16(ranges + 2 * segment)
+                    for codepoint in range(start, end + 1):
+                        if range_offset == 0:
+                            glyph = (codepoint + delta) & 0xFFFF
+                        else:
+                            glyph = u16(ranges + 2 * segment + range_offset + 2 * (codepoint - start))
+                            glyph = (glyph + delta) & 0xFFFF if glyph else 0
+                        if glyph:
+                            covered.add(codepoint)
+            elif fmt == 12:
+                for group in range(u32(subtable + 12)):
+                    start = u32(subtable + 16 + 12 * group)
+                    end = u32(subtable + 20 + 12 * group)
+                    first_glyph = u32(subtable + 24 + 12 * group)
+                    covered.update(
+                        codepoint for codepoint in range(start, end + 1)
+                        if first_glyph + codepoint - start
+                    )
+        if not covered:
+            raise ValueError("empty cmap")
+        return frozenset(covered)
+    except (ValueError, struct.error) as error:
+        raise CaptionRenderError("CAPTION_FONT_INVALID", "installed font's character table could not be read") from error
 
 
-def _is_whitespace(char: str) -> bool:
-    """Whitespace is never "missing": it keeps the base renderer's handling."""
-    return (
-        char.isspace()
-        or char in "\t\n"
-        or unicodedata.category(char) in ("Zs", "Zl", "Zp")
-    )
+def _require_drawable_text(font_bytes: bytes, lines: list[str]) -> None:
+    """Refuse the whole caption if the chosen font cannot draw every character."""
 
-
-def _is_missing_glyph(
-    font: ImageFont.FreeTypeFont,
-    char: str,
-    notdef_mask: bytes,
-    cache: dict[str, bool],
-) -> bool:
-    """True when ``char`` is drawn as .notdef by ``font``.
-
-    Pillow's ``getmask`` renders a codepoint the font lacks as the same box it
-    renders for any other missing codepoint, so equality with the reference
-    .notdef mask decides support. A supported zero-ink character (space,
-    U+00A0, U+200B, U+FEFF) has an empty mask, which never equals the box.
-    """
-    if char not in cache:
-        cache[char] = not _is_whitespace(char) and bytes(font.getmask(char)) == notdef_mask
-    return cache[char]
-
-
-def _strip_unsupported_lines(
-    font: ImageFont.FreeTypeFont,
-    lines: list[str],
-) -> tuple[list[str], list[int]]:
-    """Drop glyphs the font cannot draw, then orphan joiners/variation selectors.
-
-    Lines with no unsupported characters are returned byte-for-byte unchanged,
-    so captions without emoji keep their exact text, layout and PNG bytes.
-    Whitespace of any kind is never treated as unsupported. A line that only
-    becomes empty because of the strip is dropped, so it leaves no blank row.
-    Dropped codepoints are returned sorted and deduplicated.
-    """
-
-    notdef_mask = _missing_glyph_mask(font)
-    cache: dict[str, bool] = {}
-    stripped_lines: list[str] = []
-    dropped: set[int] = set()
-    for line in lines:
-        missing = {char for char in line if _is_missing_glyph(font, char, notdef_mask, cache)}
-        if not missing:
-            stripped_lines.append(line)
-            continue
-        kept: list[str] = []
-        for char in line:
-            if char in missing:
-                dropped.add(ord(char))
-            elif char in _EMOJI_JOINER_VS_SKINTONE:
-                # The emoji this joiner/selector/skin-tone modified is gone.
-                dropped.add(ord(char))
-            else:
-                kept.append(char)
-        # Collapse the doubled spaces a dropped glyph left behind and trim the
-        # line ends, exactly as the burned text should read.
-        cleaned = re.sub(r" {2,}", " ", "".join(kept)).strip()
-        if cleaned:
-            stripped_lines.append(cleaned)
-    return stripped_lines, sorted(dropped)
+    covered = _font_codepoints(font_bytes)
+    missing = sorted({
+        ord(char) for line in lines for char in line
+        if not char.isspace() and ord(char) not in covered
+    })
+    if missing:
+        shown = ", ".join(f"U+{codepoint:04X}" for codepoint in missing[:8])
+        if len(missing) > 8:
+            shown += f" and {len(missing) - 8} more"
+        raise CaptionRenderError("CAPTION_GLYPH_MISSING", f"caption has characters the font cannot draw: {shown}")
+    if not any(unicodedata.category(char)[0] in "LN" for line in lines for char in line):
+        raise CaptionRenderError("CAPTION_NO_TEXT", "caption has no letter or digit the font can draw")
 
 
 def _line_height_px(font_size_px: int) -> int:
@@ -828,27 +827,9 @@ def render_caption_overlay(
     if not lines:
         raise CaptionRenderError("CAPTION_EMPTY", "caption produced no renderable lines")
 
-    # Drop characters the resolved font cannot draw BEFORE wrapping and any
-    # measurement, so fit, wrap and line widths all use exactly the text that
-    # will be drawn. Explicit newlines (and any blank lines) are preserved.
-    original_lines = lines
-    lines, dropped_glyphs = _strip_unsupported_lines(fonts[font_size_px], lines)
-    if dropped_glyphs:
-        _LOGGER.info(
-            "caption render dropped %d unsupported glyph(s): %s",
-            len(dropped_glyphs),
-            ",".join(f"U+{codepoint:04X}" for codepoint in dropped_glyphs),
-        )
-    if not any(line.strip() for line in lines):
-        # Nothing drawable is left: render exactly as the base renderer does.
-        _LOGGER.warning(
-            "caption render has no drawable text after dropping %d unsupported glyph(s); "
-            "drawing the original caption unchanged",
-            len(dropped_glyphs),
-        )
-        lines = original_lines
     if style.line_breaks is None:
         lines = _wrap_preserving_explicit_newlines("\n".join(lines), style.line_balance)
+    _require_drawable_text(font_bytes, lines)
 
     max_width_px = round(FRAME_WIDTH * (_MAX_WIDTH_PCT / 100))
     horizontal_margin_px = (FRAME_WIDTH - max_width_px) // 2
