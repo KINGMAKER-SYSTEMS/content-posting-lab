@@ -134,9 +134,15 @@ def submit(body: RenderJobSubmission, authorization: str | None = Header(default
     repair = body.request.source_duration_repair
     if repair is not None:
         if isinstance(body.request, TimedPostRenderRequest):
-            raise HTTPException(422, "TIMED_REPAIR_UNSUPPORTED")
+            code = "TIMED_REPAIR_UNSUPPORTED"
+            logging.getLogger("content_lab.post_render_jobs").warning(
+                "post render submit refused page=%s code=%s", body.request.page_id, code)
+            raise HTTPException(422, code)
         if not source_duration_repair_enabled():
-            raise HTTPException(422, "SOURCE_DURATION_REPAIR_UNSUPPORTED")
+            code = "SOURCE_DURATION_REPAIR_UNSUPPORTED"
+            logging.getLogger("content_lab.post_render_jobs").warning(
+                "post render submit refused page=%s code=%s", body.request.page_id, code)
+            raise HTTPException(422, code)
     try:
         return service().enqueue(body, idempotency_key)
     except RenderJobError as error:

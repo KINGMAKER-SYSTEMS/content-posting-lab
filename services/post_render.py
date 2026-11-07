@@ -186,7 +186,7 @@ SOURCE_DURATION_REPAIR_ENV = "CONTENT_LAB_SOURCE_DURATION_REPAIR"
 
 def source_duration_repair_enabled() -> bool:
     """Whether the Lab admits source-duration-repair commands (default off)."""
-    return os.getenv(SOURCE_DURATION_REPAIR_ENV, "").strip().lower() == "on"
+    return os.getenv(SOURCE_DURATION_REPAIR_ENV) == "on"
 
 
 def _unique_object(pairs):

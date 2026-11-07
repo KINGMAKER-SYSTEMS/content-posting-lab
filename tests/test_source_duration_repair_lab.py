@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import shutil
 import subprocess
 from pathlib import Path
@@ -16,10 +17,11 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
+import app as app_module
 from routers import post_renders as routes
 from services import post_render as v1
 from services import post_render_jobs as jobs
-from services.post_render import PostRenderRequest, sha256
+from services.post_render import PostRenderRequest, sha256, source_duration_repair_enabled
 from services.post_render_timed import TimedPostRenderRequest
 from services.source_duration_repair import (
     SOURCE_DURATION_REPAIR_KEYS,
@@ -475,3 +477,60 @@ def test_red_proof_flag_off_request_carrying_repair_refused_at_route(monkeypatch
     assert response.status_code == 422
     assert response.json()["detail"] == "SOURCE_DURATION_REPAIR_UNSUPPORTED"
     assert seen == []
+
+
+# --------------------------------------------------------------------------- #
+# F1-F3 follow-up: exact-match flag, L1 health capability, predispatch log
+# --------------------------------------------------------------------------- #
+
+@pytest.mark.parametrize("value", ["1", "ON", " on ", "on\n"])
+def test_flag_requires_exact_on(value, monkeypatch):
+    monkeypatch.setenv(ENV, value)
+    assert source_duration_repair_enabled() is False
+
+
+def test_health_capability_flag_off_and_on(monkeypatch):
+    monkeypatch.setattr(app_module, "_schedule_tool_refresh", lambda: None)
+    monkeypatch.delenv(ENV, raising=False)
+    client = TestClient(app_module.app)
+    response = client.get("/api/health")
+    assert response.status_code == 200
+    assert response.json()["capabilities"]["source_duration_repair_v1"] is False
+    monkeypatch.setenv(ENV, "on")
+    response = client.get("/api/health")
+    assert response.json()["capabilities"]["source_duration_repair_v1"] is True
+
+
+@pytest.mark.parametrize("timed,code", [
+    (False, "SOURCE_DURATION_REPAIR_UNSUPPORTED"),
+    (True, "TIMED_REPAIR_UNSUPPORTED"),
+])
+def test_predispatch_422_logs_typed_code(timed, code, monkeypatch, caplog):
+    if timed:
+        monkeypatch.setenv(ENV, "on")
+        body = _timed_submission(repair=good_command()).model_dump(by_alias=True)
+    else:
+        monkeypatch.delenv(ENV, raising=False)
+        body = _submission(v1_request(source_duration_repair=good_command())).model_dump(by_alias=True)
+
+    seen = []
+
+    class Spy:
+        def enqueue(self, body, key):
+            seen.append(key)
+
+    monkeypatch.setattr(routes, "service", lambda: Spy())
+    app = FastAPI()
+    app.include_router(routes.router, prefix="/api/control-plane")
+    client = TestClient(app)
+    headers = {"Authorization": "Bearer only-this-test-service-token",
+               "X-RT-Page-Id": body["request"]["page_id"],
+               "Idempotency-Key": f"lab-sdr-f2-log-{code}"}
+    monkeypatch.setenv("CONTROL_PLANE_TOKEN", "only-this-test-service-token")
+    caplog.set_level(logging.WARNING, logger="content_lab.post_render_jobs")
+    response = client.post("/api/control-plane/v1/post-renders", json=body, headers=headers)
+    assert response.status_code == 422
+    assert response.json()["detail"] == code
+    assert seen == []
+    messages = [record.getMessage() for record in caplog.records]
+    assert f"post render submit refused page={body['request']['page_id']} code={code}" in messages
