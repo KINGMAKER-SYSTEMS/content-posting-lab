@@ -121,7 +121,11 @@ from services.control_plane_sources import (
     source_window_exclusions,
     SOURCE_SPEED_DURATION_UNSUPPORTED,
 )
-from services.control_plane_image_video import IMAGE_VIDEO_FORMATS, image_video_source_for_wire
+from services.control_plane_image_video import (
+    IMAGE_VIDEO_FORMATS,
+    image_video_plan_signature,
+    image_video_source_for_wire,
+)
 from services.control_plane_plan_reasons import (
     INSUFFICIENT_INVENTORY,
     LIBRARY_LOAD_FAILED,
@@ -650,9 +654,14 @@ def _capabilities_job_views(
     builds them, each carrying the archiveIndex (see
     _snapshot_archive_index); factored out so a test calls the same code."""
     archive_index = _snapshot_archive_index(jobs_snapshot)
+    page_jobs = {
+        "jobs": jobs_snapshot.by_page.get(page_id, {}),
+        compaction.ARCHIVE_INDEX_KEY: archive_index,
+    }
+    if _PHOTO_RESERVATIONS_KEY in jobs_snapshot.data:
+        page_jobs[_PHOTO_RESERVATIONS_KEY] = jobs_snapshot.data[_PHOTO_RESERVATIONS_KEY]
     return (
-        {"jobs": jobs_snapshot.by_page.get(page_id, {}),
-         compaction.ARCHIVE_INDEX_KEY: archive_index},
+        page_jobs,
         {"jobs": jobs_snapshot.by_source_kind.get("dossier_source_dna", {}),
          compaction.ARCHIVE_INDEX_KEY: archive_index},
     )
@@ -917,9 +926,12 @@ def capabilities(
                     _zero_plan_recipe(publication, MATERIAL_PROFILE_MISSING)
                 )
                 continue
-            unavailable = _slideshow_unavailable_signatures(
-                page_jobs_view, slideshow_recipe, page_id,
-            )
+            try:
+                unavailable = _slideshow_unavailable_signatures(
+                    page_jobs_view, slideshow_recipe, page_id,
+                )
+            except ValueError as error:
+                raise HTTPException(status_code=503, detail="photo reservation history unavailable") from error
             reserved_keys, opaque_media = _generic_clean_video_reserved_media(
                 page_jobs_view, slideshow_recipe, page_id,
             )
@@ -1379,6 +1391,8 @@ JOB_FIELDS = {
     "quantity", "constraints", "sourceIsolation", "policyHash",
     "masterPages", "masterPagesHash",
 }
+_PHOTO_RESERVATIONS_KEY = "managedPhotoReservations"
+_PHOTO_RESERVATION_SCHEMA = "content-lab.photo-plan-reservation.v1"
 SOURCE_IMPORT_FIELDS = {
     "schema", "pageId", "format", "sourceUrl", "masterPages",
     "masterPagesHash",
@@ -2174,6 +2188,12 @@ def _slideshow_unavailable_signatures(
 ) -> set[str]:
     """Reserve every slideshow plan that may already have crossed the API."""
     signatures: set[str] = set()
+    photo_recipe = getattr(recipe, "format_slug", None) in IMAGE_VIDEO_FORMATS
+    if photo_recipe:
+        for record in _photo_reservations(store).values():
+            receipt = _photo_reservation_receipt(record)
+            if receipt["pageId"] == page_id and receipt["sourceLibraryId"] == recipe.library_id:
+                signatures.add(receipt["photoPlan"]["signature"])
     for job in store.get("jobs", {}).values():
         if (
             not isinstance(job, dict)
@@ -2188,13 +2208,54 @@ def _slideshow_unavailable_signatures(
                 signatures.add(signature)
     # Archived slideshow plans keep their permanent reservations.
     for entry in (store.get(compaction.ARCHIVE_INDEX_KEY, {}) or {}).get("slideshow", []):
+        if photo_recipe and (
+            not isinstance(entry, dict)
+            or not isinstance(entry.get("pageId"), str) or not entry["pageId"]
+            or not isinstance(entry.get("sourceLibraryId"), str) or not entry["sourceLibraryId"]
+        ):
+            raise ValueError("slideshow_archive_scope_invalid")
         if not isinstance(entry, dict):
             continue
+        signature = entry.get("signature")
+        if photo_recipe and (
+            not isinstance(signature, str)
+            or not re.fullmatch(r"[0-9a-f]{64}", signature)
+        ):
+            raise ValueError("slideshow_archive_signature_invalid")
         if entry.get("pageId") == page_id and entry.get("sourceLibraryId") == recipe.library_id:
-            signature = entry.get("signature")
             if isinstance(signature, str) and re.fullmatch(r"[0-9a-f]{64}", signature):
                 signatures.add(signature)
     return signatures
+
+
+def _photo_reservations(store: dict[str, Any]) -> dict[str, Any]:
+    reservations = store.get(_PHOTO_RESERVATIONS_KEY, {})
+    if not isinstance(reservations, dict):
+        raise HTTPException(status_code=503, detail="photo reservation history unavailable")
+    return reservations
+
+
+def _photo_reservation_receipt(record: Any) -> dict[str, Any]:
+    receipt = record.get("receipt") if isinstance(record, dict) else None
+    plan = receipt.get("photoPlan") if isinstance(receipt, dict) else None
+    signature = plan.get("signature") if isinstance(plan, dict) else None
+    if (
+        not isinstance(signature, str) or not re.fullmatch(r"[0-9a-f]{64}", signature)
+        or receipt.get("schema") != _PHOTO_RESERVATION_SCHEMA
+        or not all(isinstance(receipt.get(key), str) and receipt[key] for key in (
+            "reservationId", "pageId", "recipeId", "recipeVersion",
+            "recipeSpecHash", "masterPagesHash", "sourceLibraryId", "librarySnapshotHash",
+        ))
+        or plan.get("pageId") != receipt["pageId"]
+        or plan.get("libraryId") != receipt["sourceLibraryId"]
+    ):
+        raise HTTPException(status_code=503, detail="photo reservation history unavailable")
+    try:
+        if image_video_plan_signature(plan) != signature:
+            raise ValueError("photo reservation signature mismatch")
+    except (KeyError, TypeError, ValueError) as error:
+        raise HTTPException(status_code=503, detail="photo reservation history unavailable") from error
+    return receipt
 
 
 def _generic_clean_video_reserved_media(
@@ -6281,9 +6342,12 @@ async def _create_job_impl(
             }
             start_source = True
         elif slideshow_recipe is not None:
-            unavailable_signatures = _slideshow_unavailable_signatures(
-                store, slideshow_recipe, page_id,
-            )
+            try:
+                unavailable_signatures = _slideshow_unavailable_signatures(
+                    store, slideshow_recipe, page_id,
+                )
+            except ValueError as error:
+                raise HTTPException(status_code=503, detail="photo reservation history unavailable") from error
             reserved_keys, opaque_media = _generic_clean_video_reserved_media(
                 store, slideshow_recipe, page_id,
             )
@@ -6458,6 +6522,141 @@ def _job_request_hash(
     return "sha256:" + hashlib.sha256(json.dumps(
         canonical, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
     ).encode()).hexdigest()
+
+
+def _replay_photo_reservation(
+    reservations: dict[str, Any], key: str, request_hash: str,
+) -> dict[str, Any] | None:
+    if key not in reservations:
+        return None
+    record = reservations[key]
+    receipt = _photo_reservation_receipt(record)
+    if record.get("requestHash") != request_hash:
+        raise HTTPException(status_code=409, detail="idempotency_key_reused_with_different_request")
+    return receipt
+
+
+@router.post("/v1/photo-plan-reservations")
+def reserve_photo_plan(
+    response: Response,
+    x_rt_page_id: str | None = Header(default=None),
+    x_rt_lane: str | None = Header(default=None),
+    idempotency_key: str | None = Header(default=None),
+    authorization: str | None = Header(default=None),
+    body: dict[str, Any] = Body(default=None),
+) -> dict[str, Any]:
+    """Reserve one exact managed photo plan for an authenticated remote renderer."""
+    require_control_plane_bearer(authorization)
+    if (
+        not x_rt_page_id or not PAGE_ID_RE.fullmatch(x_rt_page_id)
+        or x_rt_lane != CONTROL_PLANE_LANE
+        or not idempotency_key or not IDEMPOTENCY_KEY_RE.fullmatch(idempotency_key)
+        or not isinstance(body, dict) or set(body) - JOB_FIELDS
+        or len(json.dumps(body)) > MAX_GENERATION_JOB_BODY_BYTES
+    ):
+        raise HTTPException(status_code=400, detail="invalid photo reservation request")
+    identity = _normalize_job_identity(body)
+    if (
+        identity["pageId"] != x_rt_page_id or identity["lane"] != x_rt_lane
+        or type(body.get("quantity")) is not int or body["quantity"] != 1
+        or body.get("constraints") not in (None, {})
+        or body.get("sourceIsolation") != {"partitionKey": f"page:{x_rt_page_id}"}
+        or not identity["recipeVersion"] or not identity["policyHash"]
+    ):
+        raise HTTPException(status_code=400, detail="invalid photo reservation scope")
+    recipe_id, engine, version = (
+        identity["lockedRecipeId"], identity["engine"], identity["recipeVersion"],
+    )
+    if recipe_id not in {f"{slug}:master" for slug in IMAGE_VIDEO_FORMATS}:
+        raise HTTPException(status_code=409, detail="managed_photo_recipe_required")
+    master_pages = exact_intent(body.get("masterPages"), body.get("masterPagesHash"),
+                                expected_page_id=x_rt_page_id)
+    if master_pages is None or master_pages["contentEngine"] != engine:
+        raise HTTPException(status_code=409, detail="job Master Pages intent is missing, stale, or engine-mismatched")
+
+    request_hash = _job_request_hash(
+        body, page_id=x_rt_page_id, lane=x_rt_lane, master_pages=master_pages,
+    )
+    key = hashlib.sha256(idempotency_key.encode()).hexdigest()
+    response.headers["Cache-Control"] = "private, no-store"
+    try:
+        replay = _replay_photo_reservation(_photo_reservations(_read_jobs_snapshot()), key, request_hash)
+    except _JobsDecodeFailed as error:
+        raise HTTPException(status_code=503, detail="job store temporarily unavailable") from error
+    if replay is not None:
+        return replay
+
+    intent_hash = body["masterPagesHash"]
+    if _current_master_pages_intent(x_rt_page_id, master_pages) != (master_pages, intent_hash):
+        raise HTTPException(status_code=409, detail="job Master Pages intent does not match the current roster")
+    binding = load_registered_recipe_binding(x_rt_page_id, recipe_id, engine, version, master_pages, intent_hash)
+    if binding is None or not publication_matches_master_pages(binding[1], master_pages, intent_hash):
+        raise HTTPException(status_code=409, detail="hash-bound dossier publication is required")
+    _, publication = binding
+    recipe = resolve_slideshow_recipe(publication, require_runtime=False)
+    if recipe is None or recipe.format_slug not in IMAGE_VIDEO_FORMATS:
+        raise HTTPException(status_code=409, detail="recipe_executor_unavailable")
+    try:
+        library = load_recipe_library(recipe)
+    except SyzygyError as error:
+        raise HTTPException(status_code=409, detail="recipe_executor_unavailable") from error
+
+    path = _jobs_path()
+    with lock_for(path):
+        try:
+            # Read fresh inside the same lock as the legacy slideshow writer.
+            store = _decode_jobs_snapshot(0).data
+        except _JobsDecodeFailed as error:
+            raise HTTPException(status_code=503, detail="job store temporarily unavailable") from error
+        if not isinstance(store.get("jobs"), dict) or not isinstance(store.get("byIdempotency"), dict):
+            raise HTTPException(status_code=503, detail="job store temporarily unavailable")
+        reservations = _photo_reservations(store)
+        replay = _replay_photo_reservation(reservations, key, request_hash)
+        if replay is not None:
+            return replay
+        archive = store.get(compaction.ARCHIVE_INDEX_KEY)
+        if (
+            compaction.ARCHIVE_INDEX_KEY in store and (
+                not isinstance(archive, dict) or archive.get("version") != compaction.ARCHIVE_INDEX_VERSION
+                or not isinstance(archive.get("slideshow"), list)
+            )
+            or compaction.ARCHIVE_INDEX_KEY not in store
+            and any(entry.is_file() for entry in path.parent.glob(f"{path.name}.archive-*.jsonl"))
+        ):
+            raise HTTPException(status_code=503, detail="photo reservation history unavailable")
+        try:
+            unavailable = _slideshow_unavailable_signatures(store, recipe, x_rt_page_id)
+        except ValueError as error:
+            raise HTTPException(status_code=503, detail="photo reservation history unavailable") from error
+        reservation_id = f"photo-{key[:32]}"
+        plans = plan_slideshows(recipe, library, 1, unavailable, reservation_id)
+        if not plans:
+            reason = explain_empty_slideshow_plan(recipe, library, 1, unavailable)
+            raise HTTPException(
+                status_code=409, detail="slideshow_inventory_exhausted",
+                headers={"X-RT-Zero-Reason": reason},
+            )
+        plan = plans[0]
+        receipt = {
+            "schema": _PHOTO_RESERVATION_SCHEMA,
+            "reservationId": reservation_id,
+            "pageId": x_rt_page_id,
+            "recipeId": recipe_id,
+            "recipeVersion": version,
+            "recipeSpecHash": publication["recipeSpecHash"],
+            "masterPagesHash": intent_hash,
+            "sourceLibraryId": recipe.library_id,
+            "librarySnapshotHash": plan["librarySnapshotHash"],
+            "photoPlan": plan["photoPlan"],
+        }
+        _save_jobs({
+            **store,
+            _PHOTO_RESERVATIONS_KEY: {
+                **reservations,
+                key: {"requestHash": request_hash, "receipt": receipt},
+            },
+        })
+    return receipt
 
 
 @router.post("/v1/job-receipts/by-idempotency-key")
