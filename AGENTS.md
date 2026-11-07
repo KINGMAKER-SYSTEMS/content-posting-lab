@@ -235,6 +235,11 @@
   contract module so the router and the service read one definition.
   The shared external-owner constant also governs the exact ShipStream
   null-Notion-id manifest exception.
+- `POST /api/control-plane/v1/jobs` checks a validated slideshow request's
+  durable idempotency key before reading its live library. An identical retry
+  returns the existing job even during a library outage; a changed request
+  still conflicts. The same locked replay and runtime-recovery rules run again
+  after the library read so concurrent creators cannot reserve twice.
 - `coffee-slideshow` is the optional Syzygy replacement for Coffee AI loops.
   It retains the `Coffee` niche, uses `sourced_slideshow` and the page's own
   `coffee/<handle-slug>` library, and composes five photos with `clean-slideshow`.
@@ -307,6 +312,17 @@
   signature. Signature-only legacy archives cannot prove disjoint media and
   hold generic replenishment until reconciled; do not infer disjointness from
   changed sorted offsets or a new signature alone.
+- `POST /api/control-plane/v1/photo-plan-reservations` reserves one PenPal or
+  Twin plan for a direct renderer. It requires the Control Plane bearer,
+  page/lane headers, a registered recipe and the exact Master Pages intent.
+  The existing job-store lock serializes both routes against live, archived,
+  and direct holds. The receipt carries the exact ordered photo plan, library
+  snapshot hash, and page and recipe identities. The same request and key
+  replay the stored receipt without reading the library again. The hold
+  creates no render job or artifact and survives compaction. Holds remain
+  reserved indefinitely, including when the remote result is ambiguous.
+  Malformed archived slideshow evidence refuses new direct or ordinary photo
+  plans and capacity reads instead of treating a possibly used plan as available.
 
 - `services/abn_factory.py` kinetic-template parameters remain inert JSON inside
   the HTML script. Escape HTML script delimiters while preserving decoded values.
@@ -853,6 +869,9 @@
   unavailable providers, exact-byte binding, and cached-decision behavior.
 
 - Run `pytest -q tests/test_control_plane_capability_auth.py` for the capability Bearer boundary and unchanged authorized response.
+- Run `pytest -q tests/test_managed_photo_reservations.py tests/test_control_plane_image_video_execution.py tests/test_job_store_compaction.py`
+  for authenticated photo holds, exact replay, concurrent legacy planning,
+  exhaustion, and archived reservations.
 - Run `pytest -q tests/test_pool_bootstrap_capabilities.py tests/test_pool_supplied_pages.py`
   for pool slideshow discovery, registered recipe priority, the real HTTP
   registry and job snapshot path, and unlisted page capacity.

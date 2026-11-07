@@ -15,6 +15,7 @@ import routers.control_plane_recipes as recipes
 import services.dossier_ingredients as ingredients_module
 from services.content_engine_registry import resolve_material_profile
 from services.control_plane_slideshows import (
+    SyzygyError,
     SyzygyLibrary,
     SyzygyObject,
     library_subject,
@@ -362,6 +363,41 @@ def test_capability_and_jobs_bind_master_hash_and_reserve_unique_plans(lab):
     second_signatures = {plan["signature"] for plan in second_job["slideshowPlan"]}
     assert first_signatures.isdisjoint(second_signatures)
     assert len(started) == 2
+
+
+def test_slideshow_job_replay_survives_library_outage(lab, monkeypatch):
+    client, _, started, _, payload = lab
+    key = "slideshow-replay-library-outage"
+    first = client.post(
+        "/api/control-plane/v1/jobs", json=job_body(1, payload),
+        headers=headers(key),
+    )
+    assert first.status_code == 200, first.json()
+
+    def unavailable(*_args, **_kwargs):
+        raise SyzygyError("library temporarily unavailable")
+
+    monkeypatch.setattr(cp, "load_recipe_library", unavailable)
+    replay = client.post(
+        "/api/control-plane/v1/jobs", json=job_body(1, payload),
+        headers=headers(key),
+    )
+    assert replay.status_code == 200, replay.json()
+    assert replay.json() == first.json()
+    changed = client.post(
+        "/api/control-plane/v1/jobs", json=job_body(2, payload),
+        headers=headers(key),
+    )
+    assert changed.status_code == 409
+    assert changed.json()["detail"] == "idempotency_key_reused_with_different_request"
+    fresh = client.post(
+        "/api/control-plane/v1/jobs", json=job_body(1, payload),
+        headers=headers("slideshow-fresh-library-outage"),
+    )
+    assert fresh.status_code == 409
+    assert fresh.json()["detail"] == "recipe_executor_unavailable"
+    assert len(cp._load_jobs()["jobs"]) == 1
+    assert started == [first.json()["jobId"]]
 
 
 def test_slideshow_admission_returns_409_when_fresh_inventory_is_exhausted(lab):
