@@ -1114,3 +1114,41 @@ def test_valid_sourcecuts_list_keeps_legacy_per_entry_filtering():
     assert len(entries['sourceDnaCuts']) == 2
     assert [row['cutIndex'] for row in entries['sourceDnaCuts']] == [4, 5]
     assert entries['sourceDnaCuts'][1]['slotId'] == 'slot'
+
+
+@pytest.mark.parametrize('clips', [None, 7, True, {}, 'opaque'],
+                         ids=['null', 'integer', 'boolean', 'dict', 'string'])
+def test_completed_nonlist_clips_hold_row_and_advance_cursor(tmp_path, clips, caplog):
+    old = _old()
+    store = _empty()
+    store['jobs'] = {
+        'bad': {'jobId': 'bad', 'pageId': 'acct:p', 'sourceKind': 'generated',
+                'status': 'completed', 'createdAt': old, 'completedAt': old,
+                'clips': clips},
+        'good': {'jobId': 'good', 'pageId': 'acct:p', 'status': 'failed', 'createdAt': old},
+    }
+    store['byIdempotency'] = {'bad-key': 'bad', 'good-key': 'good'}
+    path = tmp_path / 'jobs.json'
+    atomic_save(path, store)
+    stored = path.read_bytes()
+    snapshot = atomic_load(path, default={})
+    original = json.loads(json.dumps(snapshot))
+    with caplog.at_level(logging.WARNING, logger='job_store_compaction'):
+        first, archived = c.compact_job_store(snapshot, _now(), batch_size=1)
+    assert archived == [] and first['jobs']['bad'] == original['jobs']['bad']
+    assert first[c.COMPACTION_SCAN_NEXT_KEY] == 'good'
+    assert 'completed_clips_not_a_list' in caplog.text
+    second, archived = c.compact_job_store(first, _now(), batch_size=1)
+    assert [row['jobId'] for row in archived] == ['good']
+    assert set(second['jobs']) == {'bad'}
+    assert second[c.COMPACTION_SCAN_NEXT_KEY] == 'bad'
+    assert second['byIdempotency']['bad-key'] == 'bad'
+    assert snapshot == original and path.read_bytes() == stored
+
+
+
+
+def test_completed_clip_list_preserves_legacy_per_entry_sha_filtering():
+    job = {'sourceKind': 'generated', 'status': 'completed', 'pageId': 'acct:p',
+           'clips': [None, 7, False, 'legacy', {}, {'sha256': 'invalid'}, {'sha256': SHA}]}
+    assert c.extract_index_entries(job)['usedClipSha256'] == [('acct:p', SHA)]
