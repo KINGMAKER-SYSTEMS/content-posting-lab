@@ -312,6 +312,9 @@
   signature. Signature-only legacy archives cannot prove disjoint media and
   hold generic replenishment until reconciled; do not infer disjointness from
   changed sorted offsets or a new signature alone.
+- Job-store compaction archives a completed job only when its `clips` container
+  is a list. A malformed container retains the job and its idempotency mapping,
+  records the named refusal, and advances the scan cursor so later jobs compact.
 - `POST /api/control-plane/v1/photo-plan-reservations` reserves one PenPal or
   Twin plan for a direct renderer. It requires the Control Plane bearer,
   page/lane headers, a registered recipe and the exact Master Pages intent.
