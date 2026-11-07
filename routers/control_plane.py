@@ -902,6 +902,15 @@ def capabilities(
             elif publication_engine in _SLIDESHOW_ENGINES and not syzygy_runtime_available():
                 unresolved_reason = SLIDESHOW_RUNTIME_UNAVAILABLE
                 unresolved_detail = None
+            elif publication_engine in _SLIDESHOW_ENGINES:
+                recipe_spec = typed_recipe_spec(publication)
+                unresolved_reason = (
+                    MATERIAL_PROFILE_MISSING
+                    if recipe_spec is not None
+                    and resolve_material_profile(publication, recipe_spec) is None
+                    else RECIPE_UNRESOLVED
+                )
+                unresolved_detail = None
             else:
                 unresolved_reason = RECIPE_UNRESOLVED
                 unresolved_detail = generation_unavailable_reason

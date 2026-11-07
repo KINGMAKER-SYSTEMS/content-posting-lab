@@ -94,6 +94,13 @@
   its finished clips come from the Worker pool, not Lab inventory. With zero
   reasons enabled it reports `pool_supplied`. Unlisted pages keep the registry
   ceiling, and a registered recipe's version takes precedence over bootstrap.
+- Registered slideshow capabilities report `material_profile_missing` when a
+  structurally valid typed recipe has no matching commissioned material profile
+  for its format, engine, page intent and demand, without reading the live
+  Syzygy library. A failed read of a resolved profile reports
+  `library_load_failed`. Structurally invalid recipe specs remain
+  `recipe_unresolved`, and unavailable runtime remains
+  `slideshow_runtime_unavailable`.
 - Pool-supplied Dossier pages waive Lab image-library and slideshow-treatment
   requirements, but `lyric-video` without a bound lyric timing set remains
   required and missing. The Worker cannot express a timing-less lyric-video
