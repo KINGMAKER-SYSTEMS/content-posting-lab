@@ -902,6 +902,15 @@ def capabilities(
             elif publication_engine in _SLIDESHOW_ENGINES and not syzygy_runtime_available():
                 unresolved_reason = SLIDESHOW_RUNTIME_UNAVAILABLE
                 unresolved_detail = None
+            elif publication_engine in _SLIDESHOW_ENGINES:
+                recipe_spec = typed_recipe_spec(publication)
+                unresolved_reason = (
+                    MATERIAL_PROFILE_MISSING
+                    if recipe_spec is not None
+                    and resolve_material_profile(publication, recipe_spec) is None
+                    else RECIPE_UNRESOLVED
+                )
+                unresolved_detail = None
             else:
                 unresolved_reason = RECIPE_UNRESOLVED
                 unresolved_detail = generation_unavailable_reason
@@ -912,18 +921,19 @@ def capabilities(
         if pool_supplied_zero:
             max_quantity = 0
         elif slideshow_recipe is not None:
-            try:
-                library = load_syzygy_library(slideshow_recipe_profile := (
-                    resolve_material_profile(publication, slideshow_recipe.recipe_spec)
-                ), master_pages)
-            except (SyzygyError, AttributeError):
-                zero_plan_recipes.append(
-                    _zero_plan_recipe(publication, LIBRARY_LOAD_FAILED)
-                )
-                continue
+            slideshow_recipe_profile = resolve_material_profile(
+                publication, slideshow_recipe.recipe_spec,
+            )
             if slideshow_recipe_profile is None:
                 zero_plan_recipes.append(
                     _zero_plan_recipe(publication, MATERIAL_PROFILE_MISSING)
+                )
+                continue
+            try:
+                library = load_syzygy_library(slideshow_recipe_profile, master_pages)
+            except (SyzygyError, AttributeError):
+                zero_plan_recipes.append(
+                    _zero_plan_recipe(publication, LIBRARY_LOAD_FAILED)
                 )
                 continue
             try:
