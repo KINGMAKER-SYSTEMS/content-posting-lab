@@ -912,18 +912,19 @@ def capabilities(
         if pool_supplied_zero:
             max_quantity = 0
         elif slideshow_recipe is not None:
-            try:
-                library = load_syzygy_library(slideshow_recipe_profile := (
-                    resolve_material_profile(publication, slideshow_recipe.recipe_spec)
-                ), master_pages)
-            except (SyzygyError, AttributeError):
-                zero_plan_recipes.append(
-                    _zero_plan_recipe(publication, LIBRARY_LOAD_FAILED)
-                )
-                continue
+            slideshow_recipe_profile = resolve_material_profile(
+                publication, slideshow_recipe.recipe_spec,
+            )
             if slideshow_recipe_profile is None:
                 zero_plan_recipes.append(
                     _zero_plan_recipe(publication, MATERIAL_PROFILE_MISSING)
+                )
+                continue
+            try:
+                library = load_syzygy_library(slideshow_recipe_profile, master_pages)
+            except (SyzygyError, AttributeError):
+                zero_plan_recipes.append(
+                    _zero_plan_recipe(publication, LIBRARY_LOAD_FAILED)
                 )
                 continue
             try:
