@@ -47,6 +47,19 @@ def test_other_sourced_slideshow_niche_offers_only_generic_ugc(monkeypatch):
     assert profile is not None and profile.format_slug == "ugc-slideshow"
 
 
+def test_unknown_sourced_slideshow_niche_does_not_advertise_ugc(monkeypatch):
+    for niche in ("TRUK", "truck"):
+        _, intent, _, catalog = _catalog(
+            monkeypatch, niche, "sourced_slideshow",
+            handle="unknown.slides", page_id="acct:unknown-slides",
+        )
+        assert "ugc-slideshow" not in catalog["currentFormatCandidates"]
+        assert resolve_material_profile(
+            {"recipeId": "ugc-slideshow:master", "engine": "sourced_slideshow"},
+            {"masterPages": intent, "demand": {"formatMix": {"ugc-slideshow": 1}}},
+        ) is None
+
+
 def test_other_niche_ugc_selection_resolves_from_its_own_library(monkeypatch):
     import services.dossier_ingredients as ingredients
     from services.control_plane_slideshows import SyzygyLibrary, SyzygyObject

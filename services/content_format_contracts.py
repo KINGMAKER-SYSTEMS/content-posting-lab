@@ -248,6 +248,15 @@ SEASONAL_NICHE_FORMAT_NICHES: dict[tuple[str, str], str] = {
     ("XMAS", "sourced_slideshow"): "slideshow",
 }
 
+# The exact Master Pages spellings in Control Plane's NICHE_CANONICAL.page
+# vocabulary (2026-11-08). The Lab cannot import the Worker's source at runtime;
+# unknown Notion spellings must not become executable UGC formats here.
+KNOWN_PAGE_NICHES = frozenset({
+    "TRUCK", "POV — Night Core", "silhouette", "Coffee", "POV - Dirtbike",
+    "POV", "POV — Scenic", "meme", "slideshow", "BOAT", "Construction",
+    "lyric-edits", "POV-Club", "XMAS",
+})
+
 
 def page_niche_admits(contract_niche: object, page_niche: object, page_engine: object) -> bool:
     """Whether a format contract's niche is selectable for a page's niche + engine."""
@@ -270,8 +279,7 @@ def format_page_admits(format_slug: object, contract_niche: object, page: object
         return (
             engine == "sourced_slideshow"
             and isinstance(niche, str)
-            and bool(niche.strip())
-            and niche == niche.strip()
+            and niche in KNOWN_PAGE_NICHES
             and niche not in {"Coffee", "meme"}
         )
     if not page_niche_admits(contract_niche, niche, engine):

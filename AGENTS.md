@@ -252,9 +252,11 @@
   `coffee/<handle-slug>` library, and composes five photos with `clean-slideshow`.
   Its render has no baked text or source audio; existing captions, Coffee sounds
   and page treatment apply downstream. `coffee-tok` remains available unchanged.
-- `ugc-slideshow` is a page-scoped `sourced_slideshow` option for niches without
-  the Coffee or meme slideshow route. The Dossier and recipe resolver use the
-  same format-aware niche check. `image-video` and `single-image-video` remain
+- `ugc-slideshow` is a page-scoped `sourced_slideshow` option for known Master
+  Pages niches other than Coffee and meme. Keep that vocabulary aligned with
+  Control Plane's `NICHE_CANONICAL.page`; unknown spellings do not become
+  executable formats. The Dossier and recipe resolver use the same format-aware
+  niche check. `image-video` and `single-image-video` remain
   selectable only for the exact PenPal and Twin page tuples, respectively;
   the XMAS slideshow alias does not widen those photo plans.
 - `services/control_plane_source_imports.py` owns bounded public-HTTPS download,
