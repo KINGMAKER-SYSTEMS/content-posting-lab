@@ -28,7 +28,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from services.post_render import (
     Hash, Identity, MAX_SOURCE_BYTES, MAX_FINAL_BYTES, MAX_OVERLAY_BYTES, MAX_QA_BYTES,
     PostRenderError, PostRenderRequest, RenderedPost, render_post, sha256, source_visual_matches, _caption_delivery,
-    _unique_object, _reject_nonfinite,
+    _unique_object, _reject_nonfinite, source_duration_repair_enabled,
 )
 
 from services.post_render_timed import (
@@ -1043,6 +1043,13 @@ class PostRenderJobs:
                       "source_sha256", "caption_sha256", "treatment_sha256", "renderer_id", "renderer_version"):
             if receipt.get(field) != getattr(request, field):
                 raise RenderJobError("receipt_binding_mismatch")
+        repair = getattr(request, "source_duration_repair", None)
+        if repair is not None:
+            from services.source_duration_repair import command_digest
+            if receipt.get("source_duration_repair_sha256") != command_digest(repair):
+                raise RenderJobError("receipt_binding_mismatch")
+        elif "source_duration_repair_sha256" in receipt:
+            raise RenderJobError("receipt_binding_mismatch")
         expected_schema = "posting-prepared-artifact/v2" if isinstance(request, TimedPostRenderRequest) else "posting-prepared-artifact/v1"
         if receipt.get("schema") != expected_schema:
             raise RenderJobError("receipt_binding_mismatch")
@@ -1767,13 +1774,22 @@ class PostRenderJobs:
         source = attempt_root / "source.mp4"
         try:
             submission = RenderJobSubmission.model_validate_json(row["submission_json"])
-            self.fetcher(submission.request, source)
+            request = submission.request
+            if request.source_duration_repair is not None:
+                # A durable repaired job is never run bare: without the capability
+                # it is fenced with a typed refusal, and a timed repair is refused
+                # regardless of the capability flag.
+                if isinstance(request, TimedPostRenderRequest):
+                    raise RenderJobError("TIMED_REPAIR_UNSUPPORTED")
+                if not source_duration_repair_enabled():
+                    raise RenderJobError("SOURCE_DURATION_REPAIR_UNSUPPORTED")
+            self.fetcher(request, source)
             renderer_kwargs = {"clock_ms": self.clock_ms}
-            if submission.source_provenance is None and is_pool_supplied(submission.request.page_id):
+            if submission.source_provenance is None and is_pool_supplied(request.page_id):
                 # A listed pool page supplies a finished clip, so this is the
                 # one path permitted to cross the renderer's no-receipt gate.
                 renderer_kwargs["allow_pool_supplied_without_provenance"] = True
-            self.renderer(source, self._output(row), submission.request, **renderer_kwargs)
+            self.renderer(source, self._output(row), request, **renderer_kwargs)
             authority = self._verify_output(row)
             self._finish(row, authority)
         except Exception as error:
