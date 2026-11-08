@@ -17,6 +17,8 @@ from pathlib import Path
 import re
 from typing import Any
 
+from services.control_plane_image_video import IMAGE_VIDEO_TARGETS
+
 
 CONTRACTS_PATH = (
     Path(__file__).resolve().parents[1]
@@ -237,9 +239,9 @@ def load_format_contracts() -> tuple[dict[str, FormatContract], str]:
 
 # F-XMAS-SLIDESHOW-CANDIDATES-1104. A seasonal niche spans engines. A Christmas
 # page on the sourced slideshow engine (tis.the.szn7, all.i.want.for.xma: Notion
-# Content Niche = XMAS, engine = sourced_slideshow) posts the plain slideshow
-# formats (image-video, ugc-slideshow), exactly like the slideshow niche it had
-# before the retag. The Worker projects the same pair the same way
+# Content Niche = XMAS, engine = sourced_slideshow) keeps the generic UGC
+# slideshow format. The page-bound image-video format belongs only to PenPal.
+# The Worker projects the same pair the same way
 # (notionAccountProjection.js, F-XMAS-ENGINE-AWARE-1104). The AI Christmas page
 # (XMAS + ai_video) keeps its own pov-seasonal contract by exact niche match.
 SEASONAL_NICHE_FORMAT_NICHES: dict[tuple[str, str], str] = {
@@ -256,3 +258,27 @@ def page_niche_admits(contract_niche: object, page_niche: object, page_engine: o
     if not isinstance(page_engine, str):
         return False
     return SEASONAL_NICHE_FORMAT_NICHES.get((page_niche, page_engine)) == contract_niche
+
+
+def format_page_admits(format_slug: object, contract_niche: object, page: object) -> bool:
+    """Match a format to one page without widening page-bound photo plans."""
+    if not isinstance(page, dict):
+        return False
+    niche = page.get("contentNiche")
+    engine = page.get("contentEngine")
+    if format_slug == "ugc-slideshow" and contract_niche == "slideshow":
+        return (
+            engine == "sourced_slideshow"
+            and isinstance(niche, str)
+            and bool(niche.strip())
+            and niche == niche.strip()
+            and niche not in {"Coffee", "meme"}
+        )
+    if not page_niche_admits(contract_niche, niche, engine):
+        return False
+    target = IMAGE_VIDEO_TARGETS.get(format_slug) if isinstance(format_slug, str) else None
+    if target is not None:
+        return tuple(page.get(key) for key in (
+            "pageId", "handle", "notionPageId", "contentNiche", "contentEngine",
+        )) == target[:5]
+    return True

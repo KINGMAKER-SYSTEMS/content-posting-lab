@@ -19,7 +19,7 @@ from providers import PROVIDERS
 from routers.video import PROVIDER_SCHEMAS
 from services.content_engine_registry import MaterialProfile, load_engine_registry
 from services.control_plane_image_video import IMAGE_VIDEO_FORMATS, image_video_plan_for_format
-from services.content_format_contracts import FormatContract, load_format_contracts, page_niche_admits
+from services.content_format_contracts import FormatContract, format_page_admits, load_format_contracts
 from services.control_plane_generation import (
     load_prompt_catalog,
     render_treatment_capability,
@@ -962,7 +962,7 @@ def _format_entry(
         current_slideshow_page = (
             master_pages
             if isinstance(master_pages, dict)
-            and page_niche_admits(contract.content_niche, master_pages.get("contentNiche"), master_pages.get("contentEngine"))
+            and format_page_admits(contract.format_slug, contract.content_niche, master_pages)
             and contract.content_engine == master_pages.get("contentEngine")
             else None
         )
@@ -1078,7 +1078,7 @@ def build_dossier_ingredient_catalog(
     current_source_formats = [
         format_slug
         for format_slug, contract in contracts.items()
-        if page_niche_admits(contract.content_niche, intent["contentNiche"], intent["contentEngine"])
+        if format_page_admits(format_slug, contract.content_niche, intent)
         and contract.content_engine == intent["contentEngine"]
     ]
     expected_source_format = (
@@ -1108,7 +1108,7 @@ def build_dossier_ingredient_catalog(
     current_format_candidates = [
         entry["formatId"]
         for entry in formats
-        if page_niche_admits(entry["contentNiche"], intent["contentNiche"], intent["contentEngine"])
+        if format_page_admits(entry["formatId"], entry["contentNiche"], intent)
         and entry["contentEngine"] == intent["contentEngine"]
     ]
     for entry in formats:
@@ -1153,7 +1153,7 @@ def selected_dossier_catalog_version(
     if (
         contract is None
         or profile is None
-        or not page_niche_admits(contract.content_niche, intent["contentNiche"], intent["contentEngine"])
+        or not format_page_admits(format_id, contract.content_niche, intent)
         or contract.content_engine != intent["contentEngine"]
     ):
         return None
