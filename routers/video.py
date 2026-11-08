@@ -2,6 +2,7 @@
 
 import asyncio
 import base64
+import hashlib
 import io
 import json
 import logging
@@ -115,6 +116,90 @@ def _jobs_path(project: str) -> Path:
     return PROJECTS_DIR / _safe_project(project) / "jobs.json"
 
 
+_COMPLETION_SCHEMA = "content-lab.video-completion.v1"
+
+
+def _completion_path(project: str, job_id: str, index: int) -> Path:
+    name = hashlib.sha256(f"{job_id}\0{index}".encode()).hexdigest()
+    return _jobs_path(project).parent / ".video-completions" / f"{name}.json"
+
+
+def _checked_completion_path(project: str, job_id: str, index: int, *, create: bool = False) -> Path:
+    path = _completion_path(project, job_id, index)
+    project_root = _jobs_path(project).parent.resolve(strict=True)
+    if create:
+        path.parent.mkdir(parents=True, exist_ok=True)
+    if (path.parent.is_symlink() or path.is_symlink()
+            or path.parent.resolve(strict=True) != project_root / ".video-completions"):
+        raise ValueError("Completion receipt path leaves project")
+    return path
+
+
+def _completion_artifacts(project: str, entry: dict) -> list[dict]:
+    """Bind every retained output to exact bytes under this project's video dir."""
+    files = [entry.get("file"), entry.get("provider_master_file"),
+             entry.get("provider_image_file")]
+    crops = entry.get("crops") or []
+    if not isinstance(crops, list):
+        raise ValueError("Invalid completion crops")
+    for crop in crops:
+        if not isinstance(crop, dict) or not crop.get("file"):
+            raise ValueError("Incomplete completion crop")
+        files.append(crop["file"])
+    if entry.get("status") != "done" or not files[0] or not entry.get("url"):
+        raise ValueError("Video has no completed file")
+    root = get_project_video_dir(project).resolve()
+    artifacts = []
+    for rel in dict.fromkeys(path for path in files if path is not None):
+        if not isinstance(rel, str) or not rel or Path(rel).is_absolute() or ".." in Path(rel).parts:
+            raise ValueError("Invalid completion path")
+        path = root / rel
+        resolved = path.resolve(strict=True)
+        if path.is_symlink() or resolved == root or not resolved.is_relative_to(root) or not resolved.is_file():
+            raise ValueError("Completion path leaves project videos")
+        size = resolved.stat().st_size
+        if size <= 0:
+            raise ValueError("Empty completion artifact")
+        with resolved.open("rb") as source:
+            digest = hashlib.file_digest(source, "sha256").hexdigest()
+        artifacts.append({"file": rel, "bytes": size, "sha256": digest})
+    return artifacts
+
+
+def _write_completion(project: str, job_id: str, index: int, entry: dict) -> bool:
+    try:
+        path = _checked_completion_path(project, job_id, index, create=True)
+        receipt = {"schema": _COMPLETION_SCHEMA, "job_id": job_id, "index": index,
+                   "entry": entry, "artifacts": _completion_artifacts(project, entry)}
+        atomic_save(path, receipt)
+        return True
+    except (OSError, ValueError, TypeError) as error:
+        log.error("Failed to save video completion job=%s index=%d: %s", job_id, index, error)
+        return False
+
+
+def _read_completion(project: str, job_id: str, index: int) -> dict | None:
+    try:
+        path = _checked_completion_path(project, job_id, index)
+        receipt = json.loads(path.read_text(encoding="utf-8"))
+        entry = receipt.get("entry")
+        if (receipt.get("schema") != _COMPLETION_SCHEMA or receipt.get("job_id") != job_id
+                or receipt.get("index") != index or not isinstance(entry, dict)
+                or entry.get("index") != index or entry.get("status") != "done"
+                or receipt.get("artifacts") != _completion_artifacts(project, entry)):
+            return None
+        return entry
+    except (OSError, ValueError, TypeError, AttributeError):
+        return None
+
+
+def _remove_completion(project: str, job_id: str, index: int) -> None:
+    try:
+        safe_unlink(_checked_completion_path(project, job_id, index))
+    except (OSError, ValueError):
+        log.warning("Refused unsafe completion receipt cleanup job=%s index=%d", job_id, index)
+
+
 def _save_jobs(project: str) -> bool:
     """Persist active jobs for this project; report whether the write landed."""
     project_jobs = {jid: j for jid, j in jobs.items() if j.get("project") == project}
@@ -159,9 +244,8 @@ def _mark_entry_error(job_id: str, index: int, message: str) -> None:
 def _load_jobs(project: str) -> None:
     """Load persisted jobs from disk into the in-memory dict.
 
-    Videos stuck in non-terminal states (generating, downloading, cropping, polling)
-    are marked as done-with-crops if crop files exist on disk, or as error otherwise.
-    This handles server restarts that kill in-flight async tasks.
+    New jobs require a verified completion receipt before a non-terminal entry
+    can become done. Older jobs retain their file-based recovery behavior.
     """
     try:
         p = _jobs_path(project)
@@ -174,10 +258,18 @@ def _load_jobs(project: str) -> None:
         for jid, job in data.items():
             if jid not in jobs:
                 # Fix stuck videos from previous server session
-                for v in job.get("videos", []):
+                for index, v in enumerate(job.get("videos", [])):
                     if v.get("status") not in _TERMINAL_STATUSES:
-                        # Check if crop files landed on disk before the crash
-                        if v.get("crops"):
+                        completed = _read_completion(project, jid, index)
+                        if completed:
+                            job["videos"][index] = completed
+                        elif _completion_path(project, jid, index).exists():
+                            v["status"] = "error"
+                            v["error"] = "Completion receipt or artifact changed after restart"
+                        elif job.get("completion_receipts_v1"):
+                            v["status"] = "error"
+                            v["error"] = "Server restarted before video completion was recorded"
+                        elif v.get("crops"):
                             v["status"] = "done"
                         elif v.get("file"):
                             v["status"] = "done"
@@ -195,24 +287,33 @@ def _persist_job(job_id: str, index: int) -> None:
     if not job:
         return
     project = job.get("project", "quick-test")
-    if not _save_jobs(project):
-        entry = job["videos"][index]
-        if entry.get("status") == "done":
-            # Keep the paid artifact and its path in memory for a later save.
-            # The UI and bulk download only treat `done` as ready.
-            entry["status"] = "processing"
+    entry = job["videos"][index]
+    receipt_saved = entry.get("status") == "done" and _write_completion(project, job_id, index, entry)
+    job_saved = _save_jobs(project)
+    if job_saved and receipt_saved:
+        _remove_completion(project, job_id, index)
+    elif not job_saved and not receipt_saved and entry.get("status") == "done":
+        # Retain paid bytes in memory, but do not expose a result with no
+        # durable record of its completed state.
+        entry["status"] = "processing"
 
 
 def _retry_completed_persistence(job: dict) -> None:
     """A downloaded file waiting on its jobs.json write may become ready on poll."""
-    pending = [entry for entry in job.get("videos", [])
+    pending = [(index, entry) for index, entry in enumerate(job.get("videos", []))
                if entry.get("status") == "processing" and entry.get("file") and entry.get("url")]
     if not pending:
         return
-    for entry in pending:
+    project = job.get("project", "quick-test")
+    job_id = job["id"]
+    for _, entry in pending:
         entry["status"] = "done"
-    if not _save_jobs(job.get("project", "quick-test")):
-        for entry in pending:
+    receipts = {index: _write_completion(project, job_id, index, entry) for index, entry in pending}
+    job_saved = _save_jobs(project)
+    for index, entry in pending:
+        if job_saved and receipts[index]:
+            _remove_completion(project, job_id, index)
+        elif not job_saved and not receipts[index]:
             entry["status"] = "processing"
 
 
@@ -507,6 +608,7 @@ async def generate_video(
         "crop_mode": crop_mode if crop_mode and crop_mode != "none" else None,
         "negative_prompt": extra.get("negative_prompt"),
         "project": project,
+        "completion_receipts_v1": True,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "videos": [{"index": i, "status": "queued"} for i in range(count)],
     }

@@ -354,6 +354,8 @@ def test_completed_video_waits_for_durable_receipt_before_done(
             saves += 1
             if saves > 1 and blocked:
                 raise OSError("No space left on device")
+        if path.parent.name == ".video-completions" and blocked:
+            raise OSError("No space left on device")
         return real_save(path, data, **kwargs)
 
     async def fake_generate_one(job_id, index, provider, prompt, aspect_ratio,
@@ -389,6 +391,91 @@ def test_completed_video_waits_for_durable_receipt_before_done(
     assert recovered.json()["videos"][0]["status"] == "done"
     persisted = json.loads((isolated_projects_root / "completion-failure" / "jobs.json").read_text())
     assert persisted[job_id]["videos"][0]["status"] == "done"
+
+
+def test_completion_receipt_recovers_paid_video_after_jobs_save_fails(
+    isolated_projects_root, monkeypatch,
+):
+    project = "receipt-recovery"
+    entry = {"index": 0, "status": "queued"}
+    job = {"id": "paid-job", "project": project, "completion_receipts_v1": True,
+           "videos": [entry]}
+    video_router.jobs.clear()
+    video_router.jobs[job["id"]] = job
+    assert video_router._save_jobs(project)
+    _make_video(project, "paid.mp4", b"paid video")
+    entry.update(status="done", file="paid.mp4", url="/projects/receipt-recovery/videos/paid.mp4")
+
+    real_save = video_router.atomic_save
+
+    def fail_jobs(path, data, **kwargs):
+        if path.name == "jobs.json":
+            raise OSError("jobs.json unavailable")
+        return real_save(path, data, **kwargs)
+
+    monkeypatch.setattr(video_router, "atomic_save", fail_jobs)
+    video_router._persist_job(job["id"], 0)
+    assert entry["status"] == "done"
+    assert video_router._completion_path(project, job["id"], 0).exists()
+    video_router.jobs.clear()
+    video_router._load_jobs(project)
+    recovered = video_router.jobs[job["id"]]["videos"][0]
+    assert recovered["status"] == "done"
+    assert recovered["file"] == "paid.mp4"
+
+
+def test_completion_receipt_rejects_changed_crop_bytes_after_restart(isolated_projects_root):
+    project = "receipt-crops"
+    entry = {"index": 0, "status": "queued"}
+    job = {"id": "crop-job", "project": project, "completion_receipts_v1": True,
+           "videos": [entry]}
+    video_router.jobs.clear()
+    video_router.jobs[job["id"]] = job
+    assert video_router._save_jobs(project)
+    for name in ("master.mp4", "crop0.mp4", "crop1.mp4"):
+        _make_video(project, name, name.encode())
+    entry.update(status="done", file="crop0.mp4", url="/projects/receipt-crops/videos/crop0.mp4",
+                 provider_master_file="master.mp4",
+                 crops=[{"file": "crop0.mp4"}, {"file": "crop1.mp4"}])
+    assert video_router._write_completion(project, job["id"], 0, entry)
+    _make_video(project, "crop1.mp4", b"changed crop")
+
+    video_router.jobs.clear()
+    video_router._load_jobs(project)
+    recovered = video_router.jobs[job["id"]]["videos"][0]
+    assert recovered["status"] == "error"
+    assert "changed" in recovered["error"]
+
+
+def test_new_job_partial_file_without_completion_receipt_is_not_done(isolated_projects_root):
+    project = "partial-video"
+    _make_video(project, "partial.mp4")
+    job = {"id": "partial-job", "project": project, "completion_receipts_v1": True,
+           "videos": [{"index": 0, "status": "downloading", "file": "partial.mp4"}]}
+    video_router.jobs.clear()
+    video_router.jobs[job["id"]] = job
+    assert video_router._save_jobs(project)
+
+    video_router.jobs.clear()
+    video_router._load_jobs(project)
+    recovered = video_router.jobs[job["id"]]["videos"][0]
+    assert recovered["status"] == "error"
+
+
+def test_completion_receipt_refuses_symlinked_directory(isolated_projects_root):
+    project = "receipt-link"
+    project_dir = isolated_projects_root / project
+    project_dir.mkdir()
+    elsewhere = isolated_projects_root / "other-project"
+    elsewhere.mkdir()
+    (project_dir / ".video-completions").symlink_to(elsewhere, target_is_directory=True)
+    _make_video(project, "paid.mp4")
+    entry = {"index": 0, "status": "done", "file": "paid.mp4",
+             "url": "/projects/receipt-link/videos/paid.mp4"}
+
+    assert video_router._write_completion(project, "paid-job", 0, entry) is False
+    assert video_router._read_completion(project, "paid-job", 0) is None
+    assert not list(elsewhere.iterdir())
 
 
 def test_save_jobs_skips_when_no_matching_jobs(isolated_projects_root):

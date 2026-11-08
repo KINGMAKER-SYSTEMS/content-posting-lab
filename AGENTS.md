@@ -308,10 +308,14 @@
 ## Local Contracts
 
 - `routers/video.py` must persist each queued UI video job before a generation
-  task can debit or call a provider. A completed file whose `jobs.json` write
-  fails stays in `processing` with its file identity retained; job reads and
-  bulk download retry that write and expose `done` only after it lands. Never
-  reissue a paid provider call just to recover this receipt.
+  task can debit or call a provider. A completed video may become `done` only
+  after either `jobs.json` or an atomic per-output completion receipt persists.
+  The receipt binds every retained artifact to its exact size and SHA-256;
+  its directory must be a real child of the project; restart recovery verifies
+  the receipt before restoring a new job's completed entry.
+  A partial file without a receipt never becomes `done`. If both writes fail,
+  keep the file identity in memory as `processing` and retry persistence on job
+  reads and bulk download. Never reissue a paid provider call to recover it.
 - Provider artifact download deadlines accept only finite positive seconds.
   Infinity and numeric overflow use the existing finite default, so a malformed
   setting cannot remove the whole-download deadline. Positive fractional values
