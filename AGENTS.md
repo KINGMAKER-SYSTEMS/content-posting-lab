@@ -319,6 +319,9 @@
   signature. Signature-only legacy archives cannot prove disjoint media and
   hold generic replenishment until reconciled; do not infer disjointness from
   changed sorted offsets or a new signature alone.
+- Generic `ugc-slideshow` plans count only photo objects toward their template
+  and refill chunks. Curated UGC video plans still select their pinned clips.
+  The zero-plan explanation uses the same eligible photo set as planning.
 - Job-store compaction treats an absent `clips` field as an empty list. A
   completed job with a present non-list `clips` container retains its job and
   idempotency mapping, records the named refusal, and advances the scan cursor

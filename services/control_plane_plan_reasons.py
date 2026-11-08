@@ -196,6 +196,7 @@ def explain_empty_slideshow_plan(
     from services.control_plane_slideshows import (
         CLEAN_VIDEO_FORMATS,
         _generic_clean_video_chunk,
+        _generic_clean_video_objects,
         _permutation_plan_candidates,
         curated_plans_for_recipe,
         requires_curated_video_plan,
@@ -231,7 +232,7 @@ def explain_empty_slideshow_plan(
         if opaque_reserved_media:
             return GENERIC_MEDIA_EXHAUSTED
         objects_in_order = [
-            item for item in library.objects
+            item for item in _generic_clean_video_objects(recipe, library)
             if item.key not in (reserved_media_keys or set())
         ]
         for chunk in range(len(objects_in_order) + 1):

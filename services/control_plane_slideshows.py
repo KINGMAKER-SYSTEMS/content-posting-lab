@@ -1051,6 +1051,15 @@ def _generic_clean_video_chunk(
     }
 
 
+def _generic_clean_video_objects(
+    recipe: SlideshowRecipe, library: SyzygyLibrary,
+) -> list[SyzygyObject]:
+    # Curated UGC plans select their pinned clips before reaching this path.
+    if recipe.format_slug == UGC_FORMAT_SLUG:
+        return [item for item in library.objects if item.media_type == "photo"]
+    return list(library.objects)
+
+
 def _permutation_plan_candidates(
     recipe: SlideshowRecipe, library: SyzygyLibrary, unavailable_signatures: set[str],
 ) -> list[dict[str, Any]]:
@@ -1147,7 +1156,7 @@ def plan_slideshows(
         if opaque_reserved_media:
             return []
         reserved_media_keys = reserved_media_keys or set()
-        objects_in_order = list(library.objects)
+        objects_in_order = _generic_clean_video_objects(recipe, library)
         # Keep the original first chunk/signature when unreserved; remove
         # reserved keys before taking the next complete, disjoint media set.
         available = [item for item in objects_in_order if item.key not in reserved_media_keys]

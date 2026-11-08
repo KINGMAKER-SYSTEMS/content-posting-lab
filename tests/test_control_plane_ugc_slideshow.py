@@ -752,14 +752,39 @@ async def test_culture_managed_api_job_binds_plan_and_emits_real_boundary_receip
 
 def test_generic_photo_arc_survives_actual_library_fetch_sort(monkeypatch):
     expected = _ugc_library()
+    clips = tuple(SyzygyObject(
+        f"ugc/french-core/clips/000{index}.mp4", 2_000 + index,
+        f"https://r2.example/ugc/french-core/clips/000{index}.mp4",
+    ) for index in range(3))
+    mixed = (*expected.objects, *clips)
     payload = {"lane": "ugc", "subject": "french-core", "truncated": False, "skipped": 0,
-        "count": 3, "objects": [{"key": item.key, "bytes": item.bytes, "url": item.url}
-            for item in reversed(expected.objects)]}
+        "count": len(mixed), "objects": [{"key": item.key, "bytes": item.bytes, "url": item.url}
+            for item in reversed(mixed)]}
     monkeypatch.setattr(slideshows, "_runtime", lambda: ("https://syzygy.test", "syz_test"))
     monkeypatch.setattr(slideshows.httpx, "get", lambda *args, **kwargs: slideshows.httpx.Response(200, json=payload))
     library = slideshows._fetch_library(expected.library_id, expected.lane, expected.subject)
     planned = plan_slideshows(_ugc_recipe(), library, 1, set(), "run")
     assert planned[0]["mediaKeys"] == [item.key for item in expected.objects]
+
+
+def test_generic_ugc_needs_three_photos_even_when_clips_fill_the_library():
+    from services.control_plane_plan_reasons import (
+        TEMPLATE_MEDIA_EXCEEDS_LIBRARY, explain_empty_slideshow_plan,
+    )
+
+    recipe = _ugc_recipe()
+    photos = _ugc_library().objects[:2]
+    clips = tuple(SyzygyObject(
+        f"ugc/french-core/clips/000{index}.mp4", 2_000 + index,
+        f"https://r2.example/ugc/french-core/clips/000{index}.mp4",
+    ) for index in range(3))
+    library = SyzygyLibrary(
+        recipe.library_id, recipe.lane, recipe.subject,
+        tuple(sorted((*photos, *clips), key=lambda item: item.key)),
+        "a" * 64,
+    )
+    assert plan_slideshows(recipe, library, 1, set(), "run") == []
+    assert explain_empty_slideshow_plan(recipe, library, 1, set()) == TEMPLATE_MEDIA_EXCEEDS_LIBRARY
 
 
 def _burnt_recipe() -> SlideshowRecipe:
