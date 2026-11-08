@@ -321,7 +321,9 @@
   changed sorted offsets or a new signature alone.
 - Generic `ugc-slideshow` plans count only photo objects toward their template
   and refill chunks. Curated UGC video plans still select their pinned clips.
-  The zero-plan explanation uses the same eligible photo set as planning.
+  The zero-plan explanation uses the same eligible photo set as planning:
+  fewer eligible photos than the template requires reports a library shortage;
+  enough eligible photos held by reservations reports generic exhaustion.
 - Job-store compaction treats an absent `clips` field as an empty list. A
   completed job with a present non-list `clips` container retains its job and
   idempotency mapping, records the named refusal, and advances the scan cursor

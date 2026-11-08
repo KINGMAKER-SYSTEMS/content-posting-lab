@@ -787,6 +787,20 @@ def test_generic_ugc_needs_three_photos_even_when_clips_fill_the_library():
     assert explain_empty_slideshow_plan(recipe, library, 1, set()) == TEMPLATE_MEDIA_EXCEEDS_LIBRARY
 
 
+def test_generic_ugc_reports_exhaustion_when_all_photos_are_reserved():
+    from services.control_plane_plan_reasons import (
+        GENERIC_MEDIA_EXHAUSTED, explain_empty_slideshow_plan,
+    )
+
+    recipe = _ugc_recipe()
+    library = _ugc_library()
+    reserved = {item.key for item in library.objects}
+    assert plan_slideshows(recipe, library, 1, set(), "run", reserved_media_keys=reserved) == []
+    assert explain_empty_slideshow_plan(
+        recipe, library, 1, set(), reserved_media_keys=reserved,
+    ) == GENERIC_MEDIA_EXHAUSTED
+
+
 def _burnt_recipe() -> SlideshowRecipe:
     ugc_sha = hashlib.sha256(UGC_EXECUTOR_PATH.read_bytes()).hexdigest()
     return SlideshowRecipe(
