@@ -304,7 +304,91 @@ def test_save_jobs_unwritable_dir_swallows_error(isolated_projects_root, monkeyp
 
     monkeypatch.setattr(video_router, "atomic_save", boom)
     # Must not raise.
-    video_router._save_jobs("save-proj")
+    assert video_router._save_jobs("save-proj") is False
+
+
+def test_generate_refuses_before_provider_when_initial_job_save_fails(
+    sync_client, isolated_projects_root, monkeypatch,
+):
+    provider_id = next(iter(video_router.PROVIDERS))
+    monkeypatch.setitem(video_router.API_KEYS, video_router.PROVIDERS[provider_id]["key_id"], "test-key")
+    started = []
+
+    async def fake_generate_one(*args, **kwargs):
+        started.append(True)
+
+    real_save = video_router.atomic_save
+
+    def fail_jobs(path, data, **kwargs):
+        if path.name == "jobs.json":
+            raise OSError("No space left on device")
+        return real_save(path, data, **kwargs)
+
+    monkeypatch.setattr(video_router, "atomic_save", fail_jobs)
+    monkeypatch.setattr(video_router, "generate_one", fake_generate_one)
+    monkeypatch.setattr(video_router.generation_budget, "debit_generation_spend_at",
+                        lambda *args, **kwargs: started.append("debited"))
+    response = sync_client.post("/api/video/generate", data={
+        "prompt": "receipt failure", "provider": provider_id, "count": "1",
+        "duration": "5", "aspect_ratio": "9:16", "resolution": "720p",
+        "project": "receipt-failure",
+    })
+    assert response.status_code == 503
+    assert not started
+    assert not [j for j in video_router.jobs.values() if j.get("project") == "receipt-failure"]
+    assert not (isolated_projects_root / "receipt-failure" / "jobs.json").exists()
+
+
+def test_completed_video_waits_for_durable_receipt_before_done(
+    sync_client, isolated_projects_root, monkeypatch,
+):
+    provider_id = next(iter(video_router.PROVIDERS))
+    monkeypatch.setitem(video_router.API_KEYS, video_router.PROVIDERS[provider_id]["key_id"], "test-key")
+    real_save = video_router.atomic_save
+    saves = 0
+    blocked = True
+
+    def fail_completion(path, data, **kwargs):
+        nonlocal saves
+        if path.name == "jobs.json":
+            saves += 1
+            if saves > 1 and blocked:
+                raise OSError("No space left on device")
+        return real_save(path, data, **kwargs)
+
+    async def fake_generate_one(job_id, index, provider, prompt, aspect_ratio,
+                                resolution, duration, image_data_uri, jobs,
+                                output_dir, url_prefix, on_complete=None, **extra):
+        entry = jobs[job_id]["videos"][index]
+        (output_dir / "finished.mp4").write_bytes(b"video")
+        entry.update(status="done", file="finished.mp4", url=f"{url_prefix}/finished.mp4")
+        on_complete(job_id)
+
+    monkeypatch.setattr(video_router, "atomic_save", fail_completion)
+    monkeypatch.setattr(video_router, "generate_one", fake_generate_one)
+    response = sync_client.post("/api/video/generate", data={
+        "prompt": "completion failure", "provider": provider_id, "count": "1",
+        "duration": "5", "aspect_ratio": "9:16", "resolution": "720p",
+        "project": "completion-failure",
+    })
+    assert response.status_code == 200
+    job_id = response.json()["job_id"]
+    result = None
+    for _ in range(50):
+        result = sync_client.get(f"/api/video/jobs/{job_id}").json()["videos"][0]
+        if result.get("file"):
+            break
+        time.sleep(0.02)
+    assert result["status"] == "processing"
+    assert sync_client.get(f"/api/video/jobs/{job_id}/download-all").status_code == 400
+    persisted = json.loads((isolated_projects_root / "completion-failure" / "jobs.json").read_text())
+    assert persisted[job_id]["videos"][0]["status"] == "queued"
+
+    blocked = False
+    recovered = sync_client.get(f"/api/video/jobs/{job_id}")
+    assert recovered.json()["videos"][0]["status"] == "done"
+    persisted = json.loads((isolated_projects_root / "completion-failure" / "jobs.json").read_text())
+    assert persisted[job_id]["videos"][0]["status"] == "done"
 
 
 def test_save_jobs_skips_when_no_matching_jobs(isolated_projects_root):

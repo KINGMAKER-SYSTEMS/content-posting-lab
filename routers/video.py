@@ -115,17 +115,19 @@ def _jobs_path(project: str) -> Path:
     return PROJECTS_DIR / _safe_project(project) / "jobs.json"
 
 
-def _save_jobs(project: str) -> None:
-    """Persist active jobs for this project to disk."""
+def _save_jobs(project: str) -> bool:
+    """Persist active jobs for this project; report whether the write landed."""
     project_jobs = {jid: j for jid, j in jobs.items() if j.get("project") == project}
     if not project_jobs:
-        return
+        return True
     try:
         p = _jobs_path(project)
         p.parent.mkdir(parents=True, exist_ok=True)
         atomic_save(p, project_jobs)
+        return True
     except (OSError, ValueError) as e:
         log.error("Failed to save jobs for project %r: %s", project, e)
+        return False
 
 
 _TERMINAL_STATUSES = {"done", "error"}
@@ -187,13 +189,31 @@ def _load_jobs(project: str) -> None:
         log.error("Failed to load jobs from %s: %s", p, e)
 
 
-def _persist_job(job_id: str) -> None:
-    """Callback for generate_one — write job state to disk on completion."""
+def _persist_job(job_id: str, index: int) -> None:
+    """Expose a completed video only after its job receipt is on disk."""
     job = jobs.get(job_id)
     if not job:
         return
     project = job.get("project", "quick-test")
-    _save_jobs(project)
+    if not _save_jobs(project):
+        entry = job["videos"][index]
+        if entry.get("status") == "done":
+            # Keep the paid artifact and its path in memory for a later save.
+            # The UI and bulk download only treat `done` as ready.
+            entry["status"] = "processing"
+
+
+def _retry_completed_persistence(job: dict) -> None:
+    """A downloaded file waiting on its jobs.json write may become ready on poll."""
+    pending = [entry for entry in job.get("videos", [])
+               if entry.get("status") == "processing" and entry.get("file") and entry.get("url")]
+    if not pending:
+        return
+    for entry in pending:
+        entry["status"] = "done"
+    if not _save_jobs(job.get("project", "quick-test")):
+        for entry in pending:
+            entry["status"] = "processing"
 
 
 def _read_prompts(project: str) -> list[dict]:
@@ -463,18 +483,6 @@ async def generate_video(
         "generate job=%s provider=%s count=%d project=%s prompt=%s",
         job_id, provider, count, project, prompt[:80],
     )
-    jobs[job_id] = {
-        "id": job_id,
-        "prompt": prompt,
-        "provider": provider,
-        "count": count,
-        "crop_mode": crop_mode if crop_mode and crop_mode != "none" else None,
-        "negative_prompt": extra.get("negative_prompt"),
-        "project": project,
-        "created_at": datetime.now(timezone.utc).isoformat(),
-        "videos": [{"index": i, "status": "queued"} for i in range(count)],
-    }
-
     _save_prompt(
         project,
         {
@@ -490,6 +498,23 @@ async def generate_video(
             "timestamp": datetime.now(timezone.utc).isoformat(),
         },
     )
+
+    jobs[job_id] = {
+        "id": job_id,
+        "prompt": prompt,
+        "provider": provider,
+        "count": count,
+        "crop_mode": crop_mode if crop_mode and crop_mode != "none" else None,
+        "negative_prompt": extra.get("negative_prompt"),
+        "project": project,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "videos": [{"index": i, "status": "queued"} for i in range(count)],
+    }
+
+    # Do not debit or call a provider for a job that cannot survive a restart.
+    if not _save_jobs(project):
+        del jobs[job_id]
+        raise HTTPException(status_code=503, detail="Could not save video job; generation was not started")
 
     url_prefix = f"/projects/{project}/videos"
 
@@ -510,7 +535,7 @@ async def generate_video(
                     job_id, index, provider, prompt,
                     aspect_ratio, resolution, duration, image_data_uri,
                     jobs, output_dir, url_prefix,
-                    on_complete=_persist_job,
+                    on_complete=lambda completed_job_id: _persist_job(completed_job_id, index),
                     cost_usd=cost_per_gen,
                     **extra,
                 )
@@ -574,6 +599,8 @@ def _sweep_stuck_entries(job: dict) -> None:
     for entry in job.get("videos", []):
         if entry.get("status") in _TERMINAL_STATUSES:
             continue
+        if entry.get("status") == "processing" and entry.get("file"):
+            continue  # Completed bytes are waiting for their durable receipt.
         entry["status"] = "error"
         entry["error"] = (
             f"Stuck in '{entry.get('status', 'queued')}' for over "
@@ -593,6 +620,7 @@ async def list_jobs(project: str = "quick-test"):
     _load_jobs(project)
     project_jobs = [j for j in jobs.values() if j.get("project") == project]
     for j in project_jobs:
+        _retry_completed_persistence(j)
         _sweep_stuck_entries(j)
     return project_jobs
 
@@ -606,6 +634,7 @@ async def get_job(job_id: str):
                 _load_jobs(proj_dir.name)
         if job_id not in jobs:
             raise HTTPException(status_code=404, detail="Job not found")
+    _retry_completed_persistence(jobs[job_id])
     _sweep_stuck_entries(jobs[job_id])
     return jobs[job_id]
 
@@ -653,6 +682,7 @@ async def download_all(job_id: str):
     if job_id not in jobs:
         raise HTTPException(status_code=404, detail="Job not found")
     job = jobs[job_id]
+    _retry_completed_persistence(job)
     done_videos = [
         v for v in job["videos"] if v.get("status") == "done" and v.get("file")
     ]
