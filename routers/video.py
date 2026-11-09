@@ -934,13 +934,12 @@ async def bulk_delete(body: dict):
     project = _require_project(project)
 
     _load_jobs(project)
-    video_dir = get_project_video_dir(project)
     removed_jobs = {}
     files_to_delete = []
 
     for jid in job_ids:
         job = jobs.get(jid)
-        if not job:
+        if not job or job.get("project", project) != project:
             continue
         proj = job.get("project", project)
         try:
