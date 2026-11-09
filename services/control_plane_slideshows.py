@@ -88,6 +88,7 @@ class SyzygyObject:
     key: str
     bytes: int
     url: str
+    indexed_sha256: str | None = None
 
     @property
     def media_type(self) -> str:
@@ -824,6 +825,7 @@ def _fetch_library(
         object_key = item.get("key") if isinstance(item, dict) else None
         byte_count = item.get("bytes") if isinstance(item, dict) else None
         url = item.get("url") if isinstance(item, dict) else None
+        indexed_sha256 = item.get("indexed_sha256") if isinstance(item, dict) else None
         parsed = urlsplit(url) if isinstance(url, str) else None
         if (
             not isinstance(object_key, str)
@@ -839,10 +841,16 @@ def _fetch_library(
             or parsed.password is not None
         ):
             raise SyzygyUnavailable("Syzygy library object is invalid")
-        objects.append(SyzygyObject(object_key, byte_count, url))
+        if "indexed_sha256" not in item:
+            raise SyzygyUnavailable("Syzygy library index hash is unavailable")
+        if indexed_sha256 is None:
+            continue  # R2 object has no matching indexed version to render.
+        if not isinstance(indexed_sha256, str) or not SHA256.fullmatch(indexed_sha256):
+            raise SyzygyUnavailable("Syzygy library index hash is invalid")
+        objects.append(SyzygyObject(object_key, byte_count, url, indexed_sha256))
     objects.sort(key=lambda item: item.key)
     canonical = json.dumps(
-        [[item.key, item.bytes] for item in objects],
+        [[item.key, item.bytes, item.indexed_sha256] for item in objects],
         separators=(",", ":"), ensure_ascii=False,
     )
     return SyzygyLibrary(
