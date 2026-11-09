@@ -759,24 +759,28 @@ async def delete_job(job_id: str, project: str = "quick-test"):
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid project")
 
-    # Delete all video files on disk
-    deleted_files = 0
+    # Resolve files first, but do not unlink them until the job removal is
+    # durable. If persistence fails, the existing files remain recoverable.
+    files_to_delete = []
     for v in job.get("videos", []):
         # Delete main file
         if v.get("file"):
             target = (video_dir / v["file"]).resolve()
-            if _contained_in(target, video_dir) and safe_unlink(target):
-                deleted_files += 1
+            if _contained_in(target, video_dir):
+                files_to_delete.append(target)
         # Delete crop files
         for crop in v.get("crops", []):
             if crop.get("file"):
                 target = (video_dir / crop["file"]).resolve()
-                if _contained_in(target, video_dir) and safe_unlink(target):
-                    deleted_files += 1
+                if _contained_in(target, video_dir):
+                    files_to_delete.append(target)
 
-    # Remove from in-memory state
     del jobs[job_id]
-    _save_jobs(proj)
+    if not _save_jobs(proj):
+        jobs[job_id] = job
+        raise HTTPException(status_code=503, detail="Failed to persist job deletion")
+
+    deleted_files = sum(1 for target in files_to_delete if safe_unlink(target))
 
     return {"deleted": True, "job_id": job_id, "files_removed": deleted_files}
 
@@ -931,8 +935,8 @@ async def bulk_delete(body: dict):
 
     _load_jobs(project)
     video_dir = get_project_video_dir(project)
-    deleted_jobs = 0
-    deleted_files = 0
+    removed_jobs = {}
+    files_to_delete = []
 
     for jid in job_ids:
         job = jobs.get(jid)
@@ -946,17 +950,21 @@ async def bulk_delete(body: dict):
         for v in job.get("videos", []):
             if v.get("file"):
                 target = (vdir / v["file"]).resolve()
-                if _contained_in(target, vdir) and safe_unlink(target):
-                    deleted_files += 1
+                if _contained_in(target, vdir):
+                    files_to_delete.append(target)
             for crop in v.get("crops", []):
                 if crop.get("file"):
                     target = (vdir / crop["file"]).resolve()
-                    if _contained_in(target, vdir) and safe_unlink(target):
-                        deleted_files += 1
-        del jobs[jid]
-        deleted_jobs += 1
+                    if _contained_in(target, vdir):
+                        files_to_delete.append(target)
+        removed_jobs[jid] = jobs.pop(jid)
 
-    _save_jobs(project)
+    if removed_jobs and not _save_jobs(project):
+        jobs.update(removed_jobs)
+        raise HTTPException(status_code=503, detail="Failed to persist job deletion")
+
+    deleted_files = sum(1 for target in files_to_delete if safe_unlink(target))
+    deleted_jobs = len(removed_jobs)
     return {"deleted_jobs": deleted_jobs, "deleted_files": deleted_files}
 
 

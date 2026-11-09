@@ -669,6 +669,7 @@ def test_bulk_delete_removes_jobs_and_files(sync_client):
         "project": "bd-proj",
         "videos": [{"status": "done", "file": "y.mp4"}],
     }
+    assert video_router._save_jobs("bd-proj")
     vdir = get_project_video_dir("bd-proj")
 
     resp = sync_client.post(
@@ -682,6 +683,34 @@ def test_bulk_delete_removes_jobs_and_files(sync_client):
     assert not (vdir / "x.mp4").exists()
     assert not (vdir / "y.mp4").exists()
     assert "d1" not in video_router.jobs and "d2" not in video_router.jobs
+
+    video_router.jobs.clear()
+    video_router._load_jobs("bd-proj")
+    assert video_router.jobs == {}
+    assert json.loads((vdir.parent / "jobs.json").read_text()) == {}
+
+
+def test_bulk_delete_save_failure_restores_jobs_and_keeps_files(
+    sync_client, monkeypatch,
+):
+    _make_video("bd-save-fail", "keep.mp4", b"keep")
+    video_router.jobs.clear()
+    job = {
+        "project": "bd-save-fail",
+        "videos": [{"status": "done", "file": "keep.mp4"}],
+    }
+    video_router.jobs["keep-job"] = job
+    assert video_router._save_jobs("bd-save-fail")
+    monkeypatch.setattr(video_router, "_save_jobs", lambda project: False)
+
+    response = sync_client.post(
+        "/api/video/bulk-delete",
+        json={"job_ids": ["keep-job"], "project": "bd-save-fail"},
+    )
+
+    assert response.status_code == 503
+    assert video_router.jobs == {"keep-job": job}
+    assert (get_project_video_dir("bd-save-fail") / "keep.mp4").read_bytes() == b"keep"
 
 
 def test_bulk_delete_no_ids_400(sync_client):
@@ -767,6 +796,26 @@ def test_delete_last_job_persists_empty_state_across_restart(sync_client, isolat
     video_router._load_jobs(project)
     assert video_router.jobs == {}
     assert json.loads(jobs_file.read_text()) == {}
+
+
+def test_delete_job_save_failure_restores_job_and_keeps_file(sync_client, monkeypatch):
+    _make_video("delete-save-fail", "keep.mp4", b"keep")
+    video_router.jobs.clear()
+    job = {
+        "project": "delete-save-fail",
+        "videos": [{"status": "done", "file": "keep.mp4"}],
+    }
+    video_router.jobs["keep-job"] = job
+    assert video_router._save_jobs("delete-save-fail")
+    monkeypatch.setattr(video_router, "_save_jobs", lambda project: False)
+
+    response = sync_client.request(
+        "DELETE", "/api/video/jobs/keep-job", params={"project": "delete-save-fail"}
+    )
+
+    assert response.status_code == 503
+    assert video_router.jobs == {"keep-job": job}
+    assert (get_project_video_dir("delete-save-fail") / "keep.mp4").read_bytes() == b"keep"
 
 
 # --- color-correct (single) ----------------------------------------------
