@@ -196,6 +196,7 @@ def explain_empty_slideshow_plan(
     from services.control_plane_slideshows import (
         CLEAN_VIDEO_FORMATS,
         _generic_clean_video_chunk,
+        _generic_clean_video_objects,
         _permutation_plan_candidates,
         curated_plans_for_recipe,
         requires_curated_video_plan,
@@ -230,15 +231,20 @@ def explain_empty_slideshow_plan(
         template = recipe.templates[0]
         if opaque_reserved_media:
             return GENERIC_MEDIA_EXHAUSTED
+        eligible_objects = _generic_clean_video_objects(recipe, library)
         objects_in_order = [
-            item for item in library.objects
+            item for item in eligible_objects
             if item.key not in (reserved_media_keys or set())
         ]
         for chunk in range(len(objects_in_order) + 1):
             plan = _generic_clean_video_chunk(template, objects_in_order, chunk)
             if plan is None:
                 if chunk == 0:
-                    return TEMPLATE_MEDIA_EXCEEDS_LIBRARY
+                    return (
+                        TEMPLATE_MEDIA_EXCEEDS_LIBRARY
+                        if len(eligible_objects) < template.media_count
+                        else GENERIC_MEDIA_EXHAUSTED
+                    )
                 return GENERIC_MEDIA_EXHAUSTED
             if plan["signature"] in unavailable_signatures:
                 continue
