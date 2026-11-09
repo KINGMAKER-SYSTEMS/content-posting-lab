@@ -307,6 +307,9 @@
 
 ## Local Contracts
 
+- `services/source_duration_repair.py` accepts `approved_music_id` only as
+  6-20 ASCII digits; Unicode numeric characters are invalid repair commands.
+
 - Provider artifact download deadlines accept only finite positive seconds.
   Infinity and numeric overflow use the existing finite default, so a malformed
   setting cannot remove the whole-download deadline. Positive fractional values

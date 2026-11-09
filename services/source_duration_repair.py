@@ -185,7 +185,7 @@ def validate_command(value: object) -> Dict:
         if not _is_nullable_int(value.get(key)):
             raise RepairError("repair_command_invalid", f"repair {key} must be null or a nonnegative integer")
     music = value.get("approved_music_id")
-    if not isinstance(music, str) or not (6 <= len(music) <= 20) or not music.isdigit():
+    if not isinstance(music, str) or not (6 <= len(music) <= 20) or not music.isascii() or not music.isdigit():
         raise RepairError("repair_command_invalid", "approved_music_id must be 6-20 ASCII digits")
     for key in sorted(INT_KEYS):
         v = value.get(key)
