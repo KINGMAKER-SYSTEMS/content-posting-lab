@@ -113,6 +113,7 @@ def test_validate_command_accepts_and_rejects():
         {k: v for k, v in good_command().items() if k != "slot_id"},
         {**good_command(), "slot_payload_sha256": "XYZ"},
         {**good_command(), "approved_music_id": "12345"},
+        {**good_command(), "approved_music_id": "١٢٣٤٥٦"},
         {**good_command(), "approved_music_id": 7647631384072850190},
         {**good_command(), "source_trim_start_ms": 1.5},
         {**good_command(), "source_trim_end_ms": 0},
