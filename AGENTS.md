@@ -314,9 +314,10 @@
   exists so restart cannot resurrect the deleted job; projects that have never
   had a jobs file remain file-free. Single and bulk deletion persist removed
   jobs before unlinking video files; on save failure they restore in-memory
-  state and return 503 with files intact. Bulk deletion is project-scoped:
-  foreign-project IDs are skipped like missing IDs and cannot remove their
-  jobs or media.
+  state and return 503 with files intact. Both delete routes are project-scoped:
+  single delete returns 404 for a foreign-project job, while bulk deletion skips
+  foreign-project IDs like missing IDs; neither route can remove foreign jobs
+  or media.
   The receipt binds every retained artifact to its exact size and SHA-256;
   its directory must be a real child of the project; restart recovery verifies
   the receipt before restoring a new job's completed entry.

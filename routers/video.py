@@ -750,7 +750,7 @@ async def delete_job(job_id: str, project: str = "quick-test"):
     if job_id not in jobs:
         _load_jobs(project)
     job = jobs.get(job_id)
-    if not job:
+    if not job or job.get("project", project) != project:
         raise HTTPException(status_code=404, detail="Job not found")
 
     proj = job.get("project", project)

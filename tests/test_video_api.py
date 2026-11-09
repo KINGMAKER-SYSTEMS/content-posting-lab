@@ -730,6 +730,52 @@ def test_bulk_delete_skips_job_from_another_project(sync_client):
     ) == {"job-b": job_b}
 
 
+def test_delete_job_requires_matching_project(sync_client):
+    _make_video("single-owner-a", "a.mp4", b"a")
+    _make_video("single-owner-b", "b.mp4", b"b")
+    video_router.jobs.clear()
+    job_a = {
+        "project": "single-owner-a",
+        "videos": [{"status": "done", "file": "a.mp4"}],
+    }
+    job_b = {
+        "project": "single-owner-b",
+        "videos": [{"status": "done", "file": "b.mp4"}],
+    }
+    video_router.jobs.update({"job-a": job_a, "job-b": job_b})
+    assert video_router._save_jobs("single-owner-a")
+    assert video_router._save_jobs("single-owner-b")
+
+    response = sync_client.request(
+        "DELETE", "/api/video/jobs/job-b", params={"project": "single-owner-a"}
+    )
+
+    assert response.status_code == 404
+    assert video_router.jobs == {"job-a": job_a, "job-b": job_b}
+    assert (get_project_video_dir("single-owner-b") / "b.mp4").read_bytes() == b"b"
+    assert json.loads(
+        (get_project_video_dir("single-owner-b").parent / "jobs.json").read_text()
+    ) == {"job-b": job_b}
+
+    video_router.jobs.clear()
+    video_router._load_jobs("single-owner-b")
+    assert video_router.jobs == {"job-b": job_b}
+
+    same_project_response = sync_client.request(
+        "DELETE", "/api/video/jobs/job-b", params={"project": "single-owner-b"}
+    )
+    assert same_project_response.status_code == 200
+    assert video_router.jobs == {}
+    assert not (get_project_video_dir("single-owner-b") / "b.mp4").exists()
+
+    video_router.jobs.clear()
+    video_router._load_jobs("single-owner-b")
+    assert video_router.jobs == {}
+    assert json.loads(
+        (get_project_video_dir("single-owner-b").parent / "jobs.json").read_text()
+    ) == {}
+
+
 def test_bulk_delete_save_failure_restores_jobs_and_keeps_files(
     sync_client, monkeypatch,
 ):
