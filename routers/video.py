@@ -203,10 +203,12 @@ def _remove_completion(project: str, job_id: str, index: int) -> None:
 def _save_jobs(project: str) -> bool:
     """Persist active jobs for this project; report whether the write landed."""
     project_jobs = {jid: j for jid, j in jobs.items() if j.get("project") == project}
-    if not project_jobs:
-        return True
     try:
         p = _jobs_path(project)
+        # Keep never-used projects file-free, but an existing file must be
+        # rewritten when its last job is removed or restart will resurrect it.
+        if not project_jobs and not p.exists():
+            return True
         p.parent.mkdir(parents=True, exist_ok=True)
         atomic_save(p, project_jobs)
         return True

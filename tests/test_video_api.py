@@ -744,6 +744,31 @@ def test_delete_job_tolerates_unlink_oserror(sync_client, monkeypatch):
     assert "r1" not in video_router.jobs
 
 
+def test_delete_last_job_persists_empty_state_across_restart(sync_client, isolated_projects_root):
+    """Deleting the final job must clear an existing jobs.json durably."""
+    project = "delete-last"
+    video_router.jobs.clear()
+    video_router.jobs["last"] = {
+        "project": project,
+        "videos": [{"status": "error", "error": "finished"}],
+    }
+    assert video_router._save_jobs(project)
+    jobs_file = isolated_projects_root / project / "jobs.json"
+    assert json.loads(jobs_file.read_text()) == {"last": video_router.jobs["last"]}
+
+    response = sync_client.request(
+        "DELETE", "/api/video/jobs/last", params={"project": project}
+    )
+    assert response.status_code == 200
+    assert video_router.jobs == {}
+
+    # Simulate a new process: the deleted job must not be resurrected.
+    video_router.jobs.clear()
+    video_router._load_jobs(project)
+    assert video_router.jobs == {}
+    assert json.loads(jobs_file.read_text()) == {}
+
+
 # --- color-correct (single) ----------------------------------------------
 
 

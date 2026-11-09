@@ -310,6 +310,9 @@
 - `routers/video.py` must persist each queued UI video job before a generation
   task can debit or call a provider. A completed video may become `done` only
   after either `jobs.json` or an atomic per-output completion receipt persists.
+  When the final job is deleted, persist an empty mapping if `jobs.json` already
+  exists so restart cannot resurrect the deleted job; projects that have never
+  had a jobs file remain file-free.
   The receipt binds every retained artifact to its exact size and SHA-256;
   its directory must be a real child of the project; restart recovery verifies
   the receipt before restoring a new job's completed entry.
