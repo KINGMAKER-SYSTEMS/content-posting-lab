@@ -22,6 +22,7 @@ from typing import Annotated, Callable, Literal
 
 from PIL import Image
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator, model_serializer
+from pydantic_core import PydanticCustomError
 
 from burn_quality_gate import overlay_geometry_reasons
 from services.caption_render import CaptionRenderRequest, CaptionStyle, render_caption_overlay
@@ -78,6 +79,7 @@ class PostRenderRequest(BaseModel):
     renderer_id: Literal[RENDERER_ID]
     renderer_version: Literal[RENDERER_VERSION]
     created_at_ms: int = Field(ge=0)
+    source_duration_repair: dict | None = None
 
     @field_validator("slot_id", "page_id", "program_id", "device_serial", "account")
     @classmethod
@@ -92,7 +94,27 @@ class PostRenderRequest(BaseModel):
         result = handler(self)
         if self.source_text_mode is None:
             result.pop("source_text_mode", None)
+        if self.source_duration_repair is None:
+            result.pop("source_duration_repair", None)
         return result
+
+    @model_validator(mode="after")
+    def repair_command_schema(self) -> "PostRenderRequest":
+        # Timed v2 owns its own refusal; a v1 request carrying a repair command
+        # must still be schema-valid even when the capability is off, so stored
+        # durable jobs can be reloaded and refused by the dispatch fence without
+        # losing their identity. Capability admission is enforced at the HTTP
+        # submit boundary, never here.
+        if self.source_duration_repair is not None and self.schema_ == REQUEST_SCHEMA:
+            from services.source_duration_repair import validate_command
+            try:
+                validate_command(self.source_duration_repair)
+            except Exception as error:
+                raise PydanticCustomError(
+                    getattr(error, "code", None) or "repair_command_invalid",
+                    str(error),
+                )
+        return self
 
     @model_validator(mode="after")
     def hashes_match(self) -> "PostRenderRequest":
@@ -157,6 +179,14 @@ class RenderedPost:
 
 def sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
+
+
+SOURCE_DURATION_REPAIR_ENV = "CONTENT_LAB_SOURCE_DURATION_REPAIR"
+
+
+def source_duration_repair_enabled() -> bool:
+    """Whether the Lab admits source-duration-repair commands (default off)."""
+    return os.getenv(SOURCE_DURATION_REPAIR_ENV) == "on"
 
 
 def _unique_object(pairs):
@@ -490,13 +520,29 @@ def _render_post_single(source_path: Path, output_directory: Path, request: Post
             overlay_path = output_directory / "overlay.png"
             overlay_path.write_bytes(overlay_bytes)
         final_path = output_directory / "final.mp4"
-        final_probe = _encode_final(source, overlay_path, final_path, source_probe, tools, band_height,
-                                    in_app=no_overlay, normalize_pair_timing=paired_caption)
-        if (final_probe.width, final_probe.height, final_probe.video_codec, final_probe.pixel_format,
-            final_probe.sample_aspect_ratio, final_probe.rotation) != (1080, 1920, "h264", "yuv420p", "1:1", 0):
-            raise PostRenderError("final_probe_mismatch", "encoded final media facts do not match delivery contract")
-        if abs(final_probe.duration_ms - source_probe.duration_ms) > 80:
-            raise PostRenderError("duration_changed", "caption-only delivery unexpectedly changed playback duration")
+        repair = request.source_duration_repair
+        if repair is not None:
+            from services.source_duration_repair import render_shorter
+            # The adapter-owned encoder owns the trim + delivery encode (real
+            # `_encode_final` path); it re-verifies the source hash and the
+            # near-9:16 contract itself, then writes the shorter final.
+            repair_dir = output_directory / "repair"
+            render_shorter(source_path, repair_dir, repair,
+                           overlay_path=overlay_path, frame_height=band_height,
+                           normalize_pair_timing=paired_caption)
+            shutil.move(str(repair_dir / "final.mp4"), final_path)
+            final_probe = _probe(final_path, tools)
+            if (final_probe.width, final_probe.height, final_probe.video_codec, final_probe.pixel_format,
+                final_probe.sample_aspect_ratio, final_probe.rotation) != (1080, 1920, "h264", "yuv420p", "1:1", 0):
+                raise PostRenderError("final_probe_mismatch", "encoded final media facts do not match delivery contract")
+        else:
+            final_probe = _encode_final(source, overlay_path, final_path, source_probe, tools, band_height,
+                                        in_app=no_overlay, normalize_pair_timing=paired_caption)
+            if (final_probe.width, final_probe.height, final_probe.video_codec, final_probe.pixel_format,
+                final_probe.sample_aspect_ratio, final_probe.rotation) != (1080, 1920, "h264", "yuv420p", "1:1", 0):
+                raise PostRenderError("final_probe_mismatch", "encoded final media facts do not match delivery contract")
+            if abs(final_probe.duration_ms - source_probe.duration_ms) > 80:
+                raise PostRenderError("duration_changed", "caption-only delivery unexpectedly changed playback duration")
         progress = _run([tools.ffmpeg, "-nostdin", "-v", "error", "-xerror", "-protocol_whitelist", "file,pipe",
                          "-f", "mov", "-i", str(final_path), "-map", "0:v:0",
                          "-progress", "pipe:1", "-nostats", "-f", "null", "-"], tools).decode("ascii")
@@ -528,6 +574,9 @@ def _render_post_single(source_path: Path, output_directory: Path, request: Post
             "qa_frame_sha256": qa_sha, "completed_at_ms": completed}
         if in_app:
             receipt["caption_delivery"] = "in_app"
+        if repair is not None:
+            from services.source_duration_repair import command_digest
+            receipt["source_duration_repair_sha256"] = command_digest(repair)
         receipt_json = json.dumps(receipt, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
         receipt_path = output_directory / "receipt.json"
         receipt_path.write_bytes(receipt_json)

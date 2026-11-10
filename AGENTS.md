@@ -252,6 +252,13 @@
   `coffee/<handle-slug>` library, and composes five photos with `clean-slideshow`.
   Its render has no baked text or source audio; existing captions, Coffee sounds
   and page treatment apply downstream. `coffee-tok` remains available unchanged.
+- `ugc-slideshow` is a page-scoped `sourced_slideshow` option for known Master
+  Pages niches other than Coffee and meme. Keep that vocabulary aligned with
+  Control Plane's `NICHE_CANONICAL.page`; unknown spellings do not become
+  executable formats. The Dossier and recipe resolver use the same format-aware
+  niche check. `image-video` and `single-image-video` remain
+  selectable only for the exact PenPal and Twin page tuples, respectively;
+  the XMAS slideshow alias does not widen those photo plans.
 - `services/control_plane_source_imports.py` owns bounded public-HTTPS download,
   exact-byte hashing, media probing, and refillable-master normalization for
   page-scoped source-link intake.
@@ -324,6 +331,8 @@
   A partial file without a receipt never becomes `done`. If both writes fail,
   keep the file identity in memory as `processing` and retry persistence on job
   reads and bulk download. Never reissue a paid provider call to recover it.
+- `services/source_duration_repair.py` accepts `approved_music_id` only as
+  6-20 ASCII digits; Unicode numeric characters are invalid repair commands.
 - Provider artifact download deadlines accept only finite positive seconds.
   Infinity and numeric overflow use the existing finite default, so a malformed
   setting cannot remove the whole-download deadline. Positive fractional values
@@ -336,6 +345,11 @@
   signature. Signature-only legacy archives cannot prove disjoint media and
   hold generic replenishment until reconciled; do not infer disjointness from
   changed sorted offsets or a new signature alone.
+- Generic `ugc-slideshow` plans count only photo objects toward their template
+  and refill chunks. Curated UGC video plans still select their pinned clips.
+  The zero-plan explanation uses the same eligible photo set as planning:
+  fewer eligible photos than the template requires reports a library shortage;
+  enough eligible photos held by reservations reports generic exhaustion.
 - Job-store compaction treats an absent `clips` field as an empty list. A
   completed job with a present non-list `clips` container retains its job and
   idempotency mapping, records the named refusal, and advances the scan cursor
