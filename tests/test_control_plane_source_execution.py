@@ -2238,7 +2238,27 @@ async def _run_layer_b_unreadable_job(client, idempotency):
         headers=headers(idempotency),
     )
     job_id = response.json()["jobId"]
-    _pin_cuts_to_first_frame(job_id)
+    # Keep the real freshness guard active while exercising probe-budget
+    # behavior. Every job used to be forced onto start zero; that now means
+    # a repeat of the first completed job rather than an unreadable probe.
+    # Three jobs fit disjoint ten-second lanes in the forty-second fixture.
+    store = cp._load_jobs()
+    prior_end = max((
+        cut["startMs"] + cut["durationMs"]
+        for prior_id, prior in store["jobs"].items() if prior_id != job_id
+        for cut in prior.get("sourceCuts", [])
+    ), default=0)
+    start_ms = ((prior_end + 9_999) // 10_000) * 10_000
+    for cut in store["jobs"][job_id]["sourceCuts"]:
+        assert 0 < cut["durationMs"] <= 10_000
+        assert start_ms + cut["durationMs"] <= 40_000
+        cut.update({
+            "slotId": f"{cut['masterSha256']}:{start_ms}:{cut['durationMs']}",
+            "libraryStartMs": start_ms,
+            "startMs": start_ms,
+        })
+        start_ms += 10_000  # Preserve disjointness for every cut in a batch.
+    cp.atomic_save(cp._jobs_path(), store)
     await cp._run_dossier_source(job_id)
     return cp._load_jobs()["jobs"][job_id]
 
