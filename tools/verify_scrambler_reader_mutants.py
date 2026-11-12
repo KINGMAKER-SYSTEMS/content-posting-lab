@@ -77,8 +77,11 @@ def mutation_cases() -> tuple[Mutation, ...]:
                  "if False:", "reader_contract_wildcard"),
         Mutation("partial-origin-second", "last = int(math.ceil(end_s)) - 1",
                  "last = int(math.floor(max(start_s, end_s - 0.001)))", "partial_millisecond"),
-        Mutation("aggregate-entry-budget", "if entries > USAGE_MAX_INDEX_ENTRIES:",
-                 "if False:", "index_entry_budget_counts", occurrences=3),
+        Mutation("budget-per-second", "entries += span\n        if entries > USAGE_MAX_INDEX_ENTRIES:",
+                 "entries += span\n        if False:", "index_entry_budget_counts"),
+        Mutation("budget-wildcard", "# Wildcard show: one stored entry, no per-second expansion.\n            entries += 1\n            if entries > USAGE_MAX_INDEX_ENTRIES:",
+                 "# Wildcard show: one stored entry, no per-second expansion.\n            entries += 1\n            if False:",
+                 "reader_contract_wildcard_entry_budget_is_enforced_without_asset_metadata"),
         Mutation("upstream-offset", "origin_start = int(offset_ms) + start_ms",
                  "origin_start = start_ms", "canonical_origin_window_applies_upstream_offset"),
         Mutation("mapped-bounds", "if start_ms < Decimal(str(mapping.window[0])) * 1000 or end_ms > Decimal(str(mapping.window[1])) * 1000:",
@@ -108,15 +111,23 @@ def mutation_cases() -> tuple[Mutation, ...]:
                  "next(iter(self.posted_assets.values()), ())", "wrong_or_unknown_asset or origin_identity_matches_case_sensitively"),
         Mutation("posted-latest", "record.posted_epoch >= best.posted_epoch",
                  "record.posted_epoch <= best.posted_epoch", "latest_of_multiple_covering"),
-        Mutation("posted-metadata-budget", "if entries > USAGE_MAX_INDEX_ENTRIES:",
-                 "if False:", "metadata_records_count", occurrences=3),
+        Mutation("budget-posted-metadata", "# query, so it never releases a hold and never bricks the feed.\n            entries += 1\n            if entries > USAGE_MAX_INDEX_ENTRIES:",
+                 "# query, so it never releases a hold and never bricks the feed.\n            entries += 1\n            if False:",
+                 "reader_contract_posted_metadata_entry_budget_is_checked_before_allocation"),
     )
 
 
 def prepare_mutants(source: str, cases: tuple[Mutation, ...]) -> list[tuple[Mutation, str]]:
     if not cases or len({case.name for case in cases}) != len(cases):
         raise MutationDefinitionError("mutation inventory must be nonempty with unique names")
-    return [(case, case.apply(source)) for case in cases]
+    prepared = [(case, case.apply(source)) for case in cases]
+    seen_bodies: dict[str, str] = {}
+    for case, body in prepared:
+        if body in seen_bodies:
+            raise MutationDefinitionError(
+                f"{case.name}: duplicate mutated body also produced by {seen_bodies[body]}")
+        seen_bodies[body] = case.name
+    return prepared
 
 
 def junit_stats(path: Path) -> dict:

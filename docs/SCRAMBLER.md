@@ -376,6 +376,8 @@ uses NaN specifically: bypassing the guard then accepts an empty feed, while
 infinity can merely crash in stale-age formatting and is not an acceptance proof.
 All invalid-clock cases remain in the baseline contract suite.
 
+The reader inventory contains distinct single-site mutations for the posted-metadata, wildcard and per-second aggregate entry-budget guards. Each budget needle occurs once, so a later guard cannot substitute for proving rejection before that site allocates. Duplicate mutated source bodies are rejected before execution, even when names or selectors differ.
+
 Every mutation needle must occur exactly the declared number of times and the
 edited body must compile before execution. A baseline must execute real selected
 tests and pass without skips/errors. A mutant counts as killed only when pytest

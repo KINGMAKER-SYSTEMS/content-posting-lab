@@ -89,3 +89,38 @@ def test_reader_contract_invalid_loader_clock_refuses_empty_feed(tmp_path, clock
     usage, retired = _paths(tmp_path)
     with pytest.raises(reader.ScramblerOriginalityUnavailable, match="usage_clock_invalid"):
         reader.load_originality_index(usage, retired_path=retired, now_epoch=clock)
+
+
+def test_reader_contract_wildcard_entry_budget_is_enforced_without_asset_metadata(
+        tmp_path, monkeypatch):
+    rows = [_show(8, "@pilot", wildcard=True),
+            _show(9, "@elsewhere", wildcard=True)]
+    assert all("asset_sha" not in row for row in rows)
+    # Only wildcard appends consume entries: metadata/per-second guards cannot
+    # mask a missing wildcard guard in this two-row, one-entry budget.
+    monkeypatch.setattr(reader, "USAGE_MAX_INDEX_ENTRIES", 1)
+    with pytest.raises(reader.ScramblerOriginalityUnavailable,
+                       match="usage_ledger_too_large"):
+        _index(tmp_path, rows)
+
+
+def test_reader_contract_posted_metadata_entry_budget_is_checked_before_allocation(
+        tmp_path, monkeypatch):
+    prefix = _show(8, "@pilot", wildcard=True)
+    asset_row = {**_show(9, "@pilot"), "asset_sha": "c" * 64}
+    assert "asset_sha" not in prefix
+    # The first wildcard fills the budget. The next metadata entry must refuse
+    # BEFORE allocation, not rely on its later per-second guard to raise.
+    monkeypatch.setattr(reader, "USAGE_MAX_INDEX_ENTRIES", 1)
+    original_observation = reader._PostedObservation
+    allocations = []
+
+    def record_observation(*args, **kwargs):
+        allocations.append((args, kwargs))
+        return original_observation(*args, **kwargs)
+
+    monkeypatch.setattr(reader, "_PostedObservation", record_observation)
+    with pytest.raises(reader.ScramblerOriginalityUnavailable,
+                       match="usage_ledger_too_large"):
+        _index(tmp_path, [prefix, asset_row])
+    assert allocations == [], "over-budget metadata must not be allocated"

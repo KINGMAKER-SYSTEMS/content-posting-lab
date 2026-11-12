@@ -28,8 +28,12 @@ def test_inventory_mutates_current_source_and_preserves_compileability():
     assert len(prepared) == len(cases) > 0
     required = {"prior-show-bypass", "age-expiry-30d", "age-expiry-90d",
                 "wildcard-prior", "unknown-origin", "unknown-origin-window",
-                "mapped-bounds", "finite-query-clock", "finite-loader-clock"}
+                "mapped-bounds", "finite-query-clock", "finite-loader-clock",
+                "budget-posted-metadata", "budget-wildcard", "budget-per-second"}
     assert required <= {case.name for case in cases}
+    assert len({body for _, body in prepared}) == len(prepared)
+    budget_cases = [case for case in cases if case.name.startswith("budget-")]
+    assert len(budget_cases) == 3 and all(case.occurrences == 1 for case in budget_cases)
     for case, mutant in prepared:
         assert mutant != source
         compile(mutant, case.name, "exec")
@@ -131,3 +135,21 @@ def test_main_missing_guard_refuses_before_running_any_tests(tmp_path, monkeypat
     monkeypatch.setattr(tool, "mutation_cases", lambda: (
         tool.Mutation("missing", "NOT-A-REAL-CURRENT-GUARD", "replacement", "selected"),))
     assert tool.main(["--output", str(tmp_path / "new-proof")]) == 2
+
+
+def test_distinct_names_and_selectors_cannot_inflate_duplicate_mutated_bodies():
+    cases = (tool.Mutation("first", "x = 1", "x = 2", "quadrant_one"),
+             tool.Mutation("second", "x = 1", "x = 2", "quadrant_two"))
+    with pytest.raises(tool.MutationDefinitionError, match="duplicate mutated body"):
+        tool.prepare_mutants("x = 1", cases)
+
+
+def test_main_duplicate_body_refuses_before_running_any_tests(tmp_path, monkeypatch):
+    def forbidden_execution(*args, **kwargs):
+        raise AssertionError("no process may run with duplicate mutated bodies")
+    original = tool.mutation_cases()[0]
+    duplicate = tool.Mutation("different-name", original.needle, original.replacement,
+                              "different-selector", original.occurrences)
+    monkeypatch.setattr(tool, "run_case", forbidden_execution)
+    monkeypatch.setattr(tool, "mutation_cases", lambda: (original, duplicate))
+    assert tool.main(["--output", str(tmp_path / "duplicate-proof")]) == 2
