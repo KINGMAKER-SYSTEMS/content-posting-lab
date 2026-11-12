@@ -364,3 +364,40 @@ surface with the candidate under fixed randomness. Portable edited-source
 mutation runners are tools/verify_scrambler_core_mutants.py and
 tools/verify_scrambler_reader_mutants.py; both require a passing baseline and
 preserve source hashes, patches and logs. Run remotely through suite-slot.
+
+The reader runner targets the CURRENT unused-only policy: prior-show bypass,
+30/90-day history expiry, wildcard lost windows, page-filter bypass, unknown
+origin/extent, and the retained identity, bounds, allocation-budget and posting-
+observation guards. It does not mutate the removed second-show/cooldown constants.
+`tests/test_scrambler_reader_mutant_contract.py` supplies stable input quadrants,
+including empty-history clock checks: an already-used window alone would conceal
+a broken clock guard under the unused-only policy. The loader-clock mutation
+uses NaN specifically: bypassing the guard then accepts an empty feed, while
+infinity can merely crash in stale-age formatting and is not an acceptance proof.
+All invalid-clock cases remain in the baseline contract suite.
+
+Every mutation needle must occur exactly the declared number of times and the
+edited body must compile before execution. A baseline must execute real selected
+tests and pass without skips/errors. A mutant counts as killed only when pytest
+exits 1 with selected assertion failures and zero runtime, import, collection
+or fixture errors. Accepted messages are ordinary assert/AssertionError,
+pytest's DID NOT RAISE, or explicitly tagged `pytest.fail("behavioral assertion: ...")`;
+arbitrary Failed/timeout messages do not count. Zero selected tests and timeouts
+never count.
+JUnit testcase records supply the counts. The runner changes copied modules only,
+preserves repository resource resolution, and refuses a nonempty evidence folder
+so a stale XML result cannot certify a new run. `results.json`, each mutant diff,
+source SHA256, JUnit XML and raw logs remain in that folder.
+
+Example on Maj/Seeno (use its existing test interpreter; this MacBook runs no tests):
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 python tools/verify_scrambler_reader_mutants.py \
+  --output "$HOME/ec-work/reader-proof-$(date +%Y%m%dT%H%M%S)"
+```
+
+`--output` overrides optional non-secret `SCRAMBLER_MUTANT_OUT`; otherwise the
+runner creates a new temporary evidence directory. On fleet hosts, explicitly
+choose a new directory under `~/ec-work/`. Exit 0 means the baseline passed and
+every listed mutation was behaviorally killed; 1 means baseline/mutation proof
+failed, and 2 means invalid CLI/preflight/output-directory input.

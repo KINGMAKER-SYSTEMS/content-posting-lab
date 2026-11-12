@@ -184,3 +184,118 @@ async def test_same_master_lost_prior_bounds_refuse_before_media(
     assert final["status"] == "failed"
     assert final["error"] == "source_freshness_history_unknown"
     assert not touched and not final.get("clips")
+
+def _legacy_guard_test_cut_at(cut, start_ms):
+    """Put a six-second fixture cut on the real executor's whole-second grid."""
+    result = deepcopy(cut)
+    result.update({
+        "slotId": f"{result['masterSha256']}:{start_ms}:6000",
+        "libraryStartMs": start_ms,
+        "startMs": start_ms,
+        "durationMs": 6_000,
+    })
+    assert start_ms >= 0 and start_ms % 1_000 == 0
+    return result
+
+
+@pytest.mark.asyncio
+async def test_legacy_executor_accepts_adjacent_half_open_intervals(
+        lab, monkeypatch, tmp_path):
+    client, _, _ = lab
+    first = client.post("/api/control-plane/v1/jobs", json=job_body(1),
+                        headers=headers("legacy-edge-adjacent-prior")).json()["jobId"]
+    second = client.post("/api/control-plane/v1/jobs", json=job_body(1),
+                         headers=headers("legacy-edge-adjacent-current")).json()["jobId"]
+    store = cp._load_jobs()
+    prior_cut = _legacy_guard_test_cut_at(store["jobs"][first]["sourceCuts"][0], 0)
+    adjacent = _legacy_guard_test_cut_at(store["jobs"][second]["sourceCuts"][0], 6_000)
+    assert prior_cut["startMs"] + prior_cut["durationMs"] == adjacent["startMs"]
+    cp._update_job(first, sourceCuts=[prior_cut])
+    cp._update_job(second, sourceCuts=[adjacent])
+    job_ref = [first]
+    observed = _wire_executor(monkeypatch, tmp_path, job_ref)
+
+    await cp._run_dossier_source(first)
+    prior = cp._load_jobs()["jobs"][first]
+    assert prior["status"] == "completed", prior.get("error")
+    assert prior["sourceCuts"] == [prior_cut]
+    assert len(prior["clips"]) == 1
+    job_ref[0] = second
+    await cp._run_dossier_source(second)
+    final = cp._load_jobs()["jobs"][second]
+    assert final["status"] == "completed", final.get("error")
+    assert final["sourceCuts"] == [adjacent]
+    assert len(final["clips"]) == 1
+    assert len(observed["renders"]) == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("candidate_side", ["before", "after"])
+async def test_legacy_executor_refuses_one_second_edge_overlap_before_media(
+        lab, monkeypatch, candidate_side):
+    client, _, _ = lab
+    first = client.post("/api/control-plane/v1/jobs", json=job_body(1),
+                        headers=headers("legacy-partial-overlap-prior")).json()["jobId"]
+    current = client.post("/api/control-plane/v1/jobs", json=job_body(1),
+                          headers=headers("legacy-partial-overlap-current")).json()["jobId"]
+    store = cp._load_jobs()
+    prior_start, candidate_start = ((5_000, 0) if candidate_side == "before"
+                                    else (0, 5_000))
+    prior_cut = _legacy_guard_test_cut_at(store["jobs"][first]["sourceCuts"][0], prior_start)
+    candidate = _legacy_guard_test_cut_at(store["jobs"][current]["sourceCuts"][0], candidate_start)
+    overlap = (min(prior_start + prior_cut["durationMs"], candidate_start + candidate["durationMs"])
+               - max(prior_start, candidate_start))
+    assert overlap == 1_000
+    assert prior_start != candidate_start
+    cp._update_job(first, sourceCuts=[prior_cut], status="completed")
+    cp._update_job(current, sourceCuts=[candidate])
+    touched = []
+
+    async def forbidden_media(*args):
+        touched.append(args)
+        raise AssertionError("a partial used interval must refuse before media")
+
+    monkeypatch.setattr(cp, "_cached_source_master", forbidden_media)
+    await cp._run_dossier_source(current)
+    final = cp._load_jobs()["jobs"][current]
+    # A one-second grid-valid overlap reaches freshness, not geometry refusal.
+    assert final["status"] == "failed"
+    assert final["error"] == "source_fresh_cut_needed"
+    assert not touched and not final.get("clips")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("lost_bound", ["startMs", "durationMs"])
+async def test_legacy_executor_refuses_archived_null_bounds_before_media(
+        lab, monkeypatch, lost_bound):
+    from services import job_store_compaction as compaction
+
+    client, _, _ = lab
+    first = client.post("/api/control-plane/v1/jobs", json=job_body(1),
+                        headers=headers("legacy-archive-null-prior")).json()["jobId"]
+    current = client.post("/api/control-plane/v1/jobs", json=job_body(1),
+                          headers=headers("legacy-archive-null-current")).json()["jobId"]
+    store = cp._load_jobs()
+    prior = store["jobs"].pop(first)
+    prior["status"] = "completed"
+    archive = compaction.empty_index()
+    compaction.fold_into_index(archive, prior)
+    assert len(archive["sourceDnaCuts"]) == 1
+    archived_cut = archive["sourceDnaCuts"][0]
+    assert archived_cut["masterSha256"] == store["jobs"][current]["sourceCuts"][0]["masterSha256"]
+    archived_cut[lost_bound] = None
+    store[compaction.ARCHIVE_INDEX_KEY] = archive
+    with cp.lock_for(cp._jobs_path()):
+        cp._save_jobs(store)
+    touched = []
+
+    async def forbidden_media(*args):
+        touched.append(args)
+        raise AssertionError("archived lost bounds cannot establish freshness")
+
+    monkeypatch.setattr(cp, "_cached_source_master", forbidden_media)
+    await cp._run_dossier_source(current)
+    final = cp._load_jobs()["jobs"][current]
+    assert final["status"] == "failed"
+    assert final["error"] == "source_freshness_history_unknown"
+    assert not touched and not final.get("clips")

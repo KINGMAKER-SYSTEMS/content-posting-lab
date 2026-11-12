@@ -52,7 +52,7 @@ def test_second_same_page_show_after_eight_days_is_refused(tmp_path):
     assert not allowed(feed(tmp_path, [show(days=8, page='@PiLoT')]))
 
 
-def test_third_same_page_show_within_thirty_days_is_refused(tmp_path):
+def test_multiple_prior_same_page_shows_refuse_reuse(tmp_path):
     assert not allowed(feed(tmp_path, [show(days=8, page='@pilot'),
                                      show(days=16, page='@pilot')]))
 
