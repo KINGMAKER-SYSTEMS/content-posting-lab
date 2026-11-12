@@ -48,8 +48,8 @@ def test_candidate_must_have_positive_window_inside_canonical_master_mapping(tmp
     assert not allowed(feed(tmp_path), start, end)
 
 
-def test_second_same_page_show_after_eight_days_is_legal(tmp_path):
-    assert allowed(feed(tmp_path, [show(days=8, page='@PiLoT')]))
+def test_second_same_page_show_after_eight_days_is_refused(tmp_path):
+    assert not allowed(feed(tmp_path, [show(days=8, page='@PiLoT')]))
 
 
 def test_third_same_page_show_within_thirty_days_is_refused(tmp_path):

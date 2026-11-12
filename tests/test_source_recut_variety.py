@@ -1,10 +1,8 @@
-"""Re-cut variety (operator rule 2026-09-30).
+"""Unused-moment selection and variety within the same masters.
 
-"When it recuts, it uses a different time cut than the previous one. It
-recuts at a different section in a different time slice", lengths 5 to 9 s in
-half-second steps, "just build it in there for everything": every re-cut of a
-master lands on a different part of the footage at a different length than
-the cuts just before it, and supply never stops when the windows run out.
+Owner 2026-11-12: duration, offset and recipe changes never unlock used moments.
+When no disjoint interval fits, report exhaustion so unused same-source coverage
+can be replenished; do not invent extra footage runway by overlapping cuts.
 """
 
 from dataclasses import replace
@@ -73,13 +71,11 @@ def _cut_one_at_a_time(recipe, count):
 
 
 def _assert_no_window_twice(cuts):
-    """No two cuts of one master and length start under 250 ms apart."""
-    by_length = {}
-    for cut in cuts:
-        by_length.setdefault((cut.master.sha256, cut.duration_ms), []).append(cut.start_ms)
-    for starts in by_length.values():
-        starts.sort()
-        assert all(b - a >= 250 for a, b in zip(starts, starts[1:])), starts
+    """Every two cuts from the same master use disjoint half-open intervals."""
+    for index, cut in enumerate(cuts):
+        for other in cuts[index + 1:]:
+            if cut.master.sha256 == other.master.sha256:
+                assert cut.start_ms + cut.duration_ms <= other.start_ms or other.start_ms + other.duration_ms <= cut.start_ms
 
 
 def test_consecutive_recuts_change_both_section_and_length():
@@ -134,35 +130,22 @@ def test_the_last_cut_is_read_from_its_timestamp_not_from_set_order():
     assert abs(cut.start_ms - 100_000) >= 120_000
 
 
-def test_every_whole_second_window_is_cut_before_any_sub_second_one():
+def test_new_offsets_are_not_used_to_reenter_previously_cut_seconds():
     recipe, master = _recipe(duration_ms=20_000)
-    durations = source_cut_durations(recipe)
-    every = {
-        (start, length)
-        for length in durations
-        for start in [*range(0, 20_000 - length + 1, 1_000), 20_000 - length]
-    }
-    cuts, _, _ = _cut_one_at_a_time(recipe, len(every) + 20)
-    windows = [(cut.start_ms, cut.duration_ms) for cut in cuts]
-    last_whole = max(i for i, window in enumerate(windows) if window in every)
-    assert every <= set(windows)
-    # A sub-second start comes early only to avoid repeating the last length.
-    assert sum(window not in every for window in windows[:last_whole]) <= 3
+    cuts, served, history = _cut_one_at_a_time(recipe, 100)
+    assert 1 <= len(cuts) <= 4
+    assert sum(cut.duration_ms for cut in cuts) <= master.duration_ms
     _assert_no_window_twice(cuts)
+    assert plan_source_cuts(recipe, 1, served, history=history) == []
     for cut in cuts:
         assert source_cut_is_planned(recipe, master, cut.start_ms, cut.duration_ms, cut.slot_id)
 
 
-def test_true_saturation_stops_with_a_named_reason_and_never_repeats_a_window():
-    # A 6 s master holds 9 windows: 5 s at 0/0.25/0.5/0.75/1 s, 5.5 s at
-    # 0/0.25/0.5 s and 6 s at 0. Once each is cut, nothing more is planned (a
-    # repeat would render the same bytes, which the Worker refuses) and the
-    # reason is named so the Worker can fetch new footage.
+def test_true_saturation_stops_with_a_named_reason_without_overlap_reuse():
     recipe, master = _recipe(duration_ms=6_000)
     cuts, served, history = _cut_one_at_a_time(recipe, 100)
-    assert len(cuts) == 9
+    assert len(cuts) == 1
     _assert_no_window_twice(cuts)
-    assert {cut.start_ms % 1_000 for cut in cuts} == {0, 250, 500, 750}
     assert plan_source_cuts(recipe, 10, served, history=history) == []
     assert explain_empty_source_plan(recipe, served) == SOURCE_WINDOWS_EXHAUSTED
 
@@ -177,25 +160,19 @@ def test_a_five_second_master_stops_on_the_second_job():
     assert explain_empty_source_plan(recipe, served) == SOURCE_WINDOWS_EXHAUSTED
 
 
-def test_a_single_length_vocabulary_moves_the_start_and_then_stops():
-    # At 0.56x only 5 s satisfies both the source and delivered 5-9 s bound,
-    # so the length cannot change: every cut is still a new start, and the
-    # master stops with the named reason instead of repeating one.
+def test_single_length_vocabulary_stops_when_only_overlapping_starts_remain():
     recipe, master = _recipe(duration_ms=8_000, clip_speed=0.56)
     assert source_cut_durations(recipe) == (5_000,)
     cuts, served, history = _cut_one_at_a_time(recipe, 100)
-    assert [cut.start_ms for cut in cuts[:4]] and len(cuts) == len({cut.start_ms for cut in cuts})
-    _assert_no_window_twice(cuts)
-    assert len(cuts) == 13  # starts 0..3 s at 0, 0.25, 0.5, 0.75 s (3.25..3.75 do not fit)
+    assert len(cuts) == 1 and cuts[0].duration_ms == 5_000
     assert plan_source_cuts(recipe, 1, served, history=history) == []
     assert explain_empty_source_plan(recipe, served) == SOURCE_WINDOWS_EXHAUSTED
 
 
-def test_capacity_is_zero_only_when_every_window_is_cut():
+def test_capacity_becomes_zero_when_no_disjoint_unused_window_fits():
     recipe, master = _recipe(duration_ms=6_000)
-    _, served, history = _cut_one_at_a_time(recipe, 8)
-    assert len(plan_source_cuts(recipe, recipe.max_quantity, served, history=history)) == 1
-    _, served, history = _cut_one_at_a_time(recipe, 9)
+    assert len(plan_source_cuts(recipe, recipe.max_quantity, set())) == 1
+    _, served, history = _cut_one_at_a_time(recipe, 1)
     assert plan_source_cuts(recipe, recipe.max_quantity, served, history=history) == []
 
 
@@ -335,39 +312,12 @@ def _cut_in_jobs(recipe, jobs, quantity=10):
     return cuts, served, history
 
 
-def test_an_80_second_master_cuts_every_start_once_then_stops_by_name():
-    # rumi58651-shaped page: one 80 s master cut in runs of 10. Every whole
-    # second x length window first, then half-second starts, then quarter and
-    # three-quarter starts; each window exactly once, the length changing
-    # every cut; then a named stop, never a repeat.
+def test_eighty_second_master_spreads_disjoint_cuts_then_names_exhaustion():
     recipe, master = _recipe(duration_ms=80_000)
-    durations = source_cut_durations(recipe)
-
-    def fits(offset, length):
-        return (80_000 - length - offset) // 1_000 + 1
-
-    whole = sum(fits(0, length) + (length % 1_000 != 0) for length in durations)
-    half = sum(fits(500, length) - (length % 1_000 != 0) for length in durations)
-    quarter = sum(fits(250, length) + fits(750, length) for length in durations)
     cuts, served, history = _cut_in_jobs(recipe, 1_000)
-    assert len(cuts) == whole + half + quarter
+    assert 1 < len(cuts) <= 80_000 // min(source_cut_durations(recipe))
+    assert sum(cut.duration_ms for cut in cuts) <= master.duration_ms
     _assert_no_window_twice(cuts)
-
-    def level(cut):
-        if cut.start_ms % 1_000 == 0 or cut.start_ms == 80_000 - cut.duration_ms:
-            return 0
-        return {500: 1}.get(cut.start_ms % 1_000, 2)
-
-    levels = [level(cut) for cut in cuts]
-    # Coarse to fine: a finer start is used early only to change the length.
-    last = {level: len(levels) - 1 - levels[::-1].index(level) for level in (0, 1)}
-    assert sum(level > 0 for level in levels[:last[0]]) <= 20
-    assert sum(level > 1 for level in levels[:last[1]]) <= 20
-    lengths = [cut.duration_ms for cut in cuts]
-    # The length repeats only near the very end, when one length is all that
-    # is left uncut.
-    repeats = [i for i, (a, b) in enumerate(zip(lengths, lengths[1:])) if a == b]
-    assert len(repeats) <= 10 and all(i > len(lengths) - 40 for i in repeats), repeats
     for cut in cuts:
         assert source_cut_is_planned(recipe, master, cut.start_ms, cut.duration_ms, cut.slot_id)
     assert plan_source_cuts(recipe, 10, served, history=history) == []
@@ -384,22 +334,13 @@ def test_sub_second_starts_are_far_enough_apart_for_any_frame_rate_above_4_fps()
         assert len(set(frames)) == len(frames), (fps, frames)
 
 
-def test_a_sampled_master_finds_its_last_uncut_window_exactly(monkeypatch):
-    # Above FULL_SCAN_CANDIDATES a level is sampled. When the sample misses
-    # the few windows left, an exact pass finds them: the planner never
-    # reports a master used up while a never-cut window remains.
+def test_sampled_master_exact_fallback_finds_last_disjoint_unused_gap(monkeypatch):
     import services.control_plane_sources as sources
     monkeypatch.setattr(sources, "SAMPLED_CANDIDATES_PER_CUT", 1)
     recipe, master = _recipe(duration_ms=700_000)
-    sha = master.sha256
-    durations = source_cut_durations(recipe)
-    every = [
-        (start, length)
-        for length in durations
-        for start in [*range(0, 700_000 - length + 1, 1_000), 700_000 - length]
-    ]
-    assert len(every) > sources.FULL_SCAN_CANDIDATES
-    left = (412_000, 7_500)
-    served = {f"{sha}:{start}:{length}" for start, length in every if (start, length) != left}
+    # All but the final eight seconds are used. Candidate enumeration still
+    # exceeds the sampled threshold, but the untouched tail must be found.
+    served = {f"{master.sha256}:0:692000"}
     (cut,) = plan_source_cuts(recipe, 1, served, seed="miss")
-    assert (cut.start_ms, cut.duration_ms) == left
+    assert cut.start_ms >= 692_000
+    assert cut.start_ms + cut.duration_ms <= master.duration_ms

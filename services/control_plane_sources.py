@@ -59,29 +59,18 @@ EXECUTOR_SCHEMA = "content-lab.source-dna-recut-executor.v1"
 CUT_SLOT_STEP_MS = 9_000
 RECUT_PHASES_MS = (0, 3_000, 6_000)
 RECUT_FIXED_DURATION_MS = 6_000
-# Time-frame planning (operator rule 2026-09-25: only the EXACT posted clip may
-# never post again; a different time frame of the same master -- another start
-# or another length -- is a new video). Every whole-second start on the master
-# (plus one start ending on its last frame) times every allowed length is a
-# candidate.
-# Re-cut variety (operator rule 2026-09-30): each re-cut uses a different part
-# of the master and a different length than the cuts before it, and supply
-# never stops. plan_source_cuts scores every candidate (fresh footage first,
-# then far from recent starts, then a length unlike recent lengths, then the
-# least recently used footage, then a seeded random tiebreak recorded on the
-# job as cutPlanSeed). When every window has been cut, the oldest is reused
-# instead of refusing the job.
+# Time-frame planning (owner 2026-11-12): preserve each page's existing
+# masters and aesthetic; use unused moments across the long master. Another
+# offset, length, speed or recipe never unlocks previously used footage.
+# Candidate variety still spreads cuts across the timeline and lengths, but
+# any overlap with supplied prior cut intervals is ineligible. Exhaustion is
+# named SOURCE_WINDOWS_EXHAUSTED, never concealed by an overlapping re-cut.
 CUT_START_STEP_MS = 1_000
 CAPABILITY_PLAN_SEED = "capability"
-# Sub-second starts (operator 2026-09-30: never render the same bytes twice).
-# Once every whole-second start x length window of a master is cut, new
-# windows start inside each second, coarse to fine: at half a second, then at
-# a quarter and three quarters. Masters carry no verified frame rate, so starts
-# stay at least MIN_START_GAP_MS apart: two different starts of one length
-# decode different first frames at any frame rate above 4 fps, and a window
-# counts as already cut when an earlier cut of the same length starts less
-# than MIN_START_GAP_MS away. When every such window is cut the master is
-# exhausted (SOURCE_WINDOWS_EXHAUSTED); nothing is ever cut twice.
+# Sub-second starts are additional candidate boundaries, never reuse credit.
+# Every candidate must be disjoint from supplied prior intervals; preserve the
+# existing same-length first-frame spacing check as an additional constraint.
+# No fitting unused interval means SOURCE_WINDOWS_EXHAUSTED.
 START_OFFSET_LEVELS_MS = ((0,), (500,), (250, 750))
 SUB_SECOND_START_OFFSETS_MS = frozenset(
     offset for level in START_OFFSET_LEVELS_MS for offset in level
@@ -642,6 +631,21 @@ def _used_time_frames(
     return {sha: sorted(frames) for sha, frames in used.items()}
 
 
+def source_cut_overlaps_used_frames(
+    recipe: SourceRecipe, served_slots: set[str], master: MasterSource,
+    start_ms: int, duration_ms: int,
+) -> bool:
+    """Local-master interval check shared by planner history and execution.
+
+    This query does not certify upstream aliases or complete feed history.
+    The executor must read its durable used frames while holding the jobs lock.
+    """
+    return any(
+        prior_start < start_ms + duration_ms and start_ms < prior_start + prior_duration
+        for prior_start, prior_duration in _used_time_frames(recipe, served_slots)[master.sha256]
+    )
+
+
 def _merged_reservations(
     master: MasterSource, identity: str | None,
     exclusions: list[tuple[str, str | None, int, int]] | None,
@@ -781,14 +785,10 @@ class _Lane:
         return bool(index and self.reserved[index - 1][1] > start)
 
     def static_score(self, start: int, duration: int) -> tuple[float, tuple[float, int]]:
-        """(footage-reuse penalty, newest cut touching it) for one candidate.
+        """Legacy score shape, retained for deterministic variety tie-breaking.
 
-        Any overlap with footage this master already cut costs more than any
-        distance or length penalty except repeating the last length, so fresh
-        footage comes first; more of the window already cut costs more. When
-        a window must overlap, footage cut longest ago is preferred: the age
-        term is the rank of the newest cut touching the window's seconds, 0
-        for the oldest and 1 for the newest.
+        The planner now filters overlapping candidates with is_taken before
+        calling this score: a reuse penalty can never authorize used footage.
         """
         end = start + duration
         covered = 0
@@ -838,12 +838,19 @@ class _Lane:
         return bool(self.recent) and duration == self.recent[0][1]
 
     def is_taken(self, start: int, duration: int) -> bool:
-        """True when a cut of this length starts less than MIN_START_GAP_MS away.
+        """Refuse any overlap with used footage, regardless of clip length.
 
-        Starts at least that far apart decode different first frames at any
-        frame rate above 4 fps; closer ones may decode the same frames. This
-        also catches an end-on-last-frame start a few ms from a grid start.
+        Also preserve the old same-length first-frame spacing check. Queued,
+        completed and archived source cuts supplied in frames all count;
+        this local-master predicate does not certify canonical feed coverage.
         """
+        # Owner 2026-11-12: a different offset, length or treatment is not
+        # fresh footage. Keep the same master, but never re-enter any used
+        # interval. Half-open adjacency remains usable.
+        end = start + duration
+        index = bisect_left(self.covered, (end, -1))
+        if index and self.covered[index - 1][1] > start:
+            return True
         starts = self.taken.get(duration)
         if not starts:
             return False
@@ -1157,8 +1164,8 @@ def plan_source_cuts(
     """Plan up to ``quantity`` never-cut windows, as varied as possible.
 
     Every cut path goes through here (tests/test_source_cut_path_census.py).
-    Without ``scrambler`` this is exactly the base planner (verified
-    byte-identical, pick order included, by tests/test_scrambler_executor_behavior.py):
+    Without ``scrambler`` this uses the base planner with the current
+    unused-only interval rule:
     candidates are every whole-second start on the master's timeline (from
     the page floor; plus one start ending on the last frame) at every allowed
     length (source_cut_durations). Only when every one of those is cut do
@@ -1167,12 +1174,11 @@ def plan_source_cuts(
     scored, lower is better:
 
     1. repeating the master's last length (only when nothing else fits),
-    2. overlap with footage this master already cut (fresh footage first;
-       when everything overlaps, footage cut longest ago wins),
+    2. overlap is refused regardless of the age or length of the prior cut;
     3. closeness of its start to the last few starts on this master,
     4. the same (or a 0.5 s different) length as the last few cuts,
 
-    then least-recently-used footage, then a seeded random tiebreak, so the
+    then a seeded random tiebreak among unused footage, so the
     same seed and inputs always yield the same plan. Every pick updates the
     "recent" state, so one multi-clip plan is itself spread out, and one plan
     never holds two overlapping cuts of a master. The first cut on a master
@@ -1269,12 +1275,10 @@ def _plan_source_cuts_base(
     seed: str,
     history: dict[str, CutUse] | None,
 ) -> list[SourceCut]:
-    """The base planner: exactly the pre-Scrambler algorithm, untouched.
+    """Legacy treatments with unused-only local-master interval selection.
 
-    The Scrambler is OFF for every page that reaches here, so this body stays
-    byte-identical to main (pick order and rng consumption included). Any
-    most-different/scrambler behaviour lives only in
-    _plan_source_cuts_scrambled.
+    The common lane predicate refuses overlap with every supplied used frame;
+    this changes eligibility, never the page's master bindings or aesthetic.
     """
     used = _used_time_frames(recipe, served_slots)
     durations = source_cut_durations(recipe)

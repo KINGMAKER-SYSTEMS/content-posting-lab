@@ -1,3 +1,12 @@
+> **Owner update 2026-11-12:** new video cuts use unused moments within the
+> same existing masters and aesthetic. The reader no longer grants a second
+> show after seven days or drops supplied usage after 90 days. Older show-limit
+> descriptions below are historical. Complete retained source history and
+> canonical pending reservations are release prerequisites; changing the reader
+> alone cannot restore rows already pruned by a producer. This staged repair
+> also makes the shared local-master planner reject interval overlaps across
+> clip lengths. Legacy canonical feed integration remains a separate gap.
+
 # Scrambler — default OFF
 
 The Scrambler varies source-video cuts before planning: output length, effective
@@ -17,7 +26,7 @@ opt-in via SCRAMBLER_FAST_SHARE.
 Draws freeze before planning. The reserved span includes the skipped offset plus
 output length times effective speed. Private canonical origin coordinates never
 rewrite public source descriptors or identity hashes. Full-window fingerprint
-ranking operates within fresh/used classes; missing coverage takes a named
+ranking operates among unused candidates; missing fingerprint coverage takes a named
 spacing fallback.
 
 ## Source-use protection

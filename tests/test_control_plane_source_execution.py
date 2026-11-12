@@ -869,11 +869,9 @@ def test_active_source_job_reserves_windows_across_recipe_revisions(lab):
     assert not _overlapping(first_job["sourceCuts"], following_job["sourceCuts"])
 
 
-def test_capability_counts_down_to_zero_only_when_every_window_is_cut(lab, monkeypatch):
-    # Every whole-second start x length is cut once first, then the half and
-    # quarter-second starts; no window is ever cut twice. Capacity reaches 0
-    # only then, and job creation answers 409 source_windows_exhausted. A
-    # 12 s master keeps the drain short; the planner is the same at any length.
+def test_capability_counts_down_when_no_unused_interval_fits(lab, monkeypatch):
+    # Capacity counts disjoint unused footage, not overlapping offset/length
+    # combinations. A twelve-second master supports at most two fresh cuts.
     from dataclasses import replace
     client, _, _ = lab
     resolve = cp._dossier_source_recipe
@@ -916,8 +914,11 @@ def test_capability_counts_down_to_zero_only_when_every_window_is_cut(lab, monke
         frames.extend(planned)
         cp._update_job(created.json()["jobId"], status="completed")
 
-    assert set(frames) == every
-    assert len(frames) == len(every)
+    assert 1 <= len(frames) <= 2
+    assert sum(length for _, length in frames) <= 12_000
+    for index, (start, length) in enumerate(frames):
+        assert all(start + length <= other or other + other_length <= start
+                   for other, other_length in frames[index + 1:])
     assert capability() == [{
         "recipeId": "pov-dirt-bike:master",
         "engine": "sourced_video",
@@ -1304,47 +1305,16 @@ def test_page_bound_shipstream_master_can_use_first_frame(authority):
     assert min(int(slot.split(":")[1]) for slot in served) == 0
 
 
-def test_used_page_master_is_recut_at_shifted_points_not_declared_exhausted():
-    from services.control_plane_sources import source_window_exclusions
-    # Production 2026-09-18: bambisrevenge11 and tender.acres each have one
-    # 90-second page master and read capability_capacity_exhausted once its
-    # 9-second grid was cut. Every whole-second start and allowed length of the
-    # same footage is now a distinct time frame before the page is exhausted.
-    from dataclasses import replace
-    recipe = resolve_source_recipe(publication(cut_duration_ms=7_000))
-    original = recipe.masters[0]
-    page_master = replace(
-        original, duration_ms=90_000, source_offset_ms=0,
-        provenance={**original.provenance, "authority": "ShipStream source-manifest.v1 exact page master"},
-    )
-    recipe = replace(recipe, masters=(page_master,))
-    first = plan_source_cuts(recipe, 100, set())
-    served = {cut.slot_id for cut in first}
-    recut = plan_source_cuts(recipe, 100, served)
-    assert recut, "a used page master must still offer re-cuts"
-    assert not {cut.slot_id for cut in recut} & served
-    assert all(cut.start_ms + cut.duration_ms <= 90_000 for cut in recut)
-    assert all(5_000 <= cut.duration_ms <= 9_000 for cut in recut)
-    for i, left in enumerate(recut):
-        for right in recut[i + 1:]:
-            assert not (left.start_ms < right.start_ms + right.duration_ms
-                        and right.start_ms < left.start_ms + left.duration_ms), (left, right)
-    _, total = _drain(recipe)
-    # Whole-second starts, plus one ending on the last frame for half-second lengths.
-    assert len(total) == sum(
-        (90_000 - length) // 1_000 + 1 + (length % 1_000 != 0)
-        for length in range(5_000, 9_001, 500)
-    )
-    # Every whole-second window cut: the planner moves inside the second
-    # (half, then quarter seconds) instead of stopping, never repeating one.
-    following = plan_source_cuts(recipe, 100, total)
-    assert following and not {cut.slot_id for cut in following} & total
-    assert all(cut.start_ms % 1_000 for cut in following)
-    # Another page's window still blocks a re-cut, exactly like a first cut.
-    everything = source_window_exclusions([{
-        "sourceIdentity": page_master.provenance["sourceUrl"], "startMs": 0, "endMs": 90_000,
-    }])
-    assert plan_source_cuts(recipe, 100, served, everything) == []
+def test_used_page_master_never_reenters_used_moments_at_shifted_points():
+    recipe, master = _page_master_recipe(90_000)
+    batches, served = _drain(recipe)
+    cuts = [cut for batch in batches for cut in batch]
+    assert cuts and sum(cut.duration_ms for cut in cuts) <= 90_000
+    for index, cut in enumerate(cuts):
+        assert all(cut.start_ms + cut.duration_ms <= other.start_ms
+                   or other.start_ms + other.duration_ms <= cut.start_ms
+                   for other in cuts[index + 1:])
+    assert plan_source_cuts(recipe, 100, served) == []
 
 
 def _page_master_recipe(duration_ms):
@@ -1380,37 +1350,25 @@ def _drain(recipe, served=frozenset(), exclusions=None):
     raise AssertionError("fresh windows never ran out")
 
 
-def test_short_page_master_is_recut_into_six_second_clips():
-    # Production 2026-09-18: healing.in.the.hills has one 7.5-second page
-    # master, so the grid gave it exactly one cut and it read
-    # capability_capacity_exhausted. Operator: "do 6-second clips of the same
-    # footage". Every fitting time frame, including 0-6 s and 1.5-7.5 s, is
-    # cut once, one per job (they overlap); then come sub-second starts.
+def test_short_page_master_stops_after_one_use_instead_of_overlapping_recuts():
     recipe, master = _page_master_recipe(7_500)
     batches, served = _drain(recipe)
     cuts = [cut for batch in batches for cut in batch]
-    assert sorted((cut.start_ms, cut.duration_ms) for cut in cuts) == [
-        (0, 5_000), (0, 5_500), (0, 6_000), (0, 6_500), (0, 7_000), (0, 7_500),
-        (500, 7_000), (1_000, 5_000), (1_000, 5_500), (1_000, 6_000),
-        (1_000, 6_500), (1_500, 6_000), (2_000, 5_000), (2_000, 5_500),
-        (2_500, 5_000),
-    ]
-    assert all(len(batch) == 1 for batch in batches)
-    assert f"{master.sha256}:0:6000" in served and f"{master.sha256}:1500:6000" in served
-    following = plan_source_cuts(recipe, 100, served)
-    assert len(following) == 1 and following[0].slot_id not in served
-    assert following[0].start_ms % 1_000
+    assert len(cuts) == 1
+    assert 5_000 <= cuts[0].duration_ms <= 7_500
+    assert cuts[0].master == master
+    assert plan_source_cuts(recipe, 100, served) == []
 
 
-def test_long_footage_yields_every_length_including_the_six_second_grid():
+def test_long_footage_varies_lengths_without_requiring_overlapping_grid_cuts():
     recipe, master = _page_master_recipe(90_000)
     batches, served = _drain(recipe)
     cuts = [cut for batch in batches for cut in batch]
-    assert {cut.duration_ms for cut in cuts} == set(range(5_000, 9_001, 500))
-    six = {cut.start_ms for cut in cuts if cut.duration_ms == 6_000}
-    assert set(range(0, 84_001, 6_000)) <= six, "the old 6-second pass is a subset"
+    lengths = {cut.duration_ms for cut in cuts}
+    assert lengths <= set(range(5_000, 9_001, 500)) and len(lengths) >= 3
     assert len(cuts) == len({cut.slot_id for cut in cuts})
-    assert not any(cut.slot_id in served for cut in plan_source_cuts(recipe, 100, served))
+    assert sum(cut.duration_ms for cut in cuts) <= master.duration_ms
+    assert plan_source_cuts(recipe, 100, served) == []
 
 
 def test_executor_accepts_exactly_the_cuts_the_planner_emits():
@@ -1436,11 +1394,11 @@ def test_shared_source_exclusions_skip_other_page_windows_and_reencoding():
     recipe = replace(recipe, masters=(master,))
     excluded = source_window_exclusions([{'sourceIdentity':'https://youtu.be/vt5im2TRAKw?si=x','startMs':60_000,'endMs':80_000}])
     _, served = _drain(recipe, exclusions=excluded)
-    assert min(int(slot.split(':')[1]) for slot in served) == 80_000
+    assert served and all(int(slot.split(':')[1]) >= 80_000 for slot in served)
     # Half-open touching intervals do not block a valid next slot.
     excluded = source_window_exclusions([{'sourceIdentity':master.provenance['sourceUrl'],'startMs':0,'endMs':63_000}])
     _, served = _drain(recipe, exclusions=excluded)
-    assert min(int(slot.split(':')[1]) for slot in served) == 63_000
+    assert served and all(int(slot.split(':')[1]) >= 63_000 for slot in served)
     # Unknown legacy timing blocks the whole source, not a guessed short window.
     excluded = source_window_exclusions([{'sourceIdentity':master.provenance['sourceUrl'],'startMs':0,'endMs':9_007_199_254_740_991}])
     assert plan_source_cuts(recipe, 1, set(), excluded) == []

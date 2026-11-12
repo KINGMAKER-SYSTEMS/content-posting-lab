@@ -882,7 +882,7 @@ def test_source_dna_exhaustion_is_terminal_and_a_fresh_master_refills(monkeypatc
 
     recipe, master = variety._recipe(duration_ms=6_000)
     cuts, served, history = variety._cut_one_at_a_time(recipe, 100)
-    assert len(cuts) == 9
+    assert len(cuts) == 1
     assert plan_source_cuts(recipe, 1, served, history=history) == []
     assert explain_empty_source_plan(recipe, served) == SOURCE_WINDOWS_EXHAUSTED
     # A fresh master opens never-cut windows: the source-DNA zero is terminal
