@@ -215,3 +215,38 @@ created a Lab job. Deploying compatibility alone does not resume that terminal
 Worker preparation. Releases must use the existing authorized refresh/retry
 workflow and verify a fresh successful preparation; this branch performs no
 Worker state changes, render submission, phone action, or deployment.
+
+### Output endpoint (exact final frame count)
+
+The delivery encode resamples to 30 fps with no end bound, so FFmpeg rounds the
+last frame at EOF and the 80 ms source-duration tolerance decides the result. A
+531-frame 60000/1001 source (8.858850 s) becomes 267 frames, 8.900 s. When the
+picture must end inside a measured interval of the slot's sound, the Worker
+puts this policy in the immutable slot payload as `output_endpoint` and repeats
+it, value for value, on the v1 render request:
+
+```json
+{"schema": "content-lab.post-render-output-endpoint.v1", "frame_rate": "30/1",
+ "frames": 266, "interval_start_ms": 8830, "interval_end_ms": 8875,
+ "evidence_sha256": "<sha256 of the accepted interval evidence>"}
+```
+
+- `frames / 30` s must lie inside the interval (exact rational check) and
+  within 80 ms of the probed source duration. It is a choice of frame boundary,
+  not a cut or a pad.
+- Both bounded encodes carry `-frames:v <frames>`. The final must decode to
+  exactly `frames` frames and probe within 1 ms of `round(frames * 1000 / 30)`
+  ms, or the job fails `output_endpoint_unmet`. The frame count is the exact
+  contract; the 1 ms is the MP4 container's own millisecond duration rounding
+  (a 266-frame final is stored as 8.866016 s or 8.866667 s depending on packet
+  order). Other refusals:
+  `output_endpoint_outside_source`, `output_endpoint_audio_unsupported` (a
+  source with an audio stream), and a schema-invalid or slot-mismatched policy
+  at submit.
+- The receipt adds `output_endpoint_sha256`, the SHA-256 of the policy as
+  compact sorted-key JSON. Durable authority re-checks it, the duration and the
+  decoded frame count.
+- Not supported with timed v2 requests or `source_duration_repair`.
+- A request without the field is byte-identical to before. Because the job id
+  is the slot id plus the slot payload hash, a slot that gains the policy is a
+  new job; an artifact rendered without it is never relabelled.

@@ -31,6 +31,9 @@ from services.post_render import (
     _unique_object, _reject_nonfinite, source_duration_repair_enabled,
 )
 
+from services.output_endpoint import (
+    canonical_endpoint, duration_meets_endpoint, endpoint_digest, endpoint_frames,
+)
 from services.post_render_timed import (
     DURATION_TOLERANCE_MS, TimedPostRenderRequest, render_timed_post, _resolve_timing,
 )
@@ -263,6 +266,16 @@ class RenderJobSubmission(BaseModel):
             raise ValueError("lyric source marker does not match immutable slot")
         if lyric_source and slot["caption"].get("text") != "":
             raise ValueError("lyric source must not contain caption text")
+        # An output endpoint is authority only when the exact hashed slot
+        # carries the same policy, and a slot that pins one cannot be rendered
+        # unbounded. Compared as canonical JSON so 266 and 266.0 differ.
+        slot_endpoint = slot.get("output_endpoint") if "output_endpoint" in slot else None
+        if "output_endpoint" in slot and slot_endpoint is None:
+            raise ValueError("slot output endpoint must be a policy when present")
+        if (slot_endpoint is None) != (request.output_endpoint is None) or (
+                slot_endpoint is not None
+                and canonical_endpoint(slot_endpoint) != canonical_endpoint(request.output_endpoint)):
+            raise ValueError("output endpoint does not match immutable slot")
         if "program_id" in slot and slot["program_id"] != request.program_id:
             raise ValueError("slot program mismatch")
         # Structural equality only. Cross-language treatment hashing uses original request bytes.
@@ -1049,6 +1062,15 @@ class PostRenderJobs:
             if receipt.get("source_duration_repair_sha256") != command_digest(repair):
                 raise RenderJobError("receipt_binding_mismatch")
         elif "source_duration_repair_sha256" in receipt:
+            raise RenderJobError("receipt_binding_mismatch")
+        endpoint = getattr(request, "output_endpoint", None)
+        if endpoint is not None:
+            # The durable facts must still show the bound endpoint was met.
+            if (receipt.get("output_endpoint_sha256") != endpoint_digest(endpoint)
+                    or not duration_meets_endpoint(receipt.get("duration_ms"), endpoint_frames(endpoint))
+                    or evidence.get("decoded_video_frames") != endpoint_frames(endpoint)):
+                raise RenderJobError("receipt_binding_mismatch")
+        elif "output_endpoint_sha256" in receipt:
             raise RenderJobError("receipt_binding_mismatch")
         expected_schema = "posting-prepared-artifact/v2" if isinstance(request, TimedPostRenderRequest) else "posting-prepared-artifact/v1"
         if receipt.get("schema") != expected_schema:

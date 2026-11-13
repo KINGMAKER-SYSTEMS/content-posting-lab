@@ -27,6 +27,10 @@ from pydantic_core import PydanticCustomError
 from burn_quality_gate import overlay_geometry_reasons
 from services.caption_render import CaptionRenderRequest, CaptionStyle, render_caption_overlay
 from services.ffmpeg import delivery_encode_args
+from services.output_endpoint import (
+    OutputEndpointError, duration_meets_endpoint, endpoint_digest, endpoint_frames,
+    endpoint_within_source, validate_output_endpoint,
+)
 from services.page_frame import frame_band_height, frame_band_rows, frame_fit, letterbox_filter
 from services.pool_supplied_pages import is_pool_supplied
 from services.source_treatment import normalized_visual_treatment
@@ -80,6 +84,9 @@ class PostRenderRequest(BaseModel):
     renderer_version: Literal[RENDERER_VERSION]
     created_at_ms: int = Field(ge=0)
     source_duration_repair: dict | None = None
+    # An exact output frame count inside an approved interval; it must also be
+    # present in the immutable slot payload (services/output_endpoint.py).
+    output_endpoint: dict | None = None
 
     @field_validator("slot_id", "page_id", "program_id", "device_serial", "account")
     @classmethod
@@ -96,7 +103,23 @@ class PostRenderRequest(BaseModel):
             result.pop("source_text_mode", None)
         if self.source_duration_repair is None:
             result.pop("source_duration_repair", None)
+        if self.output_endpoint is None:
+            result.pop("output_endpoint", None)
         return result
+
+    @model_validator(mode="after")
+    def output_endpoint_schema(self) -> "PostRenderRequest":
+        if self.output_endpoint is None:
+            return self
+        if self.schema_ != REQUEST_SCHEMA:
+            raise ValueError("timed render does not support an output endpoint")
+        if self.source_duration_repair is not None:
+            raise ValueError("output endpoint cannot be combined with a source duration repair")
+        try:
+            validate_output_endpoint(self.output_endpoint)
+        except OutputEndpointError as error:
+            raise PydanticCustomError(error.code, str(error))
+        return self
 
     @model_validator(mode="after")
     def repair_command_schema(self) -> "PostRenderRequest":
@@ -302,6 +325,18 @@ def _run(args: list[str], tools: RenderTools, *, output_file: Path | None = None
         process.stderr.close()
 
 
+def _has_audio(path: Path, tools: RenderTools) -> bool:
+    raw = _run([tools.ffprobe, "-v", "error", "-protocol_whitelist", "file,pipe", "-f", "mov",
+                "-select_streams", "a", "-show_entries", "stream=index", "-of", "json", str(path)], tools)
+    try:
+        streams = json.loads(raw)["streams"]
+        if not isinstance(streams, list):
+            raise ValueError("stream list required")
+        return bool(streams)
+    except (KeyError, ValueError, TypeError) as error:
+        raise PostRenderError("media_probe_invalid", "media probe did not prove audio stream facts") from error
+
+
 def _probe(path: Path, tools: RenderTools) -> MediaProbe:
     raw = _run([tools.ffprobe, "-v", "error", "-protocol_whitelist", "file,pipe", "-f", "mov",
                 "-show_streams", "-show_format", "-of", "json", str(path)], tools)
@@ -397,7 +432,15 @@ def _video_graph(source_probe: MediaProbe, frame_height: int | None = None, *, i
 
 def _encode_final(source: Path, overlay: Path | None, final: Path, source_probe: MediaProbe,
                   tools: RenderTools, frame_height: int | None = None, *, in_app: bool = False,
-                  normalize_pair_timing: bool = False) -> MediaProbe:
+                  normalize_pair_timing: bool = False, output_frames: int | None = None) -> MediaProbe:
+    """Encode the delivery final; ``output_frames`` caps it at an exact 30 fps frame count.
+
+    Without a bound FFmpeg rounds the last frame at EOF and the 80 ms tolerance
+    decides. With one, both bounded encodes carry ``-frames:v`` and the final
+    must probe at that endpoint (to the container's millisecond rounding);
+    anything else is refused, never kept. The caller then proves the exact
+    decoded frame count.
+    """
     graph = _video_graph(source_probe, frame_height, in_app=in_app, normalize_pair_timing=normalize_pair_timing)
     base = [tools.ffmpeg, "-nostdin", "-v", "error", "-xerror", "-protocol_whitelist", "file,pipe",
             "-noautorotate", "-f", "mov", "-i", str(source)]
@@ -419,10 +462,16 @@ def _encode_final(source: Path, overlay: Path | None, final: Path, source_probe:
                 index = encode.index(option)
                 del encode[index:index + 2]
             encode += ["-b:v", str(bitrate), "-maxrate", str(bitrate), "-bufsize", str(bitrate * 2)]
+        if output_frames is not None:
+            encode += ["-frames:v", str(output_frames)]
         try:
             _run([*base, *encode, "-threads", "2", "-fs", str(MAX_FINAL_BYTES + 1), str(final)],
                  tools, output_file=final)
             probe = _probe(final, tools)
+            if output_frames is not None and not duration_meets_endpoint(probe.duration_ms, output_frames):
+                final.unlink(missing_ok=True)
+                raise PostRenderError("output_endpoint_unmet",
+                                      "encoded final does not end at the bound output endpoint")
             if final.stat().st_size <= MAX_FINAL_BYTES and abs(probe.duration_ms - source_probe.duration_ms) <= 80:
                 return probe
         except PostRenderError as error:
@@ -495,6 +544,17 @@ def _render_post_single(source_path: Path, output_directory: Path, request: Post
         if (source_probe.height < 768 or source_probe.sample_aspect_ratio not in {"1:1", "", "N/A", "0:1"}
                 or source_probe.rotation != 0 or not near_vertical):
             raise PostRenderError("regeneration_required", "source must be upright square-pixel near-9:16 video at least 768 pixels high")
+        endpoint = request.output_endpoint
+        if endpoint is not None:
+            # The policy picks a frame boundary; it is not a cut or a pad. It
+            # must sit inside the drift an ordinary encode already accepts, and
+            # a source with audio would keep a track longer than the picture.
+            if not endpoint_within_source(endpoint, source_probe.duration_ms):
+                raise PostRenderError("output_endpoint_outside_source",
+                                      "output endpoint is not within the delivery tolerance of the source duration")
+            if _has_audio(source, tools):
+                raise PostRenderError("output_endpoint_audio_unsupported",
+                                      "output endpoint supports only sources without an audio stream")
         caption_request = None if lyric_source else _caption_request(request)
         band_height = _frame_band_height(request)
         if no_overlay:
@@ -537,7 +597,8 @@ def _render_post_single(source_path: Path, output_directory: Path, request: Post
                 raise PostRenderError("final_probe_mismatch", "encoded final media facts do not match delivery contract")
         else:
             final_probe = _encode_final(source, overlay_path, final_path, source_probe, tools, band_height,
-                                        in_app=no_overlay, normalize_pair_timing=paired_caption)
+                                        in_app=no_overlay, normalize_pair_timing=paired_caption,
+                                        output_frames=None if endpoint is None else endpoint_frames(endpoint))
             if (final_probe.width, final_probe.height, final_probe.video_codec, final_probe.pixel_format,
                 final_probe.sample_aspect_ratio, final_probe.rotation) != (1080, 1920, "h264", "yuv420p", "1:1", 0):
                 raise PostRenderError("final_probe_mismatch", "encoded final media facts do not match delivery contract")
@@ -549,6 +610,10 @@ def _render_post_single(source_path: Path, output_directory: Path, request: Post
         frames = [int(line.partition("=")[2]) for line in progress.splitlines() if line.startswith("frame=")]
         if not frames or frames[-1] <= 0 or "progress=end" not in progress:
             raise PostRenderError("final_decode_failed", "full final-video decode did not complete")
+        if endpoint is not None and (frames[-1] != endpoint_frames(endpoint) or not duration_meets_endpoint(
+                final_probe.duration_ms, endpoint_frames(endpoint))):
+            raise PostRenderError("output_endpoint_unmet",
+                                  "decoded final does not have exactly the bound output frames")
         qa_at_ms = final_probe.duration_ms // 2
         qa_path = output_directory / "qa.jpg"
         _run([tools.ffmpeg, "-nostdin", "-v", "error", "-xerror", "-protocol_whitelist", "file,pipe",
@@ -577,6 +642,8 @@ def _render_post_single(source_path: Path, output_directory: Path, request: Post
         if repair is not None:
             from services.source_duration_repair import command_digest
             receipt["source_duration_repair_sha256"] = command_digest(repair)
+        if endpoint is not None:
+            receipt["output_endpoint_sha256"] = endpoint_digest(endpoint)
         receipt_json = json.dumps(receipt, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
         receipt_path = output_directory / "receipt.json"
         receipt_path.write_bytes(receipt_json)
