@@ -171,8 +171,8 @@ def test_rollback_never_pairs_old_origins_with_new_usage(tmp_path, monkeypatch):
     bad_pairs: list[tuple[bytes, bytes]] = []
 
     def spy_replace(src, dst):
-        if str(src).endswith(".tmp") and Path(dst).name == "manifest.json":
-            raise OSError("injected manifest replace failure")
+        if str(src).endswith(".tmp") and Path(dst).name == "usage.jsonl":
+            raise OSError("injected usage replace failure")
         real_replace(src, dst)
         if str(src).endswith(".bak"):
             restored.append(Path(dst).name)
@@ -185,7 +185,7 @@ def test_rollback_never_pairs_old_origins_with_new_usage(tmp_path, monkeypatch):
         pull_once(lambda n: {"manifest.json": manifest, "usage.jsonl": usage,
                              "origins.json": origins}[n], dest)
     assert exc.value.reason.startswith("write_failed")
-    assert restored == ["usage.jsonl", "origins.json"]
+    assert restored == ["origins.json", "manifest.json"]
     assert bad_pairs == []
     assert (dest / "usage.jsonl").read_bytes() == old_usage
     assert (dest / "origins.json").read_bytes() == old_origins
@@ -207,8 +207,8 @@ def test_sync_tool_replaces_origins_before_usage(tmp_path, monkeypatch):
 
     monkeypatch.setattr(feed_sync.os, "replace", spy_replace)
     feed_sync.sync_feed(src, tmp_path / "dest", now_epoch=time.time())
-    assert order == ["origins.json", "usage.jsonl"]
-    assert sfp.WRITE_ORDER[:2] == ("origins.json", "usage.jsonl")
+    assert order == ["manifest.json", "origins.json", "usage.jsonl"]
+    assert sfp.WRITE_ORDER == ("manifest.json", "origins.json", "usage.jsonl")
 
 
 # --- preflight: the pull writes where the loader reads ------------------------

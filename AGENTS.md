@@ -43,6 +43,9 @@
   Recursive cleanup is limited to the renderer's unique managed temporary
   directory.
 
+- `services/source_byte_facts.py` reuses cached audio and visual facts only
+  after the current regular artifact matches its bound SHA-256 and byte size;
+  otherwise facts remain unknown or follow the existing exact-byte probe path.
 - `services/visual_admission.py` owns exact-byte pre-caption OCR/vision-provider decisions;
   the authenticated job visual-admission endpoint queues a bounded background
   whole-job sweep and persists algorithm/byte-bound decisions for endpoint
@@ -313,18 +316,50 @@
   `_patch_page` refuses non-canonical ids before any request. Alias-collision 409s never echo the alias.
 - `burn_server.py` exposes the same typed caption-render route on the posting
   Mac's canonical port-8002 Burn runtime for Rail consumption.
-- `events/` is the repository's append-only chronological ledger: one new
-  `YYYY-MM-DD-HHMM-<branch-slug>.md` file per meaningful event, committed on
-  the work branch. Legacy root `events.md` is frozen history; never edit it or
-  an existing `events/` entry.
+- The canonical repository root `events.md` is the single append-only
+  chronological ledger. Linked worktrees append there and name their branch/ref
+  in a `worktree:` field. Preserve historical `events/` entries unchanged.
 - `SCHEMA.md` describes the current Editor Bay timeline, edit-command, ABN import,
   and render-cache contracts; `services/editor_timeline.py` and `routers/agenticnews.py` own the implementation.
 
 ## Local Contracts
 
+- Scrambler feed writers share one permanent local lock and publish the verified
+  manifest before its data files. Readers verify bounded exact bytes against that
+  manifest before selecting clips and refuse incomplete refreshes, including
+  cached reads. Manual recovery preserves the original data age. Legacy two-file
+  feeds remain supported only without a manifest or managed marker.
+- Generated-media retention shares one finite cooperative deadline across safety
+  scans, confirmation, walking and deletion. Incomplete protection scans authorize
+  no cleanup; a started clip-and-thumbnail unit may finish after expiry. Hold an
+  entire job with a malformed public clip list or artifact descriptor while valid
+  peers proceed. Every primary and declared thumbnail must resolve inside its
+  artifact directory; present nonregular or unreadable artifacts hold the job.
+  Missing artifacts and absent/null optional thumbnails remain supported. Keep
+  missing-list legacy behavior, current newest/old probe fairness and backoff,
+  job/probe caps, private checkpoints and active recovery masters protected.
+- Advertised origin recipes describe the active render lane's actual loop draw:
+  Scrambler uses `split_swap`, Layer B uses `loop_swap`. Preserve default-off
+  origin advertising, nonloop null metadata and existing treatment receipts.
+- `routers/video.py` must persist each queued UI video job before a generation
+  task can debit or call a provider. A completed video may become `done` only
+  after either `jobs.json` or an atomic per-output completion receipt persists.
+  When the final job is deleted, persist an empty mapping if `jobs.json` already
+  exists so restart cannot resurrect the deleted job; projects that have never
+  had a jobs file remain file-free. Single and bulk deletion persist removed
+  jobs before unlinking video files; on save failure they restore in-memory
+  state and return 503 with files intact. Both delete routes are project-scoped:
+  single delete returns 404 for a foreign-project job, while bulk deletion skips
+  foreign-project IDs like missing IDs; neither route can remove foreign jobs
+  or media.
+  The receipt binds every retained artifact to its exact size and SHA-256;
+  its directory must be a real child of the project; restart recovery verifies
+  the receipt before restoring a new job's completed entry.
+  A partial file without a receipt never becomes `done`. If both writes fail,
+  keep the file identity in memory as `processing` and retry persistence on job
+  reads and bulk download. Never reissue a paid provider call to recover it.
 - `services/source_duration_repair.py` accepts `approved_music_id` only as
   6-20 ASCII digits; Unicode numeric characters are invalid repair commands.
-
 - Provider artifact download deadlines accept only finite positive seconds.
   Infinity and numeric overflow use the existing finite default, so a malformed
   setting cannot remove the whole-download deadline. Positive fractional values
@@ -850,6 +885,13 @@
   module and return the same versioned schema and hashes.
 
 ## Verification
+- Run `pytest -q tests/test_generated_media_retention.py tests/test_source_import_flat_retention.py tests/test_scrambler_private_retention.py tests/test_slideshow_runner_ownership.py tests/test_truck_recovery_runner_ownership.py`
+  for retention deadlines, malformed-job holds, probe fairness and protected media ownership.
+- Run `pytest -q tests/test_retention_descriptor_plan_peer_probe.py tests/test_retention_directory_descriptor_peer_probe.py tests/test_retention_resolver_plan_peer_probe.py tests/test_layerb_loop_recipe_runtime.py`
+  for read-only whole-job artifact holds and advertised loop metadata against
+  synthetic native frame/audio renders without providers.
+- Run `pytest -q tests/test_feed_snapshot_eligibility.py tests/test_scrambler_feed_pull.py tests/test_scrambler_feed_pull_producer.py tests/test_scrambler_feed_sync.py`
+  for exact-byte feed snapshots, publication barriers, recovery age and source eligibility.
 - Run `pytest -q tests/test_health_tool_latency.py tests/test_smoke.py`
   for nonblocking single-flight tool refresh, missing-tool degradation and
   the public health response.
@@ -901,6 +943,9 @@
 - Run `pytest -q tests/test_visual_admission.py` for observed boat-frame OCR
   noise, short readable text, rotated single-frame text, complete coverage,
   unavailable providers, exact-byte binding, and cached-decision behavior.
+- Run `pytest -q tests/test_source_byte_facts.py` for exact artifact-byte audio
+  and visual inventory, cached evidence integrity and scoped Control Plane
+  serialization.
 
 - Run `pytest -q tests/test_control_plane_capability_auth.py` for the capability Bearer boundary and unchanged authorized response.
 - Run `pytest -q tests/test_managed_photo_reservations.py tests/test_control_plane_image_video_execution.py tests/test_job_store_compaction.py`
