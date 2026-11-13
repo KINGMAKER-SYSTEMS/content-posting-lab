@@ -3399,6 +3399,14 @@ async def _run_owned_dossier_generation(job_id: str) -> None:
             elif index in completed_calls and not complete:
                 raise RuntimeError("generation_checkpoint_incomplete_call")
         provider_calls_completed = len(completed_calls)
+        # Commission cap: bind this job before its first paid create (and again,
+        # idempotently, on every resume) so every create below is also reserved
+        # against its commission's lifetime caps. No commission configured for
+        # the page: nothing changes. Malformed config or ledger: fail closed here.
+        await asyncio.to_thread(
+            generation_budget.bind_commission_job,
+            generation_budget.jobs_store_path(), job_id, job.get("pageId"),
+        )
         for call_index in range(calls):
             if not _job_matches_current_master_pages(job):
                 raise RuntimeError("master_pages_strategy_changed")
