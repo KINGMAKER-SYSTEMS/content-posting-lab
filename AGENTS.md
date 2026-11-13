@@ -308,15 +308,19 @@
   `_patch_page` refuses non-canonical ids before any request. Alias-collision 409s never echo the alias.
 - `burn_server.py` exposes the same typed caption-render route on the posting
   Mac's canonical port-8002 Burn runtime for Rail consumption.
-- `events/` is the repository's append-only chronological ledger: one new
-  `YYYY-MM-DD-HHMM-<branch-slug>.md` file per meaningful event, committed on
-  the work branch. Legacy root `events.md` is frozen history; never edit it or
-  an existing `events/` entry.
+- The canonical repository root `events.md` is the single append-only
+  chronological ledger. Linked worktrees append there and name their branch/ref
+  in a `worktree:` field. Preserve historical `events/` entries unchanged.
 - `SCHEMA.md` describes the current Editor Bay timeline, edit-command, ABN import,
   and render-cache contracts; `services/editor_timeline.py` and `routers/agenticnews.py` own the implementation.
 
 ## Local Contracts
 
+- Scrambler feed writers share one permanent local lock and publish the verified
+  manifest before its data files. Readers verify bounded exact bytes against that
+  manifest before selecting clips and refuse incomplete refreshes, including
+  cached reads. Manual recovery preserves the original data age. Legacy two-file
+  feeds remain supported only without a manifest or managed marker.
 - `routers/video.py` must persist each queued UI video job before a generation
   task can debit or call a provider. A completed video may become `done` only
   after either `jobs.json` or an atomic per-output completion receipt persists.
@@ -861,6 +865,8 @@
   module and return the same versioned schema and hashes.
 
 ## Verification
+- Run `pytest -q tests/test_feed_snapshot_eligibility.py tests/test_scrambler_feed_pull.py tests/test_scrambler_feed_pull_producer.py tests/test_scrambler_feed_sync.py`
+  for exact-byte feed snapshots, publication barriers, recovery age and source eligibility.
 - Run `pytest -q tests/test_health_tool_latency.py tests/test_smoke.py`
   for nonblocking single-flight tool refresh, missing-tool degradation and
   the public health response.
