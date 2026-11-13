@@ -460,17 +460,63 @@ class GeneratedMediaRetention:
                 continue
             clip_paths: set[Path] = private_paths
             inside = _flat_import_file if flat_import else _inside
+            descriptors = []
+            malformed = False
             for clip in job.get("clips", []):
                 if expired():
                     return
                 if not isinstance(clip, dict):
                     return  # validated before any job paths are selected
-                files = [path for path in (
-                    inside(artifact_directory, clip.get("path")),
-                    inside(artifact_directory, (clip.get("thumbnail") or {}).get("path")
-                            if isinstance(clip.get("thumbnail"), dict) else None),
-                ) if path is not None]
+                # Resolve every descriptor before selecting any file in this
+                # job: an unidentified artifact must never become a stray.
+                try:
+                    primary = inside(artifact_directory, clip.get("path"))
+                except (ValueError, OSError, RuntimeError):
+                    primary = None
+                if expired():
+                    return
+                if primary is None:
+                    malformed = True
+                    break
+                files = [primary]
+                thumbnail = clip.get("thumbnail")
+                if thumbnail is not None:
+                    if not isinstance(thumbnail, dict):
+                        malformed = True
+                        break
+                    try:
+                        thumbnail_path = inside(artifact_directory, thumbnail.get("path"))
+                    except (ValueError, OSError, RuntimeError):
+                        thumbnail_path = None
+                    if expired():
+                        return
+                    if thumbnail_path is None:
+                        malformed = True
+                        break
+                    files.append(thumbnail_path)
+                # Missing artifacts may have been cleaned previously. A
+                # present nonregular or unreadable artifact holds its job.
+                for path in files:
+                    if expired():
+                        return
+                    try:
+                        valid_type = stat.S_ISREG(path.stat().st_mode)
+                    except FileNotFoundError:
+                        valid_type = True
+                    except OSError:
+                        valid_type = False
+                    if expired():
+                        return
+                    if not valid_type:
+                        malformed = True
+                        break
+                if malformed:
+                    break
                 clip_paths.update(files)
+                descriptors.append((clip, files))
+            if malformed:
+                continue
+            for clip, files in descriptors:
                 if expired():
                     return
                 present = [path for path in files if path.is_file()]
