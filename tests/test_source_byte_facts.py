@@ -134,6 +134,19 @@ def test_stale_producer_phase_and_time_require_new_measurement(media,tmp_path):
         job['sourceByteFacts']={'0':old};r,_=f.build(job,JOB,0,clip,path)
         assert r['status']=='UNKNOWN' and r['audio']['audioStreams'] is None
 
+def test_cached_facts_require_current_artifact_hash_and_size(media,tmp_path,monkeypatch):
+    job,clip,path=ctx(tmp_path,media);measured,evidence=f.build(job,JOB,0,clip,path,allow_probe=True)
+    job['sourceByteFacts']={'0':measured};job['sourceByteFactsEvidence']={'0':evidence}
+    original=path.read_bytes();path.write_bytes(bytes([original[0]^1])+original[1:])
+    assert path.stat().st_size==clip['bytes']
+    monkeypatch.setattr(f,'_probe',lambda *_:pytest.fail('identity mismatch must not reuse or probe'))
+    cached,_=f.build(job,JOB,0,clip,path)
+    assert cached['status']=='UNKNOWN' and cached['audio']['audioStreams'] is None
+    assert cached['visual']=={'status':'UNKNOWN','decision':None}
+    fresh,_=f.build(job,JOB,0,clip,path,allow_probe=True)
+    assert fresh['status']=='UNKNOWN' and fresh['reason']=='source_identity_mismatch'
+    assert fresh['visual']=={'status':'UNKNOWN','decision':None}
+
 def test_owned_probe_timeout_is_bounded(media,tmp_path,monkeypatch):
     tool=tmp_path/'owned-probe';tool.write_text('#!/bin/sh\nsleep 10\n');tool.chmod(0o700)
     monkeypatch.setattr(f.shutil,'which',lambda _:str(tool));monkeypatch.setattr(f,'PROBE_SECONDS',.15)

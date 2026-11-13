@@ -131,6 +131,18 @@ def reusable_audio(previous, identity, producer, evidence=None):
     return _timestamp(previous.get("measuredAt"))
 
 
+def _source_matches_identity(path, identity):
+    """Confirm the current regular file still matches the bound artifact bytes."""
+    try:
+        if path.is_symlink() or not stat.S_ISREG(path.stat().st_mode):
+            return False
+        size = path.stat().st_size
+        return (0 < size <= MAX_BYTES and size == identity["bytes"]
+                and digest(path) == identity["sha256"])
+    except OSError:
+        return False
+
+
 def _audio_count(raw):
     def unique(pairs):
         result = {}
@@ -246,13 +258,15 @@ def build(job, job_id, index, clip, path, *, allow_probe=False, _producer=None):
             or job.get("recipeId") == "lyric-video:master" or clip.get("lyricTiming") is not None):
         result["reason"] = "unsupported_source_binding_or_phase"
         return result, None
-    result["visual"] = cached_visual(job, job_id, index, clip)
+    source_matches = _source_matches_identity(path, identity)
+    if source_matches:
+        result["visual"] = cached_visual(job, job_id, index, clip)
     records = job.get("sourceByteFacts")
     previous = records.get(str(index)) if isinstance(records, dict) else None
     private_records = job.get("sourceByteFactsEvidence")
     old_evidence = private_records.get(str(index)) if isinstance(private_records, dict) else None
     private = None
-    if reusable_audio(previous, identity, producer, old_evidence):
+    if source_matches and reusable_audio(previous, identity, producer, old_evidence):
         result.update(audio=copy.deepcopy(previous["audio"]), custody=copy.deepcopy(previous["custody"]),
                       measuredAt=previous["measuredAt"])
     elif allow_probe:

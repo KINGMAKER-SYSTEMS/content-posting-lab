@@ -43,6 +43,9 @@
   Recursive cleanup is limited to the renderer's unique managed temporary
   directory.
 
+- `services/source_byte_facts.py` reuses cached audio and visual facts only
+  after the current regular artifact matches its bound SHA-256 and byte size;
+  otherwise facts remain unknown or follow the existing exact-byte probe path.
 - `services/visual_admission.py` owns exact-byte pre-caption OCR/vision-provider decisions;
   the authenticated job visual-admission endpoint queues a bounded background
   whole-job sweep and persists algorithm/byte-bound decisions for endpoint
@@ -893,6 +896,9 @@
 - Run `pytest -q tests/test_visual_admission.py` for observed boat-frame OCR
   noise, short readable text, rotated single-frame text, complete coverage,
   unavailable providers, exact-byte binding, and cached-decision behavior.
+- Run `pytest -q tests/test_source_byte_facts.py` for exact artifact-byte audio
+  and visual inventory, cached evidence integrity and scoped Control Plane
+  serialization.
 
 - Run `pytest -q tests/test_control_plane_capability_auth.py` for the capability Bearer boundary and unchanged authorized response.
 - Run `pytest -q tests/test_managed_photo_reservations.py tests/test_control_plane_image_video_execution.py tests/test_job_store_compaction.py`
