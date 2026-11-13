@@ -324,9 +324,15 @@
 - Generated-media retention shares one finite cooperative deadline across safety
   scans, confirmation, walking and deletion. Incomplete protection scans authorize
   no cleanup; a started clip-and-thumbnail unit may finish after expiry. Hold an
-  entire job with a malformed public clip list while valid peers proceed. Keep
+  entire job with a malformed public clip list or artifact descriptor while valid
+  peers proceed. Every primary and declared thumbnail must resolve inside its
+  artifact directory; present nonregular or unreadable artifacts hold the job.
+  Missing artifacts and absent/null optional thumbnails remain supported. Keep
   missing-list legacy behavior, current newest/old probe fairness and backoff,
   job/probe caps, private checkpoints and active recovery masters protected.
+- Advertised origin recipes describe the active render lane's actual loop draw:
+  Scrambler uses `split_swap`, Layer B uses `loop_swap`. Preserve default-off
+  origin advertising, nonloop null metadata and existing treatment receipts.
 - `routers/video.py` must persist each queued UI video job before a generation
   task can debit or call a provider. A completed video may become `done` only
   after either `jobs.json` or an atomic per-output completion receipt persists.
@@ -873,6 +879,9 @@
 ## Verification
 - Run `pytest -q tests/test_generated_media_retention.py tests/test_source_import_flat_retention.py tests/test_scrambler_private_retention.py tests/test_slideshow_runner_ownership.py tests/test_truck_recovery_runner_ownership.py`
   for retention deadlines, malformed-job holds, probe fairness and protected media ownership.
+- Run `pytest -q tests/test_retention_descriptor_plan_peer_probe.py tests/test_retention_directory_descriptor_peer_probe.py tests/test_retention_resolver_plan_peer_probe.py tests/test_layerb_loop_recipe_runtime.py`
+  for read-only whole-job artifact holds and advertised loop metadata against
+  synthetic native frame/audio renders without providers.
 - Run `pytest -q tests/test_feed_snapshot_eligibility.py tests/test_scrambler_feed_pull.py tests/test_scrambler_feed_pull_producer.py tests/test_scrambler_feed_sync.py`
   for exact-byte feed snapshots, publication barriers, recovery age and source eligibility.
 - Run `pytest -q tests/test_health_tool_latency.py tests/test_smoke.py`
