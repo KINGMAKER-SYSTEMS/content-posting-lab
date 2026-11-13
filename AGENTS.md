@@ -317,9 +317,25 @@
 
 ## Local Contracts
 
+- `routers/video.py` must persist each queued UI video job before a generation
+  task can debit or call a provider. A completed video may become `done` only
+  after either `jobs.json` or an atomic per-output completion receipt persists.
+  When the final job is deleted, persist an empty mapping if `jobs.json` already
+  exists so restart cannot resurrect the deleted job; projects that have never
+  had a jobs file remain file-free. Single and bulk deletion persist removed
+  jobs before unlinking video files; on save failure they restore in-memory
+  state and return 503 with files intact. Both delete routes are project-scoped:
+  single delete returns 404 for a foreign-project job, while bulk deletion skips
+  foreign-project IDs like missing IDs; neither route can remove foreign jobs
+  or media.
+  The receipt binds every retained artifact to its exact size and SHA-256;
+  its directory must be a real child of the project; restart recovery verifies
+  the receipt before restoring a new job's completed entry.
+  A partial file without a receipt never becomes `done`. If both writes fail,
+  keep the file identity in memory as `processing` and retry persistence on job
+  reads and bulk download. Never reissue a paid provider call to recover it.
 - `services/source_duration_repair.py` accepts `approved_music_id` only as
   6-20 ASCII digits; Unicode numeric characters are invalid repair commands.
-
 - Provider artifact download deadlines accept only finite positive seconds.
   Infinity and numeric overflow use the existing finite default, so a malformed
   setting cannot remove the whole-download deadline. Positive fractional values

@@ -304,7 +304,178 @@ def test_save_jobs_unwritable_dir_swallows_error(isolated_projects_root, monkeyp
 
     monkeypatch.setattr(video_router, "atomic_save", boom)
     # Must not raise.
-    video_router._save_jobs("save-proj")
+    assert video_router._save_jobs("save-proj") is False
+
+
+def test_generate_refuses_before_provider_when_initial_job_save_fails(
+    sync_client, isolated_projects_root, monkeypatch,
+):
+    provider_id = next(iter(video_router.PROVIDERS))
+    monkeypatch.setitem(video_router.API_KEYS, video_router.PROVIDERS[provider_id]["key_id"], "test-key")
+    started = []
+
+    async def fake_generate_one(*args, **kwargs):
+        started.append(True)
+
+    real_save = video_router.atomic_save
+
+    def fail_jobs(path, data, **kwargs):
+        if path.name == "jobs.json":
+            raise OSError("No space left on device")
+        return real_save(path, data, **kwargs)
+
+    monkeypatch.setattr(video_router, "atomic_save", fail_jobs)
+    monkeypatch.setattr(video_router, "generate_one", fake_generate_one)
+    monkeypatch.setattr(video_router.generation_budget, "debit_generation_spend_at",
+                        lambda *args, **kwargs: started.append("debited"))
+    response = sync_client.post("/api/video/generate", data={
+        "prompt": "receipt failure", "provider": provider_id, "count": "1",
+        "duration": "5", "aspect_ratio": "9:16", "resolution": "720p",
+        "project": "receipt-failure",
+    })
+    assert response.status_code == 503
+    assert not started
+    assert not [j for j in video_router.jobs.values() if j.get("project") == "receipt-failure"]
+    assert not (isolated_projects_root / "receipt-failure" / "jobs.json").exists()
+
+
+def test_completed_video_waits_for_durable_receipt_before_done(
+    sync_client, isolated_projects_root, monkeypatch,
+):
+    provider_id = next(iter(video_router.PROVIDERS))
+    monkeypatch.setitem(video_router.API_KEYS, video_router.PROVIDERS[provider_id]["key_id"], "test-key")
+    real_save = video_router.atomic_save
+    saves = 0
+    blocked = True
+
+    def fail_completion(path, data, **kwargs):
+        nonlocal saves
+        if path.name == "jobs.json":
+            saves += 1
+            if saves > 1 and blocked:
+                raise OSError("No space left on device")
+        if path.parent.name == ".video-completions" and blocked:
+            raise OSError("No space left on device")
+        return real_save(path, data, **kwargs)
+
+    async def fake_generate_one(job_id, index, provider, prompt, aspect_ratio,
+                                resolution, duration, image_data_uri, jobs,
+                                output_dir, url_prefix, on_complete=None, **extra):
+        entry = jobs[job_id]["videos"][index]
+        (output_dir / "finished.mp4").write_bytes(b"video")
+        entry.update(status="done", file="finished.mp4", url=f"{url_prefix}/finished.mp4")
+        on_complete(job_id)
+
+    monkeypatch.setattr(video_router, "atomic_save", fail_completion)
+    monkeypatch.setattr(video_router, "generate_one", fake_generate_one)
+    response = sync_client.post("/api/video/generate", data={
+        "prompt": "completion failure", "provider": provider_id, "count": "1",
+        "duration": "5", "aspect_ratio": "9:16", "resolution": "720p",
+        "project": "completion-failure",
+    })
+    assert response.status_code == 200
+    job_id = response.json()["job_id"]
+    result = None
+    for _ in range(50):
+        result = sync_client.get(f"/api/video/jobs/{job_id}").json()["videos"][0]
+        if result.get("file"):
+            break
+        time.sleep(0.02)
+    assert result["status"] == "processing"
+    assert sync_client.get(f"/api/video/jobs/{job_id}/download-all").status_code == 400
+    persisted = json.loads((isolated_projects_root / "completion-failure" / "jobs.json").read_text())
+    assert persisted[job_id]["videos"][0]["status"] == "queued"
+
+    blocked = False
+    recovered = sync_client.get(f"/api/video/jobs/{job_id}")
+    assert recovered.json()["videos"][0]["status"] == "done"
+    persisted = json.loads((isolated_projects_root / "completion-failure" / "jobs.json").read_text())
+    assert persisted[job_id]["videos"][0]["status"] == "done"
+
+
+def test_completion_receipt_recovers_paid_video_after_jobs_save_fails(
+    isolated_projects_root, monkeypatch,
+):
+    project = "receipt-recovery"
+    entry = {"index": 0, "status": "queued"}
+    job = {"id": "paid-job", "project": project, "completion_receipts_v1": True,
+           "videos": [entry]}
+    video_router.jobs.clear()
+    video_router.jobs[job["id"]] = job
+    assert video_router._save_jobs(project)
+    _make_video(project, "paid.mp4", b"paid video")
+    entry.update(status="done", file="paid.mp4", url="/projects/receipt-recovery/videos/paid.mp4")
+
+    real_save = video_router.atomic_save
+
+    def fail_jobs(path, data, **kwargs):
+        if path.name == "jobs.json":
+            raise OSError("jobs.json unavailable")
+        return real_save(path, data, **kwargs)
+
+    monkeypatch.setattr(video_router, "atomic_save", fail_jobs)
+    video_router._persist_job(job["id"], 0)
+    assert entry["status"] == "done"
+    assert video_router._completion_path(project, job["id"], 0).exists()
+    video_router.jobs.clear()
+    video_router._load_jobs(project)
+    recovered = video_router.jobs[job["id"]]["videos"][0]
+    assert recovered["status"] == "done"
+    assert recovered["file"] == "paid.mp4"
+
+
+def test_completion_receipt_rejects_changed_crop_bytes_after_restart(isolated_projects_root):
+    project = "receipt-crops"
+    entry = {"index": 0, "status": "queued"}
+    job = {"id": "crop-job", "project": project, "completion_receipts_v1": True,
+           "videos": [entry]}
+    video_router.jobs.clear()
+    video_router.jobs[job["id"]] = job
+    assert video_router._save_jobs(project)
+    for name in ("master.mp4", "crop0.mp4", "crop1.mp4"):
+        _make_video(project, name, name.encode())
+    entry.update(status="done", file="crop0.mp4", url="/projects/receipt-crops/videos/crop0.mp4",
+                 provider_master_file="master.mp4",
+                 crops=[{"file": "crop0.mp4"}, {"file": "crop1.mp4"}])
+    assert video_router._write_completion(project, job["id"], 0, entry)
+    _make_video(project, "crop1.mp4", b"changed crop")
+
+    video_router.jobs.clear()
+    video_router._load_jobs(project)
+    recovered = video_router.jobs[job["id"]]["videos"][0]
+    assert recovered["status"] == "error"
+    assert "changed" in recovered["error"]
+
+
+def test_new_job_partial_file_without_completion_receipt_is_not_done(isolated_projects_root):
+    project = "partial-video"
+    _make_video(project, "partial.mp4")
+    job = {"id": "partial-job", "project": project, "completion_receipts_v1": True,
+           "videos": [{"index": 0, "status": "downloading", "file": "partial.mp4"}]}
+    video_router.jobs.clear()
+    video_router.jobs[job["id"]] = job
+    assert video_router._save_jobs(project)
+
+    video_router.jobs.clear()
+    video_router._load_jobs(project)
+    recovered = video_router.jobs[job["id"]]["videos"][0]
+    assert recovered["status"] == "error"
+
+
+def test_completion_receipt_refuses_symlinked_directory(isolated_projects_root):
+    project = "receipt-link"
+    project_dir = isolated_projects_root / project
+    project_dir.mkdir()
+    elsewhere = isolated_projects_root / "other-project"
+    elsewhere.mkdir()
+    (project_dir / ".video-completions").symlink_to(elsewhere, target_is_directory=True)
+    _make_video(project, "paid.mp4")
+    entry = {"index": 0, "status": "done", "file": "paid.mp4",
+             "url": "/projects/receipt-link/videos/paid.mp4"}
+
+    assert video_router._write_completion(project, "paid-job", 0, entry) is False
+    assert video_router._read_completion(project, "paid-job", 0) is None
+    assert not list(elsewhere.iterdir())
 
 
 def test_save_jobs_skips_when_no_matching_jobs(isolated_projects_root):
@@ -498,6 +669,7 @@ def test_bulk_delete_removes_jobs_and_files(sync_client):
         "project": "bd-proj",
         "videos": [{"status": "done", "file": "y.mp4"}],
     }
+    assert video_router._save_jobs("bd-proj")
     vdir = get_project_video_dir("bd-proj")
 
     resp = sync_client.post(
@@ -511,6 +683,120 @@ def test_bulk_delete_removes_jobs_and_files(sync_client):
     assert not (vdir / "x.mp4").exists()
     assert not (vdir / "y.mp4").exists()
     assert "d1" not in video_router.jobs and "d2" not in video_router.jobs
+
+    video_router.jobs.clear()
+    video_router._load_jobs("bd-proj")
+    assert video_router.jobs == {}
+    assert json.loads((vdir.parent / "jobs.json").read_text()) == {}
+
+
+def test_bulk_delete_skips_job_from_another_project(sync_client):
+    _make_video("bulk-owner-a", "a.mp4", b"a")
+    _make_video("bulk-owner-b", "b.mp4", b"b")
+    video_router.jobs.clear()
+    job_a = {
+        "project": "bulk-owner-a",
+        "videos": [{"status": "done", "file": "a.mp4"}],
+    }
+    job_b = {
+        "project": "bulk-owner-b",
+        "videos": [{"status": "done", "file": "b.mp4"}],
+    }
+    video_router.jobs.update({"job-a": job_a, "job-b": job_b})
+    assert video_router._save_jobs("bulk-owner-a")
+    assert video_router._save_jobs("bulk-owner-b")
+
+    response = sync_client.post(
+        "/api/video/bulk-delete",
+        json={"job_ids": ["job-a", "job-b"], "project": "bulk-owner-a"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"deleted_jobs": 1, "deleted_files": 1}
+    assert "job-a" not in video_router.jobs
+    assert video_router.jobs["job-b"] == job_b
+    assert (get_project_video_dir("bulk-owner-a") / "a.mp4").exists() is False
+    assert (get_project_video_dir("bulk-owner-b") / "b.mp4").read_bytes() == b"b"
+
+    video_router.jobs.clear()
+    video_router._load_jobs("bulk-owner-a")
+    video_router._load_jobs("bulk-owner-b")
+    assert set(video_router.jobs) == {"job-b"}
+    assert json.loads(
+        (get_project_video_dir("bulk-owner-a").parent / "jobs.json").read_text()
+    ) == {}
+    assert json.loads(
+        (get_project_video_dir("bulk-owner-b").parent / "jobs.json").read_text()
+    ) == {"job-b": job_b}
+
+
+def test_delete_job_requires_matching_project(sync_client):
+    _make_video("single-owner-a", "a.mp4", b"a")
+    _make_video("single-owner-b", "b.mp4", b"b")
+    video_router.jobs.clear()
+    job_a = {
+        "project": "single-owner-a",
+        "videos": [{"status": "done", "file": "a.mp4"}],
+    }
+    job_b = {
+        "project": "single-owner-b",
+        "videos": [{"status": "done", "file": "b.mp4"}],
+    }
+    video_router.jobs.update({"job-a": job_a, "job-b": job_b})
+    assert video_router._save_jobs("single-owner-a")
+    assert video_router._save_jobs("single-owner-b")
+
+    response = sync_client.request(
+        "DELETE", "/api/video/jobs/job-b", params={"project": "single-owner-a"}
+    )
+
+    assert response.status_code == 404
+    assert video_router.jobs == {"job-a": job_a, "job-b": job_b}
+    assert (get_project_video_dir("single-owner-b") / "b.mp4").read_bytes() == b"b"
+    assert json.loads(
+        (get_project_video_dir("single-owner-b").parent / "jobs.json").read_text()
+    ) == {"job-b": job_b}
+
+    video_router.jobs.clear()
+    video_router._load_jobs("single-owner-b")
+    assert video_router.jobs == {"job-b": job_b}
+
+    same_project_response = sync_client.request(
+        "DELETE", "/api/video/jobs/job-b", params={"project": "single-owner-b"}
+    )
+    assert same_project_response.status_code == 200
+    assert video_router.jobs == {}
+    assert not (get_project_video_dir("single-owner-b") / "b.mp4").exists()
+
+    video_router.jobs.clear()
+    video_router._load_jobs("single-owner-b")
+    assert video_router.jobs == {}
+    assert json.loads(
+        (get_project_video_dir("single-owner-b").parent / "jobs.json").read_text()
+    ) == {}
+
+
+def test_bulk_delete_save_failure_restores_jobs_and_keeps_files(
+    sync_client, monkeypatch,
+):
+    _make_video("bd-save-fail", "keep.mp4", b"keep")
+    video_router.jobs.clear()
+    job = {
+        "project": "bd-save-fail",
+        "videos": [{"status": "done", "file": "keep.mp4"}],
+    }
+    video_router.jobs["keep-job"] = job
+    assert video_router._save_jobs("bd-save-fail")
+    monkeypatch.setattr(video_router, "_save_jobs", lambda project: False)
+
+    response = sync_client.post(
+        "/api/video/bulk-delete",
+        json={"job_ids": ["keep-job"], "project": "bd-save-fail"},
+    )
+
+    assert response.status_code == 503
+    assert video_router.jobs == {"keep-job": job}
+    assert (get_project_video_dir("bd-save-fail") / "keep.mp4").read_bytes() == b"keep"
 
 
 def test_bulk_delete_no_ids_400(sync_client):
@@ -571,6 +857,51 @@ def test_delete_job_tolerates_unlink_oserror(sync_client, monkeypatch):
     assert resp.json()["deleted"] is True
     # Job removed from memory even though the file couldn't be unlinked.
     assert "r1" not in video_router.jobs
+
+
+def test_delete_last_job_persists_empty_state_across_restart(sync_client, isolated_projects_root):
+    """Deleting the final job must clear an existing jobs.json durably."""
+    project = "delete-last"
+    video_router.jobs.clear()
+    video_router.jobs["last"] = {
+        "project": project,
+        "videos": [{"status": "error", "error": "finished"}],
+    }
+    assert video_router._save_jobs(project)
+    jobs_file = isolated_projects_root / project / "jobs.json"
+    assert json.loads(jobs_file.read_text()) == {"last": video_router.jobs["last"]}
+
+    response = sync_client.request(
+        "DELETE", "/api/video/jobs/last", params={"project": project}
+    )
+    assert response.status_code == 200
+    assert video_router.jobs == {}
+
+    # Simulate a new process: the deleted job must not be resurrected.
+    video_router.jobs.clear()
+    video_router._load_jobs(project)
+    assert video_router.jobs == {}
+    assert json.loads(jobs_file.read_text()) == {}
+
+
+def test_delete_job_save_failure_restores_job_and_keeps_file(sync_client, monkeypatch):
+    _make_video("delete-save-fail", "keep.mp4", b"keep")
+    video_router.jobs.clear()
+    job = {
+        "project": "delete-save-fail",
+        "videos": [{"status": "done", "file": "keep.mp4"}],
+    }
+    video_router.jobs["keep-job"] = job
+    assert video_router._save_jobs("delete-save-fail")
+    monkeypatch.setattr(video_router, "_save_jobs", lambda project: False)
+
+    response = sync_client.request(
+        "DELETE", "/api/video/jobs/keep-job", params={"project": "delete-save-fail"}
+    )
+
+    assert response.status_code == 503
+    assert video_router.jobs == {"keep-job": job}
+    assert (get_project_video_dir("delete-save-fail") / "keep.mp4").read_bytes() == b"keep"
 
 
 # --- color-correct (single) ----------------------------------------------
