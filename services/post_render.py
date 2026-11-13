@@ -614,6 +614,11 @@ def _render_post_single(source_path: Path, output_directory: Path, request: Post
                 final_probe.duration_ms, endpoint_frames(endpoint))):
             raise PostRenderError("output_endpoint_unmet",
                                   "decoded final does not have exactly the bound output frames")
+        if repair is not None:
+            from services.source_trim_policy import repair_output_met
+            if not repair_output_met(repair, frames[-1], final_probe.duration_ms):
+                raise PostRenderError("repair_output_mismatch",
+                                      "repaired final does not have exactly the commanded frames and duration")
         qa_at_ms = final_probe.duration_ms // 2
         qa_path = output_directory / "qa.jpg"
         _run([tools.ffmpeg, "-nostdin", "-v", "error", "-xerror", "-protocol_whitelist", "file,pipe",

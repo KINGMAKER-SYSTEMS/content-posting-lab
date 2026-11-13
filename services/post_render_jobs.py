@@ -34,6 +34,7 @@ from services.post_render import (
 from services.output_endpoint import (
     canonical_endpoint, duration_meets_endpoint, endpoint_digest, endpoint_frames,
 )
+from services.source_trim_policy import bind_repair_command, repair_output_met
 from services.post_render_timed import (
     DURATION_TOLERANCE_MS, TimedPostRenderRequest, render_timed_post, _resolve_timing,
 )
@@ -276,6 +277,14 @@ class RenderJobSubmission(BaseModel):
                 slot_endpoint is not None
                 and canonical_endpoint(slot_endpoint) != canonical_endpoint(request.output_endpoint)):
             raise ValueError("output endpoint does not match immutable slot")
+        # A repair command is authority only as the derivation of the slot's own
+        # source trim; a slot that asks for a cut is never rendered uncut. Timed
+        # v2 has no repair path at all (the dispatch fence refuses a command).
+        if isinstance(request, TimedPostRenderRequest):
+            if "source_trim" in slot:
+                raise ValueError("timed render does not support a source trim")
+        else:
+            bind_repair_command(request.source_duration_repair, slot, request)
         if "program_id" in slot and slot["program_id"] != request.program_id:
             raise ValueError("slot program mismatch")
         # Structural equality only. Cross-language treatment hashing uses original request bytes.
@@ -1060,6 +1069,9 @@ class PostRenderJobs:
         if repair is not None:
             from services.source_duration_repair import command_digest
             if receipt.get("source_duration_repair_sha256") != command_digest(repair):
+                raise RenderJobError("receipt_binding_mismatch")
+            # The durable facts must show exactly the commanded cut, not a shorter one.
+            if not repair_output_met(repair, evidence.get("decoded_video_frames"), receipt.get("duration_ms")):
                 raise RenderJobError("receipt_binding_mismatch")
         elif "source_duration_repair_sha256" in receipt:
             raise RenderJobError("receipt_binding_mismatch")

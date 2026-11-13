@@ -31,6 +31,7 @@ from services.source_duration_repair import (
 )
 from tests.test_post_render import NOW, request as v1_request
 from tests.test_post_render_timed import request as timed_request
+from services.source_trim_policy import REQUEST_IDENTITY_KEYS, font_file_sha256, trim_policy_of
 from tests.test_source_duration_repair import good_command
 
 ENV = "CONTENT_LAB_SOURCE_DURATION_REPAIR"
@@ -96,6 +97,39 @@ def _submission(request: PostRenderRequest) -> jobs.RenderJobSubmission:
                               "provenance_id": "generation:lab-sdr-fixture"}})
 
 
+def _bound(src_sha: str = "a" * 64, **trim):
+    """A repaired v1 submission whose command is the derivation of its own slot.
+
+    This is what the Worker mints: the slot carries the hash-free source trim, its
+    sound and its format; the command repeats the request's identities, names the
+    slot's caption font and that font file's digest, and carries the slot hash.
+    Returns (command, request, submission).
+    """
+    command = _repair_command(src_sha, **trim)
+    base = v1_request(source_sha=src_sha)
+    treatment = json.loads(base.render_treatment_json)
+    font = treatment["captionStyle"]["font"]
+    command.update({key: getattr(base, key) for key in REQUEST_IDENTITY_KEYS if key != "slot_payload_sha256"})
+    command.update(font_id=font, font_sha256=font_file_sha256(font))
+    slot = {"schema_version": 4, "slot_id": base.slot_id, "page_id": base.page_id,
+            "handle": base.account, "asset": {"sha256": base.source_sha256},
+            "device_hint": {"device_serial": base.device_serial},
+            "caption": {"text": base.caption}, "render_treatment": treatment,
+            "format": command["format_id"], "sound": {"music_id": command["approved_music_id"]},
+            "source_trim": trim_policy_of(command)}
+    raw = json.dumps(slot, separators=(",", ":"))
+    command["slot_payload_sha256"] = sha256(raw.encode())
+    request = v1_request(source_sha=src_sha, slot_payload_sha256=command["slot_payload_sha256"],
+                         source_duration_repair=command)
+    body = jobs.RenderJobSubmission.model_validate({
+        "schema": jobs.JOB_SCHEMA, "request": request, "slot_payload_json": raw,
+        "source_provenance": {"schema": "posting-source-treatment/v1",
+                              "source_sha256": request.source_sha256,
+                              "source_visual_treatment_sha256": request.source_visual_treatment_sha256,
+                              "provenance_id": "generation:lab-sdr-fixture"}})
+    return command, request, body
+
+
 def _service(tmp_path, *, renderer=None, fetcher=None, clock=None) -> jobs.PostRenderJobs:
     return jobs.PostRenderJobs(tmp_path / "jobs",
                                renderer=renderer or jobs.render_prepared_post,
@@ -111,9 +145,7 @@ def test_t1_repaired_v1_job_full_envelope_and_digest(tmp_path, monkeypatch):
     src = tmp_path / "source.mp4"
     _make_source(src)
     src_sha = sha256(src.read_bytes())
-    command = _repair_command(src_sha, end_ms=2000)
-    request = v1_request(source_sha=src_sha, source_duration_repair=command)
-    body = _submission(request)
+    command, request, body = _bound(src_sha, end_ms=2000)
     service = _service(tmp_path, fetcher=lambda _request, path: shutil.copyfile(src, path))
     accepted = service.enqueue(body, "lab-sdr-t1")
     assert accepted["state"] == "queued"
@@ -283,9 +315,7 @@ def test_t5_row3_new_worker_old_lab_stored_repair_held(tmp_path, monkeypatch):
     src = tmp_path / "source.mp4"
     _make_source(src)
     src_sha = sha256(src.read_bytes())
-    command = _repair_command(src_sha)
-    request = v1_request(source_sha=src_sha, source_duration_repair=command)
-    body = _submission(request)
+    command, request, body = _bound(src_sha)
     calls = {"fetch": 0, "render": 0}
 
     def fetcher(_request, path):
@@ -313,9 +343,7 @@ def test_t5_row4_new_worker_compatible_lab_enabled(tmp_path, monkeypatch):
     src = tmp_path / "source.mp4"
     _make_source(src)
     src_sha = sha256(src.read_bytes())
-    command = _repair_command(src_sha)
-    request = v1_request(source_sha=src_sha, source_duration_repair=command)
-    body = _submission(request)
+    command, request, body = _bound(src_sha)
     service = _service(tmp_path, fetcher=lambda _request, path: shutil.copyfile(src, path))
     accepted = service.enqueue(body, "lab-sdr-t5-row4")
     assert service.run_one()
@@ -330,9 +358,7 @@ def test_t5_row5_emission_disabled_after_use(tmp_path, monkeypatch):
     src = tmp_path / "source.mp4"
     _make_source(src)
     src_sha = sha256(src.read_bytes())
-    command = _repair_command(src_sha)
-    request = v1_request(source_sha=src_sha, source_duration_repair=command)
-    body = _submission(request)
+    command, request, body = _bound(src_sha)
     service = _service(tmp_path, fetcher=lambda _request, path: shutil.copyfile(src, path))
     accepted = service.enqueue(body, "lab-sdr-t5-row5")
     assert service.run_one()
@@ -345,7 +371,7 @@ def test_t5_row5_emission_disabled_after_use(tmp_path, monkeypatch):
     src2 = tmp_path / "source2.mp4"
     _make_source(src2, freq=660)
     src2_sha = sha256(src2.read_bytes())
-    body2 = _submission(v1_request(source_sha=src2_sha, source_duration_repair=_repair_command(src2_sha)))
+    body2 = _bound(src2_sha)[2]
     service.fetcher = lambda _request, path: shutil.copyfile(src2, path)
     accepted2 = service.enqueue(body2, "lab-sdr-t5-row5-new")
     assert service.run_one()
@@ -365,8 +391,7 @@ def test_t6_capability_off_stored_repaired_job_refused_encoder_never_called(tmp_
     src = tmp_path / "source.mp4"
     _make_source(src)
     src_sha = sha256(src.read_bytes())
-    command = _repair_command(src_sha)
-    body = _submission(v1_request(source_sha=src_sha, source_duration_repair=command))
+    command, _request, body = _bound(src_sha)
     calls = {"fetch": 0, "render": 0}
     service = _service(
         tmp_path,
@@ -387,9 +412,7 @@ def test_t8_nonzero_start_trim_cuts_to_exact_length(tmp_path, monkeypatch):
     src = tmp_path / "source.mp4"
     _make_source(src, seconds=3)
     src_sha = sha256(src.read_bytes())
-    command = _repair_command(src_sha, start_ms=1200, end_ms=3000)
-    request = v1_request(source_sha=src_sha, source_duration_repair=command)
-    body = _submission(request)
+    command, request, body = _bound(src_sha, start_ms=1200, end_ms=3000)
     service = _service(tmp_path, fetcher=lambda _request, path: shutil.copyfile(src, path))
     accepted = service.enqueue(body, "lab-sdr-t8")
     assert service.run_one()
@@ -411,9 +434,7 @@ def test_red_proof_wrong_digest_is_refused(tmp_path, monkeypatch):
     src = tmp_path / "source.mp4"
     _make_source(src)
     src_sha = sha256(src.read_bytes())
-    command = _repair_command(src_sha)
-    request = v1_request(source_sha=src_sha, source_duration_repair=command)
-    body = _submission(request)
+    command, request, body = _bound(src_sha)
     service = _service(tmp_path, fetcher=lambda _request, path: shutil.copyfile(src, path))
     accepted = service.enqueue(body, "lab-sdr-red-wrong-digest")
     assert service.run_one()
@@ -429,9 +450,7 @@ def test_red_proof_digest_is_inside_hashed_receipt_bytes(tmp_path, monkeypatch):
     src = tmp_path / "source.mp4"
     _make_source(src)
     src_sha = sha256(src.read_bytes())
-    command = _repair_command(src_sha)
-    request = v1_request(source_sha=src_sha, source_duration_repair=command)
-    body = _submission(request)
+    command, request, body = _bound(src_sha)
     service = _service(tmp_path, fetcher=lambda _request, path: shutil.copyfile(src, path))
     accepted = service.enqueue(body, "lab-sdr-red-echo-after-hash")
     assert service.run_one()
@@ -468,7 +487,7 @@ def test_red_proof_flag_off_request_carrying_repair_refused_at_route(monkeypatch
     app = FastAPI()
     app.include_router(routes.router, prefix="/api/control-plane")
     client = TestClient(app)
-    body = _submission(v1_request(source_duration_repair=good_command())).model_dump(by_alias=True)
+    body = _bound()[2].model_dump(by_alias=True)
     headers = {"Authorization": "Bearer only-this-test-service-token",
                "X-RT-Page-Id": body["request"]["page_id"],
                "Idempotency-Key": "lab-sdr-red-flag-off"}
@@ -511,7 +530,7 @@ def test_predispatch_422_logs_typed_code(timed, code, monkeypatch, caplog):
         body = _timed_submission(repair=good_command()).model_dump(by_alias=True)
     else:
         monkeypatch.delenv(ENV, raising=False)
-        body = _submission(v1_request(source_duration_repair=good_command())).model_dump(by_alias=True)
+        body = _bound()[2].model_dump(by_alias=True)
 
     seen = []
 
