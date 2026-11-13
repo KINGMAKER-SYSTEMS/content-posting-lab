@@ -321,6 +321,12 @@
   manifest before selecting clips and refuse incomplete refreshes, including
   cached reads. Manual recovery preserves the original data age. Legacy two-file
   feeds remain supported only without a manifest or managed marker.
+- Generated-media retention shares one finite cooperative deadline across safety
+  scans, confirmation, walking and deletion. Incomplete protection scans authorize
+  no cleanup; a started clip-and-thumbnail unit may finish after expiry. Hold an
+  entire job with a malformed public clip list while valid peers proceed. Keep
+  missing-list legacy behavior, current newest/old probe fairness and backoff,
+  job/probe caps, private checkpoints and active recovery masters protected.
 - `routers/video.py` must persist each queued UI video job before a generation
   task can debit or call a provider. A completed video may become `done` only
   after either `jobs.json` or an atomic per-output completion receipt persists.
@@ -865,6 +871,8 @@
   module and return the same versioned schema and hashes.
 
 ## Verification
+- Run `pytest -q tests/test_generated_media_retention.py tests/test_source_import_flat_retention.py tests/test_scrambler_private_retention.py tests/test_slideshow_runner_ownership.py tests/test_truck_recovery_runner_ownership.py`
+  for retention deadlines, malformed-job holds, probe fairness and protected media ownership.
 - Run `pytest -q tests/test_feed_snapshot_eligibility.py tests/test_scrambler_feed_pull.py tests/test_scrambler_feed_pull_producer.py tests/test_scrambler_feed_sync.py`
   for exact-byte feed snapshots, publication barriers, recovery age and source eligibility.
 - Run `pytest -q tests/test_health_tool_latency.py tests/test_smoke.py`
