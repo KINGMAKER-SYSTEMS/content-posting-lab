@@ -121,11 +121,16 @@ from services.control_plane_sources import (
     source_window_exclusions,
     SOURCE_SPEED_DURATION_UNSUPPORTED,
 )
-from services.control_plane_image_video import IMAGE_VIDEO_FORMATS, image_video_source_for_wire
+from services.control_plane_image_video import (
+    IMAGE_VIDEO_FORMATS,
+    image_video_plan_signature,
+    image_video_source_for_wire,
+)
 from services.control_plane_plan_reasons import (
     INSUFFICIENT_INVENTORY,
     LIBRARY_LOAD_FAILED,
     MATERIAL_PROFILE_MISSING,
+    POOL_SUPPLIED,
     PROMPT_INVENTORY_EXHAUSTED,
     RECIPE_UNRESOLVED,
     SLIDESHOW_RUNTIME_UNAVAILABLE,
@@ -136,7 +141,9 @@ from services.control_plane_slideshows import (
     SyzygyError,
     UGC_FORMAT_SLUG,
     CLEAN_VIDEO_FORMATS,
+    COFFEE_FORMAT_SLUG,
     curated_plan_for_recipe,
+    retired_ugc_recipe,
     curated_plan_signature,
     curated_variant_number,
     requires_curated_video_plan,
@@ -168,13 +175,14 @@ from services.content_engine_registry import (
     load_engine_registry,
     resolve_material_profile,
 )
-from services.content_format_contracts import CONTRACTS_PATH, load_format_contracts
+from services.content_format_contracts import CONTRACTS_PATH, load_format_contracts, page_niche_admits
 from services.ffmpeg import (
     FrameGeometryUnavailable, delivery_encode_args, probe_display_size, run_color_correct,
     _COLOR_CORRECT_GATE, _probe_input_duration_seconds as probe_source_output_duration_seconds,
 )
 from services.master_pages_contract import SCHEMA as MASTER_PAGES_SCHEMA, canonical_intent, exact_intent, intent_hash
 from services.page_frame import VERTICAL_FRAME, resolved_frame
+from services.pool_supplied_pages import is_pool_supplied
 from services import generation_budget, moderation_retry
 from services.roster_public import require_roster_auth
 from services import clip_similarity
@@ -554,19 +562,17 @@ def _contracts_freshness_signature() -> tuple[str, int, int, int, int]:
 def _prompt_catalog_freshness_signature() -> tuple[tuple[str, int, int, int, int], ...]:
     """Collision-safe stat signature for EVERY file load_prompt_catalog can
     read for ANY format_slug: the base catalog, plus (when using the
-    default, non-overridden catalog path) the silhouette and boat overlays
-    it unconditionally reads and merges in regardless of which format_slug
-    was asked for (services/control_plane_generation.py's
-    load_prompt_catalog). Not per-format-slug precise — it always includes
-    all three files, not just the one(s) a given format_slug's resolution
-    would actually touch — which can only over-invalidate, never under-.
+    default catalog path) the silhouette and boat overlays and the separate
+    Christmas catalog. The signature includes all of them for any AI-video
+    binding so a catalog change cannot leave stale capabilities in the cache.
     """
     configured = os.environ.get("CONTENT_LAB_PROMPT_CATALOG", "").strip()
     base = Path(configured).resolve() if configured else CATALOG_PATH
     paths = [base]
-    if not configured:
+    if base == CATALOG_PATH.resolve():
         paths.append(base.with_name("silhouette_stills.v1.json"))
         paths.append(base.with_name("boat_minimax.v1.json"))
+        paths.append(base.with_name("christmas_pov.v1.json"))
     return tuple(_file_stat_signature(path) for path in paths)
 
 
@@ -648,9 +654,14 @@ def _capabilities_job_views(
     builds them, each carrying the archiveIndex (see
     _snapshot_archive_index); factored out so a test calls the same code."""
     archive_index = _snapshot_archive_index(jobs_snapshot)
+    page_jobs = {
+        "jobs": jobs_snapshot.by_page.get(page_id, {}),
+        compaction.ARCHIVE_INDEX_KEY: archive_index,
+    }
+    if _PHOTO_RESERVATIONS_KEY in jobs_snapshot.data:
+        page_jobs[_PHOTO_RESERVATIONS_KEY] = jobs_snapshot.data[_PHOTO_RESERVATIONS_KEY]
     return (
-        {"jobs": jobs_snapshot.by_page.get(page_id, {}),
-         compaction.ARCHIVE_INDEX_KEY: archive_index},
+        page_jobs,
         {"jobs": jobs_snapshot.by_source_kind.get("dossier_source_dna", {}),
          compaction.ARCHIVE_INDEX_KEY: archive_index},
     )
@@ -669,6 +680,23 @@ def safety_controls(response: Response) -> dict[str, Any]:
     from services.safety_controls import snapshot
     response.headers["Cache-Control"] = "no-store"
     return snapshot(post_renders._started_service)
+
+
+def _pool_supplied_recipe_without_library(publication: dict[str, Any]) -> bool:
+    """A listed pool-supplied page whose production carries no Lab library id.
+
+    The Worker posts these pages' finished clips from its vault pool, so the
+    Lab advertises the recipe at zero (replenish blocked) instead of trying to
+    resolve a renderable slideshow recipe that can never bind a library.
+    """
+    spec = typed_recipe_spec(publication)
+    if spec is None:
+        return False
+    production = spec.get("production")
+    return (
+        isinstance(production, dict)
+        and production.get("sourceLibraryId") is None
+    )
 
 
 @router.get("/v1/capabilities", dependencies=[Depends(_require_capabilities_bearer)])
@@ -794,15 +822,23 @@ def capabilities(
     intent_niche = master_pages.get("contentNiche")
     intent_engine = master_pages.get("contentEngine")
     bootstrap = next((profile for profile in profiles.values()
-                      if profile.content_niche == intent_niche
+                      if page_niche_admits(profile.content_niche, intent_niche, intent_engine)
                       and profile.content_engine == intent_engine
                       and profile.execution_status == "commissioned"), None)
     if bootstrap is not None and not registered_bindings:
+        # Keep the first-publication discovery row, but do not advertise Lab
+        # render inventory for a listed pool slideshow. Match the registered
+        # pool route below; other engines retain their commissioned ceiling.
+        bootstrap_pool_supplied = (
+            bootstrap.content_engine in _SLIDESHOW_ENGINES
+            and is_pool_supplied(page_id)
+        )
         entries.append({
             "recipeId": f"{bootstrap.format_slug}:master",
             "engine": bootstrap.content_engine,
             "recipeVersion": bootstrap.format_contract_version,
-            "maxQuantity": bootstrap.max_quantity,
+            "maxQuantity": 0 if bootstrap_pool_supplied else bootstrap.max_quantity,
+            **({"zeroReason": POOL_SUPPLIED} if bootstrap_pool_supplied else {}),
             **({"sourceIdentities": completed_import_identities}
                if bootstrap.content_engine == "sourced_video" and completed_import_identities
                else {}),
@@ -821,26 +857,42 @@ def capabilities(
     # all available. Registration alone never becomes a capability.
     for _, publication in registered_bindings:
         publication_engine = publication.get("engine")
-        if publication_engine == "ai_video":
-            generation_recipe, generation_unavailable_reason = (
-                resolve_generation_recipe_with_reason(publication)
-            )
-        else:
+        # A listed pool-supplied page with no Lab library id still advertises
+        # its registered recipe, but at zero: the Worker supplies the finished
+        # clips from its vault pool, so the Lab never renders it.
+        pool_supplied_zero = (
+            publication_engine in _SLIDESHOW_ENGINES
+            and is_pool_supplied(page_id)
+            and _pool_supplied_recipe_without_library(publication)
+        )
+        if pool_supplied_zero:
             generation_recipe = None
             generation_unavailable_reason = None
-        source_refusal_reasons: list[str] = []
-        source_recipe = (
-            _dossier_source_recipe(publication, source_refusal_reasons)
-            if publication_engine == "sourced_video"
-            else None
-        )
-        slideshow_recipe = (
-            resolve_slideshow_recipe(publication)
-            if publication_engine in _SLIDESHOW_ENGINES
-            else None
-        )
+            source_refusal_reasons: list[str] = []
+            source_recipe = None
+            slideshow_recipe = None
+        else:
+            if publication_engine == "ai_video":
+                generation_recipe, generation_unavailable_reason = (
+                    resolve_generation_recipe_with_reason(publication)
+                )
+            else:
+                generation_recipe = None
+                generation_unavailable_reason = None
+            source_refusal_reasons: list[str] = []
+            source_recipe = (
+                _dossier_source_recipe(publication, source_refusal_reasons)
+                if publication_engine == "sourced_video"
+                else None
+            )
+            slideshow_recipe = (
+                resolve_slideshow_recipe(publication)
+                if publication_engine in _SLIDESHOW_ENGINES
+                else None
+            )
         if (
-            generation_recipe is None
+            not pool_supplied_zero
+            and generation_recipe is None
             and source_recipe is None
             and slideshow_recipe is None
         ):
@@ -850,6 +902,15 @@ def capabilities(
             elif publication_engine in _SLIDESHOW_ENGINES and not syzygy_runtime_available():
                 unresolved_reason = SLIDESHOW_RUNTIME_UNAVAILABLE
                 unresolved_detail = None
+            elif publication_engine in _SLIDESHOW_ENGINES:
+                recipe_spec = typed_recipe_spec(publication)
+                unresolved_reason = (
+                    MATERIAL_PROFILE_MISSING
+                    if recipe_spec is not None
+                    and resolve_material_profile(publication, recipe_spec) is None
+                    else RECIPE_UNRESOLVED
+                )
+                unresolved_detail = None
             else:
                 unresolved_reason = RECIPE_UNRESOLVED
                 unresolved_detail = generation_unavailable_reason
@@ -857,24 +918,30 @@ def capabilities(
                 _zero_plan_recipe(publication, unresolved_reason, unresolved_detail)
             )
             continue
-        if slideshow_recipe is not None:
-            try:
-                library = load_syzygy_library(slideshow_recipe_profile := (
-                    resolve_material_profile(publication, slideshow_recipe.recipe_spec)
-                ), master_pages)
-            except (SyzygyError, AttributeError):
-                zero_plan_recipes.append(
-                    _zero_plan_recipe(publication, LIBRARY_LOAD_FAILED)
-                )
-                continue
+        if pool_supplied_zero:
+            max_quantity = 0
+        elif slideshow_recipe is not None:
+            slideshow_recipe_profile = resolve_material_profile(
+                publication, slideshow_recipe.recipe_spec,
+            )
             if slideshow_recipe_profile is None:
                 zero_plan_recipes.append(
                     _zero_plan_recipe(publication, MATERIAL_PROFILE_MISSING)
                 )
                 continue
-            unavailable = _slideshow_unavailable_signatures(
-                page_jobs_view, slideshow_recipe, page_id,
-            )
+            try:
+                library = load_syzygy_library(slideshow_recipe_profile, master_pages)
+            except (SyzygyError, AttributeError):
+                zero_plan_recipes.append(
+                    _zero_plan_recipe(publication, LIBRARY_LOAD_FAILED)
+                )
+                continue
+            try:
+                unavailable = _slideshow_unavailable_signatures(
+                    page_jobs_view, slideshow_recipe, page_id,
+                )
+            except ValueError as error:
+                raise HTTPException(status_code=503, detail="photo reservation history unavailable") from error
             reserved_keys, opaque_media = _generic_clean_video_reserved_media(
                 page_jobs_view, slideshow_recipe, page_id,
             )
@@ -917,7 +984,9 @@ def capabilities(
             source_identities = sorted(set(identities))
         zero_reason = None
         if max_quantity == 0:
-            if slideshow_recipe is not None:
+            if pool_supplied_zero:
+                zero_reason = POOL_SUPPLIED
+            elif slideshow_recipe is not None:
                 zero_reason = explain_empty_slideshow_plan(
                     slideshow_recipe, library, slideshow_recipe.max_quantity, unavailable,
                 )
@@ -1332,6 +1401,8 @@ JOB_FIELDS = {
     "quantity", "constraints", "sourceIsolation", "policyHash",
     "masterPages", "masterPagesHash",
 }
+_PHOTO_RESERVATIONS_KEY = "managedPhotoReservations"
+_PHOTO_RESERVATION_SCHEMA = "content-lab.photo-plan-reservation.v1"
 SOURCE_IMPORT_FIELDS = {
     "schema", "pageId", "format", "sourceUrl", "masterPages",
     "masterPagesHash",
@@ -1810,6 +1881,16 @@ def run_compaction_once(
             )
             raise
         if not archived:
+            # Persist scan-only progress without publishing a synthetic empty
+            # archive index or appending an empty archive batch.
+            cursor_key = compaction.COMPACTION_SCAN_NEXT_KEY
+            if (cursor_key in store) != (cursor_key in new_store) or store.get(cursor_key) != new_store.get(cursor_key):
+                cursor_only = dict(store)
+                if cursor_key in new_store:
+                    cursor_only[cursor_key] = new_store[cursor_key]
+                else:
+                    cursor_only.pop(cursor_key, None)
+                _save_jobs(cursor_only)
             return {"archived": 0, "jobs_before": before, "jobs_after": before,
                     "tmp_swept": _sweep_stale_compaction_tmps(path)}
         compaction.append_archive_records(path, archived, now)
@@ -1859,7 +1940,9 @@ def _compaction_loop() -> None:
 _MEDIA_RETENTION_THREAD: threading.Thread | None = None
 # Pressure is re-read every minute; a pass runs when its pressure's interval is up.
 _MEDIA_RETENTION_TICK_SECONDS = 60
-_MEDIA_RETENTION_INTERVAL_SECONDS = {"normal": 10 * 60, "tight": 2 * 60, "floor": 60}
+# Every pressure waits 10 min: a near-full volume must not run a 60 s pass cycle
+# whose probes hammer the control plane's D1 (2026-11-04 probe storm).
+_MEDIA_RETENTION_INTERVAL_SECONDS = {"normal": 10 * 60, "tight": 10 * 60, "floor": 10 * 60}
 _MEDIA_RETENTION = generated_media_retention.GeneratedMediaRetention()
 
 
@@ -1881,8 +1964,24 @@ def run_generated_media_retention_once(now: datetime | None = None, *, pressure:
     )
 
 
+_MEDIA_RETENTION_ENV = "CONTENT_LAB_MEDIA_RETENTION"
+
+
+def _media_retention_paused() -> bool:
+    """Operator kill switch: CONTENT_LAB_MEDIA_RETENTION=off pauses every pass.
+
+    Each pass probes the Control Plane once per unconfirmed clip, and each probe
+    is a production D1 read. When D1 is overloaded the operator sets this to
+    "off" (case and spaces ignored) so the Lab adds no reads at all; nothing is
+    deleted while paused. Any other value, or no value, runs normally.
+    """
+    return os.environ.get(_MEDIA_RETENTION_ENV, "").strip().lower() == "off"
+
+
 def _media_retention_tick(last_run: float, now: float) -> float:
     """Run one pass if the current pressure's interval has elapsed; return the last-run time."""
+    if _media_retention_paused():
+        return last_run
     pressure = _generated_volume_pressure()
     if now - last_run < _MEDIA_RETENTION_INTERVAL_SECONDS[pressure]:
         return last_run
@@ -1891,7 +1990,10 @@ def _media_retention_tick(last_run: float, now: float) -> float:
 
 
 def _media_retention_loop() -> None:
-    last_run = float("-inf")
+    # Start the clock at boot instead of -inf: the first pass waits one full
+    # interval, so a deploy or restart no longer fires a burst of probes
+    # (one D1 read each) the moment the process comes up.
+    last_run = time.monotonic()
     while True:
         try:
             last_run = _media_retention_tick(last_run, time.monotonic())
@@ -2096,28 +2198,74 @@ def _slideshow_unavailable_signatures(
 ) -> set[str]:
     """Reserve every slideshow plan that may already have crossed the API."""
     signatures: set[str] = set()
+    photo_recipe = getattr(recipe, "format_slug", None) in IMAGE_VIDEO_FORMATS
+    if photo_recipe:
+        for record in _photo_reservations(store).values():
+            receipt = _photo_reservation_receipt(record)
+            if receipt["pageId"] == page_id and receipt["sourceLibraryId"] == recipe.library_id:
+                signatures.add(receipt["photoPlan"]["signature"])
     for job in store.get("jobs", {}).values():
         if (
             not isinstance(job, dict)
             or job.get("sourceKind") != "syzygy_slideshow"
             or job.get("pageId") != page_id
             or job.get("sourceLibraryId") != recipe.library_id
-            or job.get("status") not in SOURCE_DNA_UNAVAILABLE_STATUSES
         ):
             continue
-        for plan in job.get("slideshowPlan", []):
+        for plan in compaction.slideshow_reserved_plans(job):
             signature = plan.get("signature") if isinstance(plan, dict) else None
             if isinstance(signature, str) and re.fullmatch(r"[0-9a-f]{64}", signature):
                 signatures.add(signature)
     # Archived slideshow plans keep their permanent reservations.
     for entry in (store.get(compaction.ARCHIVE_INDEX_KEY, {}) or {}).get("slideshow", []):
+        if photo_recipe and (
+            not isinstance(entry, dict)
+            or not isinstance(entry.get("pageId"), str) or not entry["pageId"]
+            or not isinstance(entry.get("sourceLibraryId"), str) or not entry["sourceLibraryId"]
+        ):
+            raise ValueError("slideshow_archive_scope_invalid")
         if not isinstance(entry, dict):
             continue
+        signature = entry.get("signature")
+        if photo_recipe and (
+            not isinstance(signature, str)
+            or not re.fullmatch(r"[0-9a-f]{64}", signature)
+        ):
+            raise ValueError("slideshow_archive_signature_invalid")
         if entry.get("pageId") == page_id and entry.get("sourceLibraryId") == recipe.library_id:
-            signature = entry.get("signature")
             if isinstance(signature, str) and re.fullmatch(r"[0-9a-f]{64}", signature):
                 signatures.add(signature)
     return signatures
+
+
+def _photo_reservations(store: dict[str, Any]) -> dict[str, Any]:
+    reservations = store.get(_PHOTO_RESERVATIONS_KEY, {})
+    if not isinstance(reservations, dict):
+        raise HTTPException(status_code=503, detail="photo reservation history unavailable")
+    return reservations
+
+
+def _photo_reservation_receipt(record: Any) -> dict[str, Any]:
+    receipt = record.get("receipt") if isinstance(record, dict) else None
+    plan = receipt.get("photoPlan") if isinstance(receipt, dict) else None
+    signature = plan.get("signature") if isinstance(plan, dict) else None
+    if (
+        not isinstance(signature, str) or not re.fullmatch(r"[0-9a-f]{64}", signature)
+        or receipt.get("schema") != _PHOTO_RESERVATION_SCHEMA
+        or not all(isinstance(receipt.get(key), str) and receipt[key] for key in (
+            "reservationId", "pageId", "recipeId", "recipeVersion",
+            "recipeSpecHash", "masterPagesHash", "sourceLibraryId", "librarySnapshotHash",
+        ))
+        or plan.get("pageId") != receipt["pageId"]
+        or plan.get("libraryId") != receipt["sourceLibraryId"]
+    ):
+        raise HTTPException(status_code=503, detail="photo reservation history unavailable")
+    try:
+        if image_video_plan_signature(plan) != signature:
+            raise ValueError("photo reservation signature mismatch")
+    except (KeyError, TypeError, ValueError) as error:
+        raise HTTPException(status_code=503, detail="photo reservation history unavailable") from error
+    return receipt
 
 
 def _generic_clean_video_reserved_media(
@@ -2153,9 +2301,8 @@ def _generic_clean_video_reserved_media(
             and job.get("sourceKind") == "syzygy_slideshow"
             and job.get("pageId") == page_id
             and job.get("sourceLibraryId") == recipe.library_id
-            and job.get("status") in SOURCE_DNA_UNAVAILABLE_STATUSES
         ):
-            for plan in job.get("slideshowPlan", []):
+            for plan in compaction.slideshow_reserved_plans(job):
                 if isinstance(plan, dict):
                     remember(plan)
     for entry in (store.get(compaction.ARCHIVE_INDEX_KEY, {}) or {}).get("slideshow", []):
@@ -2262,8 +2409,8 @@ def _truck_master_candidates(
     """Return durable, unused, current-authority truck masters for re-cropping.
 
     A completed recovery reserves its exact masters permanently. Active
-    recoveries reserve them against concurrent replenishment. Failed recovery
-    jobs release them because no new delivery bytes crossed the API boundary.
+    recoveries reserve them against concurrent replenishment. A failed recovery
+    releases its masters only when it has no clips that the artifact API can expose.
     A landscape file alone is not enough: the producing job must match the
     selected profile, recipe, prompt catalog, executor and provider
     model. This prevents old-model or old-prompt renders from silently becoming
@@ -2279,13 +2426,9 @@ def _truck_master_candidates(
         if (
             not isinstance(job, dict)
             or job.get("sourceKind") != "truck_master_recovery"
-            or job.get("status") not in SOURCE_DNA_UNAVAILABLE_STATUSES
         ):
             continue
-        for master in job.get("recoveryMasters", []):
-            sha256 = master.get("sha256") if isinstance(master, dict) else None
-            if isinstance(sha256, str) and re.fullmatch(r"[0-9a-f]{64}", sha256):
-                reserved.add(sha256)
+        reserved.update(compaction.truck_recovery_reserved_masters(job))
     # Archived completed recoveries reserve their masters permanently.
     for sha256 in archive_index.get("truckRecoveryMasters", []):
         if isinstance(sha256, str) and re.fullmatch(r"[0-9a-f]{64}", sha256):
@@ -2493,15 +2636,34 @@ _UNRECORDED_FAILURE_REASON = "lab_failure_reason_unrecorded"
 _WRITER_FAILURE_REASON = "generation_failed_without_message"
 
 
+# ECMAScript String.prototype.trim whitespace, matching the Worker validator.
+# Python's default strip differs for FEFF and several C0 control characters.
+_WORKER_TRIM_CHARS = (
+    "\u0009\u000a\u000b\u000c\u000d\u0020\u00a0\u1680"
+    "\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a"
+    "\u2028\u2029\u202f\u205f\u3000\ufeff"
+)
+
+
 def _terminal_failure_reason(error: Any, *, fallback: str) -> str:
-    """Return the bounded, non-blank reason required by terminal failures."""
-    if isinstance(error, str):
-        reason = error.strip()
-    elif error is None:
-        reason = ""
-    else:
-        reason = str(error).strip()
-    return reason[:300] or fallback
+    """Produce a nonblank reason bounded in the Worker's UTF-16 units."""
+    reason = error if isinstance(error, str) else "" if error is None else str(error)
+    reason = reason.strip(_WORKER_TRIM_CHARS)
+    kept = []
+    units = 0
+    for char in reason:
+        code = ord(char)
+        # Avoid emitting an invalid Unicode scalar if a stored JSON value
+        # contains an unpaired surrogate.
+        if 0xD800 <= code <= 0xDFFF:
+            char = "\ufffd"
+            code = 0xFFFD
+        width = 2 if code > 0xFFFF else 1
+        if units + width > 300:
+            break
+        kept.append(char)
+        units += width
+    return "".join(kept).strip(_WORKER_TRIM_CHARS) or fallback
 
 
 def _exception_failure_reason(error: BaseException) -> str:
@@ -2544,6 +2706,54 @@ def _update_source_job(job_id: str, **fields: Any) -> dict[str, Any] | None:
         store = _load_jobs()
         job = store["jobs"].get(job_id)
         if (not isinstance(job, dict) or job.get("sourceKind") != "dossier_source_dna"
+                or job.get("status") not in GENERATION_ACTIVE_STATUSES):
+            return None
+        job.update(fields)
+        _save_jobs(store)
+        return dict(job)
+
+
+def _has_truck_recovery_claim(job: dict[str, Any]) -> bool:
+    return (type(job.get("truckRecoveryClaimVersion")) is int
+            and job["truckRecoveryClaimVersion"] == 1
+            and isinstance(job.get("truckRecoveryAttemptId"), str)
+            and bool(job["truckRecoveryAttemptId"]))
+
+
+def _update_truck_recovery_job(job_id: str, attempt_id: str, runtime_id: str, **fields: Any) -> dict[str, Any] | None:
+    if fields.get("status") in _FAILURE_TERMINAL_STATUSES:
+        fields["error"] = _terminal_failure_reason(fields.get("error"), fallback=_WRITER_FAILURE_REASON)
+    with lock_for(_jobs_path()):
+        store = _load_jobs()
+        job = store.get("jobs", {}).get(job_id)
+        if (not isinstance(job, dict) or job.get("sourceKind") != "truck_master_recovery"
+                or not _has_truck_recovery_claim(job)
+                or job.get("truckRecoveryAttemptId") != attempt_id
+                or job.get("runtimeId") != runtime_id
+                or job.get("status") not in GENERATION_ACTIVE_STATUSES):
+            return None
+        job.update(fields)
+        _save_jobs(store)
+        return dict(job)
+
+
+def _has_slideshow_runner_claim(job: dict[str, Any]) -> bool:
+    return (type(job.get("slideshowClaimVersion")) is int
+            and job["slideshowClaimVersion"] == 1
+            and isinstance(job.get("slideshowAttemptId"), str)
+            and bool(job["slideshowAttemptId"]))
+
+
+def _update_slideshow_job(job_id: str, attempt_id: str, runtime_id: str, **fields: Any) -> dict[str, Any] | None:
+    if fields.get("status") in _FAILURE_TERMINAL_STATUSES:
+        fields["error"] = _terminal_failure_reason(fields.get("error"), fallback=_WRITER_FAILURE_REASON)
+    with lock_for(_jobs_path()):
+        store = _load_jobs()
+        job = store.get("jobs", {}).get(job_id)
+        if (not isinstance(job, dict) or job.get("sourceKind") != "syzygy_slideshow"
+                or not _has_slideshow_runner_claim(job)
+                or job.get("slideshowAttemptId") != attempt_id
+                or job.get("runtimeId") != runtime_id
                 or job.get("status") not in GENERATION_ACTIVE_STATUSES):
             return None
         job.update(fields)
@@ -2723,6 +2933,7 @@ def _claim_unique_generated_clip(
 
 def _claim_unique_slideshow_clip(
     job_id: str, manifest: dict[str, Any], plan_signature: str,
+    expected_attempt: str | None = None, expected_runtime: str | None = None,
 ) -> None:
     """Atomically admit one fresh render for one reserved slideshow plan."""
     digest = manifest.get("sha256")
@@ -2736,7 +2947,10 @@ def _claim_unique_slideshow_clip(
     with lock_for(_jobs_path()):
         store = _load_jobs()
         job = store.get("jobs", {}).get(job_id)
-        if not isinstance(job, dict) or job.get("status") not in GENERATION_ACTIVE_STATUSES:
+        if (not isinstance(job, dict) or job.get("status") not in GENERATION_ACTIVE_STATUSES
+                or (expected_attempt is not None and
+                    (job.get("sourceKind") != "syzygy_slideshow" or not _has_slideshow_runner_claim(job)
+                     or job.get("slideshowAttemptId") != expected_attempt or job.get("runtimeId") != expected_runtime))):
             raise RuntimeError("slideshow_job_not_active")
         page_id = job.get("pageId")
         archive_index = store.get(compaction.ARCHIVE_INDEX_KEY, {}) or {}
@@ -2753,7 +2967,8 @@ def _claim_unique_slideshow_clip(
             if (
                 not isinstance(other, dict)
                 or other.get("pageId") != page_id
-                or other.get("status") not in SOURCE_DNA_UNAVAILABLE_STATUSES
+                or (other.get("status") not in SOURCE_DNA_UNAVAILABLE_STATUSES
+                    and not (other.get("sourceKind") == "syzygy_slideshow" and other.get("clips")))
             ):
                 continue
             for clip in other.get("clips", []):
@@ -3690,7 +3905,34 @@ async def _video_geometry(path: Path) -> tuple[int, int]:
     return width, height
 
 
-async def _run_truck_master_recovery(job_id: str) -> None:
+_TRUCK_RECOVERY_ATTEMPT_UNSET = object()
+
+
+async def _run_truck_master_recovery(job_id: str, expected_attempt: Any = _TRUCK_RECOVERY_ATTEMPT_UNSET,
+                                     expected_runtime: Any = _TRUCK_RECOVERY_ATTEMPT_UNSET) -> None:
+    initial = _get_job_or_404(job_id)
+    attempt = initial.get("truckRecoveryAttemptId") if expected_attempt is _TRUCK_RECOVERY_ATTEMPT_UNSET else expected_attempt
+    runtime = _GENERATION_RUNTIME_ID if expected_runtime is _TRUCK_RECOVERY_ATTEMPT_UNSET else expected_runtime
+    with runner_lock(_jobs_path(), job_id) as acquired:
+        if not acquired:
+            return
+        current = _get_job_or_404(job_id)
+        if (not _has_truck_recovery_claim(current) or current.get("sourceKind") != "truck_master_recovery"
+                or current.get("truckRecoveryAttemptId") != attempt or current.get("runtimeId") != runtime
+                or current.get("status") not in GENERATION_ACTIVE_STATUSES):
+            return
+        try:
+            await _run_owned_truck_master_recovery(job_id, attempt, runtime)
+        except BaseException as error:
+            await _settle_source_call(_update_truck_recovery_job, job_id, attempt, runtime,
+                                      status="failed", error=("generation_cancelled"
+                                      if isinstance(error, asyncio.CancelledError) else _exception_failure_reason(error)),
+                                      completedAt=datetime.now(timezone.utc).isoformat())
+            if not isinstance(error, Exception):
+                raise
+
+
+async def _run_owned_truck_master_recovery(job_id: str, attempt: str, runtime: str) -> None:
     """Turn preserved paid truck masters into five exact portrait deliveries.
 
     This path never calls a model. It copies and re-hashes the previously
@@ -3701,8 +3943,7 @@ async def _run_truck_master_recovery(job_id: str) -> None:
     """
     job = _get_job_or_404(job_id)
     if not _job_matches_current_master_pages(job):
-        await asyncio.to_thread(_update_job,
-            job_id,
+        await _settle_source_call(_update_truck_recovery_job, job_id, attempt, runtime,
             status="failed",
             error="master_pages_strategy_changed",
             completedAt=datetime.now(timezone.utc).isoformat(),
@@ -3721,8 +3962,7 @@ async def _run_truck_master_recovery(job_id: str) -> None:
         ).hexdigest()
         or not publication_matches_master_pages(publication, job["masterPages"], job["masterPagesHash"])
     ):
-        await asyncio.to_thread(_update_job,
-            job_id, status="failed", error="truck_master_recipe_unavailable",
+        await _settle_source_call(_update_truck_recovery_job, job_id, attempt, runtime, status="failed", error="truck_master_recipe_unavailable",
             completedAt=datetime.now(timezone.utc).isoformat(),
         )
         return
@@ -3731,13 +3971,13 @@ async def _run_truck_master_recovery(job_id: str) -> None:
     master_root.mkdir(parents=True, exist_ok=True, mode=0o700)
     masters = job.get("recoveryMasters")
     if not isinstance(masters, list) or not masters:
-        await asyncio.to_thread(_update_job,
-            job_id, status="failed", error="truck_master_recovery_empty",
+        await _settle_source_call(_update_truck_recovery_job, job_id, attempt, runtime, status="failed", error="truck_master_recovery_empty",
             completedAt=datetime.now(timezone.utc).isoformat(),
         )
         return
     manifests: list[dict[str, Any]] = []
-    await asyncio.to_thread(_update_job,job_id, status="running", progress=0)
+    if await _settle_source_call(_update_truck_recovery_job, job_id, attempt, runtime, status="running", progress=0) is None:
+        return
     try:
         for master_index, candidate in enumerate(masters):
             if not _job_matches_current_master_pages(job):
@@ -3801,36 +4041,34 @@ async def _run_truck_master_recovery(job_id: str) -> None:
                     job_root, crop, len(manifests),
                 )
                 manifests.append(manifest)
-            await asyncio.to_thread(_update_job,
-                job_id,
-                progress=int(((master_index + 1) / len(masters)) * 100),
-            )
+            if await _settle_source_call(_update_truck_recovery_job, job_id, attempt, runtime,
+                    progress=int(((master_index + 1) / len(masters)) * 100)) is None:
+                return
     except asyncio.CancelledError:
-        shutil.rmtree(job_root, ignore_errors=True)
-        await asyncio.to_thread(_update_job,
-            job_id,
+        failed = await _settle_source_call(_update_truck_recovery_job, job_id, attempt, runtime,
             status="failed",
             error="generation_cancelled",
             completedAt=datetime.now(timezone.utc).isoformat(),
         )
+        if failed is not None and not failed.get("clips"):
+            shutil.rmtree(job_root, ignore_errors=True)
         raise
     except Exception as error:
-        shutil.rmtree(job_root, ignore_errors=True)
-        await asyncio.to_thread(_update_job,
-            job_id, status="failed", error=_exception_failure_reason(error),
+        failed = await _settle_source_call(_update_truck_recovery_job, job_id, attempt, runtime, status="failed", error=_exception_failure_reason(error),
             completedAt=datetime.now(timezone.utc).isoformat(),
         )
+        if failed is not None and not failed.get("clips"):
+            shutil.rmtree(job_root, ignore_errors=True)
         return
     if not _job_matches_current_master_pages(job):
-        await asyncio.to_thread(_update_job,
-            job_id,
+        await _settle_source_call(_update_truck_recovery_job, job_id, attempt, runtime,
             status="failed",
             error="master_pages_strategy_changed",
             completedAt=datetime.now(timezone.utc).isoformat(),
         )
         return
-    await asyncio.to_thread(_update_job,
-        job_id, status="completed", progress=100, clips=manifests,
+    await _settle_source_call(_update_truck_recovery_job, job_id, attempt, runtime,
+        status="completed", progress=100, clips=manifests,
         completedAt=datetime.now(timezone.utc).isoformat(),
     )
 
@@ -4303,9 +4541,13 @@ async def _run_dossier_source_inner(job_id: str) -> None:
                 previous_variant = (cut_speed, cut_crop)
                 # A backup master's declared brightness replaces the recipe's
                 # before the jitter (source_dna_registry.GRADE_OVERRIDE_BOUNDS).
+                # The page look is the recipe's own brightness; cut_grade clamps
+                # a darker-only page's cut back to it so an override can never
+                # brighten a cut above the look.
+                recipe_filters = recipe.recipe_spec["renderTreatment"]["filters"]
                 cut_filters = cut_grade(job["pageId"], f"{master.sha256}:{start_ms}:{duration_ms}",
-                                        {**recipe.recipe_spec["renderTreatment"]["filters"],
-                                         **(master.grade_override or {})})
+                                        {**recipe_filters, **(master.grade_override or {})},
+                                        look=float(recipe_filters.get("brightness", 1.0)))
                 cut_cc = filters_to_color_correction(cut_filters)
             # A scrambler cut renders the drawn sub-window (the offset head of
             # the reserved span is skipped) at the drawn EFFECTIVE speed; the
@@ -4524,6 +4766,11 @@ async def _run_dossier_source_inner(job_id: str) -> None:
                              else (transforms.reverse if vary_transforms else None)),
                     hflip=(scram_transforms.mirror if scram_record is not None
                            else (transforms.mirror if vary_transforms else None)),
+                    # A Scrambler split_swap cut is the Lab's split-and-rotate
+                    # loop path (PR 281): its halves are re-ordered in place,
+                    # so the advertised recipe records loop_split True. Every
+                    # other cut keeps loop_split null (the pre-G39 value).
+                    loop_split=(scram_split_swap or None),
                 )} if advertise_origin() else {}),
             })
             manifest["thumbnail"] = await _thumbnail_manifest(
@@ -4608,12 +4855,38 @@ async def _run_dossier_source_inner(job_id: str) -> None:
     )
 
 
-async def _run_syzygy_slideshow(job_id: str) -> None:
+_SLIDESHOW_ATTEMPT_UNSET = object()
+
+
+async def _run_syzygy_slideshow(job_id: str, expected_attempt: Any = _SLIDESHOW_ATTEMPT_UNSET,
+                                  expected_runtime: Any = _SLIDESHOW_ATTEMPT_UNSET) -> None:
+    initial = _get_job_or_404(job_id)
+    attempt = initial.get("slideshowAttemptId") if expected_attempt is _SLIDESHOW_ATTEMPT_UNSET else expected_attempt
+    runtime = _GENERATION_RUNTIME_ID if expected_runtime is _SLIDESHOW_ATTEMPT_UNSET else expected_runtime
+    with runner_lock(_jobs_path(), job_id) as acquired:
+        if not acquired:
+            return
+        current = _get_job_or_404(job_id)
+        if (not _has_slideshow_runner_claim(current) or current.get("sourceKind") != "syzygy_slideshow"
+                or current.get("slideshowAttemptId") != attempt or current.get("runtimeId") != runtime
+                or current.get("status") not in GENERATION_ACTIVE_STATUSES):
+            return
+        try:
+            await _run_owned_syzygy_slideshow(job_id, attempt, runtime)
+        except BaseException as error:
+            await _settle_source_call(_update_slideshow_job, job_id, attempt, runtime,
+                                      status="failed", error=("slideshow_render_cancelled"
+                                      if isinstance(error, asyncio.CancelledError) else _exception_failure_reason(error)),
+                                      completedAt=datetime.now(timezone.utc).isoformat())
+            if not isinstance(error, Exception):
+                raise
+
+
+async def _run_owned_syzygy_slideshow(job_id: str, attempt: str, runtime: str) -> None:
     """Render reserved Syzygy plans under one page's locked recipe."""
     job = _get_job_or_404(job_id)
     if not _job_matches_current_master_pages(job):
-        await asyncio.to_thread(_update_job,
-            job_id,
+        await _settle_source_call(_update_slideshow_job, job_id, attempt, runtime,
             status="failed",
             error="master_pages_strategy_changed",
             completedAt=datetime.now(timezone.utc).isoformat(),
@@ -4628,6 +4901,11 @@ async def _run_syzygy_slideshow(job_id: str) -> None:
         if isinstance(publication, dict)
         else None
     )
+    # A job planned before an ugc-slideshow executor change still runs the plan
+    # it was given: a version in the closed retired map resolves to that exact
+    # file. Any other mismatch still fails closed below.
+    if recipe is not None:
+        recipe = retired_ugc_recipe(recipe, job) or recipe
     if (
         recipe is None
         or job.get("sourceLibraryId") != recipe.library_id
@@ -4645,8 +4923,7 @@ async def _run_syzygy_slideshow(job_id: str) -> None:
         or job.get("materialSource") != recipe.material_source
         or job.get("assetType") != recipe.asset_type
     ):
-        await asyncio.to_thread(_update_job,
-            job_id,
+        await _settle_source_call(_update_slideshow_job, job_id, attempt, runtime,
             status="failed",
             error="slideshow_recipe_executor_unavailable",
             completedAt=datetime.now(timezone.utc).isoformat(),
@@ -4658,7 +4935,7 @@ async def _run_syzygy_slideshow(job_id: str) -> None:
         try:
             validate_managed_lyric_job(job, publication, recipe.recipe_spec)
         except (KeyError, TypeError, ValueError):
-            await asyncio.to_thread(_update_job, job_id, status="failed",
+            await _settle_source_call(_update_slideshow_job, job_id, attempt, runtime, status="failed",
                 error="lyric_recipe_authority_mismatch", completedAt=datetime.now(timezone.utc).isoformat())
             return
 
@@ -4676,8 +4953,7 @@ async def _run_syzygy_slideshow(job_id: str) -> None:
     }
     plans = job.get("slideshowPlan")
     if not isinstance(plans, list) or not plans:
-        await asyncio.to_thread(_update_job,
-            job_id,
+        await _settle_source_call(_update_slideshow_job, job_id, attempt, runtime,
             status="failed",
             error="slideshow_recipe_selection_missing",
             completedAt=datetime.now(timezone.utc).isoformat(),
@@ -4685,7 +4961,8 @@ async def _run_syzygy_slideshow(job_id: str) -> None:
         return
     templates = {template.slug: template for template in recipe.templates}
     manifests: list[dict[str, Any]] = []
-    await asyncio.to_thread(_update_job,job_id, status="running", progress=0)
+    if await _settle_source_call(_update_slideshow_job, job_id, attempt, runtime, status="running", progress=0) is None:
+        return
     try:
         library = await asyncio.to_thread(load_recipe_library, recipe)
         if library.library_id != recipe.library_id:
@@ -4839,6 +5116,7 @@ async def _run_syzygy_slideshow(job_id: str) -> None:
                 page_id=job["pageId"],
                 recipe_version=job["recipeVersion"],
                 format_slug=recipe.format_slug,
+                lab_job_id=job_id,
             )
             play_url = await poll_syzygy_render(render_job_id)
             raw_render = renders_root / f"render-{index:04d}.mp4"
@@ -4849,7 +5127,7 @@ async def _run_syzygy_slideshow(job_id: str) -> None:
             destination = treated_root / f"slideshow-{index:04d}.mp4"
             encode_args = (
                 ugc_encode_args(recipe.encode_preset)
-                if recipe.format_slug in CLEAN_VIDEO_FORMATS or recipe.format_slug in IMAGE_VIDEO_FORMATS
+                if recipe.format_slug in CLEAN_VIDEO_FORMATS or recipe.format_slug in IMAGE_VIDEO_FORMATS or recipe.format_slug == COFFEE_FORMAT_SLUG
                 else delivery_encode_args(recipe.encode_preset)
             )
             await run_color_correct(
@@ -4890,40 +5168,35 @@ async def _run_syzygy_slideshow(job_id: str) -> None:
             manifest["thumbnail"] = await _thumbnail_manifest(
                 job_root, destination, len(manifests),
             )
-            _claim_unique_slideshow_clip(job_id, manifest, signature)
+            _claim_unique_slideshow_clip(job_id, manifest, signature, attempt, runtime)
             manifests.append(manifest)
-            await asyncio.to_thread(_update_job,
-                job_id,
-                progress=int(((index + 1) / len(plans)) * 100),
-            )
+            if await _settle_source_call(_update_slideshow_job, job_id, attempt, runtime,
+                    progress=int(((index + 1) / len(plans)) * 100)) is None:
+                return
     except asyncio.CancelledError:
-        # A cancelled runner must never leave the job stuck in "running"
-        # with partial renders; the reservation releases with the failure.
-        await asyncio.to_thread(_update_job,
-            job_id,
+        # A cancelled runner becomes terminal; already exposed partial clips
+        # retain their plan and digest reservations.
+        await _settle_source_call(_update_slideshow_job, job_id, attempt, runtime,
             status="failed",
             error="slideshow_render_cancelled",
             completedAt=datetime.now(timezone.utc).isoformat(),
         )
         raise
     except Exception as error:
-        await asyncio.to_thread(_update_job,
-            job_id,
+        await _settle_source_call(_update_slideshow_job, job_id, attempt, runtime,
             status="failed",
             error=_exception_failure_reason(error),
             completedAt=datetime.now(timezone.utc).isoformat(),
         )
         return
     if not _job_matches_current_master_pages(job):
-        await asyncio.to_thread(_update_job,
-            job_id,
+        await _settle_source_call(_update_slideshow_job, job_id, attempt, runtime,
             status="failed",
             error="master_pages_strategy_changed",
             completedAt=datetime.now(timezone.utc).isoformat(),
         )
         return
-    await asyncio.to_thread(_update_job,
-        job_id,
+    await _settle_source_call(_update_slideshow_job, job_id, attempt, runtime,
         status="completed",
         progress=100,
         clips=manifests,
@@ -5128,9 +5401,14 @@ def _start_dossier_source(job_id: str) -> None:
 
 
 def _start_truck_master_recovery(job_id: str) -> None:
-    task = asyncio.create_task(_run_truck_master_recovery(job_id))
+    current = _truck_recovery_tasks.get(job_id)
+    if current is not None and not current.done():
+        return
+    job = _get_job_or_404(job_id)
+    task = asyncio.create_task(_run_truck_master_recovery(job_id, job.get("truckRecoveryAttemptId"), _GENERATION_RUNTIME_ID))
     _truck_recovery_tasks[job_id] = task
-    task.add_done_callback(lambda _: _truck_recovery_tasks.pop(job_id, None))
+    task.add_done_callback(lambda completed: _truck_recovery_tasks.pop(job_id, None)
+                           if _truck_recovery_tasks.get(job_id) is completed else None)
 
 
 async def _guarded_page_source_import(job_id: str, attempt_id: str | None) -> None:
@@ -5183,10 +5461,16 @@ async def _cancel_page_source_import(job_id: str, expected_attempt: str | None =
 
 
 def _start_syzygy_slideshow(job_id: str) -> None:
-    task = asyncio.create_task(_run_syzygy_slideshow(job_id))
+    current = _syzygy_slideshow_tasks.get(job_id)
+    if current is not None and not current.done():
+        return
+    job = _get_job_or_404(job_id)
+    attempt, runtime = job.get("slideshowAttemptId"), _GENERATION_RUNTIME_ID
+    task = asyncio.create_task(_run_syzygy_slideshow(job_id, attempt, runtime))
     _syzygy_slideshow_tasks[job_id] = task
     task.add_done_callback(
-        lambda _: _syzygy_slideshow_tasks.pop(job_id, None),
+        lambda completed: _syzygy_slideshow_tasks.pop(job_id, None)
+        if _syzygy_slideshow_tasks.get(job_id) is completed else None,
     )
 
 
@@ -5403,8 +5687,80 @@ async def create_source_import(
     return {"schema": RESPONSE_SCHEMA, "jobId": job_id, "status": "queued"}
 
 
-@router.post("/v1/jobs")
-async def create_job(
+def _replay_existing_job(
+    store: dict[str, Any], idempotency_key: str, job_request_hash: str,
+) -> dict[str, Any] | None:
+    """Replay a validated job while the durable jobs-store lock is held."""
+    existing_id = _idempotency_job_id(store, idempotency_key)
+    if not existing_id or existing_id not in store["jobs"]:
+        return None
+    existing = store["jobs"][existing_id]
+    # Legacy rows predate request fingerprints; preserve their replay
+    # behavior, but never let a hashed row be reused for new bytes.
+    if existing.get("jobRequestHash") not in (None, job_request_hash):
+        raise HTTPException(status_code=409, detail="idempotency_key_reused_with_different_request")
+    if (_checkpointed_generation(existing)
+            and existing.get("status") in GENERATION_ACTIVE_STATUSES):
+        if _needs_generation_resume(existing):
+            _start_dossier_generation(existing["jobId"])
+        return {"schema": RESPONSE_SCHEMA, "jobId": existing["jobId"], "status": existing["status"]}
+    if (
+        existing.get("sourceKind") in ASYNC_SOURCE_KINDS
+        and existing.get("status") in GENERATION_ACTIVE_STATUSES
+        and existing.get("runtimeId") != _GENERATION_RUNTIME_ID
+    ):
+        if existing.get("sourceKind") == "truck_master_recovery":
+            if _has_truck_recovery_claim(existing):
+                with runner_lock(_jobs_path(), existing["jobId"]) as acquired:
+                    if acquired:
+                        existing.update({"status": "failed", "error": "generation_runtime_restarted",
+                                         "completedAt": datetime.now(timezone.utc).isoformat()})
+                        _save_jobs(store)
+            else:
+                existing.update({"status": "failed", "error": "generation_runtime_restarted",
+                                 "completedAt": datetime.now(timezone.utc).isoformat()})
+                _save_jobs(store)
+        elif existing.get("sourceKind") == "syzygy_slideshow":
+            if _has_slideshow_runner_claim(existing):
+                with runner_lock(_jobs_path(), existing["jobId"]) as acquired:
+                    if acquired:
+                        existing.update({"status": "failed", "error": "generation_runtime_restarted",
+                                         "completedAt": datetime.now(timezone.utc).isoformat()})
+                        _save_jobs(store)
+            else:
+                existing.update({"status": "failed", "error": "generation_runtime_restarted",
+                                 "completedAt": datetime.now(timezone.utc).isoformat()})
+                _save_jobs(store)
+        elif existing.get("sourceKind") == "dossier_source_dna" and not _has_source_runner_claim(existing):
+            # A legacy runner never took the claim; its liveness is
+            # unknown, so its windows must remain reserved.
+            pass
+        elif existing.get("sourceKind") == "dossier_source_dna":
+            # A different runtime may still be cutting these windows.
+            # A claim acquired first also fences a queued runner, which
+            # rechecks the terminal state after it acquires the claim.
+            with runner_lock(_jobs_path(), existing["jobId"]) as acquired:
+                if acquired:
+                    existing.update({
+                        "status": "failed", "error": "generation_runtime_restarted",
+                        "completedAt": datetime.now(timezone.utc).isoformat(),
+                    })
+                    _save_jobs(store)
+                    if any(isinstance(cut, dict) and "scrambler" in cut
+                           for cut in existing.get("sourceCuts", ())):
+                        release_job_reservations(existing["pageId"], existing["jobId"],
+                                                 reason="generation_runtime_restarted")
+        else:
+            existing.update({
+                "status": "failed",
+                "error": "generation_runtime_restarted",
+                "completedAt": datetime.now(timezone.utc).isoformat(),
+            })
+            _save_jobs(store)
+    return {"schema": RESPONSE_SCHEMA, "jobId": existing["jobId"], "status": existing["status"]}
+
+
+async def _create_job_impl(
     request: Request,
     x_rt_page_id: str | None = Header(default=None),
     x_rt_lane: str | None = Header(default=None),
@@ -5517,8 +5873,22 @@ async def create_job(
             provider_calls = generation_recipe.planned_provider_calls(quantity)
         except ValueError as error:
             raise HTTPException(status_code=400, detail=str(error)) from error
+    # Fingerprint only the validated, immutable job contract. Jobs written by
+    # older runtimes have no hash; those legacy rows remain replay-compatible.
+    job_request_hash = _job_request_hash(
+        body, page_id=page_id, lane=x_rt_lane, master_pages=master_pages,
+    )
     slideshow_library = None
     if slideshow_recipe is not None:
+        # A retry must recover its existing receipt even when the library is
+        # temporarily unavailable. The locked check below still closes races
+        # with a concurrent creator after this lock is released.
+        with lock_for(_jobs_path()):
+            replay = _replay_existing_job(
+                _load_jobs(), idempotency_key, job_request_hash,
+            )
+            if replay is not None:
+                return replay
         # The live library read is network I/O and must happen before the
         # durable jobs-store lock is held; the reservation itself is planned
         # and persisted atomically inside the lock below.
@@ -5530,12 +5900,6 @@ async def create_job(
             raise HTTPException(
                 status_code=409, detail="recipe_executor_unavailable",
             ) from error
-
-    # Fingerprint only the validated, immutable job contract.  Jobs written by
-    # older runtimes have no hash; those legacy rows remain replay-compatible.
-    job_request_hash = _job_request_hash(
-        body, page_id=page_id, lane=x_rt_lane, master_pages=master_pages,
-    )
 
     start_generation = False
     start_source = False
@@ -5552,50 +5916,9 @@ async def create_job(
             preloaded_originality = error
     with lock_for(_jobs_path()):
         store = _load_jobs()
-        existing_id = _idempotency_job_id(store, idempotency_key)
-        if existing_id and existing_id in store["jobs"]:
-            existing = store["jobs"][existing_id]
-            # Legacy rows predate request fingerprints; preserve their replay
-            # behavior, but never let a hashed row be reused for new bytes.
-            if existing.get("jobRequestHash") not in (None, job_request_hash):
-                raise HTTPException(status_code=409, detail="idempotency_key_reused_with_different_request")
-            if (_checkpointed_generation(existing)
-                    and existing.get("status") in GENERATION_ACTIVE_STATUSES):
-                if _needs_generation_resume(existing):
-                    _start_dossier_generation(existing["jobId"])
-                return {"schema": RESPONSE_SCHEMA, "jobId": existing["jobId"], "status": existing["status"]}
-            if (
-                existing.get("sourceKind") in ASYNC_SOURCE_KINDS
-                and existing.get("status") in GENERATION_ACTIVE_STATUSES
-                and existing.get("runtimeId") != _GENERATION_RUNTIME_ID
-            ):
-                if existing.get("sourceKind") == "dossier_source_dna" and not _has_source_runner_claim(existing):
-                    # A legacy runner never took the claim; its liveness is
-                    # unknown, so its windows must remain reserved.
-                    pass
-                elif existing.get("sourceKind") == "dossier_source_dna":
-                    # A different runtime may still be cutting these windows.
-                    # A claim acquired first also fences a queued runner, which
-                    # rechecks the terminal state after it acquires the claim.
-                    with runner_lock(_jobs_path(), existing["jobId"]) as acquired:
-                        if acquired:
-                            existing.update({
-                                "status": "failed", "error": "generation_runtime_restarted",
-                                "completedAt": datetime.now(timezone.utc).isoformat(),
-                            })
-                            _save_jobs(store)
-                            if any(isinstance(cut, dict) and "scrambler" in cut
-                                   for cut in existing.get("sourceCuts", ())):
-                                release_job_reservations(existing["pageId"], existing["jobId"],
-                                                         reason="generation_runtime_restarted")
-                else:
-                    existing.update({
-                        "status": "failed",
-                        "error": "generation_runtime_restarted",
-                        "completedAt": datetime.now(timezone.utc).isoformat(),
-                    })
-                    _save_jobs(store)
-            return {"schema": RESPONSE_SCHEMA, "jobId": existing["jobId"], "status": existing["status"]}
+        replay = _replay_existing_job(store, idempotency_key, job_request_hash)
+        if replay is not None:
+            return replay
 
         job_id = JOB_ID_PREFIX + _secrets.token_hex(8)
         common = {
@@ -5637,6 +5960,8 @@ async def create_job(
             job = {
                 **common,
                 "sourceKind": "truck_master_recovery",
+                "truckRecoveryClaimVersion": 1,
+                "truckRecoveryAttemptId": _secrets.token_hex(16),
                 "status": "queued",
                 "progress": 0,
                 "clips": [],
@@ -6027,9 +6352,12 @@ async def create_job(
             }
             start_source = True
         elif slideshow_recipe is not None:
-            unavailable_signatures = _slideshow_unavailable_signatures(
-                store, slideshow_recipe, page_id,
-            )
+            try:
+                unavailable_signatures = _slideshow_unavailable_signatures(
+                    store, slideshow_recipe, page_id,
+                )
+            except ValueError as error:
+                raise HTTPException(status_code=503, detail="photo reservation history unavailable") from error
             reserved_keys, opaque_media = _generic_clean_video_reserved_media(
                 store, slideshow_recipe, page_id,
             )
@@ -6080,6 +6408,8 @@ async def create_job(
                 "clips": [],
                 "artifactRoot": str(job_root),
                 "slideshowPlan": plans,
+                "slideshowClaimVersion": 1,
+                "slideshowAttemptId": _secrets.token_hex(16),
                 "sourceLibraryId": slideshow_recipe.library_id,
                 "librarySnapshotHash": slideshow_library.snapshot_hash,
                 "engineRegistryHash": slideshow_recipe.engine_registry_hash,
@@ -6113,6 +6443,34 @@ async def create_job(
     elif start_slideshow:
         _start_syzygy_slideshow(job_id)
     return {"schema": RESPONSE_SCHEMA, "jobId": job_id, "status": job["status"]}
+
+
+@router.post("/v1/jobs")
+async def create_job(
+    request: Request,
+    x_rt_page_id: str | None = Header(default=None),
+    x_rt_lane: str | None = Header(default=None),
+    idempotency_key: str | None = Header(default=None),
+    authorization: str | None = Header(default=None),
+    body: dict[str, Any] = Body(default=None),
+) -> dict[str, Any]:
+    """Exact recipe version under one durable idempotency key.
+
+    Every 409 is logged with its page id and detail so a repeating refusal
+    (e.g. ``scrambler_unavailable: origin_mapping_unknown``) is visible in
+    Railway logs, not only in the response body.
+    """
+    try:
+        return await _create_job_impl(
+            request, x_rt_page_id, x_rt_lane, idempotency_key, authorization,
+            body,
+        )
+    except HTTPException as error:
+        if error.status_code == 409:
+            page = (x_rt_page_id or "").strip() or "-"
+            log.info("POST /api/control-plane/v1/jobs 409 page=%s detail=%s",
+                     page, error.detail)
+        raise
 
 
 def _get_job_or_404(job_id: str) -> dict[str, Any]:
@@ -6174,6 +6532,141 @@ def _job_request_hash(
     return "sha256:" + hashlib.sha256(json.dumps(
         canonical, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
     ).encode()).hexdigest()
+
+
+def _replay_photo_reservation(
+    reservations: dict[str, Any], key: str, request_hash: str,
+) -> dict[str, Any] | None:
+    if key not in reservations:
+        return None
+    record = reservations[key]
+    receipt = _photo_reservation_receipt(record)
+    if record.get("requestHash") != request_hash:
+        raise HTTPException(status_code=409, detail="idempotency_key_reused_with_different_request")
+    return receipt
+
+
+@router.post("/v1/photo-plan-reservations")
+def reserve_photo_plan(
+    response: Response,
+    x_rt_page_id: str | None = Header(default=None),
+    x_rt_lane: str | None = Header(default=None),
+    idempotency_key: str | None = Header(default=None),
+    authorization: str | None = Header(default=None),
+    body: dict[str, Any] = Body(default=None),
+) -> dict[str, Any]:
+    """Reserve one exact managed photo plan for an authenticated remote renderer."""
+    require_control_plane_bearer(authorization)
+    if (
+        not x_rt_page_id or not PAGE_ID_RE.fullmatch(x_rt_page_id)
+        or x_rt_lane != CONTROL_PLANE_LANE
+        or not idempotency_key or not IDEMPOTENCY_KEY_RE.fullmatch(idempotency_key)
+        or not isinstance(body, dict) or set(body) - JOB_FIELDS
+        or len(json.dumps(body)) > MAX_GENERATION_JOB_BODY_BYTES
+    ):
+        raise HTTPException(status_code=400, detail="invalid photo reservation request")
+    identity = _normalize_job_identity(body)
+    if (
+        identity["pageId"] != x_rt_page_id or identity["lane"] != x_rt_lane
+        or type(body.get("quantity")) is not int or body["quantity"] != 1
+        or body.get("constraints") not in (None, {})
+        or body.get("sourceIsolation") != {"partitionKey": f"page:{x_rt_page_id}"}
+        or not identity["recipeVersion"] or not identity["policyHash"]
+    ):
+        raise HTTPException(status_code=400, detail="invalid photo reservation scope")
+    recipe_id, engine, version = (
+        identity["lockedRecipeId"], identity["engine"], identity["recipeVersion"],
+    )
+    if recipe_id not in {f"{slug}:master" for slug in IMAGE_VIDEO_FORMATS}:
+        raise HTTPException(status_code=409, detail="managed_photo_recipe_required")
+    master_pages = exact_intent(body.get("masterPages"), body.get("masterPagesHash"),
+                                expected_page_id=x_rt_page_id)
+    if master_pages is None or master_pages["contentEngine"] != engine:
+        raise HTTPException(status_code=409, detail="job Master Pages intent is missing, stale, or engine-mismatched")
+
+    request_hash = _job_request_hash(
+        body, page_id=x_rt_page_id, lane=x_rt_lane, master_pages=master_pages,
+    )
+    key = hashlib.sha256(idempotency_key.encode()).hexdigest()
+    response.headers["Cache-Control"] = "private, no-store"
+    try:
+        replay = _replay_photo_reservation(_photo_reservations(_read_jobs_snapshot()), key, request_hash)
+    except _JobsDecodeFailed as error:
+        raise HTTPException(status_code=503, detail="job store temporarily unavailable") from error
+    if replay is not None:
+        return replay
+
+    intent_hash = body["masterPagesHash"]
+    if _current_master_pages_intent(x_rt_page_id, master_pages) != (master_pages, intent_hash):
+        raise HTTPException(status_code=409, detail="job Master Pages intent does not match the current roster")
+    binding = load_registered_recipe_binding(x_rt_page_id, recipe_id, engine, version, master_pages, intent_hash)
+    if binding is None or not publication_matches_master_pages(binding[1], master_pages, intent_hash):
+        raise HTTPException(status_code=409, detail="hash-bound dossier publication is required")
+    _, publication = binding
+    recipe = resolve_slideshow_recipe(publication, require_runtime=False)
+    if recipe is None or recipe.format_slug not in IMAGE_VIDEO_FORMATS:
+        raise HTTPException(status_code=409, detail="recipe_executor_unavailable")
+    try:
+        library = load_recipe_library(recipe)
+    except SyzygyError as error:
+        raise HTTPException(status_code=409, detail="recipe_executor_unavailable") from error
+
+    path = _jobs_path()
+    with lock_for(path):
+        try:
+            # Read fresh inside the same lock as the legacy slideshow writer.
+            store = _decode_jobs_snapshot(0).data
+        except _JobsDecodeFailed as error:
+            raise HTTPException(status_code=503, detail="job store temporarily unavailable") from error
+        if not isinstance(store.get("jobs"), dict) or not isinstance(store.get("byIdempotency"), dict):
+            raise HTTPException(status_code=503, detail="job store temporarily unavailable")
+        reservations = _photo_reservations(store)
+        replay = _replay_photo_reservation(reservations, key, request_hash)
+        if replay is not None:
+            return replay
+        archive = store.get(compaction.ARCHIVE_INDEX_KEY)
+        if (
+            compaction.ARCHIVE_INDEX_KEY in store and (
+                not isinstance(archive, dict) or archive.get("version") != compaction.ARCHIVE_INDEX_VERSION
+                or not isinstance(archive.get("slideshow"), list)
+            )
+            or compaction.ARCHIVE_INDEX_KEY not in store
+            and any(entry.is_file() for entry in path.parent.glob(f"{path.name}.archive-*.jsonl"))
+        ):
+            raise HTTPException(status_code=503, detail="photo reservation history unavailable")
+        try:
+            unavailable = _slideshow_unavailable_signatures(store, recipe, x_rt_page_id)
+        except ValueError as error:
+            raise HTTPException(status_code=503, detail="photo reservation history unavailable") from error
+        reservation_id = f"photo-{key[:32]}"
+        plans = plan_slideshows(recipe, library, 1, unavailable, reservation_id)
+        if not plans:
+            reason = explain_empty_slideshow_plan(recipe, library, 1, unavailable)
+            raise HTTPException(
+                status_code=409, detail="slideshow_inventory_exhausted",
+                headers={"X-RT-Zero-Reason": reason},
+            )
+        plan = plans[0]
+        receipt = {
+            "schema": _PHOTO_RESERVATION_SCHEMA,
+            "reservationId": reservation_id,
+            "pageId": x_rt_page_id,
+            "recipeId": recipe_id,
+            "recipeVersion": version,
+            "recipeSpecHash": publication["recipeSpecHash"],
+            "masterPagesHash": intent_hash,
+            "sourceLibraryId": recipe.library_id,
+            "librarySnapshotHash": plan["librarySnapshotHash"],
+            "photoPlan": plan["photoPlan"],
+        }
+        _save_jobs({
+            **store,
+            _PHOTO_RESERVATIONS_KEY: {
+                **reservations,
+                key: {"requestHash": request_hash, "receipt": receipt},
+            },
+        })
+    return receipt
 
 
 @router.post("/v1/job-receipts/by-idempotency-key")
@@ -6294,6 +6787,30 @@ async def job_status(
                             error="source_import_runtime_restarted",
                             completedAt=datetime.now(timezone.utc).isoformat(),
                         )
+        elif job.get("sourceKind") == "truck_master_recovery":
+            if _has_truck_recovery_claim(job):
+                with runner_lock(_jobs_path(), job_id) as acquired:
+                    if acquired:
+                        _update_truck_recovery_job(job_id, job["truckRecoveryAttemptId"], job["runtimeId"],
+                                                   status="failed", error="generation_runtime_restarted",
+                                                   completedAt=datetime.now(timezone.utc).isoformat())
+            else:
+                current = _get_job_or_404(job_id)
+                if current.get("status") in GENERATION_ACTIVE_STATUSES:
+                    _update_job(job_id, status="failed", error="generation_runtime_restarted",
+                                completedAt=datetime.now(timezone.utc).isoformat())
+        elif job.get("sourceKind") == "syzygy_slideshow":
+            if _has_slideshow_runner_claim(job):
+                with runner_lock(_jobs_path(), job_id) as acquired:
+                    if acquired:
+                        _update_slideshow_job(job_id, job["slideshowAttemptId"], job["runtimeId"],
+                                              status="failed", error="generation_runtime_restarted",
+                                              completedAt=datetime.now(timezone.utc).isoformat())
+            else:
+                current = _get_job_or_404(job_id)
+                if current.get("status") in GENERATION_ACTIVE_STATUSES:
+                    _update_job(job_id, status="failed", error="generation_runtime_restarted",
+                                completedAt=datetime.now(timezone.utc).isoformat())
         elif job.get("sourceKind") == "dossier_source_dna":
             # Pre-claim owners stay reserved until explicitly reconciled.
             if _has_source_runner_claim(job):
@@ -6436,6 +6953,89 @@ def _artifact_lyric_timing(job: dict[str, Any], clip: dict[str, Any]) -> dict[st
         raise HTTPException(409, "lyric_timing_binding_invalid") from error
 
 
+def _source_byte_facts_for_artifacts(job_id: str, job: dict[str, Any], limit: int) -> dict[int, dict]:
+    # Keep legacy/default-OFF artifacts byte-for-byte unchanged and do not import
+    # a detector or touch the job store unless a server-owned exact cohort opts in.
+    if os.environ.get("CONTENT_LAB_SOURCE_BYTE_FACTS") != "on":
+        return {}
+    from copy import deepcopy
+    from services import source_byte_facts as facts
+    if not facts.enabled_for(job):
+        return {}
+    snapshot = deepcopy(job)
+    clips = snapshot.get("clips")
+    if not isinstance(clips, list):
+        return {}
+    count = min(100, max(0, limit), len(clips))
+    if count == 0:
+        return {}
+    producer = facts.producer_identity()
+    old = snapshot.get("sourceByteFacts")
+    old = old if isinstance(old, dict) else {}
+    old_evidence = snapshot.get("sourceByteFactsEvidence")
+    old_evidence = old_evidence if isinstance(old_evidence, dict) else {}
+    cursor = snapshot.get("sourceByteFactsCursor", 0)
+    cursor = cursor % count if type(cursor) is int and cursor >= 0 else 0
+    selected = next((i for i in [(cursor + n) % count for n in range(count)]
+                     if isinstance(clips[i], dict) and not facts.reusable_audio(
+                         old.get(str(i)), facts.binding(snapshot, job_id, i, clips[i]), producer, old_evidence.get(str(i)))), None)
+    artifact_root = snapshot.get("artifactRoot")
+    if not isinstance(artifact_root, str) or not artifact_root.strip():
+        return {}
+    root = Path(artifact_root).resolve()
+    results, private = {}, {}
+    for index, clip in enumerate(clips[:count]):
+        if not isinstance(clip, dict):
+            continue
+        path = (root / str(clip.get("path") or "")).resolve()
+        value, evidence = facts.build(snapshot, job_id, index, clip, path,
+                                      allow_probe=(index == selected and root in path.parents), _producer=producer)
+        results[index] = value
+        if evidence is not None:
+            private[index] = evidence
+    if any(value.get("reason") == "audio_probe_busy" for value in results.values()):
+        return results  # An active owned probe must not be overwritten by a busy observer.
+    # Never hold the global writer lock across a child process or a byte read.
+    # Commit only if the exact job/clip context used above is still current.
+    with lock_for(_jobs_path()):
+        store = _load_jobs()
+        current = store.get("jobs", {}).get(job_id)
+        if not isinstance(current, dict) or not facts.enabled_for(current):
+            return {}
+        if any(current.get(k) != snapshot.get(k) for k in
+               ("pageId", "jobId", "recipeSpecHash", "policyHash", "artifactRoot", "sourceKind", "recipeId",
+                "sourceByteFacts", "sourceByteFactsEvidence", "sourceByteFactsCursor")):
+            return {}
+        current_clips = current.get("clips")
+        if not isinstance(current_clips, list) or len(current_clips) < count:
+            return {}
+        for index in results:
+            if (not isinstance(current_clips[index], dict)
+                    or any(current_clips[index].get(k) != clips[index].get(k)
+                           for k in ("path", "sha256", "bytes", "sourceTreatment", "lyricTiming"))):
+                return {}
+        current_visual = current.get("visualAdmission")
+        current_visual = current_visual if isinstance(current_visual, dict) else {}
+        snapshot_visual = snapshot.get("visualAdmission")
+        snapshot_visual = snapshot_visual if isinstance(snapshot_visual, dict) else {}
+        if any(current_visual.get(str(i)) != snapshot_visual.get(str(i)) for i in results):
+            return {}
+        records = current.get("sourceByteFacts")
+        records = dict(records) if isinstance(records, dict) else {}
+        evidence_records = current.get("sourceByteFactsEvidence")
+        evidence_records = dict(evidence_records) if isinstance(evidence_records, dict) else {}
+        for index, value in results.items():
+            records[str(index)] = deepcopy(value)
+        for index, evidence in private.items():
+            evidence_records[str(index)] = deepcopy(evidence)
+        current["sourceByteFacts"] = records
+        current["sourceByteFactsEvidence"] = evidence_records
+        if selected is not None:
+            current["sourceByteFactsCursor"] = (selected + 1) % count
+        _save_jobs(store)
+    return results
+
+
 @router.get("/v1/jobs/{job_id}/artifacts")
 def job_artifacts(
     job_id: str,
@@ -6476,6 +7076,14 @@ def job_artifacts(
         index = boundary.get("index")
         if count is not None and type(index) is int and 0 <= index < count:
             artifact_limit += count - index - 1
+    try:
+        source_byte_facts = _source_byte_facts_for_artifacts(job_id, job, artifact_limit)
+    except Exception:
+        # Inventory is an optional qualification envelope. A missing envelope
+        # remains pending at the scoped consumer; never turn an inventory or
+        # persistence failure into a delivery failure or a fabricated success.
+        log.warning("source_byte_facts_unavailable")
+        source_byte_facts = {}
     artifacts = []
     for index, clip in enumerate(job["clips"][:artifact_limit]):
         artifact = {
@@ -6503,6 +7111,8 @@ def job_artifacts(
         lyric_timing = _artifact_lyric_timing(job, clip)
         if lyric_timing is not None:
             artifact["lyricTiming"] = lyric_timing
+        if index in source_byte_facts:
+            artifact["sourceByteFacts"] = source_byte_facts[index]
         artifacts.append(artifact)
     return {"schema": RESPONSE_SCHEMA, "jobId": job_id, "artifacts": artifacts}
 

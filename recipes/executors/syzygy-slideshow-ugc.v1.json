@@ -32,22 +32,10 @@
             "duration": 12.0
           },
           {
-            "file": "ytal-v-0012.mp4",
-            "sha256": "28b721c76288b5ecd6f78437d59c89162bf25e92aaac1934d14bff28c3e96975",
-            "bytes": 4125502,
-            "duration": 8.5085
-          },
-          {
             "file": "ytal-v-0014.mp4",
             "sha256": "2ba7832152cd68451ca8fcc9122bea60bf1066001bb304eeb36bb96bcad4ce07",
             "bytes": 4387384,
             "duration": 6.006
-          },
-          {
-            "file": "ytal-v-0002.mp4",
-            "sha256": "d425ebd704c00e458efcbae3fed83748c7aec0751578c192fc4d23cbf65a23e7",
-            "bytes": 7791757,
-            "duration": 8.0
           },
           {
             "file": "ytal-v-0007.mp4",
@@ -62,52 +50,16 @@
             "duration": 6.006
           },
           {
-            "file": "ytal-v-0006.mp4",
-            "sha256": "1a5d5e2e6bd94abdceac972dfdb20300910097356801451be7d7dd331b1fb0bb",
-            "bytes": 2741037,
-            "duration": 4.5
-          },
-          {
-            "file": "ytal-v-0003.mp4",
-            "sha256": "1e4b177b4635404ce09d8ce26615376784f7862b0d01bf70d191093c05655e47",
-            "bytes": 5126638,
-            "duration": 7.0
-          },
-          {
             "file": "ytal-v-0009.mp4",
             "sha256": "8c970d9fc11292af471ea33ae45c9938b74092813cf090ba49d0978e4946c8e2",
             "bytes": 3160623,
             "duration": 5.5
           },
           {
-            "file": "ytal-v-0013.mp4",
-            "sha256": "2e1e4e6209a72ea91ceb41b8430857d9a4665399671e2de1afbbc22519d88970",
-            "bytes": 2661762,
-            "duration": 5.5055
-          },
-          {
             "file": "ytal-v-0008.mp4",
             "sha256": "1d13175d1a395af05d4872060be2780d60b0000de2f900de1f55a7165fca2990",
             "bytes": 4233299,
             "duration": 6.5
-          },
-          {
-            "file": "ytal-v-0001.mp4",
-            "sha256": "87112f63ca91eac20e0aefaabc8697ebccc89e56e932222f063757ccf07ec8db",
-            "bytes": 4979012,
-            "duration": 8.0
-          },
-          {
-            "file": "tk-v-0006.mp4",
-            "sha256": "5935ebc300f5992f25748a0ffdd28d8383ec6b432c1803ee6e5b38cc90c4dd1d",
-            "bytes": 2523086,
-            "duration": 8.0
-          },
-          {
-            "file": "ytal-v-0011.mp4",
-            "sha256": "bbbca2581c344bd6cb31add5d7c9dc8e856842c8fe1754d7f60aa5ebc1372765",
-            "bytes": 2243910,
-            "duration": 5.0
           },
           {
             "file": "ytal-v-0004.mp4",
@@ -120,151 +72,63 @@
           {
             "source": "tk-v-0005.mp4",
             "sourceStart": 0,
-            "sourceEnd": 0.8,
+            "sourceEnd": 2.0,
             "outputStart": 0,
-            "outputEnd": 0.8,
-            "focalX": 0.5
-          },
-          {
-            "source": "ytal-v-0012.mp4",
-            "sourceStart": 4.1,
-            "sourceEnd": 5.3,
-            "outputStart": 0.8,
             "outputEnd": 2.0,
-            "focalX": 0.25
-          },
-          {
-            "source": "tk-v-0005.mp4",
-            "sourceStart": 9.4,
-            "sourceEnd": 9.8,
-            "outputStart": 2.0,
-            "outputEnd": 2.4,
             "focalX": 0.5
-          },
-          {
-            "source": "ytal-v-0014.mp4",
-            "sourceStart": 0.6,
-            "sourceEnd": 1.0,
-            "outputStart": 2.4,
-            "outputEnd": 2.8,
-            "focalX": 0.43
-          },
-          {
-            "source": "ytal-v-0002.mp4",
-            "sourceStart": 1.4,
-            "sourceEnd": 1.6,
-            "outputStart": 2.8,
-            "outputEnd": 3.0,
-            "focalX": 0.53
-          },
-          {
-            "source": "ytal-v-0007.mp4",
-            "sourceStart": 0.2,
-            "sourceEnd": 0.4,
-            "outputStart": 3.0,
-            "outputEnd": 3.2,
-            "focalX": 0.29
           },
           {
             "source": "ytal-v-0017.mp4",
             "sourceStart": 0.3,
-            "sourceEnd": 1.1,
-            "outputStart": 3.2,
-            "outputEnd": 4.0,
+            "sourceEnd": 1.6999999999999995,
+            "outputStart": 2.0,
+            "outputEnd": 3.4,
             "focalX": 0.4
           },
           {
-            "source": "ytal-v-0006.mp4",
-            "sourceStart": 1,
-            "sourceEnd": 1.4,
-            "outputStart": 4.0,
-            "outputEnd": 4.4,
-            "focalX": 0.65
-          },
-          {
-            "source": "ytal-v-0003.mp4",
-            "sourceStart": 0.4,
-            "sourceEnd": 0.6,
-            "outputStart": 4.4,
+            "source": "tk-v-0005.mp4",
+            "sourceStart": 9.4,
+            "sourceEnd": 10.600000000000001,
+            "outputStart": 3.4,
             "outputEnd": 4.6,
-            "focalX": 0.68
+            "focalX": 0.5
           },
           {
             "source": "ytal-v-0009.mp4",
             "sourceStart": 0.8,
-            "sourceEnd": 1.6,
+            "sourceEnd": 2.0,
             "outputStart": 4.6,
-            "outputEnd": 5.4,
-            "focalX": 0.57
-          },
-          {
-            "source": "ytal-v-0013.mp4",
-            "sourceStart": 0.6,
-            "sourceEnd": 1.0,
-            "outputStart": 5.4,
             "outputEnd": 5.8,
-            "focalX": 0.36
+            "focalX": 0.57
           },
           {
             "source": "ytal-v-0008.mp4",
             "sourceStart": 1.6,
-            "sourceEnd": 2.4,
+            "sourceEnd": 3.0000000000000004,
             "outputStart": 5.8,
-            "outputEnd": 6.6,
-            "focalX": 0.57
-          },
-          {
-            "source": "ytal-v-0001.mp4",
-            "sourceStart": 3.2,
-            "sourceEnd": 3.4,
-            "outputStart": 6.6,
-            "outputEnd": 6.8,
-            "focalX": 0.6
-          },
-          {
-            "source": "ytal-v-0002.mp4",
-            "sourceStart": 4.8,
-            "sourceEnd": 5.2,
-            "outputStart": 6.8,
             "outputEnd": 7.2,
-            "focalX": 0.59
+            "focalX": 0.57
           },
           {
             "source": "ytal-v-0014.mp4",
             "sourceStart": 2,
-            "sourceEnd": 2.8,
+            "sourceEnd": 3.3999999999999995,
             "outputStart": 7.2,
-            "outputEnd": 8.0,
+            "outputEnd": 8.6,
             "focalX": 0.43
           },
           {
-            "source": "tk-v-0006.mp4",
-            "sourceStart": 3.8,
-            "sourceEnd": 4.4,
-            "outputStart": 8.0,
-            "outputEnd": 8.6,
-            "focalX": 0.5
-          },
-          {
             "source": "ytal-v-0007.mp4",
-            "sourceStart": 4.8,
-            "sourceEnd": 5.6,
+            "sourceStart": 3.4499999999999993,
+            "sourceEnd": 5.25,
             "outputStart": 8.6,
-            "outputEnd": 9.4,
+            "outputEnd": 10.4,
             "focalX": 0.58
           },
           {
-            "source": "ytal-v-0011.mp4",
-            "sourceStart": 1.2,
-            "sourceEnd": 2.2,
-            "outputStart": 9.4,
-            "outputEnd": 10.4,
-            "focalX": 0.38
-          },
-          {
             "source": "ytal-v-0004.mp4",
-            "sourceStart": 6.4,
-            "sourceEnd": 8.0,
+            "sourceStart": 5.65,
+            "sourceEnd": 7.25,
             "outputStart": 10.4,
             "outputEnd": 12.0,
             "focalX": 0.5
@@ -791,176 +655,72 @@
           {
             "source": "bmr-v-0001.mp4",
             "sourceStart": 4.697058,
-            "sourceEnd": 5.0970580000000005,
+            "sourceEnd": 6.497058,
             "outputStart": 0,
-            "outputEnd": 0.4,
-            "focalX": 0.5
-          },
-          {
-            "source": "bmr-v-0004.mp4",
-            "sourceStart": 1.558048,
-            "sourceEnd": 2.958048,
-            "outputStart": 0.4,
             "outputEnd": 1.8,
             "focalX": 0.5
           },
           {
             "source": "bmr-v-0007.mp4",
-            "sourceStart": 5.807893,
-            "sourceEnd": 7.007893,
+            "sourceStart": 5.65,
+            "sourceEnd": 7.25,
             "outputStart": 1.8,
-            "outputEnd": 3.0,
-            "focalX": 0.5
-          },
-          {
-            "source": "bmr-v-0010.mp4",
-            "sourceStart": 3.588233,
-            "sourceEnd": 3.9882329999999997,
-            "outputStart": 3.0,
             "outputEnd": 3.4,
             "focalX": 0.5
           },
           {
             "source": "bmr-v-0013.mp4",
             "sourceStart": 0.685291,
-            "sourceEnd": 1.0852909999999998,
+            "sourceEnd": 2.151957666666666,
             "outputStart": 3.4,
-            "outputEnd": 3.8,
-            "focalX": 0.5
-          },
-          {
-            "source": "bmr-v-0016.mp4",
-            "sourceStart": 5.193495,
-            "sourceEnd": 5.860161666666667,
-            "outputStart": 3.8,
-            "outputEnd": 4.466666666666667,
-            "focalX": 0.5
-          },
-          {
-            "source": "bmr-v-0019.mp4",
-            "sourceStart": 2.479408,
-            "sourceEnd": 2.8794079999999993,
-            "outputStart": 4.466666666666667,
             "outputEnd": 4.866666666666666,
             "focalX": 0.5
           },
           {
             "source": "bmr-v-0022.mp4",
-            "sourceStart": 6.609903,
-            "sourceEnd": 7.609903,
+            "sourceStart": 5.6499999999999995,
+            "sourceEnd": 7.25,
             "outputStart": 4.866666666666666,
-            "outputEnd": 5.866666666666666,
-            "focalX": 0.5
-          },
-          {
-            "source": "bmr-v-0025.mp4",
-            "sourceStart": 4.348498,
-            "sourceEnd": 4.615164666666668,
-            "outputStart": 5.866666666666666,
-            "outputEnd": 6.133333333333334,
-            "focalX": 0.5
-          },
-          {
-            "source": "bmr-v-0029.mp4",
-            "sourceStart": 1.382605,
-            "sourceEnd": 1.7159383333333331,
-            "outputStart": 6.133333333333334,
             "outputEnd": 6.466666666666667,
             "focalX": 0.5
           },
           {
             "source": "bmr-v-0032.mp4",
-            "sourceStart": 5.907966,
-            "sourceEnd": 6.507966,
+            "sourceStart": 5.483333333333334,
+            "sourceEnd": 7.25,
             "outputStart": 6.466666666666667,
-            "outputEnd": 7.066666666666666,
-            "focalX": 0.5
-          },
-          {
-            "source": "bmr-v-0035.mp4",
-            "sourceStart": 3.19246,
-            "sourceEnd": 3.525793333333334,
-            "outputStart": 7.066666666666666,
-            "outputEnd": 7.4,
-            "focalX": 0.5
-          },
-          {
-            "source": "bmr-v-0038.mp4",
-            "sourceStart": 0.261758,
-            "sourceEnd": 0.6617579999999994,
-            "outputStart": 7.4,
-            "outputEnd": 7.8,
-            "focalX": 0.5
-          },
-          {
-            "source": "bmr-v-0041.mp4",
-            "sourceStart": 4.937067,
-            "sourceEnd": 5.3704003333333326,
-            "outputStart": 7.8,
             "outputEnd": 8.233333333333333,
             "focalX": 0.5
           },
           {
             "source": "bmr-v-0044.mp4",
             "sourceStart": 1.893568,
-            "sourceEnd": 2.893568,
+            "sourceEnd": 3.426901333333335,
             "outputStart": 8.233333333333333,
-            "outputEnd": 9.233333333333333,
-            "focalX": 0.5
-          },
-          {
-            "source": "bmr-v-0047.mp4",
-            "sourceStart": 6.63446,
-            "sourceEnd": 7.167793333333335,
-            "outputStart": 9.233333333333333,
             "outputEnd": 9.766666666666667,
             "focalX": 0.5
           },
           {
             "source": "bmr-v-0050.mp4",
             "sourceStart": 3.782447,
-            "sourceEnd": 4.315780333333333,
+            "sourceEnd": 5.115780333333332,
             "outputStart": 9.766666666666667,
-            "outputEnd": 10.3,
-            "focalX": 0.5
-          },
-          {
-            "source": "bmr-v-0053.mp4",
-            "sourceStart": 0.897204,
-            "sourceEnd": 1.6972039999999988,
-            "outputStart": 10.3,
             "outputEnd": 11.1,
             "focalX": 0.5
           },
           {
             "source": "bmr-v-0057.mp4",
             "sourceStart": 5.049991,
-            "sourceEnd": 6.249991000000001,
+            "sourceEnd": 6.649991,
             "outputStart": 11.1,
-            "outputEnd": 12.3,
-            "focalX": 0.5
-          },
-          {
-            "source": "bmr-v-0060.mp4",
-            "sourceStart": 2.741166,
-            "sourceEnd": 3.141165999999999,
-            "outputStart": 12.3,
             "outputEnd": 12.7,
             "focalX": 0.5
           },
           {
             "source": "bmr-v-0063.mp4",
-            "sourceStart": 7.177234,
-            "sourceEnd": 7.843900666666668,
+            "sourceStart": 5.783333333333333,
+            "sourceEnd": 7.25,
             "outputStart": 12.7,
-            "outputEnd": 13.366666666666667,
-            "focalX": 0.5
-          },
-          {
-            "source": "bmr-v-0066.mp4",
-            "sourceStart": 4.301357,
-            "sourceEnd": 5.101356999999999,
-            "outputStart": 13.366666666666667,
             "outputEnd": 14.166666666666666,
             "focalX": 0.5
           },
@@ -983,16 +743,8 @@
           {
             "source": "bmr-v-0075.mp4",
             "sourceStart": 3.005664,
-            "sourceEnd": 4.338997333333332,
+            "sourceEnd": 5.138997333333332,
             "outputStart": 16.233333333333334,
-            "outputEnd": 17.566666666666666,
-            "focalX": 0.5
-          },
-          {
-            "source": "bmr-v-0080.mp4",
-            "sourceStart": 0.495962,
-            "sourceEnd": 1.2959620000000007,
-            "outputStart": 17.566666666666666,
             "outputEnd": 18.366666666666667,
             "focalX": 0.5
           },

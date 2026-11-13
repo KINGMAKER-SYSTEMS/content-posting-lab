@@ -77,7 +77,7 @@ def _offline_guard_source() -> str:
     return "import ipaddress\nimport socket\nimport sys\nimport threading\n\nimport pytest\n\n" + source[start:end]
 
 
-def test_a_swallowed_async_attempt_still_fails_the_test_at_teardown(pytester):
+def test_a_swallowed_async_attempt_still_fails_the_test_at_teardown(pytester, monkeypatch):
     # A separate interpreter: audit hooks cannot be removed once installed.
     pytester.makeconftest(_offline_guard_source())
     pytester.makeini("[pytest]\nasyncio_mode = auto\n")
@@ -92,7 +92,10 @@ async def test_swallows_the_refusal():
     except Exception:
         pass
 ''')
-    result = pytester.runpytest_subprocess("-p", "no:cacheprovider")
+    # Load only the async runner this child needs, even when the parent disables
+    # plugin discovery. Keep the child deterministic when parent autoload is on.
+    monkeypatch.setenv("PYTEST_DISABLE_PLUGIN_AUTOLOAD", "1")
+    result = pytester.runpytest_subprocess("-p", "no:cacheprovider", "-p", "pytest_asyncio.plugin")
     result.assert_outcomes(passed=1, errors=1)
     result.stdout.fnmatch_lines(["*test attempted real network access: socket.getaddrinfo 'hub.invalid'*"])
 

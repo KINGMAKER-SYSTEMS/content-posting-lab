@@ -1202,7 +1202,7 @@
       "creativeAuthority": {
         "kind": "slideshow_renderer",
         "id": "syzygy-slideshow",
-        "version": "sha256:1097ebe82d9a955c63c9f89c4e840c70eeacb0fab62f6c848891c96ca6dffc09"
+        "version": "sha256:b768617dadee60d52e6bb4b5990d94902b54b54ad00af467ec23038025fc498d"
       },
       "dimensions": {
         "subject": {
@@ -1493,6 +1493,160 @@
         "technical_video",
         "rights_and_provenance",
         "text_layout",
+        "duplicate_and_never_reuse"
+      ],
+      "distribution": {
+        "captions": "page_binding_required",
+        "sounds": "page_binding_required"
+      },
+      "definitionGaps": []
+    },
+    "coffee-slideshow": {
+      "contentNiche": "Coffee",
+      "contentEngine": "sourced_slideshow",
+      "materialSource": "image_library",
+      "assetType": "video/mp4",
+      "definitionStatus": "complete",
+      "creativeAuthority": {
+        "kind": "slideshow_renderer",
+        "id": "syzygy-slideshow",
+        "version": "sha256:142f7a9d740b701df44dc9c340556c5a051c9cb5c30b37a6853d967b335414d4"
+      },
+      "dimensions": {
+        "subject": {
+          "status": "defined",
+          "rule": "Every frame comes from the exact page-owned coffee library of licensed caf\u00e9, coffee-making and tabletop photography; another page's media may not substitute.",
+          "authority": "production.sourceLibraryId"
+        },
+        "setting": {
+          "status": "defined",
+          "rule": "Settings remain those present in the approved page-scoped R2 photos or clips selected for the render.",
+          "authority": "artifact.source.media"
+        },
+        "shotGrammar": {
+          "status": "defined",
+          "rule": "A vertical five-photo caf\u00e9 sequence uses the clean-slideshow template. The existing deterministic planner varies ordered selections without repeating a completed plan.",
+          "authority": "syzygy-coffee-slideshow.formats.coffee-slideshow.templates"
+        },
+        "lighting": {
+          "status": "defined",
+          "rule": "Lighting comes from the selected approved media and the locked Dossier colour treatment; the renderer does not invent a different visual source.",
+          "authority": "artifact.source.media+dossier.treatment"
+        },
+        "motion": {
+          "status": "defined",
+          "rule": "Motion is limited to the selected source clips and the chosen Syzygy slideshow template transitions.",
+          "authority": "syzygy-slideshow.selection"
+        },
+        "duration": {
+          "status": "defined",
+          "rule": "The Syzygy executor renders the closed template sequence as a vertical short-form video and records its exact output duration in technical QA.",
+          "authority": "syzygy-slideshow.output"
+        },
+        "textPolicy": {
+          "status": "defined",
+          "rule": "The Syzygy visual has an explicitly blank hook, empty lyrics and no captions or original audio. Control Plane retains the page caption and Coffee sound selection downstream.",
+          "authority": "syzygy-coffee-slideshow.output.audioPolicy"
+        },
+        "negativeRules": {
+          "status": "defined",
+          "rule": "Use the page's own licensed source library, retain source provenance, reserve completed plan identities, and introduce no caption, hook, lyric or original audio into the neutral background.",
+          "authority": "syzygy-slideshow.reservation+reviewGates"
+        },
+        "referenceExamples": {
+          "status": "defined",
+          "rule": "The exact object keys, byte counts, ETags when available, and SHA-256 observations used by each render are preserved in its artifact source manifest.",
+          "authority": "artifact.source.media"
+        }
+      },
+      "output": {
+        "aspectRatio": "9:16",
+        "container": "video/mp4",
+        "durationPolicy": "executor_bound",
+        "audioPolicy": "campaign_sound_bound_downstream"
+      },
+      "reviewAuthority": "syzygy-slideshow.output+artifact.source.media",
+      "reviewGates": [
+        "technical_video",
+        "rights_and_provenance",
+        "text_layout",
+        "duplicate_and_never_reuse"
+      ],
+      "distribution": {
+        "captions": "page_binding_required",
+        "sounds": "page_binding_required"
+      },
+      "definitionGaps": []
+    },
+    "pov-seasonal": {
+      "contentNiche": "XMAS",
+      "contentEngine": "ai_video",
+      "materialSource": "generated_video",
+      "assetType": "video/mp4",
+      "definitionStatus": "complete",
+      "creativeAuthority": {
+        "kind": "prompt_family",
+        "id": "christmas-pov",
+        "version": "sha256:bcae8d47ecdd0f86aed25deb52af4155a6ac6fd80289cf46ea3b10b607586f25"
+      },
+      "dimensions": {
+        "subject": {
+          "status": "defined",
+          "rule": "First-person Christmas village walks, slow drives past decorated homes, and fixed Swiss Alpine overlooks.",
+          "authority": "promptCatalog.families.christmas-pov.slots.scene"
+        },
+        "setting": {
+          "status": "defined",
+          "rule": "Snowy Christmas markets, decorated neighborhoods, and alpine villages with warm practical holiday lights.",
+          "authority": "promptCatalog.families.christmas-pov.slots.scene"
+        },
+        "shotGrammar": {
+          "status": "defined",
+          "rule": "One continuous portrait shot with the eye-level camera movement or fixed terrace viewpoint defined by the scene.",
+          "authority": "promptCatalog.families.christmas-pov.template"
+        },
+        "lighting": {
+          "status": "defined",
+          "rule": "Blue winter twilight or dark winter night with controlled practical lights and readable snow and shadow detail.",
+          "authority": "promptCatalog.families.christmas-pov.slots.light_detail"
+        },
+        "motion": {
+          "status": "defined",
+          "rule": "Natural pedestrian sway, restrained passenger-seat parallax, or a slight handheld settle at a fixed overlook.",
+          "authority": "promptCatalog.families.christmas-pov.quality_guards"
+        },
+        "duration": {
+          "status": "defined",
+          "rule": "Eight-second portrait generation with one clip per H3 Highspeed call. Remove provider audio without re-encoding video.",
+          "authority": "promptCatalog.providers.h3-highspeed.base_input.duration"
+        },
+        "textPolicy": {
+          "status": "defined",
+          "rule": "Raw footage has no captions, overlays, logos, or watermarks.",
+          "authority": "promptCatalog.families.christmas-pov.quality_guards"
+        },
+        "negativeRules": {
+          "status": "defined",
+          "rule": "Reject cuts, fades, strobing, warped geometry, unnatural camera movement, and near duplicates.",
+          "authority": "promptCatalog.families.christmas-pov.visual_reference.reject"
+        },
+        "referenceExamples": {
+          "status": "defined",
+          "rule": "Review the shot against the scene, light and camera movement described by the selected prompt.",
+          "authority": "promptCatalog.families.christmas-pov.slots.scene"
+        }
+      },
+      "output": {
+        "aspectRatio": "9:16",
+        "container": "video/mp4",
+        "durationPolicy": "executor_bound",
+        "audioPolicy": "campaign_sound_bound_downstream"
+      },
+      "reviewAuthority": "promptCatalog.families.christmas-pov.visual_reference",
+      "reviewGates": [
+        "technical_video",
+        "ocr_text",
+        "visual_dna",
         "duplicate_and_never_reuse"
       ],
       "distribution": {

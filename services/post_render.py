@@ -21,12 +21,14 @@ from pathlib import Path
 from typing import Annotated, Callable, Literal
 
 from PIL import Image
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator, model_serializer
+from pydantic_core import PydanticCustomError
 
 from burn_quality_gate import overlay_geometry_reasons
 from services.caption_render import CaptionRenderRequest, CaptionStyle, render_caption_overlay
 from services.ffmpeg import delivery_encode_args
 from services.page_frame import frame_band_height, frame_band_rows, frame_fit, letterbox_filter
+from services.pool_supplied_pages import is_pool_supplied
 from services.source_treatment import normalized_visual_treatment
 
 REQUEST_SCHEMA = "content-lab.post-render-request.v1"
@@ -67,7 +69,8 @@ class PostRenderRequest(BaseModel):
     device_serial: Identity
     account: Identity
     source_sha256: Hash
-    caption: str = Field(min_length=1, max_length=4000)
+    caption: str = Field(max_length=4000)
+    source_text_mode: Literal["lyric"] | None = None
     caption_sha256: Hash
     render_treatment_json: str = Field(min_length=2, max_length=64 * 1024)
     treatment_sha256: Hash
@@ -76,6 +79,7 @@ class PostRenderRequest(BaseModel):
     renderer_id: Literal[RENDERER_ID]
     renderer_version: Literal[RENDERER_VERSION]
     created_at_ms: int = Field(ge=0)
+    source_duration_repair: dict | None = None
 
     @field_validator("slot_id", "page_id", "program_id", "device_serial", "account")
     @classmethod
@@ -83,6 +87,34 @@ class PostRenderRequest(BaseModel):
         if value.strip() != value or not value or any(ord(c) < 32 for c in value):
             raise ValueError("invalid render identity")
         return value
+
+    @model_serializer(mode="wrap")
+    def preserve_ordinary_request_bytes(self, handler):
+        # Old durable request/idempotency hashes must not gain a null field.
+        result = handler(self)
+        if self.source_text_mode is None:
+            result.pop("source_text_mode", None)
+        if self.source_duration_repair is None:
+            result.pop("source_duration_repair", None)
+        return result
+
+    @model_validator(mode="after")
+    def repair_command_schema(self) -> "PostRenderRequest":
+        # Timed v2 owns its own refusal; a v1 request carrying a repair command
+        # must still be schema-valid even when the capability is off, so stored
+        # durable jobs can be reloaded and refused by the dispatch fence without
+        # losing their identity. Capability admission is enforced at the HTTP
+        # submit boundary, never here.
+        if self.source_duration_repair is not None and self.schema_ == REQUEST_SCHEMA:
+            from services.source_duration_repair import validate_command
+            try:
+                validate_command(self.source_duration_repair)
+            except Exception as error:
+                raise PydanticCustomError(
+                    getattr(error, "code", None) or "repair_command_invalid",
+                    str(error),
+                )
+        return self
 
     @model_validator(mode="after")
     def hashes_match(self) -> "PostRenderRequest":
@@ -99,7 +131,13 @@ class PostRenderRequest(BaseModel):
             if not isinstance(actual_visual, dict) or set(actual_visual) != {"filters", "clipSpeed", "clipCrop"}:
                 raise ValueError("source visual evidence must contain only filters, clipSpeed and clipCrop")
             normalized_visual_treatment(actual_visual)
-        _caption_request(self)
+        if self.source_text_mode == "lyric":
+            if self.caption != "" or self.renderer_version != "1":
+                raise ValueError("lyric source requires an empty v1 caption")
+            _caption_style(self)
+            _caption_delivery(self)
+        else:
+            _caption_request(self)
         return self
 
 
@@ -143,6 +181,14 @@ def sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+SOURCE_DURATION_REPAIR_ENV = "CONTENT_LAB_SOURCE_DURATION_REPAIR"
+
+
+def source_duration_repair_enabled() -> bool:
+    """Whether the Lab admits source-duration-repair commands (default off)."""
+    return os.getenv(SOURCE_DURATION_REPAIR_ENV) == "on"
+
+
 def _unique_object(pairs):
     result = {}
     for key, value in pairs:
@@ -180,9 +226,9 @@ def _frame_band_height(request: PostRenderRequest) -> int | None:
 
 
 def _caption_delivery(request: PostRenderRequest) -> str | None:
-    """Return "in_app" when the slot opts into app-side text, else None (burned).
+    """Return "in_app" for app-side text; None for burned or existing lyric pixels.
 
-    Absent means today's burned behaviour. Only the exact string "in_app" is
+    Absent retains burned delivery for ordinary captions. Only the exact string "in_app" is
     accepted; any other value is a closed refusal so the Worker can fall back
     to a burned render.
     """
@@ -192,10 +238,11 @@ def _caption_delivery(request: PostRenderRequest) -> str | None:
     value = treatment["captionDelivery"]
     if not isinstance(value, str) or value != CAPTION_DELIVERY_IN_APP:
         raise PostRenderError("caption_delivery_invalid", "captionDelivery must be 'in_app' when present")
-    return value
+    # Existing lyrics are source pixels, never phone text or a burned fallback.
+    return None if request.source_text_mode == "lyric" else value
 
 
-def _caption_request(request: PostRenderRequest) -> CaptionRenderRequest:
+def _caption_style(request: PostRenderRequest) -> CaptionStyle:
     treatment = _slot_treatment(request)
     style = CaptionStyle.model_validate(treatment["captionStyle"])
     if frame_band_height(treatment) is not None:
@@ -203,6 +250,11 @@ def _caption_request(request: PostRenderRequest) -> CaptionRenderRequest:
         # (owner decision, 2026-09-28): a top or bottom placement would land
         # on the black bars. Font, size, colour and line breaks are unchanged.
         style = style.model_copy(update={"position": "middle", "offset_pct": 0})
+    return style
+
+
+def _caption_request(request: PostRenderRequest) -> CaptionRenderRequest:
+    style = _caption_style(request)
     return CaptionRenderRequest.model_validate({
         "schema": "content-lab.caption-render-request.v1",
         "caption": request.caption,
@@ -307,7 +359,8 @@ def _file_hash(path: Path, limit: int) -> tuple[str, int]:
     return digest.hexdigest(), total
 
 
-def _video_graph(source_probe: MediaProbe, frame_height: int | None = None, *, in_app: bool = False) -> str:
+def _video_graph(source_probe: MediaProbe, frame_height: int | None = None, *, in_app: bool = False,
+                 normalize_pair_timing: bool = False) -> str:
     chain = []
     if (source_probe.width, source_probe.height) != (1080, 1920):
         if abs(source_probe.width * 16 - source_probe.height * 9) <= 32:
@@ -326,6 +379,10 @@ def _video_graph(source_probe: MediaProbe, frame_height: int | None = None, *, i
         # The delivery frame is exactly 1080x1920 here. A page frame keeps its
         # centred band and letterboxes it in plain black on the same canvas.
         chain.append(letterbox_filter(frame_height))
+    if normalize_pair_timing:
+        # Resample before the paths diverge. FFmpeg 5.1 can round a half-frame
+        # at EOF differently with an overlay if only the encoder sets 30 fps.
+        chain.append("fps=30")
     if in_app:
         # No caption overlay input: the clean clip is delivery-only. The
         # encoder's -pix_fmt yuv420p still turns the chain into the delivery
@@ -339,8 +396,9 @@ def _video_graph(source_probe: MediaProbe, frame_height: int | None = None, *, i
 
 
 def _encode_final(source: Path, overlay: Path | None, final: Path, source_probe: MediaProbe,
-                  tools: RenderTools, frame_height: int | None = None, *, in_app: bool = False) -> MediaProbe:
-    graph = _video_graph(source_probe, frame_height, in_app=in_app)
+                  tools: RenderTools, frame_height: int | None = None, *, in_app: bool = False,
+                  normalize_pair_timing: bool = False) -> MediaProbe:
+    graph = _video_graph(source_probe, frame_height, in_app=in_app, normalize_pair_timing=normalize_pair_timing)
     base = [tools.ffmpeg, "-nostdin", "-v", "error", "-xerror", "-protocol_whitelist", "file,pipe",
             "-noautorotate", "-f", "mov", "-i", str(source)]
     if in_app:
@@ -374,9 +432,17 @@ def _encode_final(source: Path, overlay: Path | None, final: Path, source_probe:
     raise PostRenderError("delivery_budget_exceeded", "both bounded encodes exceeded the byte or duration contract")
 
 
-def source_visual_matches(request: PostRenderRequest) -> bool:
+def source_visual_matches(request: PostRenderRequest, *,
+                          allow_pool_supplied_without_provenance: bool = False) -> bool:
+    """Return whether the source has the requested visual treatment.
+
+    Pool clips are already-finished source media and deliberately have no
+    producer receipt.  The durable job runner is the only caller allowed to
+    opt into that exception after it has checked both the submission and the
+    closed pool-page list.
+    """
     if request.source_visual_treatment_json is None:
-        return False
+        return allow_pool_supplied_without_provenance and is_pool_supplied(request.page_id)
     actual = normalized_visual_treatment(json.loads(request.source_visual_treatment_json))
     desired = normalized_visual_treatment(json.loads(request.render_treatment_json))
     return actual == desired
@@ -385,7 +451,8 @@ def source_visual_matches(request: PostRenderRequest) -> bool:
 def _render_post_single(source_path: Path, output_directory: Path, request: PostRenderRequest, *,
                 font_dir: Path | None = None, tools: RenderTools = RenderTools(),
                 clock_ms: Callable[[], int] = lambda: time.time_ns() // 1_000_000,
-                burned_fallback: bool = False) -> RenderedPost:
+                burned_fallback: bool = False,
+                allow_pool_supplied_without_provenance: bool = False) -> RenderedPost:
     """Render one prepared artifact; create a new output directory or leave none on failure.
 
     The source must already be upright vertical video with the exact requested
@@ -393,16 +460,23 @@ def _render_post_single(source_path: Path, output_directory: Path, request: Post
     Unknown or different treatment provenance requires regeneration.
     This function adds only the typed caption, the page frame's letterbox
     (a centred band on plain black, still 1080x1920) and delivery encoding;
-    it never repeats the source's grade, speed or focal crop. A slot whose
+    it never repeats the source's grade, speed or focal crop. A bound lyric source
+    receives delivery encoding only, without new caption pixels or a fallback. A slot whose
     treatment says captionDelivery "in_app" gets no caption drawn at all (the
     phone types it in TikTok); its receipt says caption_delivery "in_app".
     """
     request = PostRenderRequest.model_validate(request.model_dump(by_alias=True))
-    if not source_visual_matches(request):
+    if not source_visual_matches(
+            request, allow_pool_supplied_without_provenance=allow_pool_supplied_without_provenance):
         raise PostRenderError("regeneration_required", "source treatment provenance is unknown or differs from the requested treatment")
     if request.created_at_ms > clock_ms():
         raise PostRenderError("request_future_dated", "render request is future-dated")
-    in_app = _caption_delivery(request) == CAPTION_DELIVERY_IN_APP and not burned_fallback
+    lyric_source = request.source_text_mode == "lyric"
+    if lyric_source and burned_fallback:
+        raise PostRenderError("lyric_caption_forbidden", "lyric source cannot have a burned fallback")
+    paired_caption = _caption_delivery(request) == CAPTION_DELIVERY_IN_APP
+    in_app = paired_caption and not burned_fallback
+    no_overlay = in_app or lyric_source
     if in_app and _caption_request(request).style.inverted:
         raise PostRenderError("in_app_inverted_unsupported", "in_app caption delivery cannot be inverted")
     source_path, output_directory = Path(source_path).absolute(), Path(output_directory).absolute()
@@ -421,9 +495,9 @@ def _render_post_single(source_path: Path, output_directory: Path, request: Post
         if (source_probe.height < 768 or source_probe.sample_aspect_ratio not in {"1:1", "", "N/A", "0:1"}
                 or source_probe.rotation != 0 or not near_vertical):
             raise PostRenderError("regeneration_required", "source must be upright square-pixel near-9:16 video at least 768 pixels high")
-        caption_request = _caption_request(request)
+        caption_request = None if lyric_source else _caption_request(request)
         band_height = _frame_band_height(request)
-        if in_app:
+        if no_overlay:
             # The caption stays bound (caption_sha256 is required and validated
             # on the request) but is not drawn: the ffmpeg graph has no [1:v]
             # overlay input and no caption-render evidence is produced.
@@ -446,12 +520,29 @@ def _render_post_single(source_path: Path, output_directory: Path, request: Post
             overlay_path = output_directory / "overlay.png"
             overlay_path.write_bytes(overlay_bytes)
         final_path = output_directory / "final.mp4"
-        final_probe = _encode_final(source, overlay_path, final_path, source_probe, tools, band_height, in_app=in_app)
-        if (final_probe.width, final_probe.height, final_probe.video_codec, final_probe.pixel_format,
-            final_probe.sample_aspect_ratio, final_probe.rotation) != (1080, 1920, "h264", "yuv420p", "1:1", 0):
-            raise PostRenderError("final_probe_mismatch", "encoded final media facts do not match delivery contract")
-        if abs(final_probe.duration_ms - source_probe.duration_ms) > 80:
-            raise PostRenderError("duration_changed", "caption-only delivery unexpectedly changed playback duration")
+        repair = request.source_duration_repair
+        if repair is not None:
+            from services.source_duration_repair import render_shorter
+            # The adapter-owned encoder owns the trim + delivery encode (real
+            # `_encode_final` path); it re-verifies the source hash and the
+            # near-9:16 contract itself, then writes the shorter final.
+            repair_dir = output_directory / "repair"
+            render_shorter(source_path, repair_dir, repair,
+                           overlay_path=overlay_path, frame_height=band_height,
+                           normalize_pair_timing=paired_caption)
+            shutil.move(str(repair_dir / "final.mp4"), final_path)
+            final_probe = _probe(final_path, tools)
+            if (final_probe.width, final_probe.height, final_probe.video_codec, final_probe.pixel_format,
+                final_probe.sample_aspect_ratio, final_probe.rotation) != (1080, 1920, "h264", "yuv420p", "1:1", 0):
+                raise PostRenderError("final_probe_mismatch", "encoded final media facts do not match delivery contract")
+        else:
+            final_probe = _encode_final(source, overlay_path, final_path, source_probe, tools, band_height,
+                                        in_app=no_overlay, normalize_pair_timing=paired_caption)
+            if (final_probe.width, final_probe.height, final_probe.video_codec, final_probe.pixel_format,
+                final_probe.sample_aspect_ratio, final_probe.rotation) != (1080, 1920, "h264", "yuv420p", "1:1", 0):
+                raise PostRenderError("final_probe_mismatch", "encoded final media facts do not match delivery contract")
+            if abs(final_probe.duration_ms - source_probe.duration_ms) > 80:
+                raise PostRenderError("duration_changed", "caption-only delivery unexpectedly changed playback duration")
         progress = _run([tools.ffmpeg, "-nostdin", "-v", "error", "-xerror", "-protocol_whitelist", "file,pipe",
                          "-f", "mov", "-i", str(final_path), "-map", "0:v:0",
                          "-progress", "pipe:1", "-nostats", "-f", "null", "-"], tools).decode("ascii")
@@ -483,10 +574,13 @@ def _render_post_single(source_path: Path, output_directory: Path, request: Post
             "qa_frame_sha256": qa_sha, "completed_at_ms": completed}
         if in_app:
             receipt["caption_delivery"] = "in_app"
+        if repair is not None:
+            from services.source_duration_repair import command_digest
+            receipt["source_duration_repair_sha256"] = command_digest(repair)
         receipt_json = json.dumps(receipt, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
         receipt_path = output_directory / "receipt.json"
         receipt_path.write_bytes(receipt_json)
-        if not in_app:
+        if not no_overlay:
             (output_directory / "caption-render.json").write_text(overlay.model_dump_json(by_alias=True))
         (output_directory / "request.json").write_text(request.model_dump_json(by_alias=True))
         (output_directory / "decode.json").write_text(json.dumps({
@@ -504,7 +598,8 @@ def _render_post_single(source_path: Path, output_directory: Path, request: Post
 
 def render_post(source_path: Path, output_directory: Path, request: PostRenderRequest, *,
                 font_dir: Path | None = None, tools: RenderTools = RenderTools(),
-                clock_ms: Callable[[], int] = lambda: time.time_ns() // 1_000_000) -> RenderedPost:
+                clock_ms: Callable[[], int] = lambda: time.time_ns() // 1_000_000,
+                allow_pool_supplied_without_provenance: bool = False) -> RenderedPost:
     """Publish both clean and captioned assets with job-level verification for an in-app slot.
 
     Both variants use the identical source, caption and requested treatment.
@@ -512,13 +607,15 @@ def render_post(source_path: Path, output_directory: Path, request: PostRenderRe
     handles transient errors before either asset can become ready.
     """
     result = _render_post_single(source_path, output_directory, request,
-                                 font_dir=font_dir, tools=tools, clock_ms=clock_ms)
+                                 font_dir=font_dir, tools=tools, clock_ms=clock_ms,
+                                 allow_pool_supplied_without_provenance=allow_pool_supplied_without_provenance)
     if _caption_delivery(request) != CAPTION_DELIVERY_IN_APP:
         return result
     try:
         fallback = _render_post_single(source_path, Path(output_directory) / "burned", request,
                                       font_dir=font_dir, tools=tools, clock_ms=clock_ms,
-                                      burned_fallback=True)
+                                      burned_fallback=True,
+                                      allow_pool_supplied_without_provenance=allow_pool_supplied_without_provenance)
         receipt = json.loads(result.receipt_json)
         burned_receipt = json.loads(fallback.receipt_json)
         receipt["burned_fallback"] = {key: burned_receipt[key] for key in (

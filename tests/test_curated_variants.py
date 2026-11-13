@@ -19,7 +19,9 @@ from tests.test_control_plane_ugc_slideshow import _culture_library, _culture_re
 # Kept as a compatibility export for older plan-family imports.  Burnt's
 # active UGC authority is intentionally regenerated from the reviewed clips.
 BURNT_CANONICAL = None
-CULTURE_CANONICAL = "5c1924553e69420398fe2fb7e79f97d189bbc76678881d0a65357f36277a3126"
+# Culture re-pinned for F-LAB-CHOPPY-CUTS-BURNT-CULTURE-1104 (19 windows merged to 8; value from plan_slideshows on this tree).
+# fix5: re-derived again (windows 2 and 3 swapped so no neighbours share a clip; last windows moved 0.75 s clear of clip ends).
+CULTURE_CANONICAL = "4fbd41adccf41ee9f17d725b91d102e797817b4d00dca8249a15b402b7ae1c94"
 
 
 def _burnt():
@@ -256,6 +258,8 @@ def _runner_fixture(monkeypatch, tmp_path, plan):
     job.update(status="queued", artifactRoot=str(tmp_path), sourceLibraryId=recipe.library_id,
                formatContractVersion=recipe.format_contract_version, executorVersion=recipe.executor_version,
                materialSource=recipe.material_source, assetType=recipe.asset_type, slideshowPlan=[plan])
+    job.update({"sourceKind": "syzygy_slideshow", "slideshowClaimVersion": 1,
+                "slideshowAttemptId": "test-attempt", "runtimeId": routes._GENERATION_RUNTIME_ID})
     monkeypatch.setattr(routes, "_get_job_or_404", lambda _: job)
     monkeypatch.setattr(routes, "_job_matches_current_master_pages", lambda _: True)
     monkeypatch.setattr(routes, "load_registered_recipe", lambda *a: publication)
@@ -263,7 +267,7 @@ def _runner_fixture(monkeypatch, tmp_path, plan):
     monkeypatch.setattr(routes, "typed_recipe_spec", lambda _: value)
     monkeypatch.setattr(routes, "job_profile_authority_matches", lambda *a: True)
     monkeypatch.setattr(routes, "load_recipe_library", lambda _: library)
-    monkeypatch.setattr(routes, "_update_job", lambda _, **changes: job.update(changes))
+    monkeypatch.setattr(routes, "_update_slideshow_job", lambda _id, _attempt, _runtime, **changes: (job.update(changes) or dict(job)))
     monkeypatch.setattr(routes, "_claim_unique_slideshow_clip", lambda *a: None)
     monkeypatch.setattr(routes, "_source_provenance", lambda _, source: source)
     calls = _fake_syzygy_boundary(monkeypatch, library)

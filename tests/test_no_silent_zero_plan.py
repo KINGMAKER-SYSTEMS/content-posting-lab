@@ -83,6 +83,7 @@ SWEEP = {
     # stride/start permutation slideshows.
     "lyric-edits": ("slideshow", False, reasons.SLIDESHOW_PERMUTATIONS_EXHAUSTED),
     "meme-slideshow": ("slideshow", False, reasons.SLIDESHOW_PERMUTATIONS_EXHAUSTED),
+    "coffee-slideshow": ("slideshow", False, reasons.SLIDESHOW_PERMUTATIONS_EXHAUSTED),
     # source-DNA recuts: windows per master are terminal; a new master refills.
     "pov-dirt-bike": ("source-dna", True, reasons.SOURCE_WINDOWS_EXHAUSTED),
     "pov-club": ("source-dna", True, reasons.SOURCE_WINDOWS_EXHAUSTED),
@@ -92,6 +93,7 @@ SWEEP = {
     # ai_video generation: prompts reserve only while jobs are in flight, so a
     # zero clears when those finish (not terminal by design).
     "boat-lake": ("generated", False, reasons.PROMPT_INVENTORY_EXHAUSTED),
+    "pov-seasonal": ("generated", False, reasons.PROMPT_INVENTORY_EXHAUSTED),
     "coffee-tok": ("generated", False, reasons.PROMPT_INVENTORY_EXHAUSTED),
     "silhouette-truck": ("generated", False, reasons.PROMPT_INVENTORY_EXHAUSTED),
     "truck-scenic": ("generated", False, reasons.PROMPT_INVENTORY_EXHAUSTED),
@@ -488,6 +490,7 @@ def _capability_scaffold(
         return library
 
     monkeypatch.setattr(cp, "load_syzygy_library", stub_load)
+    return publication
 
 
 def test_capability_zero_entry_carries_zero_reason(monkeypatch, tmp_path):
@@ -518,6 +521,57 @@ def test_capability_library_load_failure_lands_in_zero_plan_recipes(monkeypatch,
         "engine": recipe.engine,
         "recipeVersion": "v1",
         "zeroReason": reasons.LIBRARY_LOAD_FAILED,
+    }]
+
+
+def test_capability_missing_material_profile_skips_library_load(monkeypatch, tmp_path):
+    recipe, library = _permutation_recipe_and_library()
+    _capability_scaffold(monkeypatch, tmp_path, recipe=recipe, library=library)
+    monkeypatch.setattr(cp, "resolve_material_profile", lambda *_args: None)
+    library_calls = []
+
+    def unexpected_library_load(*args):
+        library_calls.append(args)
+        raise AttributeError("missing profile")
+
+    monkeypatch.setattr(cp, "load_syzygy_library", unexpected_library_load)
+    response = cp.capabilities(x_rt_page_id="acct:guard-page", x_page_id=None)
+    assert library_calls == []
+    assert response["capabilities"] == []
+    assert response["zeroPlanRecipes"] == [{
+        "recipeId": recipe.recipe_id,
+        "engine": recipe.engine,
+        "recipeVersion": "v1",
+        "zeroReason": reasons.MATERIAL_PROFILE_MISSING,
+    }]
+
+
+def test_capability_missing_material_profile_during_recipe_resolution(monkeypatch, tmp_path):
+    recipe, library = _permutation_recipe_and_library()
+    publication = _capability_scaffold(
+        monkeypatch, tmp_path, recipe=recipe, library=library,
+        resolve_slideshow=ss.resolve_slideshow_recipe,
+    )
+    publication["recipeSpecCanonical"] = json.dumps({
+        "schema": "dossier.recipe-spec.v3",
+        "masterPages": {"contentEngine": recipe.engine, "contentNiche": "OTHER"},
+        "renderTreatment": {"filters": {}, "captionStyle": {}},
+        "demand": {"formatMix": {recipe.format_slug: 1.0}},
+    })
+    assert cp.typed_recipe_spec(publication) is not None
+    monkeypatch.setattr(ss, "resolve_material_profile", lambda _publication, _spec: None)
+    monkeypatch.setattr(cp, "resolve_material_profile", lambda _publication, _spec: None)
+    library_calls = []
+    monkeypatch.setattr(cp, "load_syzygy_library", lambda *args: library_calls.append(args))
+
+    response = cp.capabilities(x_rt_page_id="acct:guard-page", x_page_id=None)
+    assert library_calls == []
+    assert response["capabilities"] == []
+    assert response["zeroPlanRecipes"] == [{
+        "recipeId": recipe.recipe_id,
+        "engine": recipe.engine,
+        "recipeVersion": "v1",
+        "zeroReason": reasons.MATERIAL_PROFILE_MISSING,
     }]
 
 

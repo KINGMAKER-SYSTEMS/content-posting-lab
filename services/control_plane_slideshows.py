@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
-from dataclasses import dataclass
+from dataclasses import dataclass, replace as _dc_replace
 import functools
 import hashlib
 import json
@@ -40,6 +40,8 @@ EXECUTOR_PATH = (
 # the scoped copy.
 UGC_FORMAT_SLUG = "ugc-slideshow"
 LYRIC_VIDEO_FORMAT_SLUG = "lyric-video"
+COFFEE_FORMAT_SLUG = "coffee-slideshow"
+COFFEE_EXECUTOR_PATH = Path(__file__).resolve().parents[1] / "recipes/executors/syzygy-coffee-slideshow.v1.json"
 CLEAN_VIDEO_FORMATS = frozenset({UGC_FORMAT_SLUG, LYRIC_VIDEO_FORMAT_SLUG})
 LYRIC_VIDEO_EXECUTOR_PATH = Path(__file__).resolve().parents[1] / "recipes/executors/syzygy-slideshow-lyric-video.v1.json"
 # Lab plan identity, not an applied Syzygy builtin template.
@@ -461,13 +463,66 @@ def curated_variant_number(plan: Any) -> int | None:
     return variant
 
 
-def _executor_contract(format_slug: str | None = None) -> tuple[dict[str, Any], str]:
+# Retired ugc-slideshow executor versions. A Lab job is pinned to the executor
+# version it was planned under. When that file changes, jobs planned before the
+# deploy but not yet run must still render the plan they were given, so the
+# previous version stays resolvable here: exact bytes (checked against the
+# version's own sha256 on every load), the format contract version and the
+# registry profile authority hash that job carried. Bounded and closed: any
+# version not listed fails closed exactly as before. Add the outgoing version
+# here, with its file under recipes/executors/retired/, whenever the ugc file
+# changes again; drop an entry once no job can still carry it.
+RETIRED_UGC_EXECUTORS: dict[str, dict[str, str]] = {
+    # main 291fc5c3 (before the F-LAB-CHOPPY-CUTS-BURNT-CULTURE-1104 longer cuts).
+    "sha256:1097ebe82d9a955c63c9f89c4e840c70eeacb0fab62f6c848891c96ca6dffc09": {
+        "path": "retired/syzygy-slideshow-ugc.1097ebe82d9a.v1.json",
+        "formatContractVersion": "sha256:8ce242f638e2b146e5ea080dc74afa5478408965ee01ac2e20abae2330640525",
+        "engineProfileHash": "sha256:ba6ab2d13cfc7832e8563bc6f16b7dba0bbaa8dc73ef4211b4fe3af5f5fb3c76",
+    },
+}
+
+
+def retired_ugc_recipe(recipe: "SlideshowRecipe", job: dict[str, Any]) -> "SlideshowRecipe | None":
+    """The recipe a job planned under a retired ugc executor must run under, else None.
+
+    Fails closed (None): only the ugc format, only a version listed above whose
+    file still hashes to that version, and only a job whose own pins
+    (format contract, profile hash when present) are exactly the retired
+    version's. The live recipe is otherwise left alone.
+    """
+    version = job.get("executorVersion")
+    entry = RETIRED_UGC_EXECUTORS.get(version) if isinstance(version, str) else None
+    if (entry is None or recipe.format_slug != UGC_FORMAT_SLUG
+            or version == recipe.executor_version
+            or job.get("formatContractVersion") != entry["formatContractVersion"]
+            or job.get("engineProfileHash", entry["engineProfileHash"]) != entry["engineProfileHash"]):
+        return None
+    try:
+        _executor_contract(UGC_FORMAT_SLUG, version)
+    except (OSError, ValueError, json.JSONDecodeError):
+        return None
+    return _dc_replace(
+        recipe, executor_version=version,
+        format_contract_version=entry["formatContractVersion"],
+        engine_profile_hash=entry["engineProfileHash"],
+    )
+
+
+def _executor_contract(
+    format_slug: str | None = None, executor_version: str | None = None,
+) -> tuple[dict[str, Any], str]:
     if format_slug in IMAGE_VIDEO_FORMATS:
         from services.control_plane_image_video import slideshow_executor_adapter
         return slideshow_executor_adapter(format_slug)
-    path = (LYRIC_VIDEO_EXECUTOR_PATH if format_slug == LYRIC_VIDEO_FORMAT_SLUG else
+    path = (COFFEE_EXECUTOR_PATH if format_slug == COFFEE_FORMAT_SLUG else
+            LYRIC_VIDEO_EXECUTOR_PATH if format_slug == LYRIC_VIDEO_FORMAT_SLUG else
             UGC_EXECUTOR_PATH if format_slug == UGC_FORMAT_SLUG else EXECUTOR_PATH)
+    retired = format_slug == UGC_FORMAT_SLUG and executor_version in RETIRED_UGC_EXECUTORS
+    if retired:
+        path = UGC_EXECUTOR_PATH.parent / RETIRED_UGC_EXECUTORS[executor_version]["path"]
     raw = path.read_bytes()
+    if retired and f"sha256:{hashlib.sha256(raw).hexdigest()}" != executor_version:
+        raise ValueError("retired Syzygy slideshow executor bytes do not match their version")
     value = json.loads(raw)
     if (
         not isinstance(value, dict)
@@ -607,7 +662,9 @@ def library_subject_holder(
     return None
 
 
-def ugc_page_treatment(page_id: str, format_slug: str = UGC_FORMAT_SLUG) -> dict[str, Any] | None:
+def ugc_page_treatment(
+    page_id: str, format_slug: str = UGC_FORMAT_SLUG, executor_version: str | None = None,
+) -> dict[str, Any] | None:
     """Return the closed server-owned treatment for one UGC page, if any.
 
     Returns either a legacy ``{"cutMode","cuts","audioSectionEnd"}`` policy or a
@@ -623,7 +680,7 @@ def ugc_page_treatment(page_id: str, format_slug: str = UGC_FORMAT_SLUG) -> dict
     if page_id == "acct:burnt-mill-rd" and format_slug == LYRIC_VIDEO_FORMAT_SLUG:
         return None
     try:
-        executor, _ = _executor_contract(format_slug)
+        executor, _ = _executor_contract(format_slug, executor_version)
     except (OSError, ValueError, json.JSONDecodeError):
         return None
     treatment = executor.get("pageTreatments", {}).get(page_id)
@@ -921,13 +978,13 @@ def requires_curated_video_plan(recipe: SlideshowRecipe) -> bool:
     if recipe.format_slug not in CLEAN_VIDEO_FORMATS:
         return False
     page_id = recipe.recipe_spec.get("masterPages", {}).get("pageId")
-    treatment = ugc_page_treatment(page_id, recipe.format_slug) if isinstance(page_id, str) else None
+    treatment = ugc_page_treatment(page_id, recipe.format_slug, recipe.executor_version) if isinstance(page_id, str) else None
     return isinstance(treatment, dict) and "curatedVideoPlan" in treatment
 
 
 def _recipe_curated_plan(recipe: SlideshowRecipe) -> dict[str, Any] | None:
     page_id = recipe.recipe_spec.get("masterPages", {}).get("pageId")
-    treatment = ugc_page_treatment(page_id, recipe.format_slug) if isinstance(page_id, str) else None
+    treatment = ugc_page_treatment(page_id, recipe.format_slug, recipe.executor_version) if isinstance(page_id, str) else None
     curated = treatment.get("curatedVideoPlan") if isinstance(treatment, dict) else None
     return curated if isinstance(curated, dict) else None
 
@@ -992,6 +1049,15 @@ def _generic_clean_video_chunk(
         **identity,
         "signature": hashlib.sha256(canonical.encode()).hexdigest(),
     }
+
+
+def _generic_clean_video_objects(
+    recipe: SlideshowRecipe, library: SyzygyLibrary,
+) -> list[SyzygyObject]:
+    # Curated UGC plans select their pinned clips before reaching this path.
+    if recipe.format_slug == UGC_FORMAT_SLUG:
+        return [item for item in library.objects if item.media_type == "photo"]
+    return list(library.objects)
 
 
 def _permutation_plan_candidates(
@@ -1090,7 +1156,7 @@ def plan_slideshows(
         if opaque_reserved_media:
             return []
         reserved_media_keys = reserved_media_keys or set()
-        objects_in_order = list(library.objects)
+        objects_in_order = _generic_clean_video_objects(recipe, library)
         # Keep the original first chunk/signature when unreserved; remove
         # reserved keys before taking the next complete, disjoint media set.
         available = [item for item in objects_in_order if item.key not in reserved_media_keys]
@@ -1151,6 +1217,23 @@ def syzygy_idempotency_key(*parts: str) -> str:
     return "cpl-syzygy-" + hashlib.sha256(canonical.encode()).hexdigest()
 
 
+def _render_idempotency_key(
+    page_id: str, recipe_version: str, signature: str, lab_job_id: str | None,
+) -> str:
+    """One Syzygy render per Lab job and plan.
+
+    Syzygy replays a stored Idempotency-Key, including a FAILED render, so a
+    key built only from page, recipe and plan pinned every later Lab job for
+    that plan to the first failure (burnt.mill.rd, 10-31). Retries inside one
+    Lab job still share a key; a new Lab job gets a fresh render.
+    """
+    if lab_job_id is None:
+        return syzygy_idempotency_key(page_id, recipe_version, signature, "render-v1")
+    if not isinstance(lab_job_id, str) or not lab_job_id:
+        raise SyzygyError("Syzygy render needs a non-empty Lab job id")
+    return syzygy_idempotency_key(page_id, recipe_version, signature, "render-v2", lab_job_id)
+
+
 async def _request_json(
     method: str,
     endpoint: str,
@@ -1203,12 +1286,13 @@ async def syzygy_revision() -> str:
 
 async def submit_syzygy_render(
     plan: dict[str, Any], *, page_id: str, recipe_version: str,
-    format_slug: str | None = None,
+    format_slug: str | None = None, lab_job_id: str | None = None,
 ) -> tuple[str, str]:
     if format_slug in IMAGE_VIDEO_FORMATS:
         from services.control_plane_image_video import submit_image_video_render
         return await submit_image_video_render(plan.get("photoPlan"), page_id=page_id,
-            recipe_version=recipe_version, request_json=_request_json, format_slug=format_slug)
+            recipe_version=recipe_version, request_json=_request_json, format_slug=format_slug,
+            lab_job_id=lab_job_id)
     if format_slug == LYRIC_VIDEO_FORMAT_SLUG:
         from services.control_plane_lyric_video import validate_lyric_wire_plan
         validate_lyric_wire_plan(plan, page_id)
@@ -1246,9 +1330,7 @@ async def submit_syzygy_render(
             "uses_original_audio": False,
             "media": media,
         }
-        key = syzygy_idempotency_key(
-            page_id, recipe_version, plan["signature"], "render-v1",
-        )
+        key = _render_idempotency_key(page_id, recipe_version, plan["signature"], lab_job_id)
         value = await _request_json(
             "POST", "/api/v1/render", body={"spec": spec},
             idempotency_key=key, timeout=90.0,
@@ -1274,7 +1356,7 @@ async def submit_syzygy_render(
         "media": media,
         "audio": {"section_start": 0, "section_end": 15},
     }
-    if format_slug == UGC_FORMAT_SLUG:
+    if format_slug in {UGC_FORMAT_SLUG, COFFEE_FORMAT_SLUG}:
         # The neutral UGC background must carry no baked copy or source audio.
         # Syzygy's builtin template style fills absent keys, so these explicit
         # blank values suppress hook/lyric/caption text and original audio.
@@ -1292,9 +1374,7 @@ async def submit_syzygy_render(
         if policy is not None:
             spec["cuts"] = {"mode": policy["cutMode"], "cuts": policy["cuts"]}
             spec["audio"]["section_end"] = policy["audioSectionEnd"]
-    key = syzygy_idempotency_key(
-        page_id, recipe_version, plan["signature"], "render-v1",
-    )
+    key = _render_idempotency_key(page_id, recipe_version, plan["signature"], lab_job_id)
     value = await _request_json(
         "POST", "/api/v1/render", body={"spec": spec},
         idempotency_key=key, timeout=90.0,
@@ -1313,6 +1393,8 @@ async def poll_syzygy_render(job_id: str) -> str:
             "GET", f"/api/v1/render/{quote(job_id)}", timeout=30.0,
         )
         status = value.get("status")
+        if not isinstance(status, str) or not status.strip():
+            raise SyzygyError("Syzygy response is invalid")
         if status == "done":
             result = value.get("result")
             play_url = result.get("play_url") if isinstance(result, dict) else None

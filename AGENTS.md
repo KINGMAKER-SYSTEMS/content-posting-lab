@@ -43,6 +43,9 @@
   Recursive cleanup is limited to the renderer's unique managed temporary
   directory.
 
+- `services/source_byte_facts.py` reuses cached audio and visual facts only
+  after the current regular artifact matches its bound SHA-256 and byte size;
+  otherwise facts remain unknown or follow the existing exact-byte probe path.
 - `services/visual_admission.py` owns exact-byte pre-caption OCR/vision-provider decisions;
   the authenticated job visual-admission endpoint queues a bounded background
   whole-job sweep and persists algorithm/byte-bound decisions for endpoint
@@ -89,6 +92,24 @@
   including fractional looks, and remains within the Worker's 0.04 lower
   admission band. Other grade channels retain nearest rounding.
 - `GET /api/control-plane/v1/capabilities` requires the existing `CONTROL_PLANE_TOKEN` Bearer credential before reading page intent or job state. A missing server token returns 503; missing, invalid, or browser `APP_API_KEY` credentials return 401. The authorized Worker request and capability response schema stay unchanged.
+- Before a recipe is registered, a commissioned slideshow page on the committed
+  pool-supplied list keeps its discovery capability at `maxQuantity: 0` because
+  its finished clips come from the Worker pool, not Lab inventory. With zero
+  reasons enabled it reports `pool_supplied`. Unlisted pages keep the registry
+  ceiling, and a registered recipe's version takes precedence over bootstrap.
+- Registered slideshow capabilities report `material_profile_missing` when a
+  structurally valid typed recipe has no matching commissioned material profile
+  for its format, engine, page intent and demand, without reading the live
+  Syzygy library. A failed read of a resolved profile reports
+  `library_load_failed`. Structurally invalid recipe specs remain
+  `recipe_unresolved`, and unavailable runtime remains
+  `slideshow_runtime_unavailable`.
+- Pool-supplied Dossier pages waive Lab image-library and slideshow-treatment
+  requirements, but `lyric-video` without a bound lyric timing set remains
+  required and missing. The Worker cannot express a timing-less lyric-video
+  selection, so Dossier must show that blocker before Save & apply. The
+  committed pool-page list is loaded once per process, including concurrent
+  first reads; malformed input fails closed with one alert.
 - Source cut planning honors the immutable original 60-second minimum for raw
   source libraries and the Worker-supplied global source-window exclusions
   before rendering. Exact page-bound ShipStream masters are already extracted
@@ -224,6 +245,23 @@
   contract module so the router and the service read one definition.
   The shared external-owner constant also governs the exact ShipStream
   null-Notion-id manifest exception.
+- `POST /api/control-plane/v1/jobs` checks a validated slideshow request's
+  durable idempotency key before reading its live library. An identical retry
+  returns the existing job even during a library outage; a changed request
+  still conflicts. The same locked replay and runtime-recovery rules run again
+  after the library read so concurrent creators cannot reserve twice.
+- `coffee-slideshow` is the optional Syzygy replacement for Coffee AI loops.
+  It retains the `Coffee` niche, uses `sourced_slideshow` and the page's own
+  `coffee/<handle-slug>` library, and composes five photos with `clean-slideshow`.
+  Its render has no baked text or source audio; existing captions, Coffee sounds
+  and page treatment apply downstream. `coffee-tok` remains available unchanged.
+- `ugc-slideshow` is a page-scoped `sourced_slideshow` option for known Master
+  Pages niches other than Coffee and meme. Keep that vocabulary aligned with
+  Control Plane's `NICHE_CANONICAL.page`; unknown spellings do not become
+  executable formats. The Dossier and recipe resolver use the same format-aware
+  niche check. `image-video` and `single-image-video` remain
+  selectable only for the exact PenPal and Twin page tuples, respectively;
+  the XMAS slideshow alias does not widen those photo plans.
 - `services/control_plane_source_imports.py` owns bounded public-HTTPS download,
   exact-byte hashing, media probing, and refillable-master normalization for
   page-scoped source-link intake.
@@ -270,15 +308,38 @@
   `_patch_page` refuses non-canonical ids before any request. Alias-collision 409s never echo the alias.
 - `burn_server.py` exposes the same typed caption-render route on the posting
   Mac's canonical port-8002 Burn runtime for Rail consumption.
-- `events/` is the repository's append-only chronological ledger: one new
-  `YYYY-MM-DD-HHMM-<branch-slug>.md` file per meaningful event, committed on
-  the work branch. Legacy root `events.md` is frozen history; never edit it or
-  an existing `events/` entry.
+- The canonical repository root `events.md` is the single append-only
+  chronological ledger. Linked worktrees append there and name their branch/ref
+  in a `worktree:` field. Preserve historical `events/` entries unchanged.
 - `SCHEMA.md` describes the current Editor Bay timeline, edit-command, ABN import,
   and render-cache contracts; `services/editor_timeline.py` and `routers/agenticnews.py` own the implementation.
 
 ## Local Contracts
 
+- Scrambler feed writers share one permanent local lock and publish the verified
+  manifest before its data files. Readers verify bounded exact bytes against that
+  manifest before selecting clips and refuse incomplete refreshes, including
+  cached reads. Manual recovery preserves the original data age. Legacy two-file
+  feeds remain supported only without a manifest or managed marker.
+- `routers/video.py` must persist each queued UI video job before a generation
+  task can debit or call a provider. A completed video may become `done` only
+  after either `jobs.json` or an atomic per-output completion receipt persists.
+  When the final job is deleted, persist an empty mapping if `jobs.json` already
+  exists so restart cannot resurrect the deleted job; projects that have never
+  had a jobs file remain file-free. Single and bulk deletion persist removed
+  jobs before unlinking video files; on save failure they restore in-memory
+  state and return 503 with files intact. Both delete routes are project-scoped:
+  single delete returns 404 for a foreign-project job, while bulk deletion skips
+  foreign-project IDs like missing IDs; neither route can remove foreign jobs
+  or media.
+  The receipt binds every retained artifact to its exact size and SHA-256;
+  its directory must be a real child of the project; restart recovery verifies
+  the receipt before restoring a new job's completed entry.
+  A partial file without a receipt never becomes `done`. If both writes fail,
+  keep the file identity in memory as `processing` and retry persistence on job
+  reads and bulk download. Never reissue a paid provider call to recover it.
+- `services/source_duration_repair.py` accepts `approved_music_id` only as
+  6-20 ASCII digits; Unicode numeric characters are invalid repair commands.
 - Provider artifact download deadlines accept only finite positive seconds.
   Infinity and numeric overflow use the existing finite default, so a malformed
   setting cannot remove the whole-download deadline. Positive fractional values
@@ -291,6 +352,26 @@
   signature. Signature-only legacy archives cannot prove disjoint media and
   hold generic replenishment until reconciled; do not infer disjointness from
   changed sorted offsets or a new signature alone.
+- Generic `ugc-slideshow` plans count only photo objects toward their template
+  and refill chunks. Curated UGC video plans still select their pinned clips.
+  The zero-plan explanation uses the same eligible photo set as planning:
+  fewer eligible photos than the template requires reports a library shortage;
+  enough eligible photos held by reservations reports generic exhaustion.
+- Job-store compaction treats an absent `clips` field as an empty list. A
+  completed job with a present non-list `clips` container retains its job and
+  idempotency mapping, records the named refusal, and advances the scan cursor
+  so later jobs compact.
+- `POST /api/control-plane/v1/photo-plan-reservations` reserves one PenPal or
+  Twin plan for a direct renderer. It requires the Control Plane bearer,
+  page/lane headers, a registered recipe and the exact Master Pages intent.
+  The existing job-store lock serializes both routes against live, archived,
+  and direct holds. The receipt carries the exact ordered photo plan, library
+  snapshot hash, and page and recipe identities. The same request and key
+  replay the stored receipt without reading the library again. The hold
+  creates no render job or artifact and survives compaction. Holds remain
+  reserved indefinitely, including when the remote result is ambiguous.
+  Malformed archived slideshow evidence refuses new direct or ordinary photo
+  plans and capacity reads instead of treating a possibly used plan as available.
 
 - `services/abn_factory.py` kinetic-template parameters remain inert JSON inside
   the HTML script. Escape HTML script delimiters while preserving decoded values.
@@ -517,6 +598,11 @@
   coordinate downstream consumers before applying it.
 - A publishable caption render requires exact caption text and a complete page
   style: font, size, color, position, alignment, and line balance.
+- Caption rendering checks the selected installed font's character table before
+  drawing. A missing glyph refuses the entire caption as
+  `CAPTION_GLYPH_MISSING`; text without a letter or digit refuses as
+  `CAPTION_NO_TEXT`. Never drop unsupported characters or draw a missing-glyph
+  box into a publishable overlay.
 - Resolve fonts only from Content Lab's installed, advertised TikTokSans files.
   Unsupported, missing, or unreadable font bytes fail closed.
 - `/fonts` supplies explicit font MIME types and strong SHA-256 ETags, with a
@@ -576,6 +662,8 @@
   from the final MP4. Exact receipt bytes bind the final/source/caption/treatment
   and QA hashes to the slot, page, program, account and device. The control-plane
   artifact store owns admission; a renderer receipt alone is not ready authority.
+  In-app caption pairs share a 30 fps filter clock before the clean and burned
+  paths diverge, so the same fractional source tail yields the same frames.
 - Prepared delivery caps final video at 22 MiB and QA JPEG at 2 MiB. One automatic
   bitrate retry may fit the video budget without changing content or treatment.
   Persistent overflow or failed decode yields no artifact result. Subprocesses
@@ -741,6 +829,15 @@
   `recipes/generation/boat_minimax.v1.json` changes only boat generation;
   preserve unrelated prompt/provider versions and use the existing boat inventory.
 
+- `XMAS` pages using `ai_video` resolve to `pov-seasonal:master` through the
+  format registry. The first seasonal prompt module is `christmas-pov`.
+  `recipes/generation/christmas_pov.v1.json` owns the Christmas village walks,
+  neighborhood drives, and Alpine overlooks. Replenishment requests one
+  eight-second portrait clip per MiniMax H3 Highspeed Replicate call, reserves
+  $0.24 against the existing budget, and removes provider audio with a video
+  stream copy before delivery. Dossier advertises the fixed settings without
+  a source library or reference image. The slideshow source contracts are separate.
+
 - `GET /api/health` reports the most recently completed ffmpeg/yt-dlp
   executable check. Startup checks both off the event loop before serving.
   A request after the 60-second freshness interval starts at most one
@@ -768,6 +865,8 @@
   module and return the same versioned schema and hashes.
 
 ## Verification
+- Run `pytest -q tests/test_feed_snapshot_eligibility.py tests/test_scrambler_feed_pull.py tests/test_scrambler_feed_pull_producer.py tests/test_scrambler_feed_sync.py`
+  for exact-byte feed snapshots, publication barriers, recovery age and source eligibility.
 - Run `pytest -q tests/test_health_tool_latency.py tests/test_smoke.py`
   for nonblocking single-flight tool refresh, missing-tool degradation and
   the public health response.
@@ -819,15 +918,24 @@
 - Run `pytest -q tests/test_visual_admission.py` for observed boat-frame OCR
   noise, short readable text, rotated single-frame text, complete coverage,
   unavailable providers, exact-byte binding, and cached-decision behavior.
+- Run `pytest -q tests/test_source_byte_facts.py` for exact artifact-byte audio
+  and visual inventory, cached evidence integrity and scoped Control Plane
+  serialization.
 
 - Run `pytest -q tests/test_control_plane_capability_auth.py` for the capability Bearer boundary and unchanged authorized response.
+- Run `pytest -q tests/test_managed_photo_reservations.py tests/test_control_plane_image_video_execution.py tests/test_job_store_compaction.py`
+  for authenticated photo holds, exact replay, concurrent legacy planning,
+  exhaustion, and archived reservations.
+- Run `pytest -q tests/test_pool_bootstrap_capabilities.py tests/test_pool_supplied_pages.py`
+  for pool slideshow discovery, registered recipe priority, the real HTTP
+  registry and job snapshot path, and unlisted page capacity.
 - Run `pytest -q tests/test_control_plane_external_pages.py` for external-page
   auth, refusals, real-roster resolution by source imports, clip jobs and
   capabilities, Notion sync survival, fleet projection exclusion and DELETE scope.
 - Run `pytest -q tests/test_shipstream_source_manifest.py` for exact page-source
   projection, including the external-page null-Notion-id exception and every
   shape it still refuses.
-- Run `pytest -q tests/test_northstar_slideshow_library.py tests/test_control_plane_slideshow_execution.py`
+- Run `pytest -q tests/test_northstar_slideshow_library.py tests/test_control_plane_slideshow_execution.py tests/test_coffee_slideshow.py`
   for page-owned Syzygy library subjects: an external page's ingredients and
   jobs address `syzygy:<lane>:<reserved exact-page subject>` on both commissioned lanes, a
   Rising Tides page keeps its handle subject, and registration refuses a
@@ -859,8 +967,10 @@
   Run `pytest -q tests/test_pipeline_api.py` for the intake-password 503 path.
 
 - Run `pytest -q tests/test_caption_render_contract.py` for the typed caption
-  contract and `pytest -q tests/test_burn_and_captions_api.py` for Burn API
-  regressions. Run `pytest -q tests/test_burn_quality_gate.py` for legacy and
+  contract, `pytest -q tests/test_caption_glyph_admission.py` for exact
+  font coverage and ordinary-caption byte parity, and
+  `pytest -q tests/test_burn_and_captions_api.py` for Burn API regressions.
+  Run `pytest -q tests/test_burn_quality_gate.py` for legacy and
   typed overlay placement gates. Run the control-plane recipe, generation, and
   source-execution test files together when changing a Dossier recipe schema.
 - Run `node --test tools/gh-capture/target_policy.test.cjs` for GitHub URL,

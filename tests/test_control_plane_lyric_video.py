@@ -81,3 +81,24 @@ def test_lyric_executor_and_timing_authority_remain_loadable_after_retirement():
     from services.lyric_timing import lyric_timing_catalog
     timing = lyric_timing_catalog(page_id=PAGE, account=ACCOUNT)[0]
     assert timing["sourceProgramSha256"] == hashlib.sha256(slides.LYRIC_VIDEO_EXECUTOR_PATH.read_bytes()).hexdigest()
+
+
+@pytest.mark.parametrize("filename,key,expected", [
+    ("content-engine-registry.v1.json", "profiles",
+     "2e5a7774b4a28573eb38f293b14cf267ad27be7b26bb6a9405c2f0630864ad6a"),
+    ("content-format-contracts.v1.json", "contracts",
+     "1191a06ea1d075ee85a77e81929f0013b72d566ffeb06b0cc5afa6bc59447ad7"),
+])
+def test_legacy_authority_maps_match_reviewed_burnt_retirement(filename, key, expected):
+    # The legacy pins include #351's reviewed Burnt and Culture UGC executor.
+    # The additive formats have their own contract tests.
+    root = Path(__file__).resolve().parents[1]
+    current = json.loads((root / "recipes" / filename).read_bytes())[key]
+    for slug in (
+        "lyric-video", "image-video", "single-image-video", "meme",
+        "coffee-slideshow", "pov-seasonal",
+    ):
+        current.pop(slug)
+    encoded = json.dumps(current, sort_keys=True, separators=(",", ":"),
+                         ensure_ascii=False).encode()
+    assert hashlib.sha256(encoded).hexdigest() == expected

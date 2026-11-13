@@ -6,7 +6,7 @@ requirements into a list of named problems, read from the environment and the
 files it points at. It never writes, never bootstraps the private history and
 adds nothing to any HTTP response; it is used by
 
-* the app startup log line (``log_startup_preflight``, cheap checks only), and
+* a bounded background startup observation (``run_startup_preflight``), and
 * ``python tools/scrambler_report.py --preflight`` (full checks, including a
   real parse of the originality feed), which exits non-zero on any problem, and
 * ``python tools/scrambler_report.py --preflight --as-enabled``
@@ -18,10 +18,13 @@ The pilot environment is documented in docs/SCRAMBLER.md ("Pilot environment").
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
 import re
+import subprocess
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Mapping
@@ -34,6 +37,66 @@ FEED_R2_PREFIX_ENV = "SCRAMBLER_FEED_R2_PREFIX"
 FEED_USAGE_FILE_NAME = "usage.jsonl"  # the name services/scrambler_feed_pull.py writes
 HISTORY_PATH_ENV = "SCRAMBLER_HISTORY_PATH"
 VOLUME_ENV = "RAILWAY_VOLUME_MOUNT_PATH"
+STARTUP_DIAGNOSTIC_TIMEOUT_S = 10.0
+
+
+async def stop_startup_preflight(task: asyncio.Task) -> asyncio.CancelledError | None:
+    """Drain diagnostics, distinguishing its cancellation from its owner's."""
+    owner = asyncio.current_task()
+    owner_cancels = owner.cancelling()
+    cancellation = None
+    task.cancel()
+    while True:
+        try:
+            await asyncio.shield(task)
+            break
+        except asyncio.CancelledError as error:
+            # The cancelled child is expected. A fresh cancellation of the
+            # lifespan owner must survive this join, including repeated ones.
+            if owner.cancelling() > owner_cancels:
+                cancellation = cancellation or error
+                owner_cancels = owner.cancelling()
+            if task.done():
+                break
+    return cancellation
+
+
+async def run_startup_preflight() -> None:
+    """Observe pilot readiness without blocking startup or retaining stuck I/O.
+
+    Resolution may read a remote manifest. A thread timeout cannot stop that
+    read, so reuse the owned process lifecycle and reap it at the total deadline
+    or on app shutdown. This is diagnostic only: enqueue checks remain intact.
+    """
+    from services.owned_import_process import create_import_subprocess
+
+    logger = logging.getLogger("scrambler.preflight")
+    deadline = asyncio.get_running_loop().time() + STARTUP_DIAGNOSTIC_TIMEOUT_S
+    try:
+        async with asyncio.timeout_at(deadline):
+            process = await create_import_subprocess(
+                sys.executable, "-m", "services.scrambler_preflight",
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            )
+            output, _ = await process.communicate()
+        if process.returncode:
+            logger.warning("scrambler preflight: diagnostic process failed (exit=%s)",
+                           process.returncode)
+        else:
+            # Keep child diagnostic output bounded; no new HTTP/status fields.
+            if len(output) > 8192:
+                logger.warning("scrambler preflight: diagnostic output truncated")
+            for line in output.decode("utf-8", errors="replace")[-8192:].splitlines():
+                if line.startswith("scrambler preflight:"):
+                    logger.log(logging.WARNING if "NOT READY" in line else logging.INFO,
+                               "%s", line)
+    except TimeoutError:
+        logger.warning("scrambler preflight: readiness unknown (diagnostic deadline exceeded)")
+    except asyncio.CancelledError:
+        raise
+    except Exception as error:
+        logger.warning("scrambler preflight: readiness unknown (diagnostic %s)",
+                       type(error).__name__)
 
 # The roster integration_id the Worker sends as the page id: Notion-sourced
 # pages are ``acct:`` + the handle slugged to [a-z0-9-] (services/notion_pages.py
@@ -263,9 +326,127 @@ def preflight_problems_as_enabled(env: Mapping[str, str] | None = None, *,
     return problems
 
 
+def _resolve_page_master_shas(page: str) -> tuple[list[str], str | None]:
+    """Resolve ``page``'s current master SHAs the way the planner does, plus a
+    short failure reason (``None`` on success).
+
+    Roster intent -> the page's current registered recipe bindings ->
+    ``resolve_source_recipe`` -> its master library. Returns ``(shas, failure)``:
+    on success ``shas`` is non-empty and ``failure`` is ``None``; any failure to
+    resolve (missing intent, no matching bindings, an unresolvable recipe, or an
+    empty master library) answers ``([], reason)`` so the caller fails CLOSED
+    instead of silently reporting the page ready.
+
+    Bounded and fail-soft by design (LOW-2): this runs once at boot, iterates at
+    most one ``resolve_source_recipe`` call per registered binding (pages x
+    bindings), and each ShipStream manifest fetch is a single best-effort read
+    with no retry. A vault/network failure raises ``ShipStreamSourceUnavailable``,
+    which ``resolve_source_recipe`` already converts to ``None`` (never a crash);
+    we answer ``([], reason)`` and the preflight logs NOT READY.
+    """
+    from routers.control_plane import _current_master_pages_intent
+    from routers.control_plane_recipes import list_registered_recipe_bindings
+    from services.control_plane_sources import resolve_source_recipe
+
+    try:
+        intent = _current_master_pages_intent(page)
+    except Exception as error:  # fail closed: a broken seam must not read ready
+        return [], f"intent_exception:{type(error).__name__}"
+    if intent is None:
+        return [], "no_master_pages_intent"
+    master_pages, master_pages_hash = intent
+    try:
+        bindings = list_registered_recipe_bindings(
+            page, master_pages, master_pages_hash)
+    except Exception as error:
+        return [], f"bindings_exception:{type(error).__name__}"
+    if not bindings:
+        return [], "no_registered_recipe_bindings"
+    shas: list[str] = []
+    for _bound_page, publication in bindings:
+        try:
+            recipe = resolve_source_recipe(publication)
+        except Exception as error:
+            return [], f"resolve_exception:{type(error).__name__}"
+        if recipe is None:
+            return [], "recipe_unresolved"
+        shas.extend(master.sha256 for master in getattr(recipe, "masters", ()))
+    if not shas:
+        return [], "empty_masters"
+    return shas, None
+
+
+def preflight_page_origin_problems(env: Mapping[str, str] | None = None) -> list[str]:
+    """One ``page=<id> reason=<r>`` per listed page that is not READY.
+
+    Two failure classes, both named by page (MED-1):
+
+    * ``origin_mapping_unknown:<sha12>`` / ``origin_window_unknown:<kind>:<id>``
+      — the page resolves to masters but a master lacks a usable origin mapping;
+    * ``master_resolution_failed:<short>`` — a listed page cannot be resolved to
+      masters at all (no intent, no bindings, unresolvable recipe, or empty
+      masters). This used to answer ``[]`` and read ``ready``; it now fails
+      closed so a resolution drift is visible at startup.
+
+    This is the startup visibility for the 409 the enqueue would otherwise
+    refuse with (``scrambler_unavailable: origin_mapping_unknown:<sha12>``).
+    """
+    env = os.environ if env is None else env
+    pages = sorted(core._page_list(env.get(core.SCRAMBLER_PAGES_ENV)))
+    if not pages:
+        return []
+    usage_raw = str(env.get(originality.ORIGINALITY_USAGE_PATH_ENV, "")).strip()
+    if not usage_raw:
+        return []
+    usage = Path(usage_raw)
+    origins_raw = str(env.get(originality.ORIGINALITY_ORIGINS_PATH_ENV, "")).strip()
+    origins = Path(origins_raw) if origins_raw else usage.parent / originality.ORIGINS_FILE_NAME
+    try:
+        origins_map = originality._load_origins_map(origins)
+    except originality.ScramblerOriginalityUnavailable as error:
+        # A missing map is also reported by preflight_problems(full=False), but
+        # an unparseable/corrupt map is only parsed by the full check — startup
+        # would otherwise log ready. Either way, without a usable map no
+        # master's origin can be verified, so fail CLOSED and name every page.
+        short = str(error).split(":", 1)[0] or "origins_map_unavailable"
+        return [f"page={page} reason=origins_map_unavailable:{short}"
+                for page in pages]
+    problems: list[str] = []
+    for page in pages:
+        try:
+            shas, resolution_failure = _resolve_page_master_shas(page)
+        except Exception as error:
+            shas, resolution_failure = [], f"exception:{type(error).__name__}"
+        if resolution_failure:
+            problems.append(
+                f"page={page} reason=master_resolution_failed:{resolution_failure}")
+            continue
+        reason = None
+        for sha in shas:
+            key = originality._normalize_master_sha(sha)
+            if key is None:
+                reason = f"origin_mapping_unknown:{str(sha)[:12]}"
+            else:
+                mapping = origins_map.get(key)
+                if mapping is None:
+                    reason = f"origin_mapping_unknown:{key[:12]}"
+                elif mapping.window is None:
+                    reason = (f"origin_window_unknown:{mapping.origin_kind}:"
+                              f"{mapping.origin_id}")
+            if reason:
+                break
+        if reason:
+            problems.append(f"page={page} reason={reason}")
+    return problems
+
+
 def log_startup_preflight(logger: logging.Logger | None = None,
                           env: Mapping[str, str] | None = None) -> list[str]:
-    """One startup log line: OFF, ready, or NOT READY with every missing setting."""
+    """One startup log line: OFF, ready, or NOT READY with every missing setting.
+
+    A listed page that cannot be resolved to masters, or whose current master(s)
+    lack a usable origin mapping, is logged by name and is NOT reported ready.
+    """
     logger = logger or logging.getLogger("scrambler.preflight")
     env = os.environ if env is None else env
     if (str(env.get(core.SCRAMBLER_ENABLED_ENV, "")).strip() != "1"
@@ -273,9 +454,18 @@ def log_startup_preflight(logger: logging.Logger | None = None,
         logger.info("scrambler preflight: OFF")
         return []
     problems = preflight_problems(env, full=False)
+    problems.extend(preflight_page_origin_problems(env))
     if problems:
+        for problem in problems:
+            if problem.startswith("page="):
+                logger.warning("scrambler preflight: NOT READY %s", problem)
         logger.warning("scrambler preflight: NOT READY (%d): %s", len(problems), "; ".join(problems))
     else:
         logger.info("scrambler preflight: ready pages=%s",
                     ",".join(sorted(core._page_list(env.get(core.SCRAMBLER_PAGES_ENV)))))
     return problems
+
+
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
+    log_startup_preflight()

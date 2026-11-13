@@ -509,6 +509,88 @@ async def test_advertised_recipe_reports_scrambler_truth_without_changing_receip
     assert lane["renders"][0]["playback_speed"] == record["speed"]
 
 
+@pytest.mark.asyncio
+async def test_flag_on_split_swap_recipe_emits_loop_split_true(
+    lab, monkeypatch, tmp_path,
+):
+    """G39: a Scrambler split_swap cut is the Lab's split-and-rotate loop.
+
+    Flag on, the advertised-origin recipe records loop_split True for a
+    split_swap cut (PR 281) and nowhere else.
+    """
+    client, tmp_path, _ = lab
+    _scrambler_on(monkeypatch)
+    _originality_feed(monkeypatch, tmp_path)
+    monkeypatch.setenv(cp.ADVERTISE_ORIGIN_ENV, "1")
+    monkeypatch.setenv("SCRAMBLER_TREATMENT_WEIGHTS",
+                       "none:0,split_swap:1,camera:0,grade:0")
+    response = client.post(
+        "/api/control-plane/v1/jobs", json=job_body(1),
+        headers=headers("scrambler-g39-split-swap"),
+    )
+    job_id = response.json()["jobId"]
+    assert _job_scrambler_records(job_id)[0]["treatment"] == "split_swap"
+    _wire_executor(monkeypatch, tmp_path, [job_id])
+    await _run(job_id)
+    job = cp._load_jobs()["jobs"][job_id]
+    assert job["status"] == "completed", job.get("error")
+    recipe = job["clips"][0]["source"]["recipe"]
+    assert recipe["loop_split"] is True
+
+
+@pytest.mark.asyncio
+async def test_flag_on_non_split_scrambler_recipe_keeps_loop_split_null(
+    lab, monkeypatch, tmp_path,
+):
+    """G39: a non-split_swap Scrambler cut keeps loop_split null (pre-G39)."""
+    client, tmp_path, _ = lab
+    _scrambler_on(monkeypatch)
+    _originality_feed(monkeypatch, tmp_path)
+    monkeypatch.setenv(cp.ADVERTISE_ORIGIN_ENV, "1")
+    monkeypatch.setenv("SCRAMBLER_TREATMENT_WEIGHTS",
+                       "none:1,split_swap:0,camera:0,grade:0")
+    response = client.post(
+        "/api/control-plane/v1/jobs", json=job_body(1),
+        headers=headers("scrambler-g39-none"),
+    )
+    job_id = response.json()["jobId"]
+    assert _job_scrambler_records(job_id)[0]["treatment"] == "none"
+    _wire_executor(monkeypatch, tmp_path, [job_id])
+    await _run(job_id)
+    job = cp._load_jobs()["jobs"][job_id]
+    assert job["status"] == "completed", job.get("error")
+    recipe = job["clips"][0]["source"]["recipe"]
+    assert recipe["loop_split"] is None
+
+
+@pytest.mark.asyncio
+async def test_flag_off_split_swap_receipt_keeps_no_recipe_leg(
+    lab, monkeypatch, tmp_path,
+):
+    """G39: flag off, a split_swap cut's source keeps exactly the base keys.
+
+    The recipe leg (and its loop_split) stays off the wire entirely; the
+    receipt body is byte-identical to OFF.
+    """
+    client, tmp_path, _ = lab
+    _scrambler_on(monkeypatch)
+    _originality_feed(monkeypatch, tmp_path)
+    monkeypatch.delenv(cp.ADVERTISE_ORIGIN_ENV, raising=False)
+    monkeypatch.setenv("SCRAMBLER_TREATMENT_WEIGHTS",
+                       "none:0,split_swap:1,camera:0,grade:0")
+    response = client.post(
+        "/api/control-plane/v1/jobs", json=job_body(1),
+        headers=headers("scrambler-g39-split-swap-off"),
+    )
+    job_id = response.json()["jobId"]
+    assert _job_scrambler_records(job_id)[0]["treatment"] == "split_swap"
+    _wire_executor(monkeypatch, tmp_path, [job_id])
+    await _run(job_id)
+    job = cp._load_jobs()["jobs"][job_id]
+    assert job["status"] == "completed", job.get("error")
+    assert "recipe" not in job["clips"][0]["source"]
+
+
 # ---------------------------------------------------------------------------
 # Kill switch / legacy interplay through real executor runs
 # ---------------------------------------------------------------------------
@@ -870,21 +952,20 @@ def test_off_enqueue_serialization_matches_base_golden(lab, tmp_path, monkeypatc
         assert type(captured[phase]["sourceClaimVersion"]) is int
         assert captured[phase].pop("sourceClaimVersion") == 1
 
-    # The reviewed Burnt UGC authority changes the shared UGC executor and
-    # contract digests.  Those two authority pins legitimately flow into an
-    # otherwise unrelated source-job receipt; all behavioural serialization
-    # remains compared against the base golden.
-    def without_reviewed_authority_pins(value):
-        if isinstance(value, dict):
-            return {key: without_reviewed_authority_pins(item)
-                    for key, item in value.items()
-                    if key not in {"executorVersion", "formatContractVersion",
-                                   "engineRegistryHash", "engineProfileHash", "jobRequestHash"}}
-        if isinstance(value, list):
-            return [without_reviewed_authority_pins(item) for item in value]
-        return value
-
-    assert without_reviewed_authority_pins(captured) == without_reviewed_authority_pins(golden)
+    # Burnt's UGC retirement and the additive Coffee slideshow changed the
+    # shared registry. The current capture changes only
+    # these two stored registry hashes. The fixture page's executor,
+    # contract, profile and request hashes remain byte-identical to BASE.
+    # Keep the historical golden and apply only the reviewed substitutions
+    # at these exact paths; never discard authority fields recursively.
+    for phase in ("job", "completedJob"):
+        assert golden[phase]["engineRegistryHash"] == (
+            "4c8de21caa2e3fefbfc6b2ba659a3e029321e576ef0291f9213497043a4f31ed"
+        )
+        golden[phase]["engineRegistryHash"] = (
+            "7af6d9dd076fcb35521876d7753bdc0d30ac96731d17e2e93ffa1240907c96e7"
+        )
+    assert captured == golden
 
 
 # ---------------------------------------------------------------------------
