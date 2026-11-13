@@ -16,7 +16,7 @@ import zipfile
 from datetime import datetime
 from pathlib import Path
 
-from fastapi import APIRouter, Query, Request
+from fastapi import APIRouter, Header, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from project_manager import (
@@ -41,6 +41,7 @@ from services.caption_render import (
 from services.ffmpeg import TIKTOK_ENCODE_ARGS, build_cc_filter
 from services.fsutil import is_within, safe_unlink
 from services.json_store import atomic_load, atomic_save
+from routers.control_plane_recipes import require_control_plane_bearer
 
 log = logging.getLogger("burn")
 
@@ -315,22 +316,32 @@ async def list_captions(project: str = Query(..., description="Project name")):
 
 
 @router.post("/import-tos")
-async def import_tos_captions(project: str = Query(..., description="Project name")):
+async def import_tos_captions(
+    project: str = Query(..., description="Project name"),
+    authorization: str | None = Header(default=None),
+):
     """Pull Slingshot TOS captions from Supabase into this project's caption bank.
 
     Writes one source CSV per song under captions/tos-<slug>/ so the burn UI
     (and search) can use them. Works on the deployed volume — needs SUPABASE_URL
-    and SUPABASE_SERVICE_KEY/SUPABASE_KEY env vars.
+    and a server-held SUPABASE_SERVICE_KEY env var.
     """
+    if not (os.environ.get("CONTROL_PLANE_TOKEN") or "").strip():
+        raise HTTPException(503, "Content Lab control-plane credential is not configured")
+    require_control_plane_bearer(authorization)
+
     import csv as _csv
     import re as _re
     import requests as _requests
     from project_manager import get_project_caption_dir
 
     url = (os.getenv("SUPABASE_URL") or "").rstrip("/")
-    key = (os.getenv("SUPABASE_SERVICE_KEY") or os.getenv("SUPABASE_KEY") or "").strip()
+    key = (os.getenv("SUPABASE_SERVICE_KEY") or "").strip()
     if not (url and key):
-        return JSONResponse({"error": "SUPABASE_URL / SUPABASE_KEY not configured"}, status_code=400)
+        return JSONResponse(
+            {"error": "SUPABASE_URL / SUPABASE_SERVICE_KEY not configured"},
+            status_code=503,
+        )
 
     try:
         r = _requests.get(

@@ -22,7 +22,8 @@ site's enclosing function calls plan_source_cuts. The sole exception is the
 source runner atomically narrowing a completed job to validated cuts that made
 manifested outputs. That runner is ``_run_dossier_source``, or the Scrambler's
 ``_run_dossier_source_inner`` when its only call sites are direct calls inside
-``_run_dossier_source`` (the page-lock wrapper); there its pinned guard may
+``_run_owned_dossier_source`` (the page-lock wrapper), itself called
+only by ``_run_dossier_source`` (the job-claim wrapper); there its pinned guard may
 also pass ``scrambler=scram_record`` and nothing else. An executor site's enclosing function re-derives each cut
 with source_cut_is_planned (the planner's vocabulary check) before rendering it.
 """
@@ -38,7 +39,8 @@ RUNNER_MODULE = "routers/control_plane.py"
 # The Scrambler (#281) split the source runner: the page-lock wrapper keeps the
 # name _run_dossier_source and the cut loop moved into this one function.
 SCRAMBLER_RUNNER = "_run_dossier_source_inner"
-SCRAMBLER_WRAPPER = "_run_dossier_source"
+SCRAMBLER_WRAPPER = "_run_owned_dossier_source"
+CLAIM_WRAPPER = "_run_dossier_source"
 
 
 def _backend_modules():
@@ -117,13 +119,27 @@ def census(source, filename):
             return False
         defined = [node for node in ast.walk(tree)
                    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
-                   and node.name in {SCRAMBLER_RUNNER, SCRAMBLER_WRAPPER}]
+                   and node.name in {SCRAMBLER_RUNNER, SCRAMBLER_WRAPPER, CLAIM_WRAPPER}]
         wrappers = [node for node in tree.body if isinstance(node, ast.AsyncFunctionDef)
                     and node.name == SCRAMBLER_WRAPPER]
-        if len(defined) != 2 or len(wrappers) != 1:
+        if len(defined) != 3 or len(wrappers) != 1:
             return False
         calls = [node for node in ast.walk(wrappers[0]) if isinstance(node, ast.Call)
                  and isinstance(node.func, ast.Name) and node.func.id == SCRAMBLER_RUNNER]
+        outer = [node for node in tree.body if isinstance(node, ast.AsyncFunctionDef)
+                             and node.name == CLAIM_WRAPPER]
+        if len(outer) != 1:
+            return False
+        owner_references = [node for node in ast.walk(tree)
+                            if isinstance(node, ast.Name) and node.id == SCRAMBLER_WRAPPER]
+        if not owner_references:
+            return False
+        for node in owner_references:
+            parent = parents.get(node)
+            functions = enclosing_functions(node)
+            if not (isinstance(node.ctx, ast.Load) and isinstance(parent, ast.Call)
+                    and parent.func is node and functions and functions[0] is outer[0]):
+                return False
         return bool(calls) and not scrambler_runner_misuses()
 
     def delivered_subset_completion(node, functions):
@@ -321,7 +337,10 @@ def test_completed_source_subset_is_the_only_safe_cut_rewrite():
         # The inner runner is accepted only together with its sole caller.
         wrapper = next(node for node in tree.body if isinstance(node, ast.AsyncFunctionDef)
                        and node.name == SCRAMBLER_WRAPPER)
-        segment = ast.get_source_segment(source, wrapper) + "\n\n\n" + segment
+        outer = next(node for node in tree.body if isinstance(node, ast.AsyncFunctionDef)
+                     and node.name == CLAIM_WRAPPER)
+        segment = (ast.get_source_segment(source, outer) + "\n\n\n"
+                   + ast.get_source_segment(source, wrapper) + "\n\n\n" + segment)
     source = segment
     filename = "routers/control_plane.py"
     _, violations = census(source, filename)

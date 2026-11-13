@@ -18,6 +18,10 @@ FIELDS = (
 REQUIRED_MATERIAL_FIELDS = (
     "contentNiche", "contentEngine", "automationMode", "vaultUrl",
 )
+# Closed owners outside Notion, shared by registration, the exact null-Notion
+# source-manifest exception and page-id-derived slideshow libraries. Null-source
+# legacy/pipeline placeholders do not belong to an external owner.
+EXTERNAL_PAGE_SOURCES = frozenset({"northstar"})
 HASH = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 

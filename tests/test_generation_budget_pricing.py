@@ -4,9 +4,21 @@ Rates are pinned to the exact Replicate model pages and direct xAI classic
 Grok docs; resolution/duration normalization and input fees remain explicit.
 """
 
+import asyncio
+
 import pytest
 
 from services import generation_budget
+
+
+class _AsyncioProxy:
+    """Override create_task for one module without mutating shared asyncio."""
+
+    def __init__(self, create_task):
+        self.create_task = create_task
+
+    def __getattr__(self, name):
+        return getattr(asyncio, name)
 
 
 def test_grok_priced_by_requested_duration():
@@ -73,7 +85,7 @@ def test_pvideo_actual_payload_cap(monkeypatch, provider, duration, resolution, 
         coroutine.close()
         return QueuedTask()
 
-    monkeypatch.setattr(video.asyncio, "create_task", capture)
+    monkeypatch.setattr(video, "asyncio", _AsyncioProxy(capture))
     app = FastAPI()
     app.include_router(video.router, prefix="/api/video")
     response = TestClient(app).post("/api/video/generate", data={
@@ -183,7 +195,7 @@ def test_known_underpriced_payload_is_refused_before_queue(monkeypatch, provider
         queued.append(coroutine)
         coroutine.close()
         return QueuedTask()
-    monkeypatch.setattr(video.asyncio, "create_task", capture)
+    monkeypatch.setattr(video, "asyncio", _AsyncioProxy(capture))
     app = FastAPI()
     app.include_router(video.router, prefix="/api/video")
     from io import BytesIO

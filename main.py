@@ -19,6 +19,7 @@ if __name__ == "__main__":
         host="0.0.0.0",
         port=port,
         reload=False,
+        workers=1,  # Source-store startup reconciliation requires one service process.
         proxy_headers=True,
         forwarded_allow_ips=forwarded_allow_ips,
         timeout_keep_alive=120,  # Must exceed Railway's 60s proxy keep-alive

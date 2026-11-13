@@ -28,6 +28,7 @@ from routers.control_plane import generation_budget_status
 from routers.post_renders import router as post_renders_router, start_workers as start_post_render_workers, readiness as post_render_readiness
 from routers.control_plane_dossier import router as control_plane_dossier_router
 from routers.control_plane_recipes import router as control_plane_recipes_router
+from routers.control_plane_external_pages import router as control_plane_external_pages_router
 from routers.control_plane_source_libraries import (
     router as control_plane_source_libraries_router,
 )
@@ -48,6 +49,7 @@ from routers.upload import router as upload_router
 from routers.video import router as video_router
 from routers.agenticnews import router as agenticnews_router
 import services.agenticnews as agenticnews_db
+from services.post_render import source_duration_repair_enabled
 
 load_dotenv()
 
@@ -168,14 +170,6 @@ async def lifespan(app: FastAPI):
     # Initialize structured logging before anything else
     debug_logger.setup_logging()
 
-    # One line naming every missing Scrambler pilot setting (OFF logs "OFF").
-    try:
-        from services.scrambler_preflight import log_startup_preflight
-        log_startup_preflight()
-    except Exception as e:
-        import logging
-        logging.getLogger(__name__).warning(f"scrambler preflight failed: {e}")
-
     # main.py runs one process, and imports cannot start before this sweep.
     # Hard-killed imports skip finally; their private scratch copies are stale.
     # Keep this before imports, not in individual workers or request handlers.
@@ -191,6 +185,21 @@ async def lifespan(app: FastAPI):
     Path("burn_output").mkdir(parents=True, exist_ok=True)
     PROJECTS_DIR.mkdir(parents=True, exist_ok=True)
     ensure_default_project()
+
+    # A Railway volume admits only one mounted deployment at a time. Verify
+    # the actual mount/entrypoint before settling stopped legacy source owners;
+    # other deployments retain the explicit operator reconciliation path.
+    from routers import control_plane as source_runtime
+    from services.source_runtime_reconciliation import reconcile_railway_startup
+    try:
+        reconciliation = await asyncio.to_thread(
+            reconcile_railway_startup, source_runtime._jobs_path(),
+            source_runtime._generation_root_path(), source_runtime._GENERATION_RUNTIME_ID,
+        )
+        log.info("source runtime startup reconciliation: %s", reconciliation)
+    except Exception:
+        # An unavailable proof or repair never adds a global startup gate.
+        log.warning("source runtime reconciliation needs operator follow-up")
 
     # AgenticBuilderNews workspace DB + autonomous factory
     try:
@@ -263,25 +272,39 @@ async def lifespan(app: FastAPI):
     start_compaction_scheduler()
     from services.scrambler_feed_pull import start_feed_pull_scheduler
     start_feed_pull_scheduler()
-    yield
-    from routers.control_plane import shutdown_dossier_generation, stop_compaction_scheduler
-    stop_compaction_scheduler()
-    from services.scrambler_feed_pull import stop_feed_pull_scheduler
-    stop_feed_pull_scheduler()
-    await shutdown_dossier_generation()
-    if post_render_jobs is not None:
-        post_render_jobs.stop()
+    # Read-only readiness diagnostics may resolve remote masters. Keep their
+    # bounded owned process off startup's critical path; enqueue still enforces
+    # every existing Scrambler requirement.
+    from services.scrambler_preflight import run_startup_preflight, stop_startup_preflight
+    preflight_task = asyncio.create_task(run_startup_preflight())
+    body_error = None
+    try:
+        yield
+    except BaseException as error:
+        body_error = error
+        raise
+    finally:
+        cancellation = await stop_startup_preflight(preflight_task)
+        from routers.control_plane import shutdown_dossier_generation, stop_compaction_scheduler
+        stop_compaction_scheduler()
+        from services.scrambler_feed_pull import stop_feed_pull_scheduler
+        stop_feed_pull_scheduler()
+        await shutdown_dossier_generation()
+        if post_render_jobs is not None:
+            post_render_jobs.stop()
 
-    # Stop Telegram bot
-    try:
-        await stop_tg_bot()
-    except Exception:
-        pass
-    try:
-        await stop_sounds_bot()
-    except Exception:
-        pass
-    log.info("Content Posting Lab shutting down...")
+        # Stop Telegram bot
+        try:
+            await stop_tg_bot()
+        except Exception:
+            pass
+        try:
+            await stop_sounds_bot()
+        except Exception:
+            pass
+        log.info("Content Posting Lab shutting down...")
+        if body_error is None and cancellation is not None:
+            raise cancellation
 
 
 app = FastAPI(
@@ -310,6 +333,10 @@ _AUTH_SKIP = ("/api/health", "/api/miniapp/")
 
 @app.middleware("http")
 async def check_api_key(request: Request, call_next):
+    # This exact write route checks the private machine bearer itself. The
+    # browser API key must not block a valid machine request or authorize one.
+    if request.method == "POST" and request.url.path == "/api/burn/import-tos":
+        return await call_next(request)
     if _APP_API_KEY and request.url.path.startswith("/api/"):
         if not any(request.url.path.startswith(s) for s in _AUTH_SKIP):
             token = request.headers.get("authorization", "").removeprefix("Bearer ").strip()
@@ -355,6 +382,11 @@ app.include_router(
 )
 app.include_router(control_plane_recipes_router, prefix="/api/control-plane", tags=["control-plane-recipes"])
 app.include_router(
+    control_plane_external_pages_router,
+    prefix="/api/control-plane",
+    tags=["control-plane-external-pages"],
+)
+app.include_router(
     control_plane_source_libraries_router,
     prefix="/api/control-plane",
     tags=["control-plane-source-libraries"],
@@ -392,6 +424,9 @@ async def health_check():
         "status": "ok" if ffmpeg_ok and ytdlp_ok else "degraded",
         "ffmpeg": ffmpeg_ok,
         "ytdlp": ytdlp_ok,
+        "capabilities": {
+            "source_duration_repair_v1": source_duration_repair_enabled(),
+        },
         "providers": providers,
         # This route is deliberately unauthenticated. Keep only the integrity
         # signal public; exact spend and configured limits are omitted from this

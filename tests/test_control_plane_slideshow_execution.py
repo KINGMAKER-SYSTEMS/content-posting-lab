@@ -13,11 +13,15 @@ from fastapi.testclient import TestClient
 import routers.control_plane as cp
 import routers.control_plane_recipes as recipes
 import services.dossier_ingredients as ingredients_module
+from services.content_engine_registry import resolve_material_profile
 from services.control_plane_slideshows import (
+    SyzygyError,
     SyzygyLibrary,
     SyzygyObject,
+    library_subject,
     plan_slideshows,
     resolve_slideshow_recipe,
+    slideshow_library_address,
 )
 from services.dossier_ingredients import (
     build_dossier_ingredient_catalog,
@@ -240,6 +244,31 @@ def test_slideshow_recipe_resolves_only_a_full_pinned_publication(monkeypatch):
     assert resolve_slideshow_recipe({**payload, "engine": "ai_video"}) is None
 
 
+def test_rising_tides_pages_keep_the_handle_subject_byte_for_byte(monkeypatch):
+    """A Notion-owned page addresses syzygy:{lane}:{handle slug}, as always.
+
+    Only a page whose intent is owned outside Notion (see
+    tests/test_northstar_slideshow_library.py) derives from its page id.
+    """
+    payload = publication(monkeypatch)
+    spec = json.loads(payload["recipeSpecCanonical"])
+    intent = spec["masterPages"]
+    assert intent["source"] == "notion"
+    profile = resolve_material_profile(payload, spec)
+    assert slideshow_library_address(profile, intent) == (LIBRARY_ID, LANE, SUBJECT)
+    # The page id never enters a Rising Tides subject.
+    assert slideshow_library_address(
+        profile, {**intent, "pageId": "tt-some-other-id"},
+    ) == (LIBRARY_ID, LANE, SUBJECT)
+    # Casefold, collapse every non-[a-z0-9] run to one '-', strip the ends.
+    assert slideshow_library_address(
+        profile, {**intent, "handle": "Holy..Fumble_2"},
+    ) == (f"syzygy:{LANE}:holy-fumble-2", LANE, "holy-fumble-2")
+    assert library_subject(PAGE_ID, HANDLE, "notion") == SUBJECT
+    assert library_subject(PAGE_ID, HANDLE, None) == SUBJECT
+    assert resolve_slideshow_recipe(payload, require_runtime=False).subject == SUBJECT
+
+
 def test_slideshow_recipe_requires_the_runtime(monkeypatch):
     monkeypatch.delenv("CONTENT_LAB_GENERATION_MODE", raising=False)
     monkeypatch.delenv("SYZYGY_API_URL", raising=False)
@@ -334,6 +363,41 @@ def test_capability_and_jobs_bind_master_hash_and_reserve_unique_plans(lab):
     second_signatures = {plan["signature"] for plan in second_job["slideshowPlan"]}
     assert first_signatures.isdisjoint(second_signatures)
     assert len(started) == 2
+
+
+def test_slideshow_job_replay_survives_library_outage(lab, monkeypatch):
+    client, _, started, _, payload = lab
+    key = "slideshow-replay-library-outage"
+    first = client.post(
+        "/api/control-plane/v1/jobs", json=job_body(1, payload),
+        headers=headers(key),
+    )
+    assert first.status_code == 200, first.json()
+
+    def unavailable(*_args, **_kwargs):
+        raise SyzygyError("library temporarily unavailable")
+
+    monkeypatch.setattr(cp, "load_recipe_library", unavailable)
+    replay = client.post(
+        "/api/control-plane/v1/jobs", json=job_body(1, payload),
+        headers=headers(key),
+    )
+    assert replay.status_code == 200, replay.json()
+    assert replay.json() == first.json()
+    changed = client.post(
+        "/api/control-plane/v1/jobs", json=job_body(2, payload),
+        headers=headers(key),
+    )
+    assert changed.status_code == 409
+    assert changed.json()["detail"] == "idempotency_key_reused_with_different_request"
+    fresh = client.post(
+        "/api/control-plane/v1/jobs", json=job_body(1, payload),
+        headers=headers("slideshow-fresh-library-outage"),
+    )
+    assert fresh.status_code == 409
+    assert fresh.json()["detail"] == "recipe_executor_unavailable"
+    assert len(cp._load_jobs()["jobs"]) == 1
+    assert started == [first.json()["jobId"]]
 
 
 def test_slideshow_admission_returns_409_when_fresh_inventory_is_exhausted(lab):
@@ -441,7 +505,7 @@ def _fake_syzygy_boundary(monkeypatch, library, *, mutate=False):
             result.append(row)
         return result
 
-    async def fake_submit(plan, *, page_id, recipe_version, format_slug=None):
+    async def fake_submit(plan, *, page_id, recipe_version, format_slug=None, lab_job_id=None):
         calls["submit"].append((plan, page_id, recipe_version, format_slug))
         return f"render-job-{len(calls['submit']):04d}", "draft"
 
@@ -549,6 +613,68 @@ async def test_runner_uses_real_syzygy_http_adapter(lab, monkeypatch):
     assert polls == 2
     assert len([r for r in seen if r.method == "POST"]) == 1
     assert len([r for r in seen if r.url.host == "r2.example"]) == 2 * len(plan["mediaKeys"])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("response", [
+    {},
+    {"status": None},
+    {"status": 17},
+    {"status": ""},
+    {"status": "   "},
+])
+async def test_syzygy_render_poll_rejects_invalid_status_without_sleep(response, monkeypatch):
+    from services import control_plane_slideshows as slideshows
+
+    requests = []
+
+    async def fake_request_json(method, endpoint, *, timeout=60.0, **_kwargs):
+        requests.append((method, endpoint))
+        return response
+
+    async def forbidden_sleep(_seconds):
+        pytest.fail("malformed Syzygy status must not be polled again")
+
+    monkeypatch.setattr(slideshows, "_request_json", fake_request_json)
+    monkeypatch.setattr(slideshows.asyncio, "sleep", forbidden_sleep)
+
+    with pytest.raises(slideshows.SyzygyError) as error:
+        await slideshows.poll_syzygy_render("render-job")
+
+    assert error.type is slideshows.SyzygyError
+    assert str(error.value) == "Syzygy response is invalid"
+    assert requests == [("GET", "/api/v1/render/render-job")]
+
+
+@pytest.mark.asyncio
+async def test_syzygy_render_poll_keeps_polling_unknown_nonempty_status(monkeypatch):
+    from services import control_plane_slideshows as slideshows
+
+    responses = iter([
+        {"status": "future_render_phase"},
+        {"status": "done", "result": {"play_url": "/render-file/render-job.mp4"}},
+    ])
+    requests = []
+    sleeps = []
+
+    async def fake_request_json(method, endpoint, *, timeout=60.0, **_kwargs):
+        requests.append((method, endpoint))
+        return next(responses)
+
+    async def fake_sleep(seconds):
+        sleeps.append(seconds)
+
+    monkeypatch.setattr(slideshows, "_request_json", fake_request_json)
+    monkeypatch.setattr(slideshows.asyncio, "sleep", fake_sleep)
+
+    result = await slideshows.poll_syzygy_render("render-job")
+
+    assert result == "/render-file/render-job.mp4"
+    assert requests == [
+        ("GET", "/api/v1/render/render-job"),
+        ("GET", "/api/v1/render/render-job"),
+    ]
+    assert sleeps == [slideshows.POLL_SECONDS]
 
 
 @pytest.mark.asyncio

@@ -9,11 +9,13 @@ fonts, and turns the effective style into a transparent 1080x1920 PNG.
 from __future__ import annotations
 
 import base64
+import functools
 import hashlib
 import io
 import json
 import math
 import re
+import struct
 import unicodedata
 from pathlib import Path
 from typing import Callable, Literal
@@ -59,6 +61,7 @@ _LINE_BREAK_MAX_CHARS = 500
 _BACKGROUNDS_NEEDING_COLOR = ("box", "highlight")
 # Where an inverted caption always sits (see CaptionStyle.center_inverted_caption).
 _INVERTED_PLACEMENT = {"position": "middle", "offset_pct": 0}
+
 # Fit inside the visible picture (owner rule, 2026-10-04). The style's size is
 # the maximum: a caption that stays inside the picture is drawn exactly as
 # styled, however big, and one that would leave it only shrinks. The picture is
@@ -173,8 +176,9 @@ def caption_style_contract() -> dict:
     (contracts/caption-style.v1.json) lets the Worker check in its own CI that
     every caption style it can send is one this renderer takes. Not in it:
     render-time refusals that depend on the installed fonts and the rendered
-    size (CAPTION_FONT_UNAVAILABLE, italic fonts, and CAPTION_OUT_OF_FRAME for a
-    caption that cannot fit the visible picture even at 12 pt), and the request rule that line_breaks must spell
+    size (CAPTION_FONT_UNAVAILABLE, italic fonts, CAPTION_GLYPH_MISSING,
+    CAPTION_NO_TEXT, and CAPTION_OUT_OF_FRAME for a caption that cannot fit the
+    visible picture even at 12 pt), and the request rule that line_breaks must spell
     the caption. tests/test_caption_transforms.py fails when the copy drifts;
     regenerate it with ``python scripts/export_caption_style_contract.py``.
     """
@@ -560,6 +564,84 @@ def _load_font(font_path: Path, size_px: int) -> ImageFont.FreeTypeFont:
         ) from error
 
 
+@functools.lru_cache(maxsize=32)
+def _font_codepoints(font_bytes: bytes) -> frozenset[int]:
+    """Read real glyph coverage from the installed font's cmap, not Pillow's layout."""
+
+    def u16(offset: int) -> int:
+        return struct.unpack_from(">H", font_bytes, offset)[0]
+
+    def u32(offset: int) -> int:
+        return struct.unpack_from(">I", font_bytes, offset)[0]
+
+    try:
+        table = None
+        for index in range(u16(4)):
+            record = 12 + 16 * index
+            if font_bytes[record:record + 4] == b"cmap":
+                table = u32(record + 8)
+        if table is None:
+            raise ValueError("missing cmap")
+        covered: set[int] = set()
+        for index in range(u16(table + 2)):
+            record = table + 4 + 8 * index
+            platform, encoding, offset = u16(record), u16(record + 2), u32(record + 4)
+            if not (platform == 0 or (platform == 3 and encoding in (1, 10))):
+                continue
+            subtable = table + offset
+            fmt = u16(subtable)
+            if fmt == 4:
+                segments = u16(subtable + 6) // 2
+                ends = subtable + 14
+                starts = subtable + 16 + 2 * segments
+                deltas = starts + 2 * segments
+                ranges = starts + 4 * segments
+                for segment in range(segments):
+                    end = u16(ends + 2 * segment)
+                    start = u16(starts + 2 * segment)
+                    delta = u16(deltas + 2 * segment)
+                    range_offset = u16(ranges + 2 * segment)
+                    for codepoint in range(start, end + 1):
+                        if range_offset == 0:
+                            glyph = (codepoint + delta) & 0xFFFF
+                        else:
+                            glyph = u16(ranges + 2 * segment + range_offset + 2 * (codepoint - start))
+                            glyph = (glyph + delta) & 0xFFFF if glyph else 0
+                        if glyph:
+                            covered.add(codepoint)
+            elif fmt == 12:
+                for group in range(u32(subtable + 12)):
+                    start = u32(subtable + 16 + 12 * group)
+                    end = u32(subtable + 20 + 12 * group)
+                    first_glyph = u32(subtable + 24 + 12 * group)
+                    covered.update(
+                        codepoint for codepoint in range(start, end + 1)
+                        if first_glyph + codepoint - start
+                    )
+        if not covered:
+            raise ValueError("empty cmap")
+        return frozenset(covered)
+    except (ValueError, struct.error) as error:
+        raise CaptionRenderError("CAPTION_FONT_INVALID", "installed font's character table could not be read") from error
+
+
+def _require_drawable_text(font_bytes: bytes, lines: list[str]) -> None:
+    """Refuse the whole caption if the chosen font cannot draw every character."""
+
+    covered = _font_codepoints(font_bytes)
+    missing = sorted({
+        ord(char) for line in lines for char in line
+        if not char.isspace() and ord(char) not in covered
+    })
+    if missing:
+        shown = ", ".join(f"U+{codepoint:04X}" for codepoint in missing[:8])
+        if len(missing) > 8:
+            shown += f" and {len(missing) - 8} more"
+        raise CaptionRenderError("CAPTION_GLYPH_MISSING", f"caption has characters the font cannot draw: {shown}")
+    if not any(unicodedata.category(char)[0] in "LN" for line in lines for char in line):
+        raise CaptionRenderError("CAPTION_NO_TEXT", "caption has no letter or digit the font can draw")
+
+
 def _line_height_px(font_size_px: int) -> int:
     return max(1, round(font_size_px * _LINE_HEIGHT_MULTIPLIER))
 
@@ -738,11 +820,16 @@ def render_caption_overlay(
         return fonts[size]
 
     rendered_source = _cased(request.caption, style.case)
-    lines = ([_cased(line, style.case) for line in style.line_breaks]
-             if style.line_breaks is not None
-             else _wrap_preserving_explicit_newlines(rendered_source, style.line_balance))
+    if style.line_breaks is not None:
+        lines = [_cased(line, style.case) for line in style.line_breaks]
+    else:
+        lines = rendered_source.replace("\r\n", "\n").replace("\r", "\n").split("\n")
     if not lines:
         raise CaptionRenderError("CAPTION_EMPTY", "caption produced no renderable lines")
+
+    if style.line_breaks is None:
+        lines = _wrap_preserving_explicit_newlines("\n".join(lines), style.line_balance)
+    _require_drawable_text(font_bytes, lines)
 
     max_width_px = round(FRAME_WIDTH * (_MAX_WIDTH_PCT / 100))
     horizontal_margin_px = (FRAME_WIDTH - max_width_px) // 2
