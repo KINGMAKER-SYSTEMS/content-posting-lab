@@ -283,12 +283,38 @@ def test_clean_end_11167_other_frame_rates(tmp_path, fps, expected_frames):
     _make_source(src, fps)
     src_sha = hashlib.sha256(src.read_bytes()).hexdigest()
     out = tmp_path / "out"
+    if fps == "30000/1001":
+        # The frozen zero-start trim contains 334 source frames. It cannot
+        # supply the command's 335 delivery frames without padding. An exact
+        # declared-frame command must refuse; the old one-fewer success was
+        # the undershoot acceptance bug (ROOT adjudication 2026-11-12).
+        with pytest.raises(RepairError) as error:
+            render_shorter(src, out, _command_for(src_sha, 11167))
+        assert error.value.code == "output_endpoint_unmet"
+        assert not out.exists()
+        # A feasible window still preserves real audio at this fractional
+        # input rate: floor(11167*r)-floor(1000*r) = 334-29 = 305 frames.
+        # Its 10167 ms span contains 305 delivery frames at 30fps, to the
+        # normal millisecond container rounding, with no padding.
+        feasible = _command_for(src_sha, 11167)
+        feasible.update(source_trim_start_ms=1000,
+                        opening_evidence_id="fractional-opening",
+                        opening_evidence_sha256=feasible["decoded_reference_sha256"],
+                        opening_evidence_end_ms=1000,
+                        expected_output_duration_ms=10167, expected_output_frames=305)
+        receipt = render_shorter(src, tmp_path / "feasible", feasible)
+        assert receipt["decoded_video"]["decoded_video_frames"] == 305
+        assert receipt["ffprobe_final"]["has_audio"] is True
+        assert receipt["decoded_audio"]["decoded_sample_count"] > 0
+        assert receipt["decoded_audio"]["decoded_duration_ms"] <= 10167
+        assert receipt["final_duration_ms"] == 10167
+        return
     receipt = render_shorter(src, out, _command_for(src_sha, 11167))
     assert receipt["final_packet_end_ms"]["video"] <= 11167.0
     assert receipt["final_packet_end_ms"]["audio"] <= 11167.0
-    # The delivered final is 30 fps; after downsampling the frame count may be
-    # one less, never one more. The invariant is the end bound, not the exact
-    # source frame count, so assert the bound and non-overshoot here.
+    # The delivery clock is 30 fps and the declared frame count is exact.
+    # These feasible rates must also keep both real stream ends in bounds;
+    # the impossible fractional-rate request is explicitly refused above.
     assert receipt["final_duration_ms"] <= 11167
 
 

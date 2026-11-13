@@ -33,6 +33,7 @@ import math
 import os
 import shutil
 import subprocess
+from fractions import Fraction
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -282,6 +283,8 @@ def probe(path: Path, ffprobe_bin: Optional[str] = None) -> Dict:
         audio = [row for row in data["streams"] if row.get("codec_type") == "audio"]
         sample_rate = int(audio[0]["sample_rate"]) if audio and audio[0].get("sample_rate") else None
         channels = int(audio[0]["channels"]) if audio and audio[0].get("channels") else None
+        if audio and (not sample_rate or sample_rate <= 0 or not channels or channels <= 0):
+            raise ValueError("audio stream has no valid sample clock/channels")
         container_duration = float(data["format"]["duration"])
         audio_duration = float(audio[0]["duration"]) if audio and audio[0].get("duration") else None
         return {
@@ -292,7 +295,8 @@ def probe(path: Path, ffprobe_bin: Optional[str] = None) -> Dict:
             "fps_den": rate[1] if rate else 1,
             "audio_sample_rate": sample_rate,
             "audio_channels": channels,
-            "has_audio": bool(audio and sample_rate),
+            "has_audio": bool(audio),
+            "audio_streams": len(audio),
             "container_duration_ms": round(container_duration * 1000),
             "audio_duration_ms": round(audio_duration * 1000) if audio_duration is not None else None,
         }
@@ -348,18 +352,33 @@ def packet_ends(path: Path, ffprobe_bin: Optional[str] = None) -> Dict:
 
 def decoded_audio_facts(path: Path, ffmpeg_bin: Optional[str] = None,
                         channels: Optional[int] = None,
-                        sample_rate: Optional[int] = None) -> Dict:
+                        sample_rate: Optional[int] = None, *,
+                        ffprobe_bin: Optional[str] = None,
+                        has_audio: Optional[bool] = None) -> Dict:
     """Decode the audio to raw PCM and count the true decoded samples.
 
     AAC carries encoder priming/padding; packet pts+duration can therefore differ
     from the samples a player actually decodes. This decodes to s16le and counts,
     which is the authoritative "how much audio actually plays" fact.
     """
+    if has_audio is None:
+        facts = probe(path, ffprobe_bin)
+        has_audio = facts["has_audio"]
+        channels = facts["audio_channels"]
+        sample_rate = facts["audio_sample_rate"]
+    if not has_audio:
+        # Absence is measured, never a decode error relabelled as silence.
+        return {"decoded_sample_count": 0, "decoded_channels": 0,
+                "decoded_sample_rate": None, "decoded_duration_ms": None}
+    if not channels or channels <= 0 or not sample_rate or sample_rate <= 0:
+        raise RepairError("media_probe_invalid", "audio needs a valid sample clock and channel count")
     raw = _run([ffmpeg_bin or FFMPEG, "-nostdin", "-v", "error",
                 "-i", str(path), "-map", "0:a:0", "-f", "s16le",
                 "-acodec", "pcm_s16le", "pipe:1"],
                output_limit=MAX_SOURCE_BYTES)
-    ch = channels or 1
+    ch = channels
+    if not raw or len(raw) % (2 * ch):
+        raise RepairError("media_decode_invalid", "audio did not decode into complete PCM samples")
     total = len(raw) // 2  # 16-bit
     per_channel = total // ch if ch else 0
     return {
@@ -368,6 +387,38 @@ def decoded_audio_facts(path: Path, ffmpeg_bin: Optional[str] = None,
         "decoded_sample_rate": sample_rate,
         "decoded_duration_ms": round(per_channel * 1000 / sample_rate) if sample_rate else None,
     }
+
+
+def decoded_video_facts(path: Path, ffmpeg_bin: Optional[str] = None) -> Dict:
+    """Decode every video frame and read its real presentation clock.
+
+    Packet/header counts cannot prove that all frames decode, or where they end.
+    framemd5 hashes decoded frames and emits their exact time base/PTS/duration.
+    """
+    raw = _run([ffmpeg_bin or FFMPEG, "-nostdin", "-v", "error", "-xerror",
+                "-threads", "2", "-i", str(path), "-map", "0:v:0", "-an",
+                "-fps_mode", "passthrough", "-f", "framemd5", "pipe:1"])
+    time_base = None
+    frames = []
+    try:
+        for line in raw.decode("ascii").splitlines():
+            if line.startswith("#tb 0:"):
+                time_base = Fraction(line.split(":", 1)[1].strip())
+            elif line and not line.startswith("#"):
+                row = line.split(",")
+                frames.append((int(row[2]), int(row[3])))
+        if time_base is None or time_base <= 0 or not frames:
+            raise ValueError("missing decoded frames/clock")
+        # A 30 fps delivery frame has duration exactly 1/30, no gaps/duplicates.
+        for index, (pts, duration) in enumerate(frames):
+            if pts * time_base != Fraction(index, SOURCE_DURATION_REPAIR_DELIVERY_FPS) \
+                    or duration * time_base != Fraction(1, SOURCE_DURATION_REPAIR_DELIVERY_FPS):
+                raise ValueError("decoded delivery clock is not contiguous 30 fps")
+        return {"decoded_video_frames": len(frames), "frame_rate": "30/1",
+                "video_start_ms": float(frames[0][0] * time_base * 1000),
+                "video_end_ms": float((frames[-1][0] + frames[-1][1]) * time_base * 1000)}
+    except (ValueError, IndexError, UnicodeError, ZeroDivisionError) as error:
+        raise RepairError("media_decode_invalid", "video did not prove a contiguous decoded delivery clock") from error
 
 
 def _ceil_div(a: int, b: int) -> int:
@@ -456,6 +507,7 @@ def encode_shorter_final(source: Path, out: Path, *,
                          overlay_path: Optional[Path] = None,
                          frame_height: Optional[int] = None,
                          normalize_pair_timing: bool = False,
+                         output_frames: Optional[int] = None,
                          ffmpeg_bin: Optional[str] = None,
                          ffprobe_bin: Optional[str] = None) -> Dict:
     """Delivery-encode the trimmed source through the REAL `_encode_final`.
@@ -475,7 +527,8 @@ def encode_shorter_final(source: Path, out: Path, *,
             raise RepairError("overlay_invalid", "caption overlay is empty or exceeds the byte limit")
     try:
         _encode_final(source, overlay_path, out, source_probe, tools, frame_height,
-                      in_app=in_app, normalize_pair_timing=normalize_pair_timing)
+                      in_app=in_app, normalize_pair_timing=normalize_pair_timing,
+                      output_frames=output_frames)
     except PostRenderError as error:
         raise RepairError(error.code, str(error)) from error
     if out.stat().st_size > MAX_FINAL_BYTES:
@@ -540,7 +593,8 @@ def render_shorter(source_path: Path, output_directory: Path, command: Dict, *,
         final_path = output_directory / "final.mp4"
         final_facts = encode_shorter_final(trimmed_path, final_path,
                                            overlay_path=overlay_path, frame_height=frame_height,
-                                           normalize_pair_timing=normalize_pair_timing,
+                                           normalize_pair_timing=True,
+                                           output_frames=command["expected_output_frames"],
                                            ffmpeg_bin=ffmpeg_bin, ffprobe_bin=ffprobe_bin)
         final_sha, final_length = file_hash(final_path, MAX_FINAL_BYTES)
         # The clean-end bound must hold on the DELIVERED bytes: the container,
@@ -548,7 +602,20 @@ def render_shorter(source_path: Path, output_directory: Path, command: Dict, *,
         # commanded cut. AAC priming/padding can make the container and audio
         # stream report a few ms longer than the video stream, so all are
         # checked, never only the video frame count.
-        end_ms = command["source_trim_end_ms"]
+        # Delivered time starts at zero after trimming, even for a nonzero source start.
+        end_ms = command["expected_output_duration_ms"]
+        if final_facts["audio_streams"] != source_facts["audio_streams"]:
+            raise RepairError("final_probe_mismatch", "delivery changed audio stream presence")
+        decoded_video = decoded_video_facts(final_path, ffmpeg_bin)
+        expected_frames = command["expected_output_frames"]
+        if decoded_video["decoded_video_frames"] != expected_frames:
+            raise RepairError("output_endpoint_unmet", "decoded video frame count differs from repair command")
+        endpoint_ms = expected_frames * 1000 / SOURCE_DURATION_REPAIR_DELIVERY_FPS
+        if abs(final_facts["duration_ms"] - endpoint_ms) > 1 \
+                or abs(final_facts["container_duration_ms"] - endpoint_ms) > 1:
+            raise RepairError("output_endpoint_unmet", "delivery duration differs from decoded endpoint")
+        if decoded_video["video_end_ms"] > end_ms + 1e-6:
+            raise RepairError("trim_overshoot", "decoded video extends past the commanded span")
         final_packet = packet_ends(final_path, ffprobe_bin)
         final_ends = final_packet["ends_s"]
         final_starts = final_packet["starts_s"]
@@ -561,20 +628,20 @@ def render_shorter(source_path: Path, output_directory: Path, command: Dict, *,
             raise RepairError("trim_overshoot", "delivered container ends after the commanded cut")
         if final_facts["audio_duration_ms"] is not None and final_facts["audio_duration_ms"] > end_ms:
             raise RepairError("trim_overshoot", "delivered audio stream ends after the commanded cut")
-        # Enforce the DECLARED frame count, not just the end time: an extra frame
-        # is exactly the word the old 336-frame output exposed, so a frame count
-        # above the command's expected_output_frames cannot pass.
-        if final_packet["counts"].get("video", 0) > command["expected_output_frames"]:
-            raise RepairError("trim_overshoot",
-                              "delivered video has more frames than the commanded expected_output_frames")
+        # Packets must agree with the exact decoded frame count, including
+        # undershoots: fewer frames can lose the complete ending too.
+        if final_packet["counts"].get("video", 0) != command["expected_output_frames"]:
+            raise RepairError("output_endpoint_unmet",
+                              "delivered video packet count differs from the commanded expected_output_frames")
         # AAC priming/padding: measure the DECODED audio coverage, not just the
         # packet pts. A packet-end that fits while decoded audio still runs into
         # the next word is a real overshoot.
         decoded = decoded_audio_facts(final_path, ffmpeg_bin,
                                       channels=final_facts["audio_channels"],
-                                      sample_rate=final_facts["audio_sample_rate"])
+                                      sample_rate=final_facts["audio_sample_rate"],
+                                      ffprobe_bin=ffprobe_bin, has_audio=final_facts["has_audio"])
         if decoded["decoded_duration_ms"] is not None \
-                and decoded["decoded_duration_ms"] > command["source_trim_end_ms"]:
+                and decoded["decoded_duration_ms"] > end_ms:
             raise RepairError("trim_overshoot",
                               "decoded audio coverage extends past the commanded cut")
         if final_sha == command["source_sha256"]:
@@ -607,6 +674,7 @@ def render_shorter(source_path: Path, output_directory: Path, command: Dict, *,
             "final_packet_end_ms": {k: round(v * 1000, 2) for k, v in final_ends.items()},
             "final_packet_counts": final_packet["counts"],
             "decoded_audio": decoded,
+            "decoded_video": decoded_video,
         }
         (output_directory / "receipt.json").write_text(
             json.dumps(receipt, sort_keys=True, separators=(",", ":")) + "\n")
