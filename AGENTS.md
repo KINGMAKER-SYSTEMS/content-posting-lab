@@ -1017,6 +1017,10 @@
 - Run `pytest -q tests/test_retention_descriptor_plan_peer_probe.py tests/test_retention_directory_descriptor_peer_probe.py tests/test_retention_resolver_plan_peer_probe.py tests/test_layerb_loop_recipe_runtime.py`
   for read-only whole-job artifact holds and advertised loop metadata against
   synthetic native frame/audio renders without providers.
+- Run `pytest -q tests/test_source_recipe_applied_transforms.py`
+  for the gated source.recipe projection: actual Scrambler render speed,
+  applied reverse/mirror/split and Layer B loop flags, flag-off output and
+  per-cut reset, against the real executor with media calls stubbed.
 - Run `pytest -q tests/test_feed_snapshot_eligibility.py tests/test_scrambler_feed_pull.py tests/test_scrambler_feed_pull_producer.py tests/test_scrambler_feed_sync.py`
   for exact-byte feed snapshots, publication barriers, recovery age and source eligibility.
 - Run `pytest -q tests/test_usagesum_pull_standalone.py tests/test_usagesum_pull_reader_integration.py tests/test_originality_shadow.py`
