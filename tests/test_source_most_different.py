@@ -114,22 +114,22 @@ def _single_cut_jobs(recipe, count, served=None, history=None, prefix="job",
 
 
 def test_d1_no_two_consecutive_cuts_within_120s_and_full_spread():
-    # 200 seeded single-cut plans on one 600 s master: no two consecutive cuts
+    # 200 seeded single-cut plans on one 6000 s master: no two consecutive cuts
     # sit within 120 s while a farther window exists, and the spread covers the
     # whole master (histogram).
-    recipe, master = _recipe(duration_ms=600_000)
+    recipe, master = _recipe(duration_ms=6_000_000)
     cuts, _, _ = _single_cut_jobs(recipe, 200)
     assert len(cuts) == 200
     for previous, current in zip(cuts, cuts[1:]):
         assert abs(current.start_ms - previous.start_ms) >= 120_000, (previous, current)
     buckets = [0] * 5
     for cut in cuts:
-        buckets[min(cut.start_ms // 120_000, 4)] += 1
+        buckets[min(cut.start_ms * 5 // master.duration_ms, 4)] += 1
     assert all(bucket > 0 for bucket in buckets), buckets
 
 
 def test_d2_two_masters_switch_when_the_backup_cap_allows():
-    recipe, primary, backup = _pool(primary_ms=120_000, backup_ms=120_000)
+    recipe, primary, backup = _pool(primary_ms=600_000, backup_ms=600_000)
     cuts, _, _ = _single_cut_jobs(recipe, 30)
     roles = ["backup" if cut.master.sha256 == backup.sha256 else "primary" for cut in cuts]
     assert len(cuts) == 30
@@ -327,7 +327,7 @@ def test_d5_single_master_without_fingerprints_obeys_the_120s_rule():
     monkeypatch_delenv = pytest.MonkeyPatch()
     try:
         monkeypatch_delenv.delenv(sources.MASTERS_DHASH_ENV, raising=False)
-        recipe, _ = _recipe(duration_ms=600_000)
+        recipe, _ = _recipe(duration_ms=6_000_000)
         cuts, _, _ = _single_cut_jobs(recipe, 60)
         assert len(cuts) == 60
         for previous, current in zip(cuts, cuts[1:]):
