@@ -28,6 +28,7 @@ import os
 import contextlib
 import hashlib
 import json
+import re
 import sqlite3
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -43,6 +44,29 @@ class BudgetLedgerCorrupt(Exception):
 
     Callers must refuse spend (fail closed), never reset the total to zero.
     """
+
+# Opt-in commission caps (2026-11-13, Dale eight: 16 attempts / $4.48). A JSON
+# list of {"id", "pageId", "maxAttempts", "maxUsd"}. A control-plane job of a
+# listed page is bound to its commission before its first paid create, and
+# every create of a bound job must fit that commission's LIFETIME attempt and
+# USD caps inside the same transaction as the daily debit, or it is refused
+# before the provider POST. Unset/blank: no binding, no ledger change.
+COMMISSION_CAPS_ENV = "CONTENT_LAB_COMMISSION_CAPS"
+_COMMISSION_DDL = (
+    "CREATE TABLE IF NOT EXISTS commission_jobs(job_id TEXT PRIMARY KEY,commission_id TEXT NOT NULL)",
+    "CREATE TABLE IF NOT EXISTS commission_debits(debit_id TEXT PRIMARY KEY,commission_id TEXT NOT NULL,amount_usd TEXT NOT NULL)",
+    "CREATE TRIGGER IF NOT EXISTS immutable_commission_jobs_update BEFORE UPDATE ON commission_jobs BEGIN SELECT RAISE(ABORT,'immutable commission binding'); END",
+    "CREATE TRIGGER IF NOT EXISTS immutable_commission_jobs_delete BEFORE DELETE ON commission_jobs BEGIN SELECT RAISE(ABORT,'immutable commission binding'); END",
+    "CREATE TRIGGER IF NOT EXISTS immutable_commission_debits_update BEFORE UPDATE ON commission_debits BEGIN SELECT RAISE(ABORT,'immutable commission debit'); END",
+    "CREATE TRIGGER IF NOT EXISTS immutable_commission_debits_delete BEFORE DELETE ON commission_debits BEGIN SELECT RAISE(ABORT,'immutable commission debit'); END",
+)
+# The complete control-plane paid-create debit grammar: <labjob>-gNN[-rM][#I]
+# then :s0 | :s0:httpN | :paN | :paN:httpN (control_plane.py executor,
+# providers/base.py generate_one "#<index>" scope, providers/replicate.py HTTP
+# create and PA retries). The suffix holds exactly one "-gNN", so the greedy
+# job group is the unique job id; ownership is an EXACT job-id lookup.
+_COMMISSION_DEBIT = re.compile(r"(?P<job>.+)-g\d{2}(?:-r\d+)?(?:#\d+)?:(?:s0|pa\d+)(?::http\d+)?")
+_COMMISSION_REFUSE = "\x00unparsed-bound-debit"
 
 BUDGET_KEY = "generationBudget"
 USD_BUDGET_ENV = "LAB_GENERATION_DAILY_BUDGET_USD"
@@ -252,6 +276,8 @@ def per_gen_cost_usd(
         if not params.get("image_data_uri"):
             params["image_data_uri"] = "pricing-only"
     payload = builder("", params)
+    if model == "minimax/h3-highspeed":
+        return charged_cost_per_gen(info.get("cost_per_run_usd"))
     if model == "prunaai/p-video":
         rate = (info.get("cost_per_second_usd_by_resolution") or {}).get(payload["resolution"])
         return round(charged_cost_per_gen(rate) * payload["duration"], 4)
@@ -319,12 +345,117 @@ def debit_generation_spend_at(
         total = _add_money(spent, amount)
         if total > _money(daily_budget_usd()):
             return False
+        commission = _commission_for_debit(db, debit_id)
+        if commission is not None:
+            cap = commission_caps().get(commission)
+            attempts, usd = _commission_totals(db, commission)
+            if (cap is None or attempts + 1 > cap["maxAttempts"]
+                    or _add_money(usd, amount) > cap["maxUsd"]):
+                log.warning("commission cap refused paid create commission=%s debit=%s", commission, debit_id)
+                return False
+            db.execute("INSERT INTO commission_debits(debit_id,commission_id,amount_usd) VALUES(?,?,?)",
+                       (debit_id, commission, str(amount)))
         db.execute("INSERT INTO debits(id,day,amount_usd) VALUES(?,?,?)",
                    (debit_id, day, str(amount)))
         db.execute("INSERT INTO days(day,spent_usd) VALUES(?,?) "
                    "ON CONFLICT(day) DO UPDATE SET spent_usd=excluded.spent_usd",
                    (day, str(total)))
         return True
+
+
+def commission_caps() -> dict[str, dict[str, Any]]:
+    """Parse the opt-in commission list; unset/blank -> {}; malformed raises."""
+    raw = os.environ.get(COMMISSION_CAPS_ENV)
+    if raw is None or not raw.strip():
+        return {}
+    try:
+        entries = json.loads(raw)
+    except ValueError as error:
+        raise ValueError("commission caps are not valid JSON") from error
+    if not isinstance(entries, list):
+        raise ValueError("commission caps must be a JSON list")
+    caps: dict[str, dict[str, Any]] = {}
+    pages: set[str] = set()
+    for entry in entries:
+        if not isinstance(entry, dict) or set(entry) != {"id", "pageId", "maxAttempts", "maxUsd"}:
+            raise ValueError("each commission needs exactly id, pageId, maxAttempts, maxUsd")
+        cid, page, attempts = entry["id"], entry["pageId"], entry["maxAttempts"]
+        if not (isinstance(cid, str) and cid and isinstance(page, str) and page):
+            raise ValueError("commission id and pageId must be non-empty strings")
+        if type(attempts) is not int or attempts < 1:
+            raise ValueError("commission maxAttempts must be a positive integer")
+        try:
+            usd = Decimal(str(entry["maxUsd"]))
+        except (InvalidOperation, ValueError) as error:
+            raise ValueError("commission maxUsd is not a number") from error
+        if not usd.is_finite() or usd <= 0:
+            raise ValueError("commission maxUsd must be positive and finite")
+        if cid in caps or page in pages:
+            raise ValueError("commission ids and pageIds must be unique")
+        caps[cid] = {"id": cid, "pageId": page, "maxAttempts": attempts, "maxUsd": usd}
+        pages.add(page)
+    return caps
+
+
+def bind_commission_job(path: Path | str, job_id: str, page_id: Any) -> str | None:
+    """Bind a control-plane job to its page's commission before any paid create.
+
+    Idempotent; a binding is immutable. Returns the commission id, or None when
+    the page has no configured commission (no ledger change at all).
+    """
+    commission = next((c["id"] for c in commission_caps().values() if c["pageId"] == page_id), None)
+    if commission is None:
+        return None
+    if not isinstance(job_id, str) or not job_id:
+        raise ValueError("a commission binding requires a job id")
+    with _database(path, write=True) as db:
+        for statement in _COMMISSION_DDL:
+            db.execute(statement)
+        row = db.execute("SELECT commission_id FROM commission_jobs WHERE job_id=?", (job_id,)).fetchone()
+        if row is None:
+            db.execute("INSERT INTO commission_jobs(job_id,commission_id) VALUES(?,?)", (job_id, commission))
+        elif row[0] != commission:
+            raise BudgetLedgerCorrupt("job is already bound to another commission")
+    return commission
+
+
+def _commission_for_debit(db: sqlite3.Connection, debit_id: str) -> str | None:
+    if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='commission_jobs'").fetchone() is None:
+        return None
+    parsed = _COMMISSION_DEBIT.fullmatch(debit_id)
+    if parsed is not None:
+        row = db.execute("SELECT commission_id FROM commission_jobs WHERE job_id=?",
+                         (parsed.group("job"),)).fetchone()
+        return None if row is None else row[0]
+    # A shape this grammar does not know yet, beginning with a bound job's id:
+    # refuse (no configured cap matches the sentinel) rather than let an
+    # unrecognised retry pass uncapped.
+    bound_prefix = db.execute(
+        "SELECT 1 FROM commission_jobs WHERE substr(?, 1, length(job_id) + 2) = job_id || '-g' LIMIT 1",
+        (debit_id,),
+    ).fetchone()
+    return _COMMISSION_REFUSE if bound_prefix is not None else None
+
+
+def _commission_totals(db: sqlite3.Connection, commission: str) -> tuple[int, Decimal]:
+    rows = db.execute("SELECT amount_usd FROM commission_debits WHERE commission_id=?", (commission,)).fetchall()
+    total = Decimal(0)
+    for (amount,) in rows:
+        total = _add_money(total, _money(amount))
+    return len(rows), total
+
+
+def commission_summary_at(path: Path | str, commission: str) -> dict[str, Any]:
+    """Read-only lifetime totals for one commission (attempts reserved, USD)."""
+    cap = commission_caps().get(commission)
+    with _database(path) as db:
+        if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='commission_debits'").fetchone() is None:
+            attempts, usd = 0, Decimal(0)
+        else:
+            attempts, usd = _commission_totals(db, commission)
+    return {"id": commission, "attempts": attempts, "usd": str(usd),
+            "maxAttempts": cap["maxAttempts"] if cap else None,
+            "maxUsd": str(cap["maxUsd"]) if cap else None}
 
 
 def jobs_store_path() -> Path:

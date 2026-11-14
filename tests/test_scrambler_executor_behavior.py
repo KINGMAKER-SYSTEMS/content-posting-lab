@@ -438,6 +438,157 @@ async def test_on_execute_transform_and_split_swap_lanes_dispatch(
     # halves swap); an unmirrored one runs the swap alone.
     assert len(lane["transforms"]) == (1 if record["mirror"] else 0)
     assert job["clips"][0]["clipTransforms"]["split_swap"] is True
+    # The swap happens after rendering this one contiguous source window; it
+    # reorders its halves and cannot introduce origin seconds outside it.
+    window = job["clips"][0]["source"]["cutWindow"]
+    assert window["libraryEndMs"] - window["libraryStartMs"] == record["windowMs"]
+    assert window["originalEndMs"] - window["originalStartMs"] == record["windowMs"]
+
+
+@pytest.mark.asyncio
+async def test_advertised_recipe_reports_scrambler_truth_without_changing_receipt(
+    lab, monkeypatch, tmp_path,
+):
+    """Origin advertising records the actual scramble, not the recipe look.
+
+    The receipt remains the Worker-compared page look.  The separate,
+    flag-gated ``source.recipe`` is the only public location where the drawn
+    speed and transforms appear.
+    """
+    client, tmp_path, _ = lab
+    _scrambler_on(monkeypatch)
+    _originality_feed(monkeypatch, tmp_path)
+    monkeypatch.setenv(cp.ADVERTISE_ORIGIN_ENV, "1")
+    monkeypatch.setenv("SCRAMBLER_TREATMENT_WEIGHTS",
+                       "none:1,split_swap:0,camera:0,grade:0")
+    response = client.post(
+        "/api/control-plane/v1/jobs", json=job_body(1),
+        headers=headers("scrambler-advertised-recipe-truth"),
+    )
+    job_id = response.json()["jobId"]
+    store = cp._load_jobs()
+    record = store["jobs"][job_id]["sourceCuts"][0]["scrambler"]
+    # Keep the real speed/window draw, but exercise the independent reverse
+    # and mirror axes deterministically.  The reservation recheck below is
+    # supplied from this exact persisted operation; mark rendering separately
+    # so this focused receipt test does not forge the private history ledger.
+    record["treatment"] = "reverse"
+    record["mirror"] = True
+    cp.atomic_save(cp._jobs_path(), store)
+    monkeypatch.setattr(cp, "live_reservation_rows", lambda: [{
+        **record,
+        "pageId": PAGE_ID,
+        "jobId": job_id,
+        "masterSha256": MASTER_SHA,
+        "libraryStartMs": store["jobs"][job_id]["sourceCuts"][0]["startMs"],
+        "originStartMs": 120_000 + store["jobs"][job_id]["sourceCuts"][0]["startMs"]
+        + record["offsetMs"],
+        "originEndMs": 120_000 + store["jobs"][job_id]["sourceCuts"][0]["startMs"]
+        + record["offsetMs"] + record["windowMs"],
+        "state": "reserved",
+    }])
+    monkeypatch.setattr(cp, "mark_cut_rendered", lambda *args, **kwargs: None)
+    lane = _wire_executor(monkeypatch, tmp_path, [job_id])
+    await _run(job_id)
+    clip = cp._load_jobs()["jobs"][job_id]["clips"][0]
+    recipe = clip["source"]["recipe"]
+    assert recipe["speed"] == record["speed"]
+    assert recipe["reverse"] is True
+    assert recipe["hflip"] is True
+    assert recipe["crop"] is None
+    # Worker-visible receipt look remains exactly the page's OFF look.
+    assert clip["clipSpeed"] == pytest.approx(1.0)
+    assert clip["clipCrop"] == {"zoom": 1.0, "focusX": 0.5, "focusY": 0.5}
+    visual = clip["sourceTreatment"]["visualTreatment"]
+    assert visual["clipSpeed"] == pytest.approx(1.0)
+    assert visual["clipCrop"] == clip["clipCrop"]
+    assert visual["filters"] == {
+        "brightness": 1.0, "contrast": 1.0, "saturation": 1.0,
+        "warmth": 0.0, "fade": 0.0, "grain": 0.0, "vignette": 0.0,
+    }
+    assert lane["renders"][0]["playback_speed"] == record["speed"]
+
+
+@pytest.mark.asyncio
+async def test_flag_on_split_swap_recipe_emits_loop_split_true(
+    lab, monkeypatch, tmp_path,
+):
+    """G39: a Scrambler split_swap cut is the Lab's split-and-rotate loop.
+
+    Flag on, the advertised-origin recipe records loop_split True for a
+    split_swap cut (PR 281) and nowhere else.
+    """
+    client, tmp_path, _ = lab
+    _scrambler_on(monkeypatch)
+    _originality_feed(monkeypatch, tmp_path)
+    monkeypatch.setenv(cp.ADVERTISE_ORIGIN_ENV, "1")
+    monkeypatch.setenv("SCRAMBLER_TREATMENT_WEIGHTS",
+                       "none:0,split_swap:1,camera:0,grade:0")
+    response = client.post(
+        "/api/control-plane/v1/jobs", json=job_body(1),
+        headers=headers("scrambler-g39-split-swap"),
+    )
+    job_id = response.json()["jobId"]
+    assert _job_scrambler_records(job_id)[0]["treatment"] == "split_swap"
+    _wire_executor(monkeypatch, tmp_path, [job_id])
+    await _run(job_id)
+    job = cp._load_jobs()["jobs"][job_id]
+    assert job["status"] == "completed", job.get("error")
+    recipe = job["clips"][0]["source"]["recipe"]
+    assert recipe["loop_split"] is True
+
+
+@pytest.mark.asyncio
+async def test_flag_on_non_split_scrambler_recipe_keeps_loop_split_null(
+    lab, monkeypatch, tmp_path,
+):
+    """G39: a non-split_swap Scrambler cut keeps loop_split null (pre-G39)."""
+    client, tmp_path, _ = lab
+    _scrambler_on(monkeypatch)
+    _originality_feed(monkeypatch, tmp_path)
+    monkeypatch.setenv(cp.ADVERTISE_ORIGIN_ENV, "1")
+    monkeypatch.setenv("SCRAMBLER_TREATMENT_WEIGHTS",
+                       "none:1,split_swap:0,camera:0,grade:0")
+    response = client.post(
+        "/api/control-plane/v1/jobs", json=job_body(1),
+        headers=headers("scrambler-g39-none"),
+    )
+    job_id = response.json()["jobId"]
+    assert _job_scrambler_records(job_id)[0]["treatment"] == "none"
+    _wire_executor(monkeypatch, tmp_path, [job_id])
+    await _run(job_id)
+    job = cp._load_jobs()["jobs"][job_id]
+    assert job["status"] == "completed", job.get("error")
+    recipe = job["clips"][0]["source"]["recipe"]
+    assert recipe["loop_split"] is None
+
+
+@pytest.mark.asyncio
+async def test_flag_off_split_swap_receipt_keeps_no_recipe_leg(
+    lab, monkeypatch, tmp_path,
+):
+    """G39: flag off, a split_swap cut's source keeps exactly the base keys.
+
+    The recipe leg (and its loop_split) stays off the wire entirely; the
+    receipt body is byte-identical to OFF.
+    """
+    client, tmp_path, _ = lab
+    _scrambler_on(monkeypatch)
+    _originality_feed(monkeypatch, tmp_path)
+    monkeypatch.delenv(cp.ADVERTISE_ORIGIN_ENV, raising=False)
+    monkeypatch.setenv("SCRAMBLER_TREATMENT_WEIGHTS",
+                       "none:0,split_swap:1,camera:0,grade:0")
+    response = client.post(
+        "/api/control-plane/v1/jobs", json=job_body(1),
+        headers=headers("scrambler-g39-split-swap-off"),
+    )
+    job_id = response.json()["jobId"]
+    assert _job_scrambler_records(job_id)[0]["treatment"] == "split_swap"
+    _wire_executor(monkeypatch, tmp_path, [job_id])
+    await _run(job_id)
+    job = cp._load_jobs()["jobs"][job_id]
+    assert job["status"] == "completed", job.get("error")
+    assert "recipe" not in job["clips"][0]["source"]
 
 
 # ---------------------------------------------------------------------------
@@ -800,6 +951,20 @@ def test_off_enqueue_serialization_matches_base_golden(lab, tmp_path, monkeypatc
     for phase in ("job", "completedJob"):
         assert type(captured[phase]["sourceClaimVersion"]) is int
         assert captured[phase].pop("sourceClaimVersion") == 1
+
+    # Burnt's UGC retirement and the additive Coffee slideshow changed the
+    # shared registry. The current capture changes only
+    # these two stored registry hashes. The fixture page's executor,
+    # contract, profile and request hashes remain byte-identical to BASE.
+    # Keep the historical golden and apply only the reviewed substitutions
+    # at these exact paths; never discard authority fields recursively.
+    for phase in ("job", "completedJob"):
+        assert golden[phase]["engineRegistryHash"] == (
+            "4c8de21caa2e3fefbfc6b2ba659a3e029321e576ef0291f9213497043a4f31ed"
+        )
+        golden[phase]["engineRegistryHash"] = (
+            "7af6d9dd076fcb35521876d7753bdc0d30ac96731d17e2e93ffa1240907c96e7"
+        )
     assert captured == golden
 
 

@@ -119,7 +119,7 @@ _GRADE_LIMITS = {"brightness": (0.0, 3.0), "contrast": (0.0, 3.0), "saturation":
 _GRADE_NEUTRAL = {"brightness": 1.0, "contrast": 1.0, "saturation": 1.0, "warmth": 0.0}
 
 
-def cut_grade(page_id: str, cut_slot_id: str, filters: dict) -> dict:
+def cut_grade(page_id: str, cut_slot_id: str, filters: dict, *, look: float | None = None) -> dict:
     """The grade for one cut: the recipe filters with a small jitter.
 
     Seeded by the cut's own time frame, so a resumed job grades it the same.
@@ -127,6 +127,12 @@ def cut_grade(page_id: str, cut_slot_id: str, filters: dict) -> dict:
     0.001, well inside the band the Worker admits. Brightness moves only down
     (``[look - band*0.98, look]``), never brighter than the page look; the
     other grades stay symmetric around the recipe.
+
+    ``look`` is the page's own recipe brightness. On a darker-only page a
+    backup master's declared ``gradeOverride`` rides under the jitter, so the
+    final brightness is clamped back to ``min(value, look)``: a variation may
+    only ever darken, never brighten above the page look (Eric's gb20 rule).
+    It never lifts a darker override (``min`` is a no-op when ``value <= look``).
     """
     seed = f"{page_id}\0{cut_slot_id}\0grade"
     graded = dict(filters)
@@ -141,6 +147,8 @@ def cut_grade(page_id: str, cut_slot_id: str, filters: dict) -> dict:
             # cut. Quantize downward, while retaining the Worker's lower band.
             minimum = math.ceil(max(low, base - band) * 1000) / 1000
             graded[name] = max(minimum, math.floor(value * 1000) / 1000)
+            if look is not None and varies_clips(page_id):
+                graded[name] = min(graded[name], float(look))
         else:
             graded[name] = round(value, 3)
     return graded

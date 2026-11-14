@@ -1893,6 +1893,75 @@ async def test_a_clip_varying_page_cuts_each_window_at_its_own_speed_and_records
 
 
 @pytest.mark.asyncio
+async def test_a_backup_brightness_override_above_the_look_is_clamped_on_the_job_path(
+    lab, monkeypatch,
+):
+    # MED-1 (review): the clamp must be wired at the production call site, not
+    # only inside cut_grade. A clip-varying job whose backup master declares a
+    # brightness above the page look must still deliver every cut at the look.
+    # A mutant that drops the call-site `look=` kwarg leaves the override's
+    # jitter (0.61..0.65) in the receipt, so this test goes RED.
+    from dataclasses import replace as dc_replace
+
+    import services.clip_variation as clip_variation
+
+    client, tmp_path, _ = lab
+    monkeypatch.setattr(cp, "varies_clips", lambda page_id: page_id == PAGE_ID)
+    monkeypatch.setattr(clip_variation, "varies_clips", lambda page_id: page_id == PAGE_ID)
+
+    look = 0.5
+    backup_sha = "d" * 64
+    original_recipe = cp._dossier_source_recipe
+
+    def pooled(publication):
+        recipe = original_recipe(publication)
+        spec = dict(recipe.recipe_spec)
+        spec["renderTreatment"] = {**spec["renderTreatment"], "filters": {"brightness": look}}
+        recipe = dc_replace(recipe, recipe_spec=spec)
+        primary = recipe.masters[0]
+        backup = dc_replace(
+            primary, source_id="zz-backup-bright", sha256=backup_sha, role="backup",
+            storage_key="source-dna/backup/" + backup_sha + ".mp4",
+            grade_override={"brightness": 0.65},
+        )
+        return dc_replace(recipe, masters=(primary, backup))
+
+    monkeypatch.setattr(cp, "_dossier_source_recipe", pooled)
+    response = client.post(
+        "/api/control-plane/v1/jobs", json=job_body(1),
+        headers=headers("source-job-backup-override"),
+    )
+    assert response.status_code == 200, response.text
+    job_id = response.json()["jobId"]
+    store = cp._load_jobs()
+    for cut in store["jobs"][job_id]["sourceCuts"]:
+        cut.update({
+            "masterSha256": backup_sha,
+            "slotId": f"{backup_sha}:0:{cut['durationMs']}",
+            "libraryStartMs": 0,
+            "startMs": 0,
+        })
+    cp.atomic_save(cp._jobs_path(), store)
+    source = tmp_path / "master.mp4"
+    _write_av_test_clip(source, duration=40.0)
+
+    async def cached_source(*_):
+        return source
+
+    def no_transforms(*_args, **_kwargs):
+        pass
+
+    monkeypatch.setattr(cp, "_cached_source_master", cached_source)
+    monkeypatch.setattr(cp, "apply_transforms", no_transforms)
+    await cp._run_dossier_source(job_id)
+    job = cp._load_jobs()["jobs"][job_id]
+    assert job["status"] == "completed", job.get("error")
+    receipt = job["clips"][0]["sourceTreatment"]
+    assert receipt["visualTreatment"]["filters"]["brightness"] == pytest.approx(look), \
+        "a backup override above the page look is clamped back to the look on the job path"
+
+
+@pytest.mark.asyncio
 async def test_a_non_varying_sourced_page_gets_transforms_and_an_unchanged_receipt(
     lab, monkeypatch,
 ):
