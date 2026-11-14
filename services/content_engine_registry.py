@@ -16,7 +16,7 @@ from pathlib import Path
 import re
 from typing import Any
 
-from services.content_format_contracts import FormatContract, load_format_contracts
+from services.content_format_contracts import FormatContract, format_page_admits, load_format_contracts
 
 
 REGISTRY_PATH = (
@@ -36,6 +36,7 @@ ALLOWED_BINDINGS = {
     "ai_video": ("generated_video", "prompt_family"),
     "sourced_video": ("source_library", "source_dna_recut"),
     "sourced_slideshow": ("image_library", "slideshow_renderer"),
+    "sourced_image": ("image_library", "slideshow_renderer"),
     "lyrics_slideshows": ("lyric_image_library", "slideshow_renderer"),
 }
 
@@ -233,7 +234,7 @@ def resolve_material_profile(
         not isinstance(master_pages, dict)
         or publication.get("engine") != profile.content_engine
         or master_pages.get("contentEngine") != profile.content_engine
-        or master_pages.get("contentNiche") != profile.content_niche
+        or not format_page_admits(format_slug, profile.content_niche, master_pages)
     ):
         return None
     demand = spec.get("demand")

@@ -112,7 +112,7 @@ def test_probe_returns_closed_mp4_media_facts(monkeypatch, tmp_path):
     async def create(*_args, **_kwargs):
         return Process()
 
-    monkeypatch.setattr(asyncio, "create_subprocess_exec", create)
+    monkeypatch.setattr(imports, "create_import_subprocess", create)
     media = asyncio.run(imports._probe_video(tmp_path / "source.mp4"))
     assert media.wire() == {
         "durationMs": 6025,
@@ -139,7 +139,7 @@ def test_normalization_is_center_crop_muted_h264_30fps(monkeypatch, tmp_path):
         Path(command[-1]).write_bytes(b"normalized")
         return Process()
 
-    monkeypatch.setattr(asyncio, "create_subprocess_exec", create)
+    monkeypatch.setattr(imports, "create_import_subprocess", create)
     source = tmp_path / "original.mp4"
     source.write_bytes(b"original")
     destination = tmp_path / "source.mp4"

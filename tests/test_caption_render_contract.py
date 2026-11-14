@@ -69,6 +69,14 @@ def test_renderer_returns_deterministic_9_by_16_png_and_hashes(font_dir):
         assert image.getchannel("A").getbbox() is not None
 
 
+@pytest.mark.parametrize("caption", ["go 🚀 now", "🚀"])
+def test_missing_font_glyph_refuses_the_whole_caption(font_dir, caption):
+    payload = request().model_copy(update={"caption": caption})
+    with pytest.raises(CaptionRenderError) as error:
+        render_caption_overlay(payload, font_dir=font_dir)
+    assert error.value.code == "CAPTION_GLYPH_MISSING"
+
+
 def test_explicit_upright_is_byte_identical_without_mutating_input(font_dir):
     plain = request()
     payload = plain.model_dump(by_alias=True)

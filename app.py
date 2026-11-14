@@ -11,9 +11,11 @@ from pathlib import Path
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
+from fastapi.routing import APIRoute
 from fastapi.staticfiles import StaticFiles
-from starlette.datastructures import Headers, QueryParams
+from starlette.datastructures import URL, Headers, QueryParams
+from starlette.routing import Match
 from starlette.staticfiles import NotModifiedResponse
 import uvicorn
 
@@ -26,6 +28,7 @@ from routers.control_plane import generation_budget_status
 from routers.post_renders import router as post_renders_router, start_workers as start_post_render_workers, readiness as post_render_readiness
 from routers.control_plane_dossier import router as control_plane_dossier_router
 from routers.control_plane_recipes import router as control_plane_recipes_router
+from routers.control_plane_external_pages import router as control_plane_external_pages_router
 from routers.control_plane_source_libraries import (
     router as control_plane_source_libraries_router,
 )
@@ -47,6 +50,7 @@ from routers.video import router as video_router
 from routers.agenticnews import router as agenticnews_router
 import services.agenticnews as agenticnews_db
 from services.route_auth import RouteAuthMiddleware, require_access
+from services.post_render import source_duration_repair_enabled
 
 load_dotenv()
 
@@ -183,6 +187,21 @@ async def lifespan(app: FastAPI):
     PROJECTS_DIR.mkdir(parents=True, exist_ok=True)
     ensure_default_project()
 
+    # A Railway volume admits only one mounted deployment at a time. Verify
+    # the actual mount/entrypoint before settling stopped legacy source owners;
+    # other deployments retain the explicit operator reconciliation path.
+    from routers import control_plane as source_runtime
+    from services.source_runtime_reconciliation import reconcile_railway_startup
+    try:
+        reconciliation = await asyncio.to_thread(
+            reconcile_railway_startup, source_runtime._jobs_path(),
+            source_runtime._generation_root_path(), source_runtime._GENERATION_RUNTIME_ID,
+        )
+        log.info("source runtime startup reconciliation: %s", reconciliation)
+    except Exception:
+        # An unavailable proof or repair never adds a global startup gate.
+        log.warning("source runtime reconciliation needs operator follow-up")
+
     # AgenticBuilderNews workspace DB + autonomous factory
     try:
         await agenticnews_db.init_db()
@@ -252,23 +271,41 @@ async def lifespan(app: FastAPI):
     post_render_jobs = start_post_render_workers()
     from routers.control_plane import start_compaction_scheduler
     start_compaction_scheduler()
-    yield
-    from routers.control_plane import shutdown_dossier_generation, stop_compaction_scheduler
-    stop_compaction_scheduler()
-    await shutdown_dossier_generation()
-    if post_render_jobs is not None:
-        post_render_jobs.stop()
+    from services.scrambler_feed_pull import start_feed_pull_scheduler
+    start_feed_pull_scheduler()
+    # Read-only readiness diagnostics may resolve remote masters. Keep their
+    # bounded owned process off startup's critical path; enqueue still enforces
+    # every existing Scrambler requirement.
+    from services.scrambler_preflight import run_startup_preflight, stop_startup_preflight
+    preflight_task = asyncio.create_task(run_startup_preflight())
+    body_error = None
+    try:
+        yield
+    except BaseException as error:
+        body_error = error
+        raise
+    finally:
+        cancellation = await stop_startup_preflight(preflight_task)
+        from routers.control_plane import shutdown_dossier_generation, stop_compaction_scheduler
+        stop_compaction_scheduler()
+        from services.scrambler_feed_pull import stop_feed_pull_scheduler
+        stop_feed_pull_scheduler()
+        await shutdown_dossier_generation()
+        if post_render_jobs is not None:
+            post_render_jobs.stop()
 
-    # Stop Telegram bot
-    try:
-        await stop_tg_bot()
-    except Exception:
-        pass
-    try:
-        await stop_sounds_bot()
-    except Exception:
-        pass
-    log.info("Content Posting Lab shutting down...")
+        # Stop Telegram bot
+        try:
+            await stop_tg_bot()
+        except Exception:
+            pass
+        try:
+            await stop_sounds_bot()
+        except Exception:
+            pass
+        log.info("Content Posting Lab shutting down...")
+        if body_error is None and cancellation is not None:
+            raise cancellation
 
 
 app = FastAPI(
@@ -306,6 +343,10 @@ _AUTH_SKIP = ("/api/health", "/api/miniapp/")
 
 @app.middleware("http")
 async def check_api_key(request: Request, call_next):
+    # This exact write route checks the private machine bearer itself. The
+    # browser API key must not block a valid machine request or authorize one.
+    if request.method == "POST" and request.url.path == "/api/burn/import-tos":
+        return await call_next(request)
     if _APP_API_KEY and request.url.path.startswith("/api/"):
         if not any(request.url.path.startswith(s) for s in _AUTH_SKIP):
             token = request.headers.get("authorization", "").removeprefix("Bearer ").strip()
@@ -351,6 +392,11 @@ app.include_router(
 )
 app.include_router(control_plane_recipes_router, prefix="/api/control-plane", tags=["control-plane-recipes"])
 app.include_router(
+    control_plane_external_pages_router,
+    prefix="/api/control-plane",
+    tags=["control-plane-external-pages"],
+)
+app.include_router(
     control_plane_source_libraries_router,
     prefix="/api/control-plane",
     tags=["control-plane-source-libraries"],
@@ -393,6 +439,9 @@ async def health_check():
         "status": "ok" if ffmpeg_ok and ytdlp_ok else "degraded",
         "ffmpeg": ffmpeg_ok,
         "ytdlp": ytdlp_ok,
+        "capabilities": {
+            "source_duration_repair_v1": source_duration_repair_enabled(),
+        },
         "providers": providers,
         # This route is deliberately unauthenticated. Keep only the integrity
         # signal public; exact spend and configured limits are omitted from this
@@ -630,6 +679,87 @@ async def serve_frontend(full_path: str):
         status_code=404,
         detail="Frontend not built. Run 'npm run build' in frontend/ directory.",
     )
+
+
+def _route_path(scope) -> str:
+    """The request path as Starlette's router matches it: without the app's
+    ``root_path`` prefix (same rule as ``starlette._utils.get_route_path``)."""
+    path, root_path = scope.get("path", ""), scope.get("root_path", "")
+    if not root_path or not path.startswith(root_path):
+        return path
+    if path == root_path:
+        return ""
+    return path[len(root_path):] if path[len(root_path)] == "/" else path
+
+
+class _ApiNotFoundRoute(APIRoute):
+    """Catch-all for unknown/removed ``/api/*`` paths.
+
+    The built frontend registers ``GET /{full_path:path}``, so a removed API
+    path matched it (GET -> SPA HTML, any other verb -> a misleading 405).
+    This route is registered unconditionally (independent of frontend/dist)
+    and returns 404 for ``/api/...`` paths no real route claims. A real route
+    that matches the path with a *different* verb must keep winning, so this
+    route defers (PARTIAL) and lets the framework emit that route's own
+    405 + Allow instead of swallowing it into a 404. That works only for
+    routes registered BEFORE this one, so every ``/api`` router must be
+    included above it (pinned by tests/test_api404_retired_paths.py).
+    """
+
+    def matches(self, scope):
+        if scope.get("type") != "http":
+            return Match.NONE, {}
+        # Only paths with something after "/api/". Bare "/api" and "/api/" keep
+        # their old behavior, and Starlette's slash-redirect probe of "/api" (to
+        # "/api/") is not turned into a redirect by this route.
+        path = _route_path(scope)
+        if not path.startswith("/api/") or path == "/api/":
+            return Match.NONE, {}
+        for route in app.routes:
+            if route is self:
+                continue
+            # The SPA catch-all would FULL-match any /api path; it must not
+            # count as a real route here or unknown /api paths stay SPA/405.
+            if getattr(route, "endpoint", None) is serve_frontend:
+                continue
+            match, _ = route.matches(scope)
+            if match is not Match.NONE:
+                return Match.PARTIAL, {}
+        return super().matches(scope)
+
+
+def _slash_redirect_target(scope) -> str | None:
+    """Redo Starlette's ``redirect_slashes`` for ``/api`` paths.
+
+    The router only tries the other trailing-slash spelling when NO route
+    matched, and this catch-all matches every unknown ``/api/...`` path. So,
+    like the router would have, redirect when the path with its trailing slash
+    toggled is a real route (e.g. ``/api/health/`` -> ``/api/health``).
+    """
+    path = scope["path"]
+    other = dict(scope, path=path.rstrip("/") if _route_path(scope).endswith("/") else path + "/")
+    for route in app.routes:
+        if isinstance(route, _ApiNotFoundRoute) or getattr(route, "endpoint", None) is serve_frontend:
+            continue
+        if route.matches(other)[0] is not Match.NONE:
+            return str(URL(scope=other))
+    return None
+
+
+async def api_not_found(request: Request, full_path: str):
+    target = _slash_redirect_target(request.scope)
+    if target is not None:
+        return RedirectResponse(target)
+    raise HTTPException(status_code=404, detail="Not Found")
+
+
+app.router.add_api_route(
+    "/api/{full_path:path}",
+    api_not_found,
+    methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS", "TRACE"],
+    include_in_schema=False,
+    route_class_override=_ApiNotFoundRoute,
+)
 
 
 if FRONTEND_DIR.exists():

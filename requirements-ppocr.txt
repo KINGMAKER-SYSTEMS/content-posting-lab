@@ -1,0 +1,11 @@
+# Opt-in PP-OCRv6 runtime for LAB_OCR_ENGINE=ppocr.
+# The tesseract default does not install these; keep them out of the base image
+# to avoid ~120 MiB of numpy/opencv-headless/onnxruntime wheel weight unless the
+# operator actually switches the OCR engine.
+#
+# Wheel sizes (python:3.11-slim-bookworm, x86_64):
+#   rapidocr-3.10.0-py3-none-any.whl                   27,288,134 B  (PP-OCRv6 small models bundled)
+#   onnxruntime-1.31.0-cp311-manylinux_2_28_x86_64.whl 23,753,636 B
+# plus transitive opencv-python-headless, numpy, shapely, pyclipper.
+rapidocr==3.10.0
+onnxruntime==1.31.0

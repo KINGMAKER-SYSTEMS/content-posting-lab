@@ -98,7 +98,7 @@
       "maxQuantity": 0
     },
     "pov-night-core": {
-      "contentNiche": "POV — Night Core",
+      "contentNiche": "POV \u2014 Night Core",
       "contentEngine": "sourced_video",
       "materialSource": "source_library",
       "assetType": "video/mp4",
@@ -122,7 +122,7 @@
       "maxQuantity": 0
     },
     "pov-scenic": {
-      "contentNiche": "POV — Scenic",
+      "contentNiche": "POV \u2014 Scenic",
       "contentEngine": "sourced_video",
       "materialSource": "source_library",
       "assetType": "video/mp4",
@@ -131,6 +131,18 @@
       "executorId": "source-dna-recut",
       "executorVersion": "sha256:2d0dd20fad4302f799272e7d5e1ba7de1ecb8b9a85646f68cf9720ac14569171",
       "formatContractVersion": "sha256:31cbad392107972949f3977383427a344808f653e9022d6284d08d307bec9772",
+      "maxQuantity": 10
+    },
+    "meme": {
+      "contentNiche": "meme",
+      "contentEngine": "sourced_video",
+      "materialSource": "source_library",
+      "assetType": "video/mp4",
+      "executionStatus": "commissioned",
+      "executorKind": "source_dna_recut",
+      "executorId": "source-dna-recut",
+      "executorVersion": "sha256:2d0dd20fad4302f799272e7d5e1ba7de1ecb8b9a85646f68cf9720ac14569171",
+      "formatContractVersion": "sha256:f3ab4ad33505fe28bf4535b88ae84763975309fedab524a97ec8b84ad4f44e66",
       "maxQuantity": 10
     },
     "silhouette-truck": {
@@ -168,6 +180,78 @@
       "executorVersion": null,
       "formatContractVersion": "sha256:18e41f914afada14bbf46f5abe18bf1f3885ad680bd24bda908b417191110aae",
       "maxQuantity": 0
+    },
+    "ugc-slideshow": {
+      "contentNiche": "slideshow",
+      "contentEngine": "sourced_slideshow",
+      "materialSource": "image_library",
+      "assetType": "video/mp4",
+      "executionStatus": "commissioned",
+      "executorKind": "slideshow_renderer",
+      "executorId": "syzygy-slideshow",
+      "executorVersion": "sha256:b768617dadee60d52e6bb4b5990d94902b54b54ad00af467ec23038025fc498d",
+      "formatContractVersion": "sha256:edd7279ab1968bbf96293c49dcd7e63cd8b22e4ef375f2812ed9446ac5f21336",
+      "maxQuantity": 10
+    },
+    "lyric-video": {
+      "contentNiche": "lyric-edits",
+      "contentEngine": "lyrics_slideshows",
+      "materialSource": "lyric_image_library",
+      "assetType": "video/mp4",
+      "executionStatus": "commissioned",
+      "executorKind": "slideshow_renderer",
+      "executorId": "syzygy-slideshow",
+      "executorVersion": "sha256:f2ef06869ea2723e83555be2a6a90558315c346196d2139f83870f7444423e78",
+      "formatContractVersion": "sha256:c36d134a19126489ce1f15144783bd884042b494d04354433ee4ba53e9ac0479",
+      "maxQuantity": 1
+    },
+    "image-video": {
+      "contentNiche": "slideshow",
+      "contentEngine": "sourced_slideshow",
+      "materialSource": "image_library",
+      "assetType": "video/mp4",
+      "executionStatus": "commissioned",
+      "executorKind": "slideshow_renderer",
+      "executorId": "syzygy-slideshow",
+      "executorVersion": "sha256:fee820be22a84f50cfa80330c5c0d6006b456a468a0bfa0373f9a652d25d599c",
+      "formatContractVersion": "sha256:7f9ab9cb54e74890e85b4cb453e0e24d44989781232243911b26e997f5166b16",
+      "maxQuantity": 1
+    },
+    "single-image-video": {
+      "contentNiche": "POV",
+      "contentEngine": "sourced_image",
+      "materialSource": "image_library",
+      "assetType": "video/mp4",
+      "executionStatus": "commissioned",
+      "executorKind": "slideshow_renderer",
+      "executorId": "syzygy-slideshow",
+      "executorVersion": "sha256:fee820be22a84f50cfa80330c5c0d6006b456a468a0bfa0373f9a652d25d599c",
+      "formatContractVersion": "sha256:26717c7ce89fa7a89c8286a9ec1fac9184613b514867daf641352f6c97f9a917",
+      "maxQuantity": 1
+    },
+    "coffee-slideshow": {
+      "contentNiche": "Coffee",
+      "contentEngine": "sourced_slideshow",
+      "materialSource": "image_library",
+      "assetType": "video/mp4",
+      "executionStatus": "commissioned",
+      "executorKind": "slideshow_renderer",
+      "executorId": "syzygy-slideshow",
+      "executorVersion": "sha256:142f7a9d740b701df44dc9c340556c5a051c9cb5c30b37a6853d967b335414d4",
+      "formatContractVersion": "sha256:ea4bc62707346f7c2d11bfde0678248d455a447c91124ab40d3590b72a6923e2",
+      "maxQuantity": 10
+    },
+    "pov-seasonal": {
+      "contentNiche": "XMAS",
+      "contentEngine": "ai_video",
+      "materialSource": "generated_video",
+      "assetType": "video/mp4",
+      "executionStatus": "commissioned",
+      "executorKind": "prompt_family",
+      "executorId": "christmas-pov",
+      "executorVersion": "sha256:bcae8d47ecdd0f86aed25deb52af4155a6ac6fd80289cf46ea3b10b607586f25",
+      "formatContractVersion": "sha256:1a3b58b16de3dd039f00054d4f4af8b3b5e3c0c8d3c4a6b5ab465098e7ffe10d",
+      "maxQuantity": 10
     }
   }
 }

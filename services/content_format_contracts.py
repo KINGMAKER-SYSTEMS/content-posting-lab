@@ -17,6 +17,8 @@ from pathlib import Path
 import re
 from typing import Any
 
+from services.control_plane_image_video import IMAGE_VIDEO_TARGETS
+
 
 CONTRACTS_PATH = (
     Path(__file__).resolve().parents[1]
@@ -233,3 +235,58 @@ def load_format_contracts() -> tuple[dict[str, FormatContract], str]:
         for format_slug, contract in value["contracts"].items()
     }
     return contracts, hashlib.sha256(raw).hexdigest()
+
+
+# F-XMAS-SLIDESHOW-CANDIDATES-1104. A seasonal niche spans engines. A Christmas
+# page on the sourced slideshow engine (tis.the.szn7, all.i.want.for.xma: Notion
+# Content Niche = XMAS, engine = sourced_slideshow) keeps the generic UGC
+# slideshow format. The page-bound image-video format belongs only to PenPal.
+# The Worker projects the same pair the same way
+# (notionAccountProjection.js, F-XMAS-ENGINE-AWARE-1104). The AI Christmas page
+# (XMAS + ai_video) keeps its own pov-seasonal contract by exact niche match.
+SEASONAL_NICHE_FORMAT_NICHES: dict[tuple[str, str], str] = {
+    ("XMAS", "sourced_slideshow"): "slideshow",
+}
+
+# The exact Master Pages spellings in Control Plane's NICHE_CANONICAL.page
+# vocabulary (2026-11-08). The Lab cannot import the Worker's source at runtime;
+# unknown Notion spellings must not become executable UGC formats here.
+KNOWN_PAGE_NICHES = frozenset({
+    "TRUCK", "POV — Night Core", "silhouette", "Coffee", "POV - Dirtbike",
+    "POV", "POV — Scenic", "meme", "slideshow", "BOAT", "Construction",
+    "lyric-edits", "POV-Club", "XMAS",
+})
+
+
+def page_niche_admits(contract_niche: object, page_niche: object, page_engine: object) -> bool:
+    """Whether a format contract's niche is selectable for a page's niche + engine."""
+    if not isinstance(contract_niche, str) or not isinstance(page_niche, str):
+        return False
+    if contract_niche == page_niche:
+        return True
+    if not isinstance(page_engine, str):
+        return False
+    return SEASONAL_NICHE_FORMAT_NICHES.get((page_niche, page_engine)) == contract_niche
+
+
+def format_page_admits(format_slug: object, contract_niche: object, page: object) -> bool:
+    """Match a format to one page without widening page-bound photo plans."""
+    if not isinstance(page, dict):
+        return False
+    niche = page.get("contentNiche")
+    engine = page.get("contentEngine")
+    if format_slug == "ugc-slideshow" and contract_niche == "slideshow":
+        return (
+            engine == "sourced_slideshow"
+            and isinstance(niche, str)
+            and niche in KNOWN_PAGE_NICHES
+            and niche not in {"Coffee", "meme"}
+        )
+    if not page_niche_admits(contract_niche, niche, engine):
+        return False
+    target = IMAGE_VIDEO_TARGETS.get(format_slug) if isinstance(format_slug, str) else None
+    if target is not None:
+        return tuple(page.get(key) for key in (
+            "pageId", "handle", "notionPageId", "contentNiche", "contentEngine",
+        )) == target[:5]
+    return True

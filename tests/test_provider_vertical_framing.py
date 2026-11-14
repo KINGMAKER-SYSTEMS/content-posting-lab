@@ -55,11 +55,12 @@ async def test_fit_to_vertical_preserves_full_landscape_inside_vertical_canvas(t
 
 
 @pytest.mark.asyncio
-async def test_truck_both_mode_emits_five_real_vertical_crops(tmp_path: Path):
+@pytest.mark.parametrize("size,expected", [("160x90", (50, 90)), ("1366x768", (432, 768))])
+async def test_truck_both_mode_emits_five_real_vertical_crops(tmp_path: Path, size, expected):
     source = tmp_path / "truck-master.mp4"
     rc, _, stderr = await _run(
         "ffmpeg", "-y",
-        "-f", "lavfi", "-i", "color=c=black:s=160x90:d=1:r=10",
+        "-f", "lavfi", "-i", f"color=c=black:s={size}:d=1:r=10",
         "-c:v", "libx264", "-pix_fmt", "yuv420p", str(source),
     )
     assert rc == 0, stderr.decode()
@@ -80,7 +81,7 @@ async def test_truck_both_mode_emits_five_real_vertical_crops(tmp_path: Path):
         )
         assert rc == 0, stderr.decode()
         stream = json.loads(stdout)["streams"][0]
-        assert (stream["width"], stream["height"]) == (50, 90)
+        assert (stream["width"], stream["height"]) == expected
 
 
 @pytest.mark.asyncio

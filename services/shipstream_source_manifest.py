@@ -20,6 +20,7 @@ from urllib.parse import quote, unquote, urlparse, urlsplit
 import httpx
 
 from services.config_errors import ConfigError
+from services.master_pages_contract import EXTERNAL_PAGE_SOURCES
 from services.source_dna_registry import (
     SourceDnaLibrary,
     SourceDnaError,
@@ -397,6 +398,28 @@ def _approved_cut_library(
     )
 
 
+def _origin_from_page_master(
+    origin_source_id: Any, origin_start_ms: int, origin_end_ms: int,
+) -> dict[str, Any] | None:
+    """Carry the manifest's upstream origin id + window into the projected master.
+
+    The manifest already exposes ``originSourceId`` and ``originWindowSeconds``;
+    the projection previously dropped the id. When the id is missing (or is only
+    the Content Lab job placeholder) nothing trustworthy is left to record, so
+    the origin is omitted rather than invented.
+    """
+    if not isinstance(origin_source_id, str) or not origin_source_id.strip():
+        return None
+    origin_source_id = origin_source_id.strip()
+    if len(origin_source_id) > 100 or origin_source_id.startswith("content-lab:"):
+        return None
+    return {
+        "originSourceId": origin_source_id,
+        "originStartMs": origin_start_ms,
+        "originEndMs": origin_end_ms,
+    }
+
+
 def _master_from_page_master(row: Any, handle: str, storage_handle: str | None = None) -> dict[str, Any]:
     if not isinstance(row, dict):
         raise ShipStreamSourceError("ShipStream page master is invalid")
@@ -405,6 +428,7 @@ def _master_from_page_master(row: Any, handle: str, storage_handle: str | None =
     byte_count = row.get("bytes")
     media = row.get("media")
     registered_at = row.get("registeredAt")
+    origin_source_id = row.get("originSourceId")
     origin_window = row.get("originWindowSeconds")
     if (
         not isinstance(sha256, str)
@@ -419,6 +443,7 @@ def _master_from_page_master(row: Any, handle: str, storage_handle: str | None =
         raise ShipStreamSourceError("ShipStream page master identity is invalid")
     duration_ms = _milliseconds(media.get("durationSeconds"), "ShipStream page master duration")
     source_offset_ms = 0
+    origin: dict[str, Any] | None = None
     if isinstance(origin_window, list) and len(origin_window) == 2:
         start, end = origin_window
         if (
@@ -442,6 +467,9 @@ def _master_from_page_master(row: Any, handle: str, storage_handle: str | None =
             raise ShipStreamSourceError(
                 "ShipStream page master origin window does not match media duration"
             )
+        origin = _origin_from_page_master(
+            origin_source_id, source_offset_ms, source_offset_ms + duration_ms,
+        )
     source_url = row.get("originSourceUrl")
     if source_url is not None and not _https(source_url):
         raise ShipStreamSourceError("ShipStream page master source URL is invalid")
@@ -457,6 +485,7 @@ def _master_from_page_master(row: Any, handle: str, storage_handle: str | None =
         # This offset records where local zero sits on the upstream timeline so
         # source-floor and cross-page exclusion checks use original time.
         "sourceOffsetMs": source_offset_ms,
+        **({"origin": origin} if origin else {}),
         "provenance": {
             "sourceUrl": source_url or f"{shipstream_origin()}/assets/{quote(storage_key, safe='')}",
             "acquiredAt": registered_at,
@@ -509,6 +538,52 @@ def _master_from_historical_cut(
     }
 
 
+def _external_page_import(
+    master_pages: dict[str, Any], authority: Any, page_id: str,
+) -> bool:
+    """A registered external page may bind its manifest without a Notion id.
+
+    The Master Pages Notion page id is the page identity everywhere else in
+    this module. A page whose intent is owned outside Notion (``source`` in
+    ``EXTERNAL_PAGE_SOURCES``) has no Notion row, so its id is ``None`` rather
+    than blank. Such a page is bound only by its own Content Lab import
+    authority naming the operational page id and repeating the intent's
+    ``source`` as ``intentSource``. No other authority kind, no other page id,
+    no blank string and no manifest without ``intentSource`` stands in for the
+    missing Notion row.
+    """
+    return (
+        master_pages.get("notionPageId") is None
+        and master_pages.get("source") in EXTERNAL_PAGE_SOURCES
+        and isinstance(authority, dict)
+        and authority.get("kind") == "content_lab_page_source_import"
+        and authority.get("pageId") == page_id
+        and authority.get("intentSource") == master_pages.get("source")
+    )
+
+
+def _intent_source_matches(authority: dict[str, Any], master_pages: dict[str, Any]) -> bool:
+    """``sourceAuthority.intentSource`` names the external owner, or is absent.
+
+    ShipStream writes ``intentSource`` only on an external page's manifest and
+    keeps Rising Tides manifests byte-identical to before, so a Notion page's
+    manifest carrying the key diverges from Master Pages.
+    """
+    source = master_pages.get("source")
+    if source in EXTERNAL_PAGE_SOURCES:
+        return authority.get("intentSource") == source
+    return "intentSource" not in authority
+
+
+def _repeats_notion_page_id(block: Any, key: str, notion_page_id: str | None) -> bool:
+    """The manifest block carries the Master Pages Notion page id exactly.
+
+    For an external page that id is ``None``, and the block must then carry
+    the key as an explicit null. An omitted key never matches.
+    """
+    return isinstance(block, dict) and key in block and block[key] == notion_page_id
+
+
 def parse_shipstream_source_manifest(
     raw: bytes,
     master_pages: dict[str, Any],
@@ -529,7 +604,9 @@ def parse_shipstream_source_manifest(
     authority = value.get("sourceAuthority") if isinstance(value, dict) else None
     format_slug = value.get("format") if isinstance(value, dict) else None
     notion_page_id = master_pages.get("notionPageId")
-    if not _nonblank(notion_page_id):
+    if not _nonblank(notion_page_id) and not _external_page_import(
+        master_pages, authority, page_id,
+    ):
         raise ShipStreamSourceError("Master Pages Notion page ID is missing")
     exact_page_authority = (
         isinstance(authority, dict)
@@ -545,7 +622,7 @@ def parse_shipstream_source_manifest(
     notion_page_matches = (
         isinstance(notion, dict)
         and (
-            notion.get("pageId") == notion_page_id
+            _repeats_notion_page_id(notion, "pageId", notion_page_id)
             or (
                 notion.get("pageId") is None
                 and isinstance(authority, dict)
@@ -565,7 +642,8 @@ def parse_shipstream_source_manifest(
         or notion.get("serviceMode") != master_pages.get("automationMode")
         or not isinstance(authority, dict)
         or not _same_page_handle(authority.get("pageHandle"), handle)
-        or authority.get("notionPageId") != notion_page_id
+        or not _repeats_notion_page_id(authority, "notionPageId", notion_page_id)
+        or not _intent_source_matches(authority, master_pages)
         or not exact_page_authority
         or authority.get("replacementEligible") is not True
         or not isinstance(format_slug, str)
@@ -590,8 +668,16 @@ def parse_shipstream_source_manifest(
     masters.sort(key=lambda row: row["sourceId"])
 
     def projected_library(projected_masters: list[dict[str, Any]]) -> SourceDnaLibrary:
+        # ``origin`` names the upstream footage a master was cut from; it is
+        # recorded on the parsed MasterSource but is NOT part of the immutable
+        # library identity. Publications pinned before origin recording must
+        # keep resolving to the same sourceLibraryId/sourceLibraryVersion.
+        identity_masters = [
+            {key: value for key, value in master.items() if key != "origin"}
+            for master in projected_masters
+        ]
         identity = hashlib.sha256(json.dumps(
-            {"pageId": page_id, "format": format_slug, "masters": projected_masters},
+            {"pageId": page_id, "format": format_slug, "masters": identity_masters},
             sort_keys=True, separators=(",", ":"), ensure_ascii=False,
         ).encode()).hexdigest()
         slug = re.sub(r"[^a-z0-9]+", "-", handle.lower()).strip("-")[:48]
@@ -616,7 +702,8 @@ def parse_shipstream_source_manifest(
     # legacy identity and behavior; new selections receive the offset-aware
     # identity. This is a compatibility branch, not a silent version rewrite.
     legacy_masters = [
-        {**master, "sourceOffsetMs": 0}
+        {key: (0 if key == "sourceOffsetMs" else value)
+         for key, value in master.items() if key != "origin"}
         for master in masters
     ]
     legacy_library = projected_library(legacy_masters)

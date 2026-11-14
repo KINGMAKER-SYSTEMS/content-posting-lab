@@ -1,0 +1,50 @@
+{
+  "args": [
+    {}
+  ],
+  "destination": "source-0000.mp4",
+  "kwargs": {
+    "clip_crop": {
+      "focusX": 0.5,
+      "focusY": 0.5,
+      "zoom": 1.0
+    },
+    "clip_crop_size": [
+      1080,
+      1920
+    ],
+    "clip_duration_ms": 6000,
+    "clip_start_ms": 0,
+    "encode_args": [
+      "-c:v",
+      "libx264",
+      "-preset",
+      "medium",
+      "-crf",
+      "18",
+      "-minrate",
+      "8M",
+      "-maxrate",
+      "20M",
+      "-bufsize",
+      "20M",
+      "-profile:v",
+      "high",
+      "-level",
+      "4.2",
+      "-pix_fmt",
+      "yuv420p",
+      "-r",
+      "30",
+      "-movflags",
+      "+faststart",
+      "-c:a",
+      "aac",
+      "-b:a",
+      "192k"
+    ],
+    "playback_speed": 1.0,
+    "scale": null
+  },
+  "source": "master.mp4"
+}

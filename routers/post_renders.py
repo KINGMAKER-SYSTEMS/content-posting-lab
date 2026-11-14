@@ -7,12 +7,15 @@ import logging
 import threading
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Body, Depends, Header, HTTPException
 from fastapi.responses import FileResponse
 
 from routers.control_plane_recipes import require_control_plane_bearer
+from services.post_render import source_duration_repair_enabled
 from services.post_render_jobs import PostRenderJobs, RenderJobError, RenderJobSubmission
 from services.route_auth import require_worker
+from services.post_render_timed import TimedPostRenderRequest
+from services.slot_source_regeneration import SourceAckRequest, SourceRegenerationRequest
 
 router = APIRouter()
 _service = None
@@ -39,6 +42,15 @@ def start_workers() -> PostRenderJobs | None:
         return None
     try:
         jobs = service()
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            # Legacy sync boot has no running loop; the source lane then fails
+            # closed instead of spinning a private asyncio.run loop.
+            loop = None
+        set_source_loop = getattr(jobs, "set_source_loop", None)
+        if set_source_loop is not None:
+            set_source_loop(loop)
         jobs.start()
         _started_service = jobs
         _startup_failure = None
@@ -120,6 +132,18 @@ def _http_error(error: RenderJobError):
 def submit(body: RenderJobSubmission, authorization: str | None = Header(default=None),
            idempotency_key: str = Header(default=""), x_rt_page_id: str | None = Header(default=None)):
     _authorize(authorization, x_rt_page_id, expected=body.request.page_id)
+    repair = body.request.source_duration_repair
+    if repair is not None:
+        if isinstance(body.request, TimedPostRenderRequest):
+            code = "TIMED_REPAIR_UNSUPPORTED"
+            logging.getLogger("content_lab.post_render_jobs").warning(
+                "post render submit refused page=%s code=%s", body.request.page_id, code)
+            raise HTTPException(422, code)
+        if not source_duration_repair_enabled():
+            code = "SOURCE_DURATION_REPAIR_UNSUPPORTED"
+            logging.getLogger("content_lab.post_render_jobs").warning(
+                "post render submit refused page=%s code=%s", body.request.page_id, code)
+            raise HTTPException(422, code)
     try:
         return service().enqueue(body, idempotency_key)
     except RenderJobError as error:
@@ -146,6 +170,20 @@ def retry(job_id: str, authorization: str | None = Header(default=None), x_rt_pa
         _http_error(error)
 
 
+@router.post("/v1/post-renders/{job_id}/regenerate-source", status_code=202, dependencies=[Depends(require_worker)])
+def regenerate_source(job_id: str, body: SourceRegenerationRequest,
+                      authorization: str | None = Header(default=None),
+                      idempotency_key: str = Header(default=""),
+                      x_rt_page_id: str | None = Header(default=None)):
+    """Queue the original-master repair for one source-mismatched prepared job."""
+    _authorize(authorization, x_rt_page_id)
+    try:
+        service().require_page(job_id, x_rt_page_id)
+        return service().request_source_regeneration(job_id, x_rt_page_id, body, idempotency_key)
+    except RenderJobError as error:
+        _http_error(error)
+
+
 @router.post("/v1/post-renders/{job_id}/provenance", status_code=202, dependencies=[Depends(require_worker)])
 def provenance(job_id: str, body: RenderJobSubmission, authorization: str | None = Header(default=None),
                x_rt_page_id: str | None = Header(default=None)):
@@ -157,12 +195,13 @@ def provenance(job_id: str, body: RenderJobSubmission, authorization: str | None
         _http_error(error)
 
 
-@router.post("/v1/post-renders/{job_id}/acknowledge", status_code=202)
-def acknowledge(job_id: str, authorization: str | None = Header(default=None), x_rt_page_id: str | None = Header(default=None)):
+@router.post("/v1/post-renders/{job_id}/acknowledge", status_code=202, dependencies=[Depends(require_worker)])
+def acknowledge(job_id: str, authorization: str | None = Header(default=None), x_rt_page_id: str | None = Header(default=None),
+               body: SourceAckRequest | None = Body(default=None)):
     _authorize(authorization, x_rt_page_id)
     try:
         service().require_page(job_id, x_rt_page_id)
-        return service().acknowledge(job_id)
+        return service().acknowledge(job_id, source_ack=body)
     except RenderJobError as error:
         _http_error(error)
 
@@ -185,5 +224,6 @@ def artifact(job_id: str, kind: str, authorization: str | None = Header(default=
         path = service().artifact(job_id, kind)
     except RenderJobError as error:
         _http_error(error)
-    media_type = {"final": "video/mp4", "qa": "image/jpeg", "receipt": "application/json"}[kind]
+    media_type = {"final": "video/mp4", "qa": "image/jpeg", "receipt": "application/json",
+                  "source": "video/mp4", "burned_final": "video/mp4", "burned_qa": "image/jpeg"}[kind]
     return FileResponse(path, media_type=media_type, headers={"Cache-Control": "no-store"})

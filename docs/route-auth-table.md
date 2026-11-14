@@ -210,7 +210,7 @@ UI = the Lab frontend calls this path (grep of `frontend/src`, path-level).
 | `POST` | `/api/captions/rename-batch` | WRITE | Access JWT | yes |  |  |
 | `GET` | `/api/burn/videos` | READ | Access JWT | yes |  | operator read, no PII/spend (gated with its router) |
 | `GET` | `/api/burn/captions` | READ | Access JWT | yes |  | operator read, no PII/spend (gated with its router) |
-| `POST` | `/api/burn/import-tos` | WRITE | Access JWT |  |  |  |
+| `POST` | `/api/burn/import-tos` | WRITE | Worker bearer |  |  | Slingshot TOS import; machine-only CONTROL_PLANE_TOKEN bearer before any Supabase read or caption write, server-only SUPABASE_SERVICE_KEY |
 | `GET` | `/api/burn/fonts` | PUBLIC | - | yes | Worker | font catalog (names/files); the Worker font proxy calls it with no headers |
 | `POST` | `/api/burn/caption-render/v1` | WRITE | Access JWT |  |  |  |
 | `POST` | `/api/burn/overlay` | WRITE | Access JWT | yes |  |  |
@@ -425,10 +425,24 @@ UI = the Lab frontend calls this path (grep of `frontend/src`, path-level).
 | `MOUNT` | `/caption-output` | PUBLIC | - |  |  | generated media, public by design (WATCH) |
 | `MOUNT` | `/burn-output` | PUBLIC | - |  |  | generated media, public by design (WATCH) |
 | `GET` | `/font-preview` | PUBLIC | - |  |  | static HTML page |
+| `GET` | `/api/control-plane/v1/safety-controls` | READ | Worker bearer |  | Worker | flagged safety snapshot (CONTENT_LAB_SAFETY_CONTROLS_ENABLED); bearer before the flag |
+| `POST` | `/api/control-plane/v1/photo-plan-reservations` | WRITE | Worker bearer |  | Worker | reserves photo-plan sources for a page; bearer before the body |
+| `POST` | `/api/control-plane/v1/job-receipts/by-idempotency-key` | READ | Worker bearer |  | Worker | reconciles an original create request; starts no job |
+| `POST` | `/api/control-plane/v1/post-renders/{job_id}/regenerate-source` | WRITE | Worker bearer |  | Worker | queues original-master repair; then exact page binding |
+| `PUT` | `/api/control-plane/v1/external-pages/{page_id}` | WRITE | Worker bearer |  | Worker | registers Master Pages intent for a non-Notion page |
+| `DELETE` | `/api/control-plane/v1/external-pages/{page_id}` | WRITE | Worker bearer |  | Worker | removes a page this door registered |
+| `DELETE` | `/api/{full_path:path}` | PUBLIC | - |  |  | unknown /api path: 404 or a slash redirect to a real (gated) route; no handler |
+| `GET` | `/api/{full_path:path}` | PUBLIC | - |  |  | unknown /api path: 404 or a slash redirect to a real (gated) route; no handler |
+| `HEAD` | `/api/{full_path:path}` | PUBLIC | - |  |  | unknown /api path: 404 or a slash redirect to a real (gated) route; no handler |
+| `OPTIONS` | `/api/{full_path:path}` | PUBLIC | - |  |  | unknown /api path: 404 or a slash redirect to a real (gated) route; no handler |
+| `PATCH` | `/api/{full_path:path}` | PUBLIC | - |  |  | unknown /api path: 404 or a slash redirect to a real (gated) route; no handler |
+| `POST` | `/api/{full_path:path}` | PUBLIC | - |  |  | unknown /api path: 404 or a slash redirect to a real (gated) route; no handler |
+| `PUT` | `/api/{full_path:path}` | PUBLIC | - |  |  | unknown /api path: 404 or a slash redirect to a real (gated) route; no handler |
+| `TRACE` | `/api/{full_path:path}` | PUBLIC | - |  |  | unknown /api path: 404 or a slash redirect to a real (gated) route; no handler |
 | `GET` | `/{full_path:path}` | PUBLIC | - |  |  | SPA fallback; only files inside frontend/dist (traversal-guarded) |
 
 | `POST` | `/api/control-plane/v1/media-retention/remedy` | TOKEN | - |  |  | CONTROL_PLANE_TOKEN bearer and registered lane (inline; no request body) |
-| `POST` | `/api/control-plane/v1/post-renders/{job_id}/acknowledge` | TOKEN | - |  |  | CONTROL_PLANE_TOKEN bearer and exact page binding (no request body) |
+| `POST` | `/api/control-plane/v1/post-renders/{job_id}/acknowledge` | WRITE | Worker bearer |  | Worker | optional source-ack body; bearer as a dependency so auth precedes body parsing, then exact page binding |
 | `POST` | `/api/control-plane/v1/post-renders/{job_id}/retire` | TOKEN | - |  |  | CONTROL_PLANE_TOKEN bearer and exact page binding (no request body) |
 | `POST` | `/api/burn/caption-render/v2` | WRITE | Access JWT |  |  | same explicit operator authorization as caption-render/v1 |
 | `GET` | `/api/ready` | PUBLIC | - |  |  | worker readiness status; no roster or credential values |
