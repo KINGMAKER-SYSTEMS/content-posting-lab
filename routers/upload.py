@@ -225,4 +225,7 @@ except Exception:
 @router.get("/stats")
 async def queue_stats():
     """Get upload queue statistics."""
-    return get_queue_stats()
+    try:
+        return get_queue_stats()
+    except UploadUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc

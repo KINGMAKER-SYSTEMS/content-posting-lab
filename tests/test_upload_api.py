@@ -163,6 +163,7 @@ def test_bare_completed_preserves_receipt_and_blocks_same_account_queue(cookie_d
     assert "reconciliation" in saved["error"]
     assert upload_svc.get_job(second["job_id"])["status"] == "queued"
     assert upload_svc.get_queue_stats()["uploading"] == 0
+    assert upload_svc.get_queue_stats()["held"] == 1
     # Read from durable JSON again as a fresh process would; held is a valid
     # record, not quarantine corruption or an active browser call.
     upload_svc._quarantined_job_rows.clear()
@@ -475,7 +476,7 @@ def test_missing_job_store_requires_explicit_empty_provisioning(sync_client, coo
     store.unlink()
     with pytest.raises(upload_svc.UploadUnavailable, match="explicitly provision an empty"):
         upload_svc.submit_job(video_path="/tmp/new.mp4", account_name="linked")
-    for route in ("/api/upload/jobs", "/api/upload/jobs/unknown"):
+    for route in ("/api/upload/jobs", "/api/upload/jobs/unknown", "/api/upload/stats"):
         response = sync_client.get(route)
         assert response.status_code == 503
         assert "job store" in response.json()["detail"]

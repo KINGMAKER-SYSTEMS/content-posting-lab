@@ -795,6 +795,7 @@ export interface UploadJob {
 export interface UploadQueueStats {
   queued: number;
   uploading: number;
+  held: number;
   completed: number;
   failed: number;
   cancelled: number;

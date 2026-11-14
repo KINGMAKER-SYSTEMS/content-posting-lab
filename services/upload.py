@@ -824,6 +824,7 @@ def get_queue_stats() -> dict:
     return {
         "queued": sum(1 for j in jobs if j["status"] == "queued"),
         "uploading": sum(1 for j in jobs if j["status"] == "uploading"),
+        "held": sum(1 for j in jobs if j["status"] == "held"),
         "completed": sum(1 for j in jobs if j["status"] == "completed"),
         "failed": sum(1 for j in jobs if j["status"] == "failed"),
         "cancelled": sum(1 for j in jobs if j["status"] == "cancelled"),

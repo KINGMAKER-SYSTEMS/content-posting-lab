@@ -466,7 +466,9 @@
   creates no job or provider action.
   Repeated saved copies of one upload ID, even identical rows, are all held for reconciliation;
   no copy may execute or authorize a retry, even if one claims a terminal state.
-  Listing and polling expose the held status without making it executable.
+  Listing and polling expose the held status without making it executable;
+  queue stats count held jobs separately, and listing, polling and stats
+  return 503 rather than an empty queue when the job store is unavailable.
   The Uploads tab shows held records in their own section with the reconciliation
   reason and no cancel/retry actions; held records suppress the empty-queue invitation.
   Other valid jobs remain processable while those source rows are retained.
