@@ -1,3 +1,12 @@
+> **Owner update 2026-11-12:** new video cuts use unused moments within the
+> same existing masters and aesthetic. The reader no longer grants a second
+> show after seven days or drops supplied usage after 90 days. Older show-limit
+> descriptions below are historical. Complete retained source history and
+> canonical pending reservations are release prerequisites; changing the reader
+> alone cannot restore rows already pruned by a producer. This staged repair
+> also makes the shared local-master planner reject interval overlaps across
+> clip lengths. Legacy canonical feed integration remains a separate gap.
+
 # Scrambler — default OFF
 
 The Scrambler varies source-video cuts before planning: output length, effective
@@ -17,7 +26,7 @@ opt-in via SCRAMBLER_FAST_SHARE.
 Draws freeze before planning. The reserved span includes the skipped offset plus
 output length times effective speed. Private canonical origin coordinates never
 rewrite public source descriptors or identity hashes. Full-window fingerprint
-ranking operates within fresh/used classes; missing coverage takes a named
+ranking operates among unused candidates; missing fingerprint coverage takes a named
 spacing fallback.
 
 ## Source-use protection
@@ -355,3 +364,42 @@ surface with the candidate under fixed randomness. Portable edited-source
 mutation runners are tools/verify_scrambler_core_mutants.py and
 tools/verify_scrambler_reader_mutants.py; both require a passing baseline and
 preserve source hashes, patches and logs. Run remotely through suite-slot.
+
+The reader runner targets the CURRENT unused-only policy: prior-show bypass,
+30/90-day history expiry, wildcard lost windows, page-filter bypass, unknown
+origin/extent, and the retained identity, bounds, allocation-budget and posting-
+observation guards. It does not mutate the removed second-show/cooldown constants.
+`tests/test_scrambler_reader_mutant_contract.py` supplies stable input quadrants,
+including empty-history clock checks: an already-used window alone would conceal
+a broken clock guard under the unused-only policy. The loader-clock mutation
+uses NaN specifically: bypassing the guard then accepts an empty feed, while
+infinity can merely crash in stale-age formatting and is not an acceptance proof.
+All invalid-clock cases remain in the baseline contract suite.
+
+The reader inventory contains distinct single-site mutations for the posted-metadata, wildcard and per-second aggregate entry-budget guards. Each budget needle occurs once, so a later guard cannot substitute for proving rejection before that site allocates. Duplicate mutated source bodies are rejected before execution, even when names or selectors differ.
+
+Every mutation needle must occur exactly the declared number of times and the
+edited body must compile before execution. A baseline must execute real selected
+tests and pass without skips/errors. A mutant counts as killed only when pytest
+exits 1 with selected assertion failures and zero runtime, import, collection
+or fixture errors. Accepted messages are ordinary assert/AssertionError,
+pytest's DID NOT RAISE, or explicitly tagged `pytest.fail("behavioral assertion: ...")`;
+arbitrary Failed/timeout messages do not count. Zero selected tests and timeouts
+never count.
+JUnit testcase records supply the counts. The runner changes copied modules only,
+preserves repository resource resolution, and refuses a nonempty evidence folder
+so a stale XML result cannot certify a new run. `results.json`, each mutant diff,
+source SHA256, JUnit XML and raw logs remain in that folder.
+
+Example on Maj/Seeno (use its existing test interpreter; this MacBook runs no tests):
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 python tools/verify_scrambler_reader_mutants.py \
+  --output "$HOME/ec-work/reader-proof-$(date +%Y%m%dT%H%M%S)"
+```
+
+`--output` overrides optional non-secret `SCRAMBLER_MUTANT_OUT`; otherwise the
+runner creates a new temporary evidence directory. On fleet hosts, explicitly
+choose a new directory under `~/ec-work/`. Exit 0 means the baseline passed and
+every listed mutation was behaviorally killed; 1 means baseline/mutation proof
+failed, and 2 means invalid CLI/preflight/output-directory input.
