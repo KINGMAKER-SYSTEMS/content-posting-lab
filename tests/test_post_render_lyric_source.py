@@ -117,7 +117,7 @@ def test_real_lyric_render_has_no_overlay_or_fallback_and_keeps_decode_qa_receip
     rebind_slot(body,lambda s:s['asset'].update(sha256=source_sha))
     accepted=jobs.RenderJobSubmission.model_validate(body)
     def forbidden(*a,**kw):pytest.fail('lyric clip must not enter caption overlay renderer')
-    monkeypatch.setattr(render,'render_caption_overlay',forbidden)
+    monkeypatch.setattr(render,'render_caption_with_background',forbidden)
     output=tmp_path/'prepared'
     result=render.render_post(lyric_source,output,accepted.request,clock_ms=lambda:NOW)
     receipt=json.loads(result.receipt_json)
@@ -146,7 +146,7 @@ def test_actual_durable_runner_accepts_lyric_and_recovers_same_artifacts(lyric_s
     body["source_provenance"]["source_sha256"]=source_sha
     rebind_slot(body,lambda s:s["asset"].update(sha256=source_sha))
     accepted=jobs.RenderJobSubmission.model_validate(body)
-    monkeypatch.setattr(render,"render_caption_overlay",lambda *a,**kw:pytest.fail("lyric overlay forbidden"))
+    monkeypatch.setattr(render,"render_caption_with_background",lambda *a,**kw:pytest.fail("lyric overlay forbidden"))
     service=jobs.PostRenderJobs(tmp_path/"jobs",clock_ms=lambda:NOW,
         fetcher=lambda req,target:shutil.copyfile(lyric_source,target))
     job=service.enqueue(accepted,"lyric-source-fixture")
