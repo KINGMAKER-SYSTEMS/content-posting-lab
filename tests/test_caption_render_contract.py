@@ -784,7 +784,8 @@ def test_the_gate_checks_the_text_as_it_will_be_drawn(font_dir):
 def test_the_refusal_lists_each_missing_character_once_and_never_the_caption(font_dir):
     with pytest.raises(CaptionRenderError) as error:
         render_caption_overlay(caption_request("my secret words \U0001F62D\U0001F62D\U0001F525"), font_dir=font_dir)
-    assert error.value.message == "caption has characters the font cannot draw: U+1F62D, U+1F525"
+    # Listed once each, in code point order (main's #367 message), and never the caption itself.
+    assert error.value.message == "caption has characters the font cannot draw: U+1F525, U+1F62D"
 
 
 def test_the_preview_api_refuses_the_same_caption(sync_client, monkeypatch, font_dir):
@@ -888,9 +889,9 @@ def test_glyph_coverage_is_read_from_the_font_table_not_from_rendered_pixels(mon
     monkeypatch.setattr(ImageFont.FreeTypeFont, "getmask2", no_drawing)
     monkeypatch.setattr(ImageFont.FreeTypeFont, "getmask", no_drawing)
     caption_render._font_codepoints.cache_clear()
-    covered = caption_render._font_codepoints(str(REAL_FONT_DIR / FONT_FILE))
+    covered = caption_render._font_codepoints((REAL_FONT_DIR / FONT_FILE).read_bytes())
     assert ord("a") in covered and 0x1F62D not in covered and 0xFE0F not in covered and 0 not in covered
-    caption_render._require_drawable_text(REAL_FONT_DIR / FONT_FILE, ["plain words"])
+    caption_render._require_drawable_text((REAL_FONT_DIR / FONT_FILE).read_bytes(), ["plain words"])
     caption_render._font_codepoints.cache_clear()
 
 
@@ -899,7 +900,7 @@ def test_glyph_coverage_is_read_from_the_font_table_not_from_rendered_pixels(mon
 def test_the_gate_runs_on_the_cased_text_that_is_drawn(font_dir, monkeypatch, case, saved_lines):
     seen = []
     real = caption_render._require_drawable_text
-    monkeypatch.setattr(caption_render, "_require_drawable_text", lambda path, lines: seen.append(list(lines)) or real(path, lines))
+    monkeypatch.setattr(caption_render, "_require_drawable_text", lambda font_bytes, lines: seen.append(list(lines)) or real(font_bytes, lines))
     style = {"case": case, "line_balance": 100}
     if saved_lines:
         style["line_breaks"] = ["mixed Case words", "seCond line"]
@@ -937,8 +938,7 @@ def test_saved_line_breaks_are_normalised_exactly_like_the_caption(font_dir):
 def test_no_installed_font_has_these_characters_and_every_font_has_plain_text(font, char):
     # The comment in caption_render says these are missing from every TikTokSans file; this is its proof, per font,
     # for non-emoji characters as well.
-    path = str(REAL_FONT_DIR / font)
-    covered = caption_render._font_codepoints(path)
+    covered = caption_render._font_codepoints((REAL_FONT_DIR / font).read_bytes())
     assert ord(char) not in covered
     assert ord("a") in covered
     with pytest.raises(CaptionRenderError) as error:
@@ -1039,7 +1039,7 @@ def test_the_labs_fonts_are_exactly_the_ones_the_workers_drawable_table_was_made
     # 3. Re-derive the table body with the Lab's own cmap reader: per font, then the intersection, then its ranges.
     per_font = {}
     for name in REAL_FONTS:
-        per_font[name] = caption_render._font_codepoints(str(REAL_FONT_DIR / name))
+        per_font[name] = caption_render._font_codepoints((REAL_FONT_DIR / name).read_bytes())
         assert len(per_font[name]) == listed[name]["codepoints"], name
     intersection = frozenset.intersection(*per_font.values())
     assert frozenset.union(*per_font.values()) == intersection
