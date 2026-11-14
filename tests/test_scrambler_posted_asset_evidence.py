@@ -170,13 +170,11 @@ def test_rows_without_asset_sha_produce_no_posting_evidence(tmp_path):
     assert observe(index) is None
 
 
-def test_old_rows_leave_no_posting_proof(tmp_path):
-    # Documented unavailability: rows older than the 90-day lookback are
-    # skipped before capture - main persists a copied actual observation
-    # when it sees one; the reader never invents an old timestamp.
-    index = build(tmp_path, [show(days=120)])
-    assert not index.posted_assets
-    assert observe(index) is None
+def test_old_supplied_rows_keep_real_posting_proof(tmp_path):
+    row = show(days=120)
+    index = build(tmp_path, [row])
+    proof = observe(index)
+    assert proof is not None and proof["posted_at"] == row["posted_at"]
 
 
 def test_observed_asset_still_faces_window_allowed_show_limits(tmp_path):
@@ -188,4 +186,4 @@ def test_observed_asset_still_faces_window_allowed_show_limits(tmp_path):
     allowed, reason = index.window_allowed(
         "acct:pilot", SHA, 1200000, 1204000,
         page_handles=frozenset({"@pilot"}), now_epoch=NOW.timestamp())
-    assert not allowed and reason.startswith("cross_page_90d"), reason
+    assert not allowed and reason.startswith("origin_already_shown"), reason

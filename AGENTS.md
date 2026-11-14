@@ -624,34 +624,33 @@
   Every sourced-video capability also returns the unique immutable source URLs
   used by those masters so Control Plane can exclude already-used cross-page
   windows before it creates paid work.
-  A source window is a time frame: master SHA, start and length. Every
-  whole-second start (plus one ending on the last frame) at every allowed
-  length is a distinct clip. Queued, running and completed jobs reserve their
-  exact time frames across recipe revisions and library versions of the same
-  master bytes, so a new recipe cuts new time frames instead of re-cutting
-  delivered ones; failed jobs release theirs. Each reserved time frame keeps
-  when it was cut (job completedAt, else createdAt; archived as `usedAt`). Re-cut variety (operator rule 2026-09-30): every plan goes
-  through `plan_source_cuts`, which prefers never-cut footage, then a start far
-  from the master's last few starts, then a length unlike its last few
-  lengths, then the least recently cut footage, then a per-job seed recorded
-  as `cutPlanSeed`; one plan never holds two overlapping cuts of one master.
-  The first cut on a master uses the page's Cut length, and a cut repeats the
-  master's last length only when nothing else fits. A window is never cut
-  twice (that would render bytes the Worker refuses as a repeat): once every
-  whole-second start x length is cut, starts move inside the second (half a
-  second, then a quarter and three quarters). Masters carry no verified frame
-  rate, so starts stay at least 250 ms apart and a window counts as cut when an
-  earlier cut of the same length starts under 250 ms away. When every such
-  window is cut, capability `maxQuantity` is 0 and job creation answers 409
-  `source_windows_exhausted`: the page needs new footage. The other named
-  409s are `source_master_too_short` and `source_windows_reserved_by_other_pages`
-  (other pages' reservations arrive only with a job, so capability does not
-  count them). A plan that cannot fit another never-cut window beside its
-  other cuts ends short. Recency and variety are per master, across every page
-  that cut it. `tests/test_source_cut_path_census.py`
-  fails any new path that builds source cuts without the planner. Job creation
-  remains exact and all-or-nothing; it never silently returns fewer clips than
-  requested.
+  Owner update 2026-11-12: preserve each page's existing masters and aesthetic,
+  and cut unused moments across their full length. Every candidate interval
+  must be disjoint from supplied queued/running/completed/archived cut history,
+  regardless of prior duration, offset, age or treatment. A different window
+  identifier never makes the same moment fresh. Failed unrendered jobs release
+  their reservations; completed cuts retain theirs across recipe/library changes
+  sharing those master bytes. Timestamps influence variety only, never eligibility.
+  `plan_source_cuts` preserves existing length/treatment variety among eligible
+  unused intervals. Finer start boundaries and transformations add no footage
+  runway. When no fitting unused interval remains, `maxQuantity` is 0 and job
+  creation answers 409 `source_windows_exhausted`; extend unused coverage from
+  the SAME original source instead of cycling back or changing the aesthetic.
+  Other named 409s remain `source_master_too_short` and
+  `source_windows_reserved_by_other_pages`. External exclusions still arrive
+  with jobs rather than capability polls. Planning remains all-or-nothing for
+  the requested quantity. The planner-path census still covers new cut builders.
+  Before legacy video media acquisition, recheck durable same-master intervals
+  under the existing jobs lock, excluding the current job's own reservation.
+  Refuse only the conflicting candidate (`source_fresh_cut_needed`), or a
+  same-master history entry whose bounds are unknown
+  (`source_freshness_history_unknown`); keep disjoint siblings and normal
+  terminal/no-artifact behavior. No new receipt/wire keys or page holds.
+  Scrambler canonical eligibility rejects any supplied prior origin-second show,
+  without a seven-day re-show allowance or history-age expiry. Complete historical
+  feeds, current origin mapping and canonical legacy alias reservations remain
+  required for NETWORK-WIDE proof; this local-master repair alone does not
+  certify those external inputs. Preserve the owner's 11-09 photo-sequence rule.
 - Job `constraints` accepts `sourceWindowExclusions` and `priority`
   (`"low_runway"`); unknown keys and values are ignored and kept on the job,
   never an error. The Lab starts every job at creation, so ordering by

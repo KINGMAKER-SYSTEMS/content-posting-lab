@@ -85,8 +85,8 @@ def test_pending_commitment_holds_aliases_until_exact_post_observed(tmp_path, mo
     usage.write_text(json.dumps(row)+"\n")
     posted = load_originality_index(usage, retired_path=retired)
     assert scrambler_pending_windows(posted, "new-job") == ()
-    # Eight days later, one genuine prior show permits the second own show.
-    assert posted.window_allowed(PAGE_ID, b.sha256, start, end,
+    # An observed post releases the pending hold, never reuse eligibility.
+    assert not posted.window_allowed(PAGE_ID, b.sha256, start, end,
         page_handles=frozenset({"@pilot"}))[0]
     # Durable actual-post proof survives a rotated feed; never render-time proof.
     usage.write_text("")

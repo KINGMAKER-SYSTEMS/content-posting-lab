@@ -107,12 +107,12 @@ def test_window_allowed_accepts_the_canonical_pair_verbatim(tmp_path):
 
 # ---------------------------------------------------------------- future own-page (M3)
 
-def test_future_own_page_show_blocks_via_gap_not_skip(tmp_path):
+def test_future_own_page_show_remains_used_not_skipped(tmp_path):
     index = build(tmp_path, [show(page="@pilot", days=-0.5)])  # 12 h ahead
     allowed, reason = index.window_allowed(
         "acct:pilot", OTHER_SHA, 1200000, 1203000,
         page_handles=frozenset({"@pilot"}), now_epoch=NOW.timestamp())
-    assert not allowed and reason.startswith("page_second_gap_7d"), reason
+    assert not allowed and reason.startswith("origin_already_shown"), reason
 
 
 def test_future_own_page_wildcard_blocks_too(tmp_path):
@@ -121,7 +121,7 @@ def test_future_own_page_wildcard_blocks_too(tmp_path):
     allowed, reason = index.window_allowed(
         "acct:pilot", OTHER_SHA, 1200000, 1203000,
         page_handles=frozenset({"@pilot"}), now_epoch=NOW.timestamp())
-    assert not allowed and reason.startswith("page_second_gap_7d"), reason
+    assert not allowed and reason.startswith("origin_already_shown"), reason
 
 
 def test_future_cross_page_show_blocks(tmp_path):
@@ -129,7 +129,7 @@ def test_future_cross_page_show_blocks(tmp_path):
     allowed, reason = index.window_allowed(
         "acct:pilot", OTHER_SHA, 1200000, 1203000,
         page_handles=frozenset({"@pilot"}), now_epoch=NOW.timestamp())
-    assert not allowed and reason.startswith("cross_page_90d"), reason
+    assert not allowed and reason.startswith("origin_already_shown"), reason
 
 
 def test_posted_beyond_24h_skew_refuses_the_feed(tmp_path):
@@ -192,14 +192,14 @@ def test_entry_budget_counts_duplicate_entries_on_the_same_second(
                          show(days=9, page="@pilot", start=1200, end=1201)])
 
 
-def test_rows_older_than_ninety_days_are_not_indexed(tmp_path):
+def test_rows_older_than_ninety_days_stay_indexed_and_refuse_reuse(tmp_path):
     index = build(tmp_path, [show(page="@other", days=120)])
-    assert index.seconds_indexed() == 0
+    assert index.seconds_indexed() == 3
     assert not index.wildcard_shows
     allowed, reason = index.window_allowed(
         "acct:pilot", OTHER_SHA, 1200000, 1203000,
         page_handles=frozenset({"@pilot"}), now_epoch=NOW.timestamp())
-    assert allowed, reason
+    assert not allowed and reason.startswith("origin_already_shown"), reason
 
 
 def test_enormous_integer_window_refuses_without_overflow(tmp_path):
@@ -212,4 +212,4 @@ def test_usage_partial_millisecond_in_next_origin_second_still_counts(tmp_path):
     allowed, reason = index.window_allowed('acct:pilot', SHA, 1201000, 1202000,
         page_handles=frozenset({'@pilot'}), now_epoch=NOW.timestamp())
     assert not allowed, 'every covered origin second counts, even a fractional millisecond'
-    assert reason.startswith('cross_page_90d')
+    assert reason.startswith('origin_already_shown')
