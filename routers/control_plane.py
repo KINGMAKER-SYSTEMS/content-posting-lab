@@ -5078,7 +5078,7 @@ async def _run_owned_syzygy_slideshow(job_id: str, attempt: str, runtime: str) -
         library = await asyncio.to_thread(load_recipe_library, recipe)
         if library.library_id != recipe.library_id:
             raise RuntimeError("slideshow_library_binding_changed")
-        bytes_by_key = {item.key: item.bytes for item in library.objects}
+        objects_by_key = {item.key: item for item in library.objects}
         for index, plan in enumerate(plans):
             if not _job_matches_current_master_pages(job):
                 raise RuntimeError("master_pages_strategy_changed")
@@ -5096,6 +5096,12 @@ async def _run_owned_syzygy_slideshow(job_id: str, attempt: str, runtime: str) -
             )
             image_video = recipe.format_slug in IMAGE_VIDEO_FORMATS
             curated = requires_curated_video_plan(recipe)
+            if (
+                not (curated or image_video)
+                and isinstance(planned_media, list)
+                and any(isinstance(item, dict) and "sha256" not in item for item in planned_media)
+            ):
+                raise RuntimeError("slideshow_source_pin_missing")
             if curated and not isinstance(plan.get("windows"), list):
                 raise RuntimeError("slideshow_plan_invalid")
             if not curated and "windows" in plan:
@@ -5197,28 +5203,37 @@ async def _run_owned_syzygy_slideshow(job_id: str, attempt: str, runtime: str) -
                     not isinstance(item.get("bytes"), int)
                     or isinstance(item.get("bytes"), bool)
                     or item.get("bytes") <= 0
+                    or not isinstance(item.get("sha256"), str)
+                    or not re.fullmatch(r"[0-9a-f]{64}", item["sha256"])
                     for item in planned_media
                     if isinstance(item, dict)
                 )
             ):
                 raise RuntimeError("slideshow_plan_invalid")
+            if not (curated or image_video):
+                pinned_by_key = {
+                    item["objectKey"]: (item["sha256"], item["bytes"])
+                    for item in planned_media
+                }
             for item in planned_media:
-                if bytes_by_key.get(item["objectKey"]) != item["bytes"]:
+                live = objects_by_key.get(item["objectKey"])
+                if live is None or live.bytes != item["bytes"]:
+                    raise RuntimeError("slideshow_library_object_changed")
+                if not (curated or image_video) and live.indexed_sha256 != item["sha256"]:
                     raise RuntimeError("slideshow_library_object_changed")
             before = await observe_library_media(library, media_keys)
-            if curated or image_video:
-                # Verify observed bytes are the pinned bytes AND the observed
-                # SHA matches the pinned source SHA before any paid POST.
-                observed = {row["objectKey"]: row for row in before}
-                for key in media_keys:
-                    row = observed.get(key)
-                    pinned_sha, pinned_bytes = pinned_by_key[key]
-                    if (
-                        row is None
-                        or row["sha256"] != pinned_sha
-                        or row["bytes"] != pinned_bytes
-                    ):
-                        raise RuntimeError("slideshow_source_sha_mismatch")
+            # Verify actual streamed bytes against the admission pin before
+            # submitting to Syzygy, including ordinary photo slideshows.
+            observed = {row["objectKey"]: row for row in before}
+            for key in media_keys:
+                row = observed.get(key)
+                pinned_sha, pinned_bytes = pinned_by_key[key]
+                if (
+                    row is None
+                    or row["sha256"] != pinned_sha
+                    or row["bytes"] != pinned_bytes
+                ):
+                    raise RuntimeError("slideshow_source_sha_mismatch")
             # The renderer may roll between plans; each artifact records the
             # exact revision observed immediately before its own submission.
             renderer_revision = await syzygy_revision()
@@ -6503,16 +6518,20 @@ async def _create_job_impl(
                     detail="slideshow_inventory_exhausted",
                     headers={"X-RT-Zero-Reason": reason},
                 )
-            # Pin the exact byte count each planned key carried at admission
-            # so the runner can prove the library still holds those bytes.
-            bytes_by_key = {
-                item.key: item.bytes for item in slideshow_library.objects
-            }
+            # Pin the indexed version of each selected object at admission.
+            objects_by_key = {item.key: item for item in slideshow_library.objects}
+            generic = (
+                slideshow_recipe.format_slug not in IMAGE_VIDEO_FORMATS
+                and not requires_curated_video_plan(slideshow_recipe)
+            )
             for plan in plans:
                 plan["media"] = [
-                    {"objectKey": key, "bytes": bytes_by_key[key]}
+                    {"objectKey": key, "bytes": objects_by_key[key].bytes,
+                     **({"sha256": objects_by_key[key].indexed_sha256} if generic else {})}
                     for key in plan["mediaKeys"]
                 ]
+                if generic and any(item["sha256"] is None for item in plan["media"]):
+                    raise HTTPException(status_code=409, detail="slideshow_library_object_unindexed")
             job_root = (
                 _generation_root() / page_id / recipe_version / job_id
             ).resolve()
