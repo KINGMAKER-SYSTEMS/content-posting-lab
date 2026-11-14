@@ -39,6 +39,7 @@ and logs the bytes it freed.
 from __future__ import annotations
 
 import logging
+import math
 import os
 import re
 import shutil
@@ -201,7 +202,7 @@ def _inside(directory: Path, relative: Any) -> Path | None:
 
 
 def _private_scrambler_paths(root: Path, directory: Path, job_id: str,
-                            job: dict[str, Any]) -> set[Path] | None:
+                            job: dict[str, Any], expired=lambda: False) -> set[Path] | None:
     """Protect produced private clips; None holds an ambiguous whole job."""
     clips = job.get("scramblerRenderedClips", [])
     if not isinstance(clips, list):
@@ -223,15 +224,21 @@ def _private_scrambler_paths(root: Path, directory: Path, job_id: str,
                 or not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest)
                 or type(size) is not int or size <= 0):
             raise ValueError("private manifest identity invalid")
+        if expired():
+            raise TimeoutError("retention deadline")
         path = _inside(directory, relative)
         if path is None:
             raise ValueError("private path outside job")
         current = directory
         for part in Path(relative).parts:
+            if expired():
+                raise TimeoutError("retention deadline")
             current /= part
             if current.is_symlink():
                 raise ValueError("private path alias")
         try:
+            if expired():
+                raise TimeoutError("retention deadline")
             present = path.lstat()
         except FileNotFoundError:
             pass  # A matching public clip may already have been cleaned from R2 proof.
@@ -245,6 +252,8 @@ def _private_scrambler_paths(root: Path, directory: Path, job_id: str,
 
     try:
         for clip in clips:
+            if expired():
+                return None
             protect(clip)
             if "thumbnail" in clip:
                 protect(clip["thumbnail"])
@@ -254,9 +263,13 @@ def _private_scrambler_paths(root: Path, directory: Path, job_id: str,
         if not isinstance(public_clips, list):
             raise ValueError("public checkpoint shape invalid")
         for clip in public_clips:
+            if expired():
+                return None
             if not isinstance(clip, dict):
                 raise ValueError("public checkpoint shape invalid")
             for manifest in (clip, clip.get("thumbnail")):
+                if expired():
+                    return None
                 if not isinstance(manifest, dict):
                     continue
                 path = _inside(directory, manifest.get("path"))
@@ -348,25 +361,43 @@ class GeneratedMediaRetention:
             self._negative_cache.pop(key, None)
             self._probe_meta.pop(key, None)
 
-    def plan(self, store: dict[str, Any], root: Path, now: datetime, *, pressure: str = "normal",
-             job_limit: int = DEFAULT_JOB_LIMIT, probe_limit: int | None = None,
-             time_budget: float = DEFAULT_TIME_BUDGET_SECONDS) -> Plan:
+    def _units(self, store: dict[str, Any], root: Path, now: datetime, *, pressure: str,
+               job_limit: int, probe_limit: int | None, deadline: float, plan: Plan):
+        """Yield authorized cleanup units under one cooperative deadline."""
+        expired = lambda: self.monotonic() >= deadline
+        if expired():
+            return
         if probe_limit is None:
             probe_limit = PROBE_LIMITS[pressure]
         root = root.resolve()
         jobs = store.get("jobs", {}) if isinstance(store, dict) else {}
         protected: set[Path] = set()
         for job in jobs.values():
+            if expired():
+                return  # never use an incomplete global protection set
             if not isinstance(job, dict) or job.get("status") in TERMINAL_STATUSES:
                 continue
-            for value in [job.get("artifactRoot")] + [
-                master.get("artifactRoot") for master in job.get("recoveryMasters", []) or []
-                if isinstance(master, dict)
-            ]:
-                if isinstance(value, str) and value:
+            masters = job.get("recoveryMasters", []) or []
+            if not isinstance(masters, list):
+                return
+            values = [job.get("artifactRoot")]
+            for master in masters:
+                if expired():
+                    return
+                if not isinstance(master, dict) or not isinstance(master.get("artifactRoot"), str) or not master["artifactRoot"]:
+                    return
+                values.append(master["artifactRoot"])
+            for value in values:
+                if expired():
+                    return
+                if value is not None and (not isinstance(value, str) or not value):
+                    return
+                if value:
                     protected.add(Path(value).resolve())
         candidates = []
         for job_id, job in jobs.items():
+            if expired():
+                return
             if not isinstance(job, dict) or job.get("status") not in TERMINAL_STATUSES:
                 continue
             finished = terminal_timestamp(job)
@@ -388,38 +419,106 @@ class GeneratedMediaRetention:
             else:
                 directory = _job_dir(root, job.get("artifactRoot"))
                 artifact_directory = directory
-            if (finished is None or now - finished < CONFIRMED_SETTLE or directory is None
-                    or any(path == directory or directory in path.parents for path in protected)
-                    or _holds_truck_pool(job) or not directory.is_dir()):
+            if finished is None or now - finished < CONFIRMED_SETTLE or directory is None:
+                continue
+            clips = job.get("clips", [])
+            if not isinstance(clips, list):
+                continue
+            malformed = False
+            for clip in clips:
+                if expired():
+                    return
+                if not isinstance(clip, dict):
+                    malformed = True
+                    break
+            if malformed:
+                continue
+            covered = False
+            for path in protected:
+                if expired():
+                    return
+                if path == directory or directory in path.parents:
+                    covered = True
+                    break
+            if expired():
+                return
+            if covered or _holds_truck_pool(job) or not directory.is_dir():
                 continue
             candidates.append((finished, str(job_id), directory, artifact_directory, job, flat_import))
         candidates.sort(key=lambda item: (item[0], item[1]))
 
-        plan = Plan()
         pending: list[tuple[int, Any, Any, list[Path], int, datetime]] = []
         owners: list[bool] = []
-        started = self.monotonic()
         stray_cutoff = now - STRAY_RETENTION[pressure]
         stopped = False
         for finished, _job_id, directory, artifact_directory, job, flat_import in candidates:
-            if plan.jobs >= job_limit or self.monotonic() - started > time_budget:
+            if plan.jobs >= job_limit or expired():
                 stopped = True
                 break
-            private_paths = _private_scrambler_paths(root, artifact_directory, _job_id, job)
-            if private_paths is None:
+            private_paths = _private_scrambler_paths(root, artifact_directory, _job_id, job, expired)
+            if private_paths is None or expired():
                 continue
             clip_paths: set[Path] = private_paths
             inside = _flat_import_file if flat_import else _inside
-            work = False
-            for clip in job.get("clips", []) or []:
+            descriptors = []
+            malformed = False
+            for clip in job.get("clips", []):
+                if expired():
+                    return
                 if not isinstance(clip, dict):
-                    continue
-                files = [path for path in (
-                    inside(artifact_directory, clip.get("path")),
-                    inside(artifact_directory, (clip.get("thumbnail") or {}).get("path")
-                            if isinstance(clip.get("thumbnail"), dict) else None),
-                ) if path is not None]
+                    return  # validated before any job paths are selected
+                # Resolve every descriptor before selecting any file in this
+                # job: an unidentified artifact must never become a stray.
+                try:
+                    primary = inside(artifact_directory, clip.get("path"))
+                except (ValueError, OSError, RuntimeError):
+                    primary = None
+                if expired():
+                    return
+                if primary is None:
+                    malformed = True
+                    break
+                files = [primary]
+                thumbnail = clip.get("thumbnail")
+                if thumbnail is not None:
+                    if not isinstance(thumbnail, dict):
+                        malformed = True
+                        break
+                    try:
+                        thumbnail_path = inside(artifact_directory, thumbnail.get("path"))
+                    except (ValueError, OSError, RuntimeError):
+                        thumbnail_path = None
+                    if expired():
+                        return
+                    if thumbnail_path is None:
+                        malformed = True
+                        break
+                    files.append(thumbnail_path)
+                # Missing artifacts may have been cleaned previously. A
+                # present nonregular or unreadable artifact holds its job.
+                for path in files:
+                    if expired():
+                        return
+                    try:
+                        valid_type = stat.S_ISREG(path.stat().st_mode)
+                    except FileNotFoundError:
+                        valid_type = True
+                    except OSError:
+                        valid_type = False
+                    if expired():
+                        return
+                    if not valid_type:
+                        malformed = True
+                        break
+                if malformed:
+                    break
                 clip_paths.update(files)
+                descriptors.append((clip, files))
+            if malformed:
+                continue
+            for clip, files in descriptors:
+                if expired():
+                    return
                 present = [path for path in files if path.is_file()]
                 if not present:
                     continue
@@ -429,30 +528,49 @@ class GeneratedMediaRetention:
                 if flat_import:
                     # A flat group can gain a private retry at any point. Never
                     # walk that group (or recurse under its known media dirs).
-                    paths = []
-                    for namespace in ("source", "thumbnails"):
-                        media_dir = directory / namespace
-                        if media_dir.is_symlink() or not media_dir.is_dir():
-                            continue
-                        for child in media_dir.iterdir():
-                            path = _flat_import_file(directory, f"{namespace}/{child.name}")
-                            if path is not None and path.is_file():
-                                paths.append(path)
+                    def flat_paths():
+                        for namespace in ("source", "thumbnails"):
+                            if expired():
+                                return
+                            media_dir = directory / namespace
+                            if media_dir.is_symlink() or not media_dir.is_dir():
+                                continue
+                            for child in media_dir.iterdir():
+                                if expired():
+                                    return
+                                path = _flat_import_file(directory, f"{namespace}/{child.name}")
+                                if path is not None and path.is_file():
+                                    yield path
+                    paths = flat_paths()
                 else:
-                    paths = (Path(current, name) for current, _subdirs, names in os.walk(directory)
-                             for name in names)
+                    def walk_paths():
+                        walker = os.walk(directory)
+                        while not expired():
+                            try:
+                                current, _subdirs, names = next(walker)
+                            except StopIteration:
+                                return
+                            for name in names:
+                                if expired():
+                                    return
+                                yield Path(current, name)
+                    paths = walk_paths()
                 for path in paths:
+                    if expired():
+                        return
                     if path.resolve() not in clip_paths:
-                        plan.stray_files.append(path)
-                        work = True
-            plan.jobs += work
-            owners[-1] = work
+                        if not owners[-1]:
+                            plan.jobs += 1
+                            owners[-1] = True
+                        yield "stray_files", [path]
         walked_all = not stopped
         # Classify every present clip. Malformed records and backed-off shas
         # spend no probe; the rest are eligible.
         seen: set[str] = set()
         eligible: list[tuple[int, str, int, list[Path], int, datetime]] = []
         for index, sha, size, present, owner, finished in pending:
+            if expired():
+                return
             kept = sum(_size(path) for path in present)
             if not isinstance(sha, str):
                 plan.unconfirmed_bytes += kept
@@ -469,6 +587,8 @@ class GeneratedMediaRetention:
                 plan.unconfirmed_bytes += kept
                 continue
             eligible.append((index, sha, size, present, owner, finished))
+        if expired():
+            return
         if walked_all:
             # A clip whose file is gone no longer needs a back-off entry.
             self._prune(seen)
@@ -490,10 +610,12 @@ class GeneratedMediaRetention:
         chosen += rest[:max(probe_limit - len(chosen), 0)]
         taken = {item[0] for item in chosen}
         for item in eligible:
+            if expired():
+                return
             if item[0] not in taken:
                 plan.unconfirmed_bytes += sum(_size(path) for path in item[3])
         for position, (_index, sha, size, present, owner, _finished) in enumerate(chosen):
-            if self.monotonic() - started > time_budget:
+            if expired():
                 # Out of time: the rest wait for the next pass.
                 for later in chosen[position:]:
                     plan.unconfirmed_bytes += sum(_size(path) for path in later[3])
@@ -504,26 +626,44 @@ class GeneratedMediaRetention:
             plan.probes += 1
             answer = self.confirm(sha, size)
             if answer is True:
-                plan.clip_files.extend(present)
                 self._forget(sha)
                 if not owners[owner]:
                     owners[owner] = True
                     plan.jobs += 1
+                yield "clip_files", present
             else:
                 plan.unconfirmed_bytes += sum(_size(path) for path in present)
                 # False: not confirmed (404 or wrong length); None: unknown. Both back off.
                 self._record_failure(sha, "missing" if answer is False else "error")
+    def _deadline(self, time_budget: float) -> float:
+        if isinstance(time_budget, bool) or not isinstance(time_budget, (int, float)) or not math.isfinite(time_budget) or time_budget < 0:
+            raise ValueError("time_budget must be a finite non-negative number")
+        return self.monotonic() + time_budget
+
+    def plan(self, store: dict[str, Any], root: Path, now: datetime, *, pressure: str = "normal",
+             job_limit: int = DEFAULT_JOB_LIMIT, probe_limit: int | None = None,
+             time_budget: float = DEFAULT_TIME_BUDGET_SECONDS) -> Plan:
+        plan = Plan()
+        deadline = self._deadline(time_budget)
+        for kind, paths in self._units(store, root, now, pressure=pressure, job_limit=job_limit,
+                                       probe_limit=probe_limit, deadline=deadline, plan=plan):
+            getattr(plan, kind).extend(paths)
         return plan
 
     def sweep(self, store: dict[str, Any], root: Path, now: datetime, *, pressure: str = "normal",
-              **limits: Any) -> dict[str, int]:
-        """Delete what ``plan`` selects, prune emptied job directories, and log the bytes freed."""
-        root = root.resolve()
-        plan = self.plan(store, root, now, pressure=pressure, **limits)
+              job_limit: int = DEFAULT_JOB_LIMIT, probe_limit: int | None = None,
+              time_budget: float = DEFAULT_TIME_BUDGET_SECONDS) -> dict[str, int]:
+        """Confirm and delete incrementally; finish the current unit after expiry."""
+        deadline = self._deadline(time_budget)
+        plan = Plan()
         summary = {"clip_files": 0, "stray_files": 0, "failed": 0, "bytes_freed": 0,
-                   "unconfirmed_bytes_kept": plan.unconfirmed_bytes}
-        touched: set[Path] = set()
-        for kind, paths in (("clip_files", plan.clip_files), ("stray_files", plan.stray_files)):
+                   "unconfirmed_bytes_kept": 0}
+        if self.monotonic() >= deadline:
+            return summary
+        root = root.resolve()
+        for kind, paths in self._units(store, root, now, pressure=pressure, job_limit=job_limit,
+                                       probe_limit=probe_limit, deadline=deadline, plan=plan):
+            touched: set[Path] = set()
             for path in paths:
                 size = _size(path)
                 try:
@@ -537,19 +677,22 @@ class GeneratedMediaRetention:
                 summary[kind] += 1
                 summary["bytes_freed"] += size
                 touched.add(path.parent)
-        for directory in sorted(touched, key=lambda path: len(path.parts), reverse=True):
-            current = directory
-            while len(current.relative_to(root).parts) >= JOB_DIR_DEPTH:
-                try:
-                    current.rmdir()  # only ever removes an EMPTY directory
-                except OSError:
-                    break
-                current = current.parent
-        try:
-            usage = shutil.disk_usage(root)
-            volume = f" used_bytes={usage.used} free_bytes={usage.free} total_bytes={usage.total}"
-        except OSError:
-            volume = " volume=unavailable"
+            for directory in sorted(touched, key=lambda path: len(path.parts), reverse=True):
+                current = directory
+                while self.monotonic() < deadline and len(current.relative_to(root).parts) >= JOB_DIR_DEPTH:
+                    try:
+                        current.rmdir()  # only ever removes an EMPTY directory
+                    except OSError:
+                        break
+                    current = current.parent
+        summary["unconfirmed_bytes_kept"] = plan.unconfirmed_bytes
+        volume = " volume=not_sampled"
+        if self.monotonic() < deadline:
+            try:
+                usage = shutil.disk_usage(root)
+                volume = f" used_bytes={usage.used} free_bytes={usage.free} total_bytes={usage.total}"
+            except OSError:
+                volume = " volume=unavailable"
         log.info("generated media retention pressure=%s clip_files=%d stray_files=%d failed=%d bytes_freed=%d "
                  "unconfirmed_bytes_kept=%d probes=%d jobs=%d%s", pressure, summary["clip_files"],
                  summary["stray_files"], summary["failed"], summary["bytes_freed"], plan.unconfirmed_bytes,

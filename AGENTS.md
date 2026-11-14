@@ -43,6 +43,9 @@
   Recursive cleanup is limited to the renderer's unique managed temporary
   directory.
 
+- `services/source_byte_facts.py` reuses cached audio and visual facts only
+  after the current regular artifact matches its bound SHA-256 and byte size;
+  otherwise facts remain unknown or follow the existing exact-byte probe path.
 - `services/visual_admission.py` owns exact-byte pre-caption OCR/vision-provider decisions;
   the authenticated job visual-admission endpoint queues a bounded background
   whole-job sweep and persists algorithm/byte-bound decisions for endpoint
@@ -305,18 +308,50 @@
   `_patch_page` refuses non-canonical ids before any request. Alias-collision 409s never echo the alias.
 - `burn_server.py` exposes the same typed caption-render route on the posting
   Mac's canonical port-8002 Burn runtime for Rail consumption.
-- `events/` is the repository's append-only chronological ledger: one new
-  `YYYY-MM-DD-HHMM-<branch-slug>.md` file per meaningful event, committed on
-  the work branch. Legacy root `events.md` is frozen history; never edit it or
-  an existing `events/` entry.
+- The canonical repository root `events.md` is the single append-only
+  chronological ledger. Linked worktrees append there and name their branch/ref
+  in a `worktree:` field. Preserve historical `events/` entries unchanged.
 - `SCHEMA.md` describes the current Editor Bay timeline, edit-command, ABN import,
   and render-cache contracts; `services/editor_timeline.py` and `routers/agenticnews.py` own the implementation.
 
 ## Local Contracts
 
+- Scrambler feed writers share one permanent local lock and publish the verified
+  manifest before its data files. Readers verify bounded exact bytes against that
+  manifest before selecting clips and refuse incomplete refreshes, including
+  cached reads. Manual recovery preserves the original data age. Legacy two-file
+  feeds remain supported only without a manifest or managed marker.
+- Generated-media retention shares one finite cooperative deadline across safety
+  scans, confirmation, walking and deletion. Incomplete protection scans authorize
+  no cleanup; a started clip-and-thumbnail unit may finish after expiry. Hold an
+  entire job with a malformed public clip list or artifact descriptor while valid
+  peers proceed. Every primary and declared thumbnail must resolve inside its
+  artifact directory; present nonregular or unreadable artifacts hold the job.
+  Missing artifacts and absent/null optional thumbnails remain supported. Keep
+  missing-list legacy behavior, current newest/old probe fairness and backoff,
+  job/probe caps, private checkpoints and active recovery masters protected.
+- Advertised origin recipes describe the active render lane's actual loop draw:
+  Scrambler uses `split_swap`, Layer B uses `loop_swap`. Preserve default-off
+  origin advertising, nonloop null metadata and existing treatment receipts.
+- `routers/video.py` must persist each queued UI video job before a generation
+  task can debit or call a provider. A completed video may become `done` only
+  after either `jobs.json` or an atomic per-output completion receipt persists.
+  When the final job is deleted, persist an empty mapping if `jobs.json` already
+  exists so restart cannot resurrect the deleted job; projects that have never
+  had a jobs file remain file-free. Single and bulk deletion persist removed
+  jobs before unlinking video files; on save failure they restore in-memory
+  state and return 503 with files intact. Both delete routes are project-scoped:
+  single delete returns 404 for a foreign-project job, while bulk deletion skips
+  foreign-project IDs like missing IDs; neither route can remove foreign jobs
+  or media.
+  The receipt binds every retained artifact to its exact size and SHA-256;
+  its directory must be a real child of the project; restart recovery verifies
+  the receipt before restoring a new job's completed entry.
+  A partial file without a receipt never becomes `done`. If both writes fail,
+  keep the file identity in memory as `processing` and retry persistence on job
+  reads and bulk download. Never reissue a paid provider call to recover it.
 - `services/source_duration_repair.py` accepts `approved_music_id` only as
   6-20 ASCII digits; Unicode numeric characters are invalid repair commands.
-
 - Provider artifact download deadlines accept only finite positive seconds.
   Infinity and numeric overflow use the existing finite default, so a malformed
   setting cannot remove the whole-download deadline. Positive fractional values
@@ -372,6 +407,71 @@
 - `routers/upload.py` passes the legacy cookie-login account to its static
   Python subprocess runner as an argv value. Request values must never be
   interpolated into executable source; the exact account argument is preserved.
+- TikTok upload and cookie-login admission refuse Railway before queue writes
+  or login subprocess creation:
+  a mounted JSON file alone cannot coordinate worker claims or reconcile an
+  ambiguous browser Post after a crash. Enabling hosted uploads requires a
+  durable original-attempt receipt/reconciliation and single-writer claim
+  contract, plus the provider runtime and volume-backed queue migration.
+  Local installs retain the checkout-relative queue and must have an importable
+  callable uploader; upload submission also requires a job store whose existing
+  records have the queue-readable shape and unique job IDs. New records must
+  pass the same shape check before persistence; invalid submissions return 400.
+  Corrupt records are preserved and
+  never replaced with an empty queue. Missing prerequisites or failed
+  writes return 503; the job store itself must be explicitly provisioned as
+  an empty `[]` file for first use. If it is missing later, admission, queue
+  processing, listing and polling fail closed until the original history is
+  restored or an operator rules out prior attempts before provisioning anew.
+  Admission never proves a TikTok publication. A queued,
+  uploading, held, failed, or unproved completed job for the same captured resolved video path or device/inode and cookie account
+  blocks another submission with 409 until the original attempt is reconciled;
+  admission captures that identity and a SHA-256 digest in a worker thread,
+  outside the queue write lock, with a 1 GiB and 30-second streaming budget.
+  Admission and staging accept only regular source files; nonblocking opens
+  and post-open file-type checks refuse FIFOs and devices before any read or
+  provider call, including if a path changes between stat and open.
+  It rechecks the resolved path, inode and change times under the lock before
+  committing the job; concurrent submissions may use the queue meanwhile.
+  The async submit route shields its worker from request cancellation and
+  schedules queue processing when the worker finishes persisting, including
+  after a client disconnect. A wake arriving while the single queue runner is
+  active stays pending until that runner atomically rechecks idle, so a job
+  cannot be stranded between its last empty read and exit. Startup does not
+  automatically post preexisting queued jobs; a normal submission owns wake.
+  Before a new
+  identity-bearing job calls the provider, copy the original inode's bytes to a
+  private temporary file, check its identity and change times around the copy,
+  and require the staged-byte SHA-256 to match the admission digest,
+  and pass only that staged path to the provider. A retargeted request symlink
+  cannot redirect the provider to different bytes; a replaced or changing
+  source fails closed. A newly admitted row with no file identity also refuses
+  the provider call, even if its source appears later. Staging requires enough
+  free space and is removed after the provider returns. Legacy rows without
+  any captured identity fields retain their original execution behavior and
+  require separate reconciliation. A stable local file lock serializes queue writes and the queued-to-uploading
+  claim/cancel decision across worker processes. An unresolved uploading or held
+  claim also bars another provider call for that account, even for a different
+  queued job or process. A quarantined row with a readable account but invalid
+  status likewise blocks that account until reconciled. A quarantined prior
+  attempt with no readable account blocks any new submission or queued claim
+  for its real video path across accounts; if its video path is also unreadable,
+  all new upload claims wait for operator reconciliation. Preserve the original
+  row and allow unrelated known video paths to proceed. A bare provider
+  `Completed` or error return becomes a durable held result with its original
+  claim and return retained; it cannot
+  establish posting success or authorize a repeat. A completed row permits
+  explicit resubmission only with a matching canonical TikTok URL/video ID;
+  cancelled history retains its existing resubmission behavior. A conflict
+  creates no job or provider action.
+  Repeated saved copies of one upload ID, even identical rows, are all held for reconciliation;
+  no copy may execute or authorize a retry, even if one claims a terminal state.
+  Listing and polling expose the held status without making it executable;
+  queue stats count held jobs separately, and listing, polling and stats
+  return 503 rather than an empty queue when the job store is unavailable.
+  The Uploads tab shows held records in their own section with the reconciliation
+  reason and no cancel/retry actions; held records suppress the empty-queue invitation.
+  Other valid jobs remain processable while those source rows are retained.
 - `POST /api/telegram/send` delivers only a media file whose real path is under
   `projects/<project>/<videos|clips|burned|recreate|slideshow-images>/` or the
   legacy `output`/`burn_output` dirs. The volume root beside those dirs holds
@@ -776,6 +876,14 @@
   is ambiguous and must never be submitted again. The existing one-time PA
   interruption retry remains bounded across restarts. Processing deadlines do
   not reset; an already-completed prediction may still be read after downtime.
+- `POST /api/control-plane/v1/job-receipts/by-idempotency-key` is a side-effect-free
+  lost-ack read. It requires the app API key and Control Plane bearer, scoped
+  page/lane/idempotency headers, and the exact original job-create JSON body.
+  It returns only the job ID and status when the durable key and canonical
+  request hash match and the saved status is queued, running, completed, or
+  failed. Missing, foreign, archived, mismatched, or legacy-unhashed jobs
+  require reconciliation; malformed saved statuses fail as unavailable. The
+  lookup must not start or resume work.
 - Application shutdown pauses checkpointed generation instead of deleting its
   paid artifacts. Authenticated, exact-page status/idempotency reads resume the
   same active job after replacement. A kernel-held per-job lock prevents two
@@ -841,6 +949,13 @@
   module and return the same versioned schema and hashes.
 
 ## Verification
+- Run `pytest -q tests/test_generated_media_retention.py tests/test_source_import_flat_retention.py tests/test_scrambler_private_retention.py tests/test_slideshow_runner_ownership.py tests/test_truck_recovery_runner_ownership.py`
+  for retention deadlines, malformed-job holds, probe fairness and protected media ownership.
+- Run `pytest -q tests/test_retention_descriptor_plan_peer_probe.py tests/test_retention_directory_descriptor_peer_probe.py tests/test_retention_resolver_plan_peer_probe.py tests/test_layerb_loop_recipe_runtime.py`
+  for read-only whole-job artifact holds and advertised loop metadata against
+  synthetic native frame/audio renders without providers.
+- Run `pytest -q tests/test_feed_snapshot_eligibility.py tests/test_scrambler_feed_pull.py tests/test_scrambler_feed_pull_producer.py tests/test_scrambler_feed_sync.py`
+  for exact-byte feed snapshots, publication barriers, recovery age and source eligibility.
 - Run `pytest -q tests/test_health_tool_latency.py tests/test_smoke.py`
   for nonblocking single-flight tool refresh, missing-tool degradation and
   the public health response.
@@ -885,13 +1000,17 @@
   HDR encode cases need only ffmpeg/ffprobe; real-master cases additionally
   use the optional `HDR_FIXTURES_DIR` fixture directory.
 
-- Run `pytest -q tests/test_upload_login_account_data.py tests/test_upload_api.py tests/test_upload_cookies.py`
+- Run `pytest -q tests/test_upload_login_account_data.py tests/test_upload_api.py tests/test_upload_locking.py tests/test_upload_cookies.py`
   for literal account transport, injected expressions, login failure responses
-  and existing upload/cookie behavior without launching a browser.
+  and existing upload/cookie behavior without launching a browser. Spawned-process
+  races cover competing claims and cancellation before the winning claim is saved.
 
 - Run `pytest -q tests/test_visual_admission.py` for observed boat-frame OCR
   noise, short readable text, rotated single-frame text, complete coverage,
   unavailable providers, exact-byte binding, and cached-decision behavior.
+- Run `pytest -q tests/test_source_byte_facts.py` for exact artifact-byte audio
+  and visual inventory, cached evidence integrity and scoped Control Plane
+  serialization.
 
 - Run `pytest -q tests/test_control_plane_capability_auth.py` for the capability Bearer boundary and unchanged authorized response.
 - Run `pytest -q tests/test_managed_photo_reservations.py tests/test_control_plane_image_video_execution.py tests/test_job_store_compaction.py`

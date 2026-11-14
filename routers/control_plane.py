@@ -3401,6 +3401,14 @@ async def _run_owned_dossier_generation(job_id: str) -> None:
             elif index in completed_calls and not complete:
                 raise RuntimeError("generation_checkpoint_incomplete_call")
         provider_calls_completed = len(completed_calls)
+        # Commission cap: bind this job before its first paid create (and again,
+        # idempotently, on every resume) so every create below is also reserved
+        # against its commission's lifetime caps. No commission configured for
+        # the page: nothing changes. Malformed config or ledger: fail closed here.
+        await asyncio.to_thread(
+            generation_budget.bind_commission_job,
+            generation_budget.jobs_store_path(), job_id, job.get("pageId"),
+        )
         for call_index in range(calls):
             if not _job_matches_current_master_pages(job):
                 raise RuntimeError("master_pages_strategy_changed")
@@ -4820,11 +4828,11 @@ async def _run_dossier_source_inner(job_id: str) -> None:
                              else (transforms.reverse if vary_transforms else None)),
                     hflip=(scram_transforms.mirror if scram_record is not None
                            else (transforms.mirror if vary_transforms else None)),
-                    # A Scrambler split_swap cut is the Lab's split-and-rotate
-                    # loop path (PR 281): its halves are re-ordered in place,
-                    # so the advertised recipe records loop_split True. Every
-                    # other cut keeps loop_split null (the pre-G39 value).
-                    loop_split=(scram_split_swap or None),
+                    # Both render lanes can reorder a cut's halves. Describe
+                    # the active lane's actual draw in the origin recipe.
+                    loop_split=((scram_split_swap if scram_record is not None
+                                 else (transforms.loop_swap if vary_transforms else None))
+                                or None),
                 )} if advertise_origin() else {}),
             })
             manifest["thumbnail"] = await _thumbnail_manifest(
@@ -7009,6 +7017,89 @@ def _artifact_lyric_timing(job: dict[str, Any], clip: dict[str, Any]) -> dict[st
         raise HTTPException(409, "lyric_timing_binding_invalid") from error
 
 
+def _source_byte_facts_for_artifacts(job_id: str, job: dict[str, Any], limit: int) -> dict[int, dict]:
+    # Keep legacy/default-OFF artifacts byte-for-byte unchanged and do not import
+    # a detector or touch the job store unless a server-owned exact cohort opts in.
+    if os.environ.get("CONTENT_LAB_SOURCE_BYTE_FACTS") != "on":
+        return {}
+    from copy import deepcopy
+    from services import source_byte_facts as facts
+    if not facts.enabled_for(job):
+        return {}
+    snapshot = deepcopy(job)
+    clips = snapshot.get("clips")
+    if not isinstance(clips, list):
+        return {}
+    count = min(100, max(0, limit), len(clips))
+    if count == 0:
+        return {}
+    producer = facts.producer_identity()
+    old = snapshot.get("sourceByteFacts")
+    old = old if isinstance(old, dict) else {}
+    old_evidence = snapshot.get("sourceByteFactsEvidence")
+    old_evidence = old_evidence if isinstance(old_evidence, dict) else {}
+    cursor = snapshot.get("sourceByteFactsCursor", 0)
+    cursor = cursor % count if type(cursor) is int and cursor >= 0 else 0
+    selected = next((i for i in [(cursor + n) % count for n in range(count)]
+                     if isinstance(clips[i], dict) and not facts.reusable_audio(
+                         old.get(str(i)), facts.binding(snapshot, job_id, i, clips[i]), producer, old_evidence.get(str(i)))), None)
+    artifact_root = snapshot.get("artifactRoot")
+    if not isinstance(artifact_root, str) or not artifact_root.strip():
+        return {}
+    root = Path(artifact_root).resolve()
+    results, private = {}, {}
+    for index, clip in enumerate(clips[:count]):
+        if not isinstance(clip, dict):
+            continue
+        path = (root / str(clip.get("path") or "")).resolve()
+        value, evidence = facts.build(snapshot, job_id, index, clip, path,
+                                      allow_probe=(index == selected and root in path.parents), _producer=producer)
+        results[index] = value
+        if evidence is not None:
+            private[index] = evidence
+    if any(value.get("reason") == "audio_probe_busy" for value in results.values()):
+        return results  # An active owned probe must not be overwritten by a busy observer.
+    # Never hold the global writer lock across a child process or a byte read.
+    # Commit only if the exact job/clip context used above is still current.
+    with lock_for(_jobs_path()):
+        store = _load_jobs()
+        current = store.get("jobs", {}).get(job_id)
+        if not isinstance(current, dict) or not facts.enabled_for(current):
+            return {}
+        if any(current.get(k) != snapshot.get(k) for k in
+               ("pageId", "jobId", "recipeSpecHash", "policyHash", "artifactRoot", "sourceKind", "recipeId",
+                "sourceByteFacts", "sourceByteFactsEvidence", "sourceByteFactsCursor")):
+            return {}
+        current_clips = current.get("clips")
+        if not isinstance(current_clips, list) or len(current_clips) < count:
+            return {}
+        for index in results:
+            if (not isinstance(current_clips[index], dict)
+                    or any(current_clips[index].get(k) != clips[index].get(k)
+                           for k in ("path", "sha256", "bytes", "sourceTreatment", "lyricTiming"))):
+                return {}
+        current_visual = current.get("visualAdmission")
+        current_visual = current_visual if isinstance(current_visual, dict) else {}
+        snapshot_visual = snapshot.get("visualAdmission")
+        snapshot_visual = snapshot_visual if isinstance(snapshot_visual, dict) else {}
+        if any(current_visual.get(str(i)) != snapshot_visual.get(str(i)) for i in results):
+            return {}
+        records = current.get("sourceByteFacts")
+        records = dict(records) if isinstance(records, dict) else {}
+        evidence_records = current.get("sourceByteFactsEvidence")
+        evidence_records = dict(evidence_records) if isinstance(evidence_records, dict) else {}
+        for index, value in results.items():
+            records[str(index)] = deepcopy(value)
+        for index, evidence in private.items():
+            evidence_records[str(index)] = deepcopy(evidence)
+        current["sourceByteFacts"] = records
+        current["sourceByteFactsEvidence"] = evidence_records
+        if selected is not None:
+            current["sourceByteFactsCursor"] = (selected + 1) % count
+        _save_jobs(store)
+    return results
+
+
 @router.get("/v1/jobs/{job_id}/artifacts")
 def job_artifacts(
     job_id: str,
@@ -7049,6 +7140,14 @@ def job_artifacts(
         index = boundary.get("index")
         if count is not None and type(index) is int and 0 <= index < count:
             artifact_limit += count - index - 1
+    try:
+        source_byte_facts = _source_byte_facts_for_artifacts(job_id, job, artifact_limit)
+    except Exception:
+        # Inventory is an optional qualification envelope. A missing envelope
+        # remains pending at the scoped consumer; never turn an inventory or
+        # persistence failure into a delivery failure or a fabricated success.
+        log.warning("source_byte_facts_unavailable")
+        source_byte_facts = {}
     artifacts = []
     for index, clip in enumerate(job["clips"][:artifact_limit]):
         artifact = {
@@ -7076,6 +7175,8 @@ def job_artifacts(
         lyric_timing = _artifact_lyric_timing(job, clip)
         if lyric_timing is not None:
             artifact["lyricTiming"] = lyric_timing
+        if index in source_byte_facts:
+            artifact["sourceByteFacts"] = source_byte_facts[index]
         artifacts.append(artifact)
     return {"schema": RESPONSE_SCHEMA, "jobId": job_id, "artifacts": artifacts}
 
