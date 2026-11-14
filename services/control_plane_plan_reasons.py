@@ -60,6 +60,9 @@ SOURCE_IDENTITY_MISSING = "source_identity_missing"
 # A listed pool-supplied page posts finished clips from the Worker's vault pool;
 # the Lab never renders it, so its capability is terminal at zero by design.
 POOL_SUPPLIED = "pool_supplied"
+# Two consecutive terminal photo-job failures on a managed photo page pause new
+# admissions until a later success or the cooldown window passes.
+PHOTO_JOBS_COOLDOWN = "photo_jobs_cooldown"
 
 
 # code -> (family, terminal_by_design, remedy in plain words).
@@ -160,6 +163,10 @@ REASONS: dict[str, tuple[str, bool, str]] = {
     POOL_SUPPLIED: (
         "pool", True,
         "The Worker supplies this page's finished clips from its vault pool; the Lab never renders it.",
+    ),
+    PHOTO_JOBS_COOLDOWN: (
+        "slideshow", False,
+        "The page's last two photo jobs failed; new jobs resume after a later success or 30 minutes. Read the saved job error.",
     ),
 }
 

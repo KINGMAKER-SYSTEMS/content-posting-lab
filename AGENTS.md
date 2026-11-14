@@ -369,6 +369,14 @@
   manifest before selecting clips and refuse incomplete refreshes, including
   cached reads. Manual recovery preserves the original data age. Legacy two-file
   feeds remain supported only without a manifest or managed marker.
+- The optional private originality summary pull is off by default behind
+  `CONTENT_LAB_ORIGINALITY_SUMMARY_FEED_ENABLED=1`, independent of
+  `SCRAMBLER_ENABLED`, and writes only the absolute
+  `CONTENT_LAB_ORIGINALITY_SUMMARY_PATH`. It verifies the manifest digest,
+  `usage_summary_generated_at` binding, reader shape and 26-hour freshness before
+  an atomic 0600 replace, never lets an older generation replace a newer file,
+  refuses symlinked destinations and keeps the last valid file on any error.
+  The upstream publisher of this envelope is not yet qualified; keep it off.
 - Generated-media retention shares one finite cooperative deadline across safety
   scans, confirmation, walking and deletion. Incomplete protection scans authorize
   no cleanup; a started clip-and-thumbnail unit may finish after expiry. Hold an
@@ -432,6 +440,13 @@
   reserved indefinitely, including when the remote result is ambiguous.
   Malformed archived slideshow evidence refuses new direct or ordinary photo
   plans and capacity reads instead of treating a possibly used plan as available.
+- Managed photo pages (PenPal and Twin image-video formats) pause new photo
+  jobs after two consecutive terminal failures, ordered by terminal time.
+  Capabilities advertise zero with `photo_jobs_cooldown` and job creation
+  returns HTTP 409 `photo_jobs_cooldown`; idempotent replays still return the
+  original job. A later completed photo job or thirty minutes after the latest
+  failure reopens admission. The pause is inferred from saved job rows only:
+  no schema or stored breaker state, and it never cancels running jobs.
 
 - `services/abn_factory.py` kinetic-template parameters remain inert JSON inside
   the HTML script. Escape HTML script delimiters while preserving decoded values.
@@ -1008,6 +1023,8 @@
   per-cut reset, against the real executor with media calls stubbed.
 - Run `pytest -q tests/test_feed_snapshot_eligibility.py tests/test_scrambler_feed_pull.py tests/test_scrambler_feed_pull_producer.py tests/test_scrambler_feed_sync.py`
   for exact-byte feed snapshots, publication barriers, recovery age and source eligibility.
+- Run `pytest -q tests/test_usagesum_pull_standalone.py tests/test_usagesum_pull_reader_integration.py tests/test_originality_shadow.py`
+  for the default-off private summary pull, its independent switch and the current reader seam.
 - Run `pytest -q tests/test_health_tool_latency.py tests/test_smoke.py`
   for nonblocking single-flight tool refresh, missing-tool degradation and
   the public health response.
@@ -1067,7 +1084,7 @@
 - Run `pytest -q tests/test_control_plane_capability_auth.py` for the capability Bearer boundary and unchanged authorized response.
 - Run `pytest -q tests/test_managed_photo_reservations.py tests/test_control_plane_image_video_execution.py tests/test_job_store_compaction.py`
   for authenticated photo holds, exact replay, concurrent legacy planning,
-  exhaustion, and archived reservations.
+  exhaustion, archived reservations, and the two-failure photo-job cooldown.
 - Run `pytest -q tests/test_pool_bootstrap_capabilities.py tests/test_pool_supplied_pages.py`
   for pool slideshow discovery, registered recipe priority, the real HTTP
   registry and job snapshot path, and unlisted page capacity.

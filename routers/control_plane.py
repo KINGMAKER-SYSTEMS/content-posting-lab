@@ -131,6 +131,7 @@ from services.control_plane_plan_reasons import (
     INSUFFICIENT_INVENTORY,
     LIBRARY_LOAD_FAILED,
     MATERIAL_PROFILE_MISSING,
+    PHOTO_JOBS_COOLDOWN,
     POOL_SUPPLIED,
     PROMPT_INVENTORY_EXHAUSTED,
     RECIPE_UNRESOLVED,
@@ -468,6 +469,9 @@ def _registered_recipes() -> list[dict[str, Any]]:
 # means this holds even if the bypass logic is ever refactored to be less
 # strict for some other binding kind later.
 #
+# The photo failure cooldown (_photo_jobs_paused) reads the clock only for
+# slideshow bindings, which bypass this cache (above). For cacheable
+# generated/source bindings:
 # Audited and found NOT a factor: no time/wall-clock read (datetime.now(),
 # a lease or expiry window) feeds any reservation or planning function
 # capabilities() calls (_generated_unavailable_prompts,
@@ -919,6 +923,7 @@ def capabilities(
                 _zero_plan_recipe(publication, unresolved_reason, unresolved_detail)
             )
             continue
+        photo_jobs_paused = False
         if pool_supplied_zero:
             max_quantity = 0
         elif slideshow_recipe is not None:
@@ -953,6 +958,9 @@ def capabilities(
                 reserved_media_keys=reserved_keys,
                 opaque_reserved_media=opaque_media,
             ))
+            if _photo_jobs_paused(page_jobs_view, slideshow_recipe, page_id):
+                max_quantity = 0
+                photo_jobs_paused = True
         elif source_recipe is not None:
             unavailable_slots, cut_history = _source_dna_cut_ledger(
                 dossier_source_dna_view, source_recipe, publication["recipeVersion"],
@@ -987,6 +995,8 @@ def capabilities(
         if max_quantity == 0:
             if pool_supplied_zero:
                 zero_reason = POOL_SUPPLIED
+            elif photo_jobs_paused:
+                zero_reason = PHOTO_JOBS_COOLDOWN
             elif slideshow_recipe is not None:
                 zero_reason = explain_empty_slideshow_plan(
                     slideshow_recipe, library, slideshow_recipe.max_quantity, unavailable,
@@ -2193,6 +2203,43 @@ def _source_dna_cut_ledger(
                 order if type(order) is int else 0,
             ))
     return slots, history
+
+
+PHOTO_FAILURE_COOLDOWN_SECONDS = 30 * 60
+
+
+def _photo_jobs_paused(store: dict[str, Any], recipe: Any, page_id: str) -> bool:
+    """Infer a temporary page pause from existing terminal photo-job markers.
+
+    Two consecutive failures pause admissions until a later success or thirty
+    minutes after the latest failure. No durable breaker state or schema is
+    added. Cancelled/active/nonphoto/foreign-page jobs and legacy rows without
+    a photo plan list do not count.
+    """
+    if getattr(recipe, "format_slug", None) not in IMAGE_VIDEO_FORMATS:
+        return False
+    terminals = []
+    for job in store.get("jobs", {}).values():
+        if (not isinstance(job, dict)
+                or job.get("pageId") != page_id
+                or job.get("sourceKind") != "syzygy_slideshow"
+                or job.get("status") not in {"failed", "completed"}
+                or not isinstance(job.get("slideshowPlan"), list)
+                or not any(isinstance(plan, dict) and isinstance(plan.get("photoPlan"), dict)
+                           for plan in job.get("slideshowPlan", []))):
+            continue
+        stamped = compaction.terminal_timestamp(job)
+        if stamped is not None:
+            terminals.append((stamped.timestamp(), job.get("status")))
+    terminals.sort(key=lambda row: row[0], reverse=True)
+    paused = (len(terminals) >= 2
+              and all(status == "failed" for _, status in terminals[:2])
+              and datetime.now(timezone.utc).timestamp() - terminals[0][0]
+                  < PHOTO_FAILURE_COOLDOWN_SECONDS)
+    if paused:
+        log.warning("photo_jobs_paused page=%s cooldown_seconds=%s last_failure=%s",
+                    page_id, PHOTO_FAILURE_COOLDOWN_SECONDS, terminals[0][0])
+    return paused
 
 
 def _slideshow_unavailable_signatures(
@@ -6416,6 +6463,12 @@ async def _create_job_impl(
             }
             start_source = True
         elif slideshow_recipe is not None:
+            if _photo_jobs_paused(store, slideshow_recipe, page_id):
+                raise HTTPException(
+                    status_code=409,
+                    detail="photo_jobs_cooldown",
+                    headers={"X-RT-Zero-Reason": PHOTO_JOBS_COOLDOWN},
+                )
             try:
                 unavailable_signatures = _slideshow_unavailable_signatures(
                     store, slideshow_recipe, page_id,
