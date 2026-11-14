@@ -369,6 +369,14 @@
   manifest before selecting clips and refuse incomplete refreshes, including
   cached reads. Manual recovery preserves the original data age. Legacy two-file
   feeds remain supported only without a manifest or managed marker.
+- The optional private originality summary pull is off by default behind
+  `CONTENT_LAB_ORIGINALITY_SUMMARY_FEED_ENABLED=1`, independent of
+  `SCRAMBLER_ENABLED`, and writes only the absolute
+  `CONTENT_LAB_ORIGINALITY_SUMMARY_PATH`. It verifies the manifest digest,
+  `usage_summary_generated_at` binding, reader shape and 26-hour freshness before
+  an atomic 0600 replace, never lets an older generation replace a newer file,
+  refuses symlinked destinations and keeps the last valid file on any error.
+  The upstream publisher of this envelope is not yet qualified; keep it off.
 - Generated-media retention shares one finite cooperative deadline across safety
   scans, confirmation, walking and deletion. Incomplete protection scans authorize
   no cleanup; a started clip-and-thumbnail unit may finish after expiry. Hold an
@@ -1011,6 +1019,8 @@
   synthetic native frame/audio renders without providers.
 - Run `pytest -q tests/test_feed_snapshot_eligibility.py tests/test_scrambler_feed_pull.py tests/test_scrambler_feed_pull_producer.py tests/test_scrambler_feed_sync.py`
   for exact-byte feed snapshots, publication barriers, recovery age and source eligibility.
+- Run `pytest -q tests/test_usagesum_pull_standalone.py tests/test_usagesum_pull_reader_integration.py tests/test_originality_shadow.py`
+  for the default-off private summary pull, its independent switch and the current reader seam.
 - Run `pytest -q tests/test_health_tool_latency.py tests/test_smoke.py`
   for nonblocking single-flight tool refresh, missing-tool degradation and
   the public health response.
