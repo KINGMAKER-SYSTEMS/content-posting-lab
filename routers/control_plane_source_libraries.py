@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Header, HTTPException, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
 
 from routers.control_plane_recipes import LANE, require_control_plane_bearer
+from services.route_auth import require_worker
 from services.control_plane_source_libraries import (
     SourceLibraryError,
     finalize_source_library,
@@ -44,7 +45,7 @@ def source_library(
         raise HTTPException(error.status_code, error.detail) from error
 
 
-@router.put("/v1/source-libraries/{library_id}/clips/{clip_sha256}")
+@router.put("/v1/source-libraries/{library_id}/clips/{clip_sha256}", dependencies=[Depends(require_worker)])
 async def upload_source_clip(
     library_id: str,
     clip_sha256: str,
@@ -76,7 +77,7 @@ async def upload_source_clip(
         raise HTTPException(error.status_code, error.detail) from error
 
 
-@router.post("/v1/source-libraries/{library_id}/finalize")
+@router.post("/v1/source-libraries/{library_id}/finalize", dependencies=[Depends(require_worker)])
 def finalize(
     library_id: str,
     authorization: str | None = Header(default=None),

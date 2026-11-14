@@ -180,11 +180,11 @@ from services.ffmpeg import (
     FrameGeometryUnavailable, delivery_encode_args, probe_display_size, run_color_correct,
     _COLOR_CORRECT_GATE, _probe_input_duration_seconds as probe_source_output_duration_seconds,
 )
+from services.route_auth import require_worker
 from services.master_pages_contract import SCHEMA as MASTER_PAGES_SCHEMA, canonical_intent, exact_intent, intent_hash
 from services.page_frame import VERTICAL_FRAME, resolved_frame
 from services.pool_supplied_pages import is_pool_supplied
 from services import generation_budget, moderation_retry
-from services.roster_public import require_roster_auth
 from services import clip_similarity
 from services.clip_transforms import CutTransforms, apply_transforms, cut_transforms, transforms_disabled_reason, transforms_enabled, transforms_from_manifest
 from services.clip_variation import cut_grade, cut_variant, varies_clips
@@ -671,7 +671,7 @@ def _require_capabilities_bearer(authorization: str | None = Header(default=None
     require_control_plane_bearer(authorization)
 
 
-@router.get("/v1/safety-controls", dependencies=[Depends(_require_capabilities_bearer)])
+@router.get("/v1/safety-controls", dependencies=[Depends(require_worker), Depends(_require_capabilities_bearer)])
 def safety_controls(response: Response) -> dict[str, Any]:
     # Auth runs before the flag and before any configuration is read.
     if os.getenv("CONTENT_LAB_SAFETY_CONTROLS_ENABLED") != "1":
@@ -699,7 +699,7 @@ def _pool_supplied_recipe_without_library(publication: dict[str, Any]) -> bool:
     )
 
 
-@router.get("/v1/capabilities", dependencies=[Depends(_require_capabilities_bearer)])
+@router.get("/v1/capabilities", dependencies=[Depends(require_worker), Depends(_require_capabilities_bearer)])
 def capabilities(
     x_rt_page_id: str | None = Header(default=None),
     x_page_id: str | None = Header(default=None),
@@ -1255,7 +1255,7 @@ def _current_intent_for_capabilities(
     return next(iter(candidates.values())) if len(candidates) == 1 else None
 
 
-@router.get("/v1/roster", dependencies=[Depends(require_roster_auth)])
+@router.get("/v1/roster", dependencies=[Depends(require_worker)])
 def roster_snapshot(
     x_rt_lane: str | None = Header(default=None),
 ) -> dict[str, Any]:
@@ -1277,7 +1277,8 @@ def roster_snapshot(
     fresh is this" is "when the last Notion sync landed", not "when you
     asked". X-RT-Lane is required for the same reason capabilities requires
     a page id — these endpoints answer scoped machine callers, not bare
-    crawlers.
+    crawlers. Neither header is authentication: the route requires the
+    control-plane bearer (``require_worker``) because the rows are fleet PII.
     """
     if not x_rt_lane or not LANE_RE.match(x_rt_lane):
         raise HTTPException(status_code=400, detail="X-RT-Lane header is required")
@@ -1286,7 +1287,7 @@ def roster_snapshot(
     return projection
 
 
-@router.post("/v1/roster/refresh")
+@router.post("/v1/roster/refresh", dependencies=[Depends(require_worker)])
 async def refresh_roster_snapshot(
     x_rt_lane: str | None = Header(default=None),
     authorization: str | None = Header(default=None),
@@ -5482,7 +5483,7 @@ def _start_syzygy_slideshow(job_id: str) -> None:
     )
 
 
-@router.post("/v1/source-imports")
+@router.post("/v1/source-imports", dependencies=[Depends(require_worker)])
 async def create_source_import(
     x_rt_page_id: str | None = Header(default=None),
     x_rt_lane: str | None = Header(default=None),
@@ -6453,7 +6454,7 @@ async def _create_job_impl(
     return {"schema": RESPONSE_SCHEMA, "jobId": job_id, "status": job["status"]}
 
 
-@router.post("/v1/jobs")
+@router.post("/v1/jobs", dependencies=[Depends(require_worker)])
 async def create_job(
     request: Request,
     x_rt_page_id: str | None = Header(default=None),
@@ -6554,7 +6555,7 @@ def _replay_photo_reservation(
     return receipt
 
 
-@router.post("/v1/photo-plan-reservations")
+@router.post("/v1/photo-plan-reservations", dependencies=[Depends(require_worker)])
 def reserve_photo_plan(
     response: Response,
     x_rt_page_id: str | None = Header(default=None),
@@ -6677,7 +6678,7 @@ def reserve_photo_plan(
     return receipt
 
 
-@router.post("/v1/job-receipts/by-idempotency-key")
+@router.post("/v1/job-receipts/by-idempotency-key", dependencies=[Depends(require_worker)])
 def job_by_idempotency_key(
     x_rt_page_id: str | None = Header(default=None),
     x_rt_lane: str | None = Header(default=None),
@@ -7448,7 +7449,7 @@ def _finish_visual_sweep(job_id: str, sweep_id: str) -> None:
             _mark_visual_sweep(job_id, sweep_id, False)
 
 
-@router.post("/v1/jobs/{job_id}/visual-admission/{index}")
+@router.post("/v1/jobs/{job_id}/visual-admission/{index}", dependencies=[Depends(require_worker)])
 def job_visual_admission(
     job_id: str, index: int, body: dict[str, Any],
     x_rt_page_id: str | None = Header(default=None),

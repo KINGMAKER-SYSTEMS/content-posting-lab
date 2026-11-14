@@ -29,7 +29,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from fastapi import APIRouter, Body, Header, HTTPException
+from fastapi import APIRouter, Body, Depends, Header, HTTPException
 
 from routers.control_plane import (
     PAGE_ID_RE,
@@ -40,6 +40,7 @@ from routers.control_plane_recipes import LANE, require_control_plane_bearer
 from services import roster
 from services.control_plane_slideshows import library_subject, library_subject_holder
 from services.json_store import lock_for
+from services.route_auth import require_worker
 from services.master_pages_contract import (
     EXTERNAL_PAGE_SOURCES,
     REQUIRED_MATERIAL_FIELDS,
@@ -126,7 +127,7 @@ def _validated_intent(page_id: str, body: Any) -> dict[str, Any]:
     return intent
 
 
-@router.put("/v1/external-pages/{page_id}")
+@router.put("/v1/external-pages/{page_id}", dependencies=[Depends(require_worker)])
 def register_external_page(
     page_id: str,
     authorization: str | None = Header(default=None),
@@ -195,7 +196,7 @@ def register_external_page(
     }
 
 
-@router.delete("/v1/external-pages/{page_id}")
+@router.delete("/v1/external-pages/{page_id}", dependencies=[Depends(require_worker)])
 def remove_external_page(
     page_id: str,
     authorization: str | None = Header(default=None),
