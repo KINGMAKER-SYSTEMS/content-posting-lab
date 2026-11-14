@@ -50,7 +50,6 @@ Env names are kept in lockstep with the existing switches:
 from __future__ import annotations
 
 import hashlib
-import fcntl
 import json
 import logging
 import fcntl
