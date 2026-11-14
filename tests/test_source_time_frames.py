@@ -1,9 +1,7 @@
-"""Self-healing sourced-video supply: every replenish run cuts NEW time frames.
+"""Sourced-video supply uses unused origin moments within existing masters.
 
-Operator rule (2026-09-25): only the exact posted clip may never post again; a
-different time frame of the same master (another start or another length) is
-a new video. A long master therefore holds hundreds of cuts, and a replenish
-run must never spend renders re-cutting a time frame this page already has.
+Owner 2026-11-12 supersedes the older permission for overlapping windows with a
+different offset or length. Exhaustion must be named, never disguised as runway.
 """
 
 from dataclasses import replace
@@ -156,14 +154,15 @@ def test_a_seed_reproduces_its_plan_and_each_run_differs():
     assert {cut.slot_id for cut in first} != {cut.slot_id for cut in other}
 
 
-def test_a_long_master_sustains_a_month_of_supply_at_full_run_size():
-    # A page needs ~150 clips a month; the Worker asks for up to the Lab's
-    # per-run ceiling (10). A 600 s master with a 210 s floor must keep
-    # filling every run with unique time frames well past that.
+def test_master_runway_is_bounded_by_unused_seconds_without_overlap_credit():
     recipe, _ = _long_page_master_recipe()
     runs, served = _runs(recipe, 20)
-    assert all(len(run) == 10 for run in runs)
-    assert len(served) == 200
+    cuts = [cut for run in runs for cut in run]
+    assert cuts and len(cuts) < 200
+    assert sum(cut.duration_ms for cut in cuts) <= 600_000 - 210_000
+    for index, cut in enumerate(cuts):
+        assert all(not _overlaps(cut, other) for other in cuts[index + 1:])
+    assert plan_source_cuts(recipe, 1, served) == []
 
 
 def test_job_records_its_seed_and_the_plan_is_reproducible(lab):
@@ -213,12 +212,9 @@ def test_new_recipe_revision_does_not_recut_seven_of_ten_windows(lab):
     assert repeated == [], f"{len(repeated)} of 10 time frames re-cut"
 
 
-def test_a_tiny_master_cuts_every_window_once_then_answers_source_windows_exhausted(lab, monkeypatch):
-    # A 6 s master holds five whole-second time frames (5 s at 0/1 s, 5.5 s
-    # at 0/0.5 s, 6 s at 0), then four more at half and quarter-second starts.
-    # Each is cut exactly once; then capability reads 0 and job creation
-    # answers 409 source_windows_exhausted (the page needs new footage)
-    # instead of re-rendering a window the Worker would refuse as a repeat.
+def test_tiny_master_has_one_fresh_use_then_named_exhaustion(lab, monkeypatch):
+    # One 5-6 s cut exhausts a six-second master: alternate offsets and
+    # lengths cannot turn overlapping moments into fresh footage.
     client, _, _ = lab
     resolve = cp._dossier_source_recipe
 
@@ -230,7 +226,7 @@ def test_a_tiny_master_cuts_every_window_once_then_answers_source_windows_exhaus
 
     monkeypatch.setattr(cp, "_dossier_source_recipe", tiny)
     frames = []
-    for run in range(9):
+    for run in range(1):
         capability = client.get(
             "/api/control-plane/v1/capabilities", headers={"X-RT-Page-Id": PAGE_ID, "Authorization": f"Bearer {TOKEN}"},
         ).json()["capabilities"]
@@ -246,10 +242,9 @@ def test_a_tiny_master_cuts_every_window_once_then_answers_source_windows_exhaus
             created.json()["jobId"], status="completed",
             completedAt=f"2026-09-30T12:00:{run:02d}+00:00",
         )
-    assert sorted(set(frames[:5])) == [(0, 5_000), (0, 5_500), (0, 6_000), (500, 5_500), (1_000, 5_000)]
-    assert len(set(frames)) == len(frames), "no window is cut twice"
-    assert all(start % 1_000 for start, _ in frames[5:]), frames[5:]
-    assert {start % 1_000 for start, _ in frames[5:]} <= {250, 500, 750}
+    assert len(frames) == 1
+    start, duration = frames[0]
+    assert 5_000 <= duration <= 6_000 and 0 <= start <= 6_000 - duration
     capability = client.get(
         "/api/control-plane/v1/capabilities", headers={"X-RT-Page-Id": PAGE_ID, "Authorization": f"Bearer {TOKEN}"},
     ).json()["capabilities"]

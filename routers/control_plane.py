@@ -116,6 +116,7 @@ from services.control_plane_sources import (
     explain_empty_source_plan,
     plan_source_cuts,
     source_cut_is_planned,
+    source_cut_overlaps_used_frames,
     source_cut_durations,
     resolve_source_recipe,
     source_window_exclusions,
@@ -2120,8 +2121,9 @@ def _source_dna_cut_ledger(
     The second value says when each time frame was last cut (its job's
     completedAt, else createdAt; archived cuts keep it as ``usedAt``), so
     plan_source_cuts can vary each re-cut against the most recent ones and
-    prefer the least recently cut footage. A cut without a time counts as the
-    oldest.
+    spread unused cuts away from recent ones. Eligibility still refuses every
+    overlap, regardless of that timestamp. A cut without a time counts as the
+    oldest for variety only.
     """
     master_shas = {master.sha256 for master in source_recipe.masters}
     slots: set[str] = set()
@@ -3399,6 +3401,14 @@ async def _run_owned_dossier_generation(job_id: str) -> None:
             elif index in completed_calls and not complete:
                 raise RuntimeError("generation_checkpoint_incomplete_call")
         provider_calls_completed = len(completed_calls)
+        # Commission cap: bind this job before its first paid create (and again,
+        # idempotently, on every resume) so every create below is also reserved
+        # against its commission's lifetime caps. No commission configured for
+        # the page: nothing changes. Malformed config or ledger: fail closed here.
+        await asyncio.to_thread(
+            generation_budget.bind_commission_job,
+            generation_budget.jobs_store_path(), job_id, job.get("pageId"),
+        )
         for call_index in range(calls):
             if not _job_matches_current_master_pages(job):
                 raise RuntimeError("master_pages_strategy_changed")
@@ -4215,6 +4225,45 @@ async def _skip_refused_scrambler_cut(job: dict, job_id: str, record: dict,
     refused.append(reason)
 
 
+def _legacy_source_cut_freshness_refusal(job_id, recipe, master, start_ms, duration_ms):
+    """Recheck queued legacy cuts against durable local-master reservations.
+
+    Current job owns its own already-stored reservation. Other queued/running,
+    completed and archived cuts still block the entire used interval. Enqueue
+    uses the same lock and sees this job's reservation, so a fresh plan cannot
+    race this check by allocating the same local-master seconds.
+    """
+    with lock_for(_jobs_path()):
+        store = _load_jobs()
+        if job_id not in store["jobs"]:
+            raise RuntimeError("source_freshness_history_unknown")
+        other_store = {**store, "jobs": {
+            key: value for key, value in store["jobs"].items() if key != job_id
+        }}
+        # Lost bounds for this exact master cannot be treated as unused.
+        # Keep this refusal candidate-specific so unrelated master siblings
+        # can still deliver. The archive uses the same compact cut fields.
+        prior_cuts = [
+            cut for prior in other_store["jobs"].values()
+            if isinstance(prior, dict)
+            and prior.get("sourceKind") == "dossier_source_dna"
+            and prior.get("status") in SOURCE_DNA_UNAVAILABLE_STATUSES
+            for cut in prior.get("sourceCuts", []) if isinstance(cut, dict)
+        ]
+        prior_cuts.extend((other_store.get(compaction.ARCHIVE_INDEX_KEY, {}) or {}).get("sourceDnaCuts", []))
+        for cut in prior_cuts:
+            if not isinstance(cut, dict) or cut.get("masterSha256") != master.sha256:
+                continue
+            prior_start, prior_duration = cut.get("startMs"), cut.get("durationMs")
+            if (type(prior_start) is not int or type(prior_duration) is not int
+                    or prior_start < 0 or prior_duration <= 0
+                    or prior_start + prior_duration > master.duration_ms):
+                return "source_freshness_history_unknown"
+        slots, _history = _source_dna_cut_ledger(other_store, recipe, "")
+        return ("source_fresh_cut_needed" if source_cut_overlaps_used_frames(
+            recipe, slots, master, start_ms, duration_ms) else None)
+
+
 _scrambler_page_gates = weakref.WeakValueDictionary()
 
 
@@ -4426,6 +4475,7 @@ async def _run_dossier_source_inner(job_id: str) -> None:
     recent_cuts: list = []
     skipped_backup_cuts: list = []
     refused_scrambler_cuts: list = []
+    refused_legacy_cuts: list[str] = []
     try:
         if vary_look or vary_transforms:
             # One read of the job store, inside the try that terminalizes the
@@ -4502,6 +4552,18 @@ async def _run_dossier_source_inner(job_id: str) -> None:
                         ScramblerOriginalityUnavailable) as refusal:
                     await _skip_refused_scrambler_cut(job, job_id, scram_record, refusal,
                                                       refused_scrambler_cuts)
+                    continue
+            if scram_record is None:
+                reason = await _settle_source_call(
+                    _legacy_source_cut_freshness_refusal,
+                    job_id, recipe, master, start_ms, duration_ms,
+                )
+                if reason:
+                    # Old queued snippets do not inherit freshness from a
+                    # former planner verdict. Skip only this candidate.
+                    log.warning("source_cut_refused page=%s job=%s cut=%s reason=%s",
+                                job["pageId"], job_id, index, reason)
+                    refused_legacy_cuts.append(reason)
                     continue
             try:
                 source = await _cached_source_master(job["pageId"], master, job_id)
@@ -4800,6 +4862,8 @@ async def _run_dossier_source_inner(job_id: str) -> None:
             raise RuntimeError("source_dna_master_unavailable")
         if refused_scrambler_cuts and not manifests:
             raise RuntimeError(refused_scrambler_cuts[0])
+        if refused_legacy_cuts and not manifests:
+            raise RuntimeError(refused_legacy_cuts[0])
     except asyncio.CancelledError:
         if not scramble:
             shutil.rmtree(job_root, ignore_errors=True)

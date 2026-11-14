@@ -239,7 +239,12 @@ class CaptionRenderRequest(BaseModel):
     @model_validator(mode="after")
     def validate_exact_lines(self) -> "CaptionRenderRequest":
         if self.style.line_breaks is not None:
-            canonical = lambda value: " ".join(value.split()).lower()
+            # Line spelling, in this order, the same everywhere (Worker, rail, Lab): NFC, strip Cf (Unicode
+            # format characters), collapse whitespace, lowercase. The first three are the drawn caption's rule
+            # (``_normalized``); a saved line that differs from the caption only by a format character is the
+            # same text. The order is fixed on purpose: stripping before NFC would only change the contrived
+            # case of a format character between a base letter and its combining mark.
+            canonical = lambda value: " ".join(_normalized(value).split()).lower()
             if canonical(" ".join(self.style.line_breaks)) != canonical(self.caption):
                 raise ValueError("line_breaks must preserve the caption text")
         return self
@@ -564,6 +569,33 @@ def _load_font(font_path: Path, size_px: int) -> ImageFont.FreeTypeFont:
         ) from error
 
 
+def _normalized(text: str) -> str:
+    """The canonical text rule, shared with the Worker and the rail (lane capvisible).
+
+    1. NFC, so a decomposed "e + U+0301" is the drawn "\u00e9" the font has.
+    2. Remove Unicode format and zero-width characters (category Cf: soft hyphen,
+       U+200B-U+200F, U+202A-U+202E, U+2060-U+2064, U+FEFF). They draw nothing and
+       take no room, so the picture never showed them.
+    3. The glyph check (``_require_drawable_text``) then runs on what remains.
+       U+FE0F, the blank fillers and emoji are not Cf and stay for it to refuse.
+    """
+
+    if text.isascii():
+        return text
+    return "".join(char for char in unicodedata.normalize("NFC", text) if unicodedata.category(char) != "Cf")
+
+
+def _drawn_line(text: str, text_case: str) -> str:
+    """One saved line as it is drawn: cased, normalised, whitespace as the wrap path leaves it.
+
+    The wrap path rebuilds every line from single-space-separated words, so a saved
+    line gets the same treatment: tab, NBSP, U+3000 and runs of spaces become one
+    space, and no space-class character reaches the glyph gate unchecked.
+    """
+
+    return " ".join(_normalized(_cased(text, text_case)).split())
+
+
 @functools.lru_cache(maxsize=32)
 def _font_codepoints(font_bytes: bytes) -> frozenset[int]:
     """Read real glyph coverage from the installed font's cmap, not Pillow's layout."""
@@ -808,6 +840,34 @@ def render_caption_overlay(
     the whole full-screen canvas.
     """
 
+    return _render_caption(request, font_dir=font_dir, fit_rows=fit_rows)[0]
+
+
+def render_caption_with_background(
+    request: CaptionRenderRequest | CaptionRenderRequestV2,
+    *,
+    font_dir: Path,
+    fit_rows: tuple[int, int] | None = None,
+) -> tuple[CaptionRenderResult, bytes | None]:
+    """``render_caption_overlay`` plus the same overlay with the words left out.
+
+    The second value is a transparent 1080x1920 PNG holding only the box or
+    highlight behind the text, placed exactly as in the full overlay (same fit,
+    same size, same inversion), or None when the style has no background. It is
+    what the picture looks like around the words, which the post-render ink
+    check needs in order to tell the words from their background.
+    """
+
+    return _render_caption(request, font_dir=font_dir, fit_rows=fit_rows, want_background=True)
+
+
+def _render_caption(
+    request: CaptionRenderRequest | CaptionRenderRequestV2,
+    *,
+    font_dir: Path,
+    fit_rows: tuple[int, int] | None = None,
+    want_background: bool = False,
+) -> tuple[CaptionRenderResult, bytes | None]:
     style = request.style
     font_path, font_bytes = _resolve_font(font_dir, style.font)
     font_size_px = max(1, round(style.size_pt * _OUTPUT_SCALE))
@@ -819,13 +879,14 @@ def render_caption_overlay(
             fonts[size] = _load_font(font_path, size)
         return fonts[size]
 
-    rendered_source = _cased(request.caption, style.case)
+    rendered_source = _normalized(_cased(request.caption, style.case))
     if style.line_breaks is not None:
-        lines = [_cased(line, style.case) for line in style.line_breaks]
+        lines = [_drawn_line(line, style.case) for line in style.line_breaks]
     else:
         lines = rendered_source.replace("\r\n", "\n").replace("\r", "\n").split("\n")
-    if not lines:
-        raise CaptionRenderError("CAPTION_EMPTY", "caption produced no renderable lines")
+    # The split always returns a line and the request needs one visible
+    # character, so "no lines" cannot happen; _require_drawable_text refuses
+    # what a line holds.
 
     if style.line_breaks is None:
         lines = _wrap_preserving_explicit_newlines("\n".join(lines), style.line_balance)
@@ -908,6 +969,7 @@ def render_caption_overlay(
                         fill=background_fill,
                     )
 
+        background_image = image.copy() if want_background and style.background != "none" else None
         for record in line_records:
             if not record["text"]:
                 continue
@@ -942,6 +1004,8 @@ def render_caption_overlay(
         # down, the first line ends up at the bottom and a left-aligned
         # caption sits against the right margin. A rotation, never a mirror.
         image = image.transpose(Image.Transpose.ROTATE_180)
+        if background_image is not None:
+            background_image = background_image.transpose(Image.Transpose.ROTATE_180)
         for record in line_records:
             record["x_px"] = FRAME_WIDTH - record["x_px"]
             record["center_y_px"] = FRAME_HEIGHT - record["center_y_px"]
@@ -949,6 +1013,11 @@ def render_caption_overlay(
     output = io.BytesIO()
     image.save(output, format="PNG", optimize=False, compress_level=9)
     png_bytes = output.getvalue()
+    background_png = None
+    if background_image is not None:
+        background_output = io.BytesIO()
+        background_image.save(background_output, format="PNG", optimize=False, compress_level=9)
+        background_png = background_output.getvalue()
 
     effective_style = style.model_dump(mode="json", exclude_none=True)
     renderer = {
@@ -990,4 +1059,4 @@ def render_caption_overlay(
             },
         }
     result_model = CaptionRenderResultV2 if picture_frame is not None else CaptionRenderResult
-    return result_model.model_validate(result_payload)
+    return result_model.model_validate(result_payload), background_png
