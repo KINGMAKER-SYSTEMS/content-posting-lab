@@ -296,3 +296,19 @@ def test_telegram_router_has_no_dead_sounds_notion_import():
     assert not hasattr(tg_router, "sync_sounds_from_notion"), (
         "dead `sync_sounds_from_notion` import leaked back into routers/telegram.py"
     )
+
+
+def test_dedup_preserves_external_owner_and_never_merges_its_inventory(sync_client):
+    _add_page('ns-tt-example', 'Same Handle', source='northstar')
+    _add_page('acct:same', 'Same Handle', source='notion', project='existing-project')
+    config = tg.load_config()
+    config['inventory'] = {'ns-tt-example': [{'id': 'external-media'}],
+                           'acct:same': [{'id': 'notion-media'}]}
+    tg.save_config(config)
+    before_roster = roster.ROSTER_PATH.read_bytes()
+    before_inventory = tg.CONFIG_PATH.read_bytes()
+    response = sync_client.post('/api/roster/dedup')
+    assert response.status_code == 200
+    assert response.json()['removed'] == response.json()['inventory_merged'] == 0
+    assert roster.ROSTER_PATH.read_bytes() == before_roster
+    assert tg.CONFIG_PATH.read_bytes() == before_inventory

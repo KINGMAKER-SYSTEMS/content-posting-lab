@@ -104,3 +104,18 @@ def test_transforms_keep_the_cut_colour_tags(tmp_path):
     after = _streams(tagged)["video"]
     for key in ("color_primaries", "color_transfer", "color_space"):
         assert after[key] == before[key], key
+
+
+def test_disabled_transforms_keep_exact_bytes_without_probing_or_encoding(tmp_path, monkeypatch):
+    source = tmp_path / "cut.mp4"
+    _clip(source, seconds=0.5)
+    before = source.read_bytes()
+    entries = set(tmp_path.iterdir())
+
+    def unexpected(*_args, **_kwargs):
+        raise AssertionError("disabled effects must not run a subprocess")
+
+    monkeypatch.setattr(subprocess, "run", unexpected)
+    apply_transforms(source, CutTransforms(), ENCODE)
+    assert source.read_bytes() == before
+    assert set(tmp_path.iterdir()) == entries

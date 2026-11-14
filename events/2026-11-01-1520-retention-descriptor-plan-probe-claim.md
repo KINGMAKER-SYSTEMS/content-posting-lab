@@ -1,0 +1,3 @@
+# 2026-11-01 15:20 UTC — nonshipping read-only retention descriptor probe
+
+Claim own isolated evidence-only successor of exact3317fd9e3455b0a3de6d281a2484d32a846125146bb before adding tests. Check persisted clip dictionaries with missing/null/out-of-job paths using actual atomic_save/reload and actual retention.plan, never sweep/unlink. Include confirmed-peer, empty-list legacy and known-unconfirmed controls. Runtime/schema/policy unchanged; no competing fix or owner edits. No Python/app imports, pytest/media/provider/install or publication before root/peer admission. Candidate gap remains unproven until actual bounded native evidence.

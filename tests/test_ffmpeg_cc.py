@@ -82,9 +82,27 @@ def test_playback_speed_changes_pts_even_without_color_treatment():
     assert build_cc_filter({"grain": 20}, playback_speed=0.75).endswith(
         "setpts=PTS/0.750000"
     )
-    for invalid in (0.49, 2.01, True, float("nan")):
+    # The Scrambler's slow vocabulary reaches 0.3, so the validated floor is
+    # 0.3 (not the historical 0.5); both boundaries stay pinned.
+    assert build_cc_filter(None, playback_speed=0.3) == "setpts=PTS/0.300000"
+    assert build_cc_filter(None, playback_speed=2.0) == "setpts=PTS/2.000000"
+    for invalid in (0.29, 2.01, True, float("nan")):
         with pytest.raises(ValueError, match="playback_speed"):
             build_cc_filter(None, playback_speed=invalid)
+
+
+def test_atempo_chain_stays_inside_ffmpeg_per_filter_bounds():
+    from services.ffmpeg import _atempo_chain
+
+    # Single instance covers 0.5-2.0 unchanged.
+    assert _atempo_chain(1.0) == "atempo=1.000000"
+    assert _atempo_chain(0.75) == "atempo=0.750000"
+    # The Scrambler's 0.3-0.49 slow draws chain two instances; the pair must
+    # multiply back to the drawn speed and each stay inside 0.5-2.0.
+    for speed in (0.3, 0.35, 0.45, 0.49):
+        chain = _atempo_chain(speed)
+        assert chain == f"atempo=0.500000,atempo={speed * 2:.6f}"
+    assert _atempo_chain(0.25) == "atempo=0.500000,atempo=0.500000"
 
 
 def test_playback_speed_survives_an_effectively_neutral_color_treatment():

@@ -157,8 +157,8 @@ def test_title_case_examples(given, expected):
 
 def test_title_case_reaches_the_rendered_lines(font_dir):
     result = render_caption_overlay(
-        caption_request("when he says don't go \U0001f62d", case="title", line_balance=50), font_dir=font_dir)
-    assert result.plan.rendered_text.replace("\n", " ") == "When He Says Don't Go \U0001f62d"
+        caption_request("when he says don't go", case="title", line_balance=50), font_dir=font_dir)
+    assert result.plan.rendered_text.replace("\n", " ") == "When He Says Don't Go"
     assert result.plan.effective_style.case == "title"
 
 

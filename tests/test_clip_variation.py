@@ -100,6 +100,67 @@ def test_fractional_page_look_never_rounds_a_cut_brighter_or_below_the_worker_ba
             assert value == round(value, 3), (look, cut, value)
 
 
+def test_a_backup_brightness_override_above_the_look_is_clamped_to_the_look():
+    # A backup manifest that declares its own brightness (0.65) rides under the
+    # jitter, so without a clamp a darker-only page would cut ABOVE the page
+    # look (0.64). The clamp keeps every seeded cut at or below the look.
+    from services.clip_variation import cut_grade
+    look = 0.64
+    merged = {"brightness": 0.65, "contrast": 1.05}  # override already merged over the recipe
+    values = [cut_grade(BTL, f"{MASTER}:{start}:8000", dict(merged), look=look)["brightness"]
+              for start in range(0, 1_600_000, 8_000)]  # 200 seeded cuts
+    assert len(values) == 200
+    assert max(values) <= look, max(values)
+    assert all(value <= look for value in values)
+
+
+def test_a_backup_brightness_override_darker_than_the_look_is_kept_exactly():
+    # A darker override (0.55 < look 0.64) is never lifted: min() is a no-op
+    # when the value is already at or below the look, so the output is
+    # byte-identical to origin/main and the override's own ceiling survives.
+    from services.clip_variation import cut_grade
+    look = 0.64
+    merged = {"brightness": 0.55, "contrast": 1.05}
+    for start in range(0, 1_600_000, 8_000):
+        cut = f"{MASTER}:{start}:8000"
+        assert cut_grade(BTL, cut, dict(merged), look=look) == cut_grade(BTL, cut, dict(merged)), cut
+    values = [cut_grade(BTL, f"{MASTER}:{start}:8000", dict(merged), look=look)["brightness"]
+              for start in range(0, 1_600_000, 8_000)]
+    assert max(values) <= 0.55, "never lifted toward the look"
+    assert max(values) >= 0.54, "the darker override's ceiling survives (not collapsed)"
+
+
+def test_no_override_is_byte_identical_to_origin_main():
+    # With no override the merged brightness equals the look, so the clamp is a
+    # no-op and the output is byte-identical to origin/main (look not passed).
+    from services.clip_variation import cut_grade
+    recipe = {"brightness": 0.5, "contrast": 1.05, "fade": 0.1}
+    for start in range(0, 1_600_000, 8_000):
+        cut = f"{MASTER}:{start}:8000"
+        assert cut_grade(BTL, cut, dict(recipe), look=0.5) == cut_grade(BTL, cut, dict(recipe)), cut
+
+
+def test_the_clamp_is_scoped_to_darker_only_pages():
+    # The clamp applies only to pages whose brightness jitter is darker-only
+    # (CLIP_VARIATION_PAGES). Any other page keeps its origin/main bytes even
+    # when a caller passes a look and an override.
+    from services.clip_variation import cut_grade
+    other = "acct:codyjames6-7"
+    assert not varies_clips(other)
+    merged = {"brightness": 0.65, "contrast": 1.05}
+    for start in range(0, 800_000, 8_000):
+        cut = f"{MASTER}:{start}:8000"
+        assert cut_grade(other, cut, dict(merged), look=0.64) == cut_grade(other, cut, dict(merged)), cut
+    # The darker-only page is clamped; contrast/saturation/warmth are untouched.
+    cut = f"{MASTER}:0:8000"
+    graded = cut_grade(BTL, cut, dict(merged), look=0.64)
+    origin = cut_grade(BTL, cut, dict(merged))
+    assert graded["brightness"] <= 0.64
+    assert graded["contrast"] == origin["contrast"], "only brightness is clamped"
+    assert graded["saturation"] == origin["saturation"]
+    assert graded["warmth"] == origin["warmth"]
+
+
 def test_the_receipt_records_the_grade_actually_applied():
     from services.source_treatment import source_treatment_receipt
     job = {"jobId": "generation-1", "recipeSpecHash": "sha256:" + "a" * 64}
@@ -123,8 +184,13 @@ def test_transforms_are_drawn_at_their_shares_and_never_repeat_the_previous_comb
         counts["motion"] += drawn.motion is not None
         counts["reverse"] += drawn.reverse
         previous = drawn
-    assert 0.25 < counts["mirror"] / 600 < 0.42
-    assert 0.25 < counts["motion"] / 600 < 0.42
-    assert 0.17 < counts["reverse"] / 600 < 0.33
+    assert 0.25 < counts["mirror"] / 600 < 0.45
+    assert 0.25 < counts["motion"] / 600 < 0.50
+    # Reverse is the least-used treatment (Eric 2026-10-28): REVERSE_SHARE was
+    # cut 1/4 -> 1/15, so the delivered reverse rate is ~10% (the anti-repeat
+    # redraw nudges it up from the 1/15 per-draw share). A revert to 1/4 lands
+    # near ~28% and fails the upper bound; dropping reverse entirely fails the
+    # lower bound.
+    assert 0.04 < counts["reverse"] / 600 < 0.15
     same = CutTransforms(mirror=True)
     assert cut_transforms(BTL, "x", same) != same

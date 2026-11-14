@@ -1,0 +1,20 @@
+{
+  "generated_at": "2027-01-15T12:00:00Z",
+  "origins": {
+    "1uMmco2zNZc": {
+      "duration_s": 900.0,
+      "seconds": [
+        [0, 300, "@fixture-this-page", 2, "2027-01-12T21:30:00-0400"],
+        [600, 900, "@fixture-other-page", 1, "2027-01-10T09:15:00-0500"]
+      ]
+    },
+    "FxTure0id01": {
+      "duration_s": null,
+      "seconds": []
+    }
+  },
+  "masters": {
+    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": {"origin_id": "1uMmco2zNZc", "offset_s": 600.0},
+    "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb": {"origin_id": "FxTure0id01", "offset_s": null}
+  }
+}

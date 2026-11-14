@@ -6,17 +6,22 @@ import json
 from pathlib import Path
 
 import pytest
+import httpx
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 import routers.control_plane as cp
 import routers.control_plane_recipes as recipes
 import services.dossier_ingredients as ingredients_module
+from services.content_engine_registry import resolve_material_profile
 from services.control_plane_slideshows import (
+    SyzygyError,
     SyzygyLibrary,
     SyzygyObject,
+    library_subject,
     plan_slideshows,
     resolve_slideshow_recipe,
+    slideshow_library_address,
 )
 from services.dossier_ingredients import (
     build_dossier_ingredient_catalog,
@@ -42,7 +47,7 @@ ENGINE = "sourced_slideshow"
 NICHE = "meme"
 LIBRARY_ID = f"syzygy:{LANE}:{SUBJECT}"
 RECIPE_ID = f"{FORMAT}:master"
-RENDERER_REVISION = "d" * 64
+RENDERER_REVISION = "d" * 40
 
 
 def _library(count: int = 5) -> SyzygyLibrary:
@@ -239,6 +244,31 @@ def test_slideshow_recipe_resolves_only_a_full_pinned_publication(monkeypatch):
     assert resolve_slideshow_recipe({**payload, "engine": "ai_video"}) is None
 
 
+def test_rising_tides_pages_keep_the_handle_subject_byte_for_byte(monkeypatch):
+    """A Notion-owned page addresses syzygy:{lane}:{handle slug}, as always.
+
+    Only a page whose intent is owned outside Notion (see
+    tests/test_northstar_slideshow_library.py) derives from its page id.
+    """
+    payload = publication(monkeypatch)
+    spec = json.loads(payload["recipeSpecCanonical"])
+    intent = spec["masterPages"]
+    assert intent["source"] == "notion"
+    profile = resolve_material_profile(payload, spec)
+    assert slideshow_library_address(profile, intent) == (LIBRARY_ID, LANE, SUBJECT)
+    # The page id never enters a Rising Tides subject.
+    assert slideshow_library_address(
+        profile, {**intent, "pageId": "tt-some-other-id"},
+    ) == (LIBRARY_ID, LANE, SUBJECT)
+    # Casefold, collapse every non-[a-z0-9] run to one '-', strip the ends.
+    assert slideshow_library_address(
+        profile, {**intent, "handle": "Holy..Fumble_2"},
+    ) == (f"syzygy:{LANE}:holy-fumble-2", LANE, "holy-fumble-2")
+    assert library_subject(PAGE_ID, HANDLE, "notion") == SUBJECT
+    assert library_subject(PAGE_ID, HANDLE, None) == SUBJECT
+    assert resolve_slideshow_recipe(payload, require_runtime=False).subject == SUBJECT
+
+
 def test_slideshow_recipe_requires_the_runtime(monkeypatch):
     monkeypatch.delenv("CONTENT_LAB_GENERATION_MODE", raising=False)
     monkeypatch.delenv("SYZYGY_API_URL", raising=False)
@@ -333,6 +363,41 @@ def test_capability_and_jobs_bind_master_hash_and_reserve_unique_plans(lab):
     second_signatures = {plan["signature"] for plan in second_job["slideshowPlan"]}
     assert first_signatures.isdisjoint(second_signatures)
     assert len(started) == 2
+
+
+def test_slideshow_job_replay_survives_library_outage(lab, monkeypatch):
+    client, _, started, _, payload = lab
+    key = "slideshow-replay-library-outage"
+    first = client.post(
+        "/api/control-plane/v1/jobs", json=job_body(1, payload),
+        headers=headers(key),
+    )
+    assert first.status_code == 200, first.json()
+
+    def unavailable(*_args, **_kwargs):
+        raise SyzygyError("library temporarily unavailable")
+
+    monkeypatch.setattr(cp, "load_recipe_library", unavailable)
+    replay = client.post(
+        "/api/control-plane/v1/jobs", json=job_body(1, payload),
+        headers=headers(key),
+    )
+    assert replay.status_code == 200, replay.json()
+    assert replay.json() == first.json()
+    changed = client.post(
+        "/api/control-plane/v1/jobs", json=job_body(2, payload),
+        headers=headers(key),
+    )
+    assert changed.status_code == 409
+    assert changed.json()["detail"] == "idempotency_key_reused_with_different_request"
+    fresh = client.post(
+        "/api/control-plane/v1/jobs", json=job_body(1, payload),
+        headers=headers("slideshow-fresh-library-outage"),
+    )
+    assert fresh.status_code == 409
+    assert fresh.json()["detail"] == "recipe_executor_unavailable"
+    assert len(cp._load_jobs()["jobs"]) == 1
+    assert started == [first.json()["jobId"]]
 
 
 def test_slideshow_admission_returns_409_when_fresh_inventory_is_exhausted(lab):
@@ -440,7 +505,7 @@ def _fake_syzygy_boundary(monkeypatch, library, *, mutate=False):
             result.append(row)
         return result
 
-    async def fake_submit(plan, *, page_id, recipe_version, format_slug=None):
+    async def fake_submit(plan, *, page_id, recipe_version, format_slug=None, lab_job_id=None):
         calls["submit"].append((plan, page_id, recipe_version, format_slug))
         return f"render-job-{len(calls['submit']):04d}", "draft"
 
@@ -464,6 +529,152 @@ def _fake_syzygy_boundary(monkeypatch, library, *, mutate=False):
     monkeypatch.setattr(cp, "download_syzygy_artifact", fake_download)
     monkeypatch.setattr(cp, "run_color_correct", fake_render)
     return calls
+
+
+@pytest.mark.asyncio
+async def test_runner_uses_real_syzygy_http_adapter(lab, monkeypatch):
+    """Pin the service boundary that helper-only runner tests cannot exercise.
+
+    Responses follow Syzygy c7dd0fea render.rs public_render_job/done_result.
+    Only the network and local video encoding are replaced; no render helper
+    is stubbed, and the repository offline guard forbids provider requests.
+    """
+    client, _, _, library, payload = lab
+    queued = client.post(
+        "/api/control-plane/v1/jobs", json=job_body(1, payload),
+        headers=headers("slideshow-http-boundary-0001"),
+    )
+    assert queued.status_code == 200
+    job_id = queued.json()["jobId"]
+    plan = cp._load_jobs()["jobs"][job_id]["slideshowPlan"][0]
+    source_bytes = {item.key: b"x" * item.bytes for item in library.objects}
+    seen = []
+    polls = 0
+
+    def respond(request):
+        nonlocal polls
+        seen.append(request)
+        path = request.url.path
+        if request.url.host == "r2.example":
+            assert "authorization" not in request.headers
+            return httpx.Response(200, content=source_bytes[path.lstrip("/")],
+                                  headers={"etag": '"source-etag"'})
+        assert request.url.host == "syzygy.example"
+        assert request.headers["authorization"] == "Bearer syz_test_key"
+        if path == "/readyz":
+            return httpx.Response(200, json={"ok": True, "revision": RENDERER_REVISION})
+        if path == "/api/v1/render":
+            assert request.method == "POST"
+            spec = json.loads(request.content)["spec"]
+            assert spec["template_slug"] == plan["templateSlug"]
+            assert spec["media"] == [
+                {"type": "photo", "library": key} for key in plan["mediaKeys"]
+            ]
+            assert request.headers["idempotency-key"].startswith("cpl-syzygy-")
+            return httpx.Response(200, json={"job_id": "abc123def456", "quality": "full"})
+        if path == "/api/v1/render/abc123def456":
+            polls += 1
+            return httpx.Response(200, json={
+                "status": "rendering" if polls == 1 else "done",
+                "progress": 50 if polls == 1 else 100,
+                "result": None if polls == 1 else {
+                    "filename": "abc123def456.mp4",
+                    "play_url": "/render-file/abc123def456.mp4",
+                    "drive_uploaded": False,
+                },
+                "quality": "full", "error": None, "edit_id": None,
+            })
+        assert path == "/render-file/abc123def456.mp4"
+        return httpx.Response(200, content=b"synthetic-render-bytes")
+
+    from services import control_plane_slideshows as slideshows
+
+    client_type = httpx.AsyncClient
+    monkeypatch.setattr(slideshows.httpx, "AsyncClient", lambda **kwargs: client_type(
+        transport=httpx.MockTransport(respond), **kwargs,
+    ))
+    monkeypatch.setattr(slideshows, "POLL_SECONDS", 0)
+
+    async def encode(src, dst, *_args, **_kwargs):
+        assert Path(src).read_bytes() == b"synthetic-render-bytes"
+        Path(dst).write_bytes(b"synthetic-final-bytes")
+
+    monkeypatch.setattr(cp, "run_color_correct", encode)
+    await cp._run_syzygy_slideshow(job_id)
+    job = cp._load_jobs()["jobs"][job_id]
+    assert job["status"] == "completed", job.get("error")
+    source = job["clips"][0]["source"]
+    assert source["rendererRevision"] == RENDERER_REVISION
+    assert source["renderJobId"] == "abc123def456"
+    assert source["media"] == [{
+        "objectKey": key, "bytes": len(source_bytes[key]),
+        "etag": '"source-etag"', "sha256": hashlib.sha256(source_bytes[key]).hexdigest(),
+    } for key in plan["mediaKeys"]]
+    assert polls == 2
+    assert len([r for r in seen if r.method == "POST"]) == 1
+    assert len([r for r in seen if r.url.host == "r2.example"]) == 2 * len(plan["mediaKeys"])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("response", [
+    {},
+    {"status": None},
+    {"status": 17},
+    {"status": ""},
+    {"status": "   "},
+])
+async def test_syzygy_render_poll_rejects_invalid_status_without_sleep(response, monkeypatch):
+    from services import control_plane_slideshows as slideshows
+
+    requests = []
+
+    async def fake_request_json(method, endpoint, *, timeout=60.0, **_kwargs):
+        requests.append((method, endpoint))
+        return response
+
+    async def forbidden_sleep(_seconds):
+        pytest.fail("malformed Syzygy status must not be polled again")
+
+    monkeypatch.setattr(slideshows, "_request_json", fake_request_json)
+    monkeypatch.setattr(slideshows.asyncio, "sleep", forbidden_sleep)
+
+    with pytest.raises(slideshows.SyzygyError) as error:
+        await slideshows.poll_syzygy_render("render-job")
+
+    assert error.type is slideshows.SyzygyError
+    assert str(error.value) == "Syzygy response is invalid"
+    assert requests == [("GET", "/api/v1/render/render-job")]
+
+
+@pytest.mark.asyncio
+async def test_syzygy_render_poll_keeps_polling_unknown_nonempty_status(monkeypatch):
+    from services import control_plane_slideshows as slideshows
+
+    responses = iter([
+        {"status": "future_render_phase"},
+        {"status": "done", "result": {"play_url": "/render-file/render-job.mp4"}},
+    ])
+    requests = []
+    sleeps = []
+
+    async def fake_request_json(method, endpoint, *, timeout=60.0, **_kwargs):
+        requests.append((method, endpoint))
+        return next(responses)
+
+    async def fake_sleep(seconds):
+        sleeps.append(seconds)
+
+    monkeypatch.setattr(slideshows, "_request_json", fake_request_json)
+    monkeypatch.setattr(slideshows.asyncio, "sleep", fake_sleep)
+
+    result = await slideshows.poll_syzygy_render("render-job")
+
+    assert result == "/render-file/render-job.mp4"
+    assert requests == [
+        ("GET", "/api/v1/render/render-job"),
+        ("GET", "/api/v1/render/render-job"),
+    ]
+    assert sleeps == [slideshows.POLL_SECONDS]
 
 
 @pytest.mark.asyncio
@@ -668,6 +879,7 @@ def test_slideshow_paths_never_probe_the_ai_video_resolver(lab, monkeypatch):
         raise AssertionError("sourced_slideshow must not probe the ai_video resolver")
 
     monkeypatch.setattr(cp, "resolve_generation_recipe", unexpected_generation_probe)
+    monkeypatch.setattr(cp, "resolve_generation_recipe_with_reason", unexpected_generation_probe)
     capabilities = client.get(
         "/api/control-plane/v1/capabilities",
         headers={"X-RT-Page-Id": PAGE_ID, "Authorization": f"Bearer {TOKEN}"},

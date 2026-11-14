@@ -170,4 +170,8 @@ def test_burnt_outputs_equal_before_and_after(tmp_path, monkeypatch):
     assert baseline["sha256"] == timing._TIMING_SHA256
     assert baseline["id"] == "burnt-heavy-foot-chorus-v1"
     assert baseline["referenceAudioSha256"] == "11ace1c61ab8535c87a71dddbe7f06d03ac56bd3324809561cb49a8ddf95823f"
-    assert baseline["sourceProgramSha256"] == "78da457008391bd873dbc23c57fc7621f9707b8e139781e8d98cea4cdb9f65c9"
+    # The retired program remains loadable only so its timing authority can be
+    # checked; it is not a renderable Burnt lane.
+    assert baseline["sourceProgramSha256"] == hashlib.sha256(
+        (Path(__file__).resolve().parents[1] / "recipes/executors/syzygy-slideshow-lyric-video.v1.json").read_bytes()
+    ).hexdigest()

@@ -1,0 +1,34 @@
+[
+  {
+    "origin_kind": "footage",
+    "origin_id": "IMG_4962",
+    "label": "IMG_4962 BTL v1 night-core family (TikTok-suppressed duplicate)",
+    "retired_at": "2026-10-28T21:29:00Z",
+    "reason": "Shared duplicate footage across 8 pages (Rule #1); retired network-wide by pixel89 10-28 21:29",
+    "master_sha256s": [
+      "3816ff5c4c79d73eff1694cc21f3644aff18bb68c3a97ca5b8306316feda1314",
+      "eea5f73b71d239077d5d0a3a72c79af4ef19d1dff57296569ee4fb0d028fcb6f",
+      "18157873900884422d6b40a514d4dc164e5dbbcb8e6fa78ec33f80ebf6ecef66",
+      "a91f944e7ed266845ec3a3cc315b90eb944d0542d319aed3a8f0cb0627110810",
+      "2825d3723729333819374e7ca7104b02e356355718bce33d923f0ac69cf7db09",
+      "25f3e8909d72d782db55985c360ed1adef73b4d1de43b042eaa2f39760b6a26c",
+      "c476d034c534d95143f81fec2fe7017fa915b003135f04ae175409a1e495f6fa",
+      "5366a928ac609dae7dbf77efc109c81f9d44b8e74bd70219e7b6874d1f6f5898",
+      "5b3e9ce007c081da7264e9960337c135e4e5cabdbbf3372a19cdf75c1902d803",
+      "0bbdbbf86e26bf20ef03417a773aa19cd1cf11c45198d25a6960ae2980ba11b2",
+      "c79df263a956d3b46d089f35b6f9122f9cb296479687e622a2d188ea6aae49c2",
+      "25d518bc5db884586a42b8056d4f3b6cc0a8be3b8e92a4d6a81fece7f208896a"
+    ]
+  },
+  {
+    "origin_kind": "lab",
+    "origin_id": "pov-dirt-bike",
+    "label": "pov-dirt-bike shared chase/soul",
+    "retired_at": "2026-10-29T00:00:00Z",
+    "reason": "same footage on chase.miles.4l and soul.revival83 (103 s run), posted 09-15..10-02",
+    "master_sha256s": [
+      "c434bf9678fbaa20b9b081c68260cca75eb3dd109ddc1cb82df556ec59ae5bd5",
+      "9ff3fe749cdcf268967bc922af66857a3bace3fd38eaab4180315b77bd6be15c"
+    ]
+  }
+]

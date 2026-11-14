@@ -696,26 +696,32 @@ async def submit_image_video_render(
     request_json: Any = None,
     timeout: float = 90.0,
     format_slug: str | None = None,
+    lab_job_id: str | None = None,
 ) -> tuple[str, str]:
     """Submit one prepared photo plan and return (job_id, quality).
 
     ``request_json`` is dependency-injectable (matching the existing
     ``_request_json`` signature) so tests capture the exact request receipt
-    without a live runtime. The idempotency key is scoped to page + recipe +
-    plan signature. The receipt is (job_id, quality) only and never asserts an
+    without a live runtime. With a Lab job id, retries of that job keep one key
+    and a new job gets a fresh key. Legacy callers retain their page + recipe +
+    plan signature key. The receipt is (job_id, quality) only and never asserts an
     applied brightness gain.
     """
     if (not isinstance(plan, dict) or plan.get("pageId") != page_id
             or not isinstance(recipe_version, str) or not recipe_version.strip()
             or recipe_version != recipe_version.strip()):
         raise ImageVideoError("image-video submission identity is invalid")
+    if lab_job_id is not None and (not isinstance(lab_job_id, str) or not lab_job_id):
+        raise ImageVideoError("image-video render needs a non-empty Lab job id")
     if format_slug is not None:
         target = IMAGE_VIDEO_TARGETS.get(format_slug)
         if target is None or page_id != target[0] or len(plan.get("media", [])) != target[5]:
             raise ImageVideoError("image-video submission format differs from exact page")
     spec = build_image_video_spec(plan)
-    key = image_video_idempotency_key(
-        page_id, recipe_version, plan["signature"], "render-v1",
+    key = (
+        image_video_idempotency_key(page_id, recipe_version, plan["signature"], "render-v1")
+        if lab_job_id is None else
+        image_video_idempotency_key(page_id, recipe_version, plan["signature"], "render-v2", lab_job_id)
     )
     if request_json is None:
         from services.control_plane_slideshows import _request_json
@@ -815,8 +821,14 @@ def recipe_image_video_plan_for_variant(recipe, library, variant):
     return None
 
 def required_image_video_treatment(spec, page_id):
-    """Refuse recipes whose actual treatment would contradict the closed grade."""
-    from services.source_treatment import normalized_visual_treatment, NEUTRAL_FILTERS, NEUTRAL_CROP
+    """Accept any well-formed grade once speed and focal crop stay neutral.
+
+    The closed plan's ``brightnessGainFromOriginals`` is provenance for the
+    later managed source-treatment boundary, not the one grade a Dossier may
+    save: any filter values the visual normalizer admits are accepted here, but
+    a non-1 speed or non-neutral crop still changes cut semantics and is refused.
+    """
+    from services.source_treatment import normalized_visual_treatment, NEUTRAL_CROP
     plan = image_video_plan(page_id)
     if plan is None:
         return False
@@ -824,9 +836,7 @@ def required_image_video_treatment(spec, page_id):
         actual = normalized_visual_treatment(spec.get("renderTreatment"))
     except (ValueError, TypeError):
         return False
-    expected = {"filters": {**NEUTRAL_FILTERS, "brightness": plan["brightnessGainFromOriginals"]},
-                "clipSpeed": 1., "clipCrop": NEUTRAL_CROP}
-    return actual == expected
+    return actual["clipSpeed"] == 1.0 and actual["clipCrop"] == NEUTRAL_CROP
 
 def slideshow_executor_adapter(format_slug=FORMAT_SLUG):
     """Existing executor vocabulary; original legacy JSON stays byte-identical."""

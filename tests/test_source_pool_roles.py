@@ -16,8 +16,14 @@ from services.control_plane_sources import (
 from services.source_dna_registry import SourceDnaError, parse_source_dna_manifest
 from tests.test_source_recut_variety import _recipe
 from tests.test_control_plane_source_execution import offline_shipstream_manifest  # noqa: F401 (fixture)
+from tests.source_dna_fixture import isolate_source_dna_registry
 
-_BTL_FILE = Path(__file__).resolve().parents[1] / "recipes/source-dna/pov-night-core-between-the-lines66-automation-v1.json"
+_BTL_FILE = Path(__file__).resolve().parents[1] / "recipes/source-dna/pov-night-core-between-the-lines66-automation-v2.json"
+
+
+@pytest.fixture(autouse=True)
+def _isolated_source_dna(monkeypatch, tmp_path):
+    isolate_source_dna_registry(monkeypatch, tmp_path)
 
 
 class _PrimaryOnly:
@@ -184,7 +190,7 @@ def test_btl_lists_its_night_backup_without_moving_its_version():
     roles = {master.filename: (master.role, master.grade_override) for master in library.masters}
     assert roles["IMG_0766.mp4"] == ("backup", None)
     assert [master.role for master in library.masters].count("primary") == 1
-    assert library.sha256 == "59cd051223535dfd56fba8228dc69f37379154112f6df0f46ad69e72a1b6233c", \
+    assert library.sha256 == "1c99ac5f394ba9a329120d2be11468fccd758ca4eb981d3513426a3e149303fb", \
         "the version the Worker binds BTL's clips to (its primary-only library bytes)"
 
 
@@ -206,7 +212,7 @@ def _btl_catalog_version(monkeypatch, manifest_dir):
     catalog = ingredients.build_dossier_ingredient_catalog(page, intent, revision)
     fmt = next(entry for entry in catalog["formats"] if entry["formatId"] == "pov-night-core")
     selection = next(entry for entry in fmt["productionSelections"]
-                     if entry["sourceLibraryId"] == "pov-night-core-between-the-lines66-automation-v1")
+                     if entry["sourceLibraryId"] == "pov-night-core-between-the-lines66-automation-v2")
     resolved = ingredients.selected_dossier_catalog_version(page, intent, revision, "pov-night-core",
                                                             dict(selection), load_shipstream=False)
     assert resolved == selection["catalogVersion"]
@@ -222,7 +228,7 @@ def test_btl_catalog_version_is_the_same_with_and_without_its_backups(monkeypatc
         value["masters"] = [row for row in value["masters"] if row.get("role", "primary") == "primary"]
         (tmp_path / path.name).write_bytes((json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n").encode())
     without = _btl_catalog_version(monkeypatch, tmp_path)
-    assert with_backups == without == "sha256:0efa8ed16c45167513c2852af8b7752bb21e93376b84046a0228bbeaf3b27dcd"
+    assert with_backups == without == "sha256:c53ccc349810f423e03b57723ea312181bd8b54a9f765c50570f5bd612546e2d"
 
 
 def test_a_declared_backup_grade_is_refused_on_a_page_that_does_not_vary():
@@ -254,7 +260,7 @@ def test_btl_backups_are_exactly_the_declared_night_footage():
     assert set(backups) == set(BTL_BACKUP_SHAS)
     assert all(override is None for override in backups.values()), "backups render at the page look: no override"
     primary = [master for master in library.masters if master.role == "primary"]
-    assert [master.source_id for master in primary] == ["drive-1divlf1qpl1c3gfl8bmf5nbr5-0-800"]
+    assert [master.source_id for master in primary] == ["yt-okw0bu2qfvu-600-1200"]
     # A split file keeps one origin: its parts share an identity and continue its timeline.
     parts = sorted((master for master in library.masters if master.filename.startswith("IMG_6775")),
                    key=lambda master: master.source_offset_ms)

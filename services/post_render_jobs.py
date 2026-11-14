@@ -28,7 +28,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from services.post_render import (
     Hash, Identity, MAX_SOURCE_BYTES, MAX_FINAL_BYTES, MAX_OVERLAY_BYTES, MAX_QA_BYTES,
     PostRenderError, PostRenderRequest, RenderedPost, render_post, sha256, source_visual_matches, _caption_delivery,
-    _unique_object, _reject_nonfinite,
+    _unique_object, _reject_nonfinite, source_duration_repair_enabled,
 )
 
 from services.post_render_timed import (
@@ -36,6 +36,7 @@ from services.post_render_timed import (
 )
 
 from services import slot_source_regeneration as slot_source
+from services.pool_supplied_pages import is_pool_supplied
 
 
 def render_prepared_post(source, output, request, **kwargs):
@@ -99,6 +100,22 @@ AGE_OUT_INTERVAL_MS = {"normal": 5 * 60 * 1000, "tight": 60 * 1000, "floor": 60 
 AGE_OUT_RECHECK_MS = {"normal": 6 * 60 * 60 * 1000, "tight": 60 * 60 * 1000, "floor": 15 * 60 * 1000}
 AGE_OUT_BATCH = 120
 AGE_OUT_TIME_BUDGET_MS = 60 * 1000
+
+
+def _paired_duration_matches(clean_ms, burned_ms, clean_frames, burned_frames) -> bool:
+    def positive_finite(value):
+        return (type(value) in (int, float) and value > 0
+                and (type(value) is int or math.isfinite(value)))
+
+    if not positive_finite(clean_ms) or not positive_finite(burned_ms):
+        return False
+    if clean_ms == burned_ms:
+        return True
+    # Separate encodes of the same decoded frames can round their container
+    # duration to adjacent milliseconds. This is not a general timing tolerance.
+    return (abs(clean_ms - burned_ms) == 1
+            and positive_finite(clean_frames) and positive_finite(burned_frames)
+            and clean_frames == burned_frames)
 
 
 def render_claim_floor_bytes(worker_count: int | None = None) -> int:
@@ -239,6 +256,13 @@ class RenderJobSubmission(BaseModel):
                     and slot.get("caption", {}).get("text") == request.caption)
         if not required:
             raise ValueError("render request does not match immutable slot")
+        # The request marker alone is not authority to omit a caption. Bind it
+        # to the exact hashed slot's lyric source and already-empty text.
+        lyric_source = slot["caption"].get("source") == "lyric"
+        if (request.source_text_mode == "lyric") != lyric_source:
+            raise ValueError("lyric source marker does not match immutable slot")
+        if lyric_source and slot["caption"].get("text") != "":
+            raise ValueError("lyric source must not contain caption text")
         if "program_id" in slot and slot["program_id"] != request.program_id:
             raise ValueError("slot program mismatch")
         # Structural equality only. Cross-language treatment hashing uses original request bytes.
@@ -485,8 +509,9 @@ class PostRenderJobs:
     def _ordinary_history(submission_json: str) -> bool:
         """Recognize burned history without applying today's submission schema.
 
-        Both saved treatment copies must agree, have no opt-in field, and
-        match the saved treatment hash.
+        Both saved treatment copies must agree on the treatment body, carry no
+        in-app delivery opt-in in either copy, and the request copy must match
+        its saved hash.
         Unreadable or conflicting history remains uncertain, never ordinary.
         This classification grants no artifact or request validity.
         """
@@ -495,19 +520,45 @@ class PostRenderJobs:
             raw = saved["request"]["render_treatment_json"]
             treatment = json.loads(raw, object_pairs_hook=_unique_object, parse_constant=_reject_nonfinite)
             slot = json.loads(saved["slot_payload_json"], object_pairs_hook=_unique_object, parse_constant=_reject_nonfinite)
-            return (isinstance(treatment, dict) and isinstance(slot["render_treatment"], dict)
-                    and sha256(raw.encode()) == saved["request"]["treatment_sha256"]
-                    and treatment == slot["render_treatment"]
-                    and "captionDelivery" not in treatment
-                    and "captionDelivery" not in slot["render_treatment"])
+            slot_treatment = slot["render_treatment"]
+            if not (isinstance(treatment, dict) and isinstance(slot_treatment, dict)):
+                return False
+            if sha256(raw.encode()) != saved["request"]["treatment_sha256"]:
+                return False
+            # captionDelivery is a delivery hint, not part of the burned
+            # treatment body. Compare the body and each copy's opt-in
+            # separately so a conflicting copy fails closed through its own
+            # guard instead of the shared hash/equality checks.
+            core_equal = {k: v for k, v in treatment.items() if k != "captionDelivery"} == \
+                         {k: v for k, v in slot_treatment.items() if k != "captionDelivery"}
+            request_burned = "captionDelivery" not in treatment
+            slot_burned = "captionDelivery" not in slot_treatment
+            return core_equal and request_burned and slot_burned
         except (ValueError, TypeError, KeyError, RecursionError):
             return False
+
+    @staticmethod
+    def _mismatched_uncertain_markers(db) -> list:
+        """Uncertainty markers whose key does not embed their own job_id.
+
+        The only valid uncertainty key is '/output-uncertain/v1/<job_id>'. A
+        hand-made marker with a different suffix is never cleared by the normal
+        per-job path (which rebuilds the key from the job id) and would keep
+        forcing a startup write pass on every boot.
+        """
+        return db.execute(
+            "SELECT key, job_id FROM idempotency "
+            "WHERE key >= '/output-uncertain/v1/' AND key < '/output-uncertain/v10' "
+            "AND key != '/output-uncertain/v1/' || job_id"
+        ).fetchall()
 
     @staticmethod
     def _needs_identity_backfill(db) -> bool:
         """Ordinary-only startup writes only to remove a stale uncertainty marker."""
         # Heal markers left by the older startup code, even if no in-app row
         # exists to trigger the write pass. Never clear unclassifiable history.
+        if PostRenderJobs._mismatched_uncertain_markers(db):
+            return True
         for row in db.execute("SELECT jobs.submission_json FROM idempotency JOIN jobs ON jobs.id=idempotency.job_id "
                               "WHERE key >= '/output-uncertain/v1/' AND key < '/output-uncertain/v10'"):
             if PostRenderJobs._ordinary_history(row["submission_json"]):
@@ -529,6 +580,10 @@ class PostRenderJobs:
 
     def _backfill_output_identities(self, db) -> None:
         """Recover in-app identities; quarantine unverifiable in-app history."""
+        for mismatched in PostRenderJobs._mismatched_uncertain_markers(db):
+            db.execute("DELETE FROM idempotency WHERE key=?", (mismatched["key"],))
+            log.warning("post render identity backfill deleted mismatched uncertainty marker key=%s job=%s",
+                        mismatched["key"], mismatched["job_id"])
         for marked in db.execute("SELECT jobs.* FROM idempotency JOIN jobs ON jobs.id=idempotency.job_id "
                                  "WHERE key >= '/output-uncertain/v1/' AND key < '/output-uncertain/v10'").fetchall():
             if self._ordinary_history(marked["submission_json"]):
@@ -598,7 +653,8 @@ class PostRenderJobs:
                 raise RenderJobError("idempotency_conflict")
             if not existing:
                 has_provenance = submission.source_provenance is not None
-                matches = has_provenance and source_visual_matches(request)
+                pool_without_provenance = not has_provenance and is_pool_supplied(request.page_id)
+                matches = pool_without_provenance or (has_provenance and source_visual_matches(request))
                 state = "queued" if matches else "regeneration_needed"
                 reason = None if matches else "source_treatment_mismatch" if has_provenance else "source_treatment_provenance_missing"
                 planned_at_ms = _planned_at_ms(submission.slot_payload_json)
@@ -987,6 +1043,13 @@ class PostRenderJobs:
                       "source_sha256", "caption_sha256", "treatment_sha256", "renderer_id", "renderer_version"):
             if receipt.get(field) != getattr(request, field):
                 raise RenderJobError("receipt_binding_mismatch")
+        repair = getattr(request, "source_duration_repair", None)
+        if repair is not None:
+            from services.source_duration_repair import command_digest
+            if receipt.get("source_duration_repair_sha256") != command_digest(repair):
+                raise RenderJobError("receipt_binding_mismatch")
+        elif "source_duration_repair_sha256" in receipt:
+            raise RenderJobError("receipt_binding_mismatch")
         expected_schema = "posting-prepared-artifact/v2" if isinstance(request, TimedPostRenderRequest) else "posting-prepared-artifact/v1"
         if receipt.get("schema") != expected_schema:
             raise RenderJobError("receipt_binding_mismatch")
@@ -1063,7 +1126,9 @@ class PostRenderJobs:
                     or type(decode.get("decoded_video_frames")) not in (int, float)
                     or decode["decoded_video_frames"] <= 0
                     or not isinstance(probe, dict)
-                    or probe.get("duration_ms") != receipt.get("duration_ms")
+                    or not _paired_duration_matches(
+                        receipt.get("duration_ms"), probe.get("duration_ms"),
+                        evidence.get("decoded_video_frames"), decode.get("decoded_video_frames"))
                     or (probe.get("width"), probe.get("height"), probe.get("video_codec"), probe.get("pixel_format"))
                        != (1080, 1920, "h264", "yuv420p")):
                 raise RenderJobError("burned_fallback_decode_missing")
@@ -1709,8 +1774,22 @@ class PostRenderJobs:
         source = attempt_root / "source.mp4"
         try:
             submission = RenderJobSubmission.model_validate_json(row["submission_json"])
-            self.fetcher(submission.request, source)
-            self.renderer(source, self._output(row), submission.request, clock_ms=self.clock_ms)
+            request = submission.request
+            if request.source_duration_repair is not None:
+                # A durable repaired job is never run bare: without the capability
+                # it is fenced with a typed refusal, and a timed repair is refused
+                # regardless of the capability flag.
+                if isinstance(request, TimedPostRenderRequest):
+                    raise RenderJobError("TIMED_REPAIR_UNSUPPORTED")
+                if not source_duration_repair_enabled():
+                    raise RenderJobError("SOURCE_DURATION_REPAIR_UNSUPPORTED")
+            self.fetcher(request, source)
+            renderer_kwargs = {"clock_ms": self.clock_ms}
+            if submission.source_provenance is None and is_pool_supplied(request.page_id):
+                # A listed pool page supplies a finished clip, so this is the
+                # one path permitted to cross the renderer's no-receipt gate.
+                renderer_kwargs["allow_pool_supplied_without_provenance"] = True
+            self.renderer(source, self._output(row), request, **renderer_kwargs)
             authority = self._verify_output(row)
             self._finish(row, authority)
         except Exception as error:

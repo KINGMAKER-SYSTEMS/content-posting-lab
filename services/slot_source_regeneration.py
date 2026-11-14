@@ -181,6 +181,33 @@ def _equal_dict(left: Any, right: Any) -> bool:
     return canonical_json(left) == canonical_json(right)
 
 
+def expected_master_lineage(master) -> dict[str, Any]:
+    """The master dict a stored receipt's lineage must equal exactly.
+
+    The `origin` leg (o-origin-restore) is expected only while the receipts
+    themselves carry it: behind CONTENT_LAB_ADVERTISE_ORIGIN, the same gate
+    routers/control_plane.py applies when writing them. One gate on both
+    sides, so a flag-off receipt never mismatches for carrying exactly the
+    base baa2106 fields.
+    """
+    from routers import control_plane as cp
+
+    lineage = {
+        "sourceId": master.source_id,
+        "sha256": master.sha256,
+        "bytes": master.bytes,
+        "filename": master.filename,
+        "mimeType": master.mime_type,
+        "storageKey": master.storage_key,
+        "durationMs": master.duration_ms,
+        "sourceOffsetMs": master.source_offset_ms,
+        "provenance": master.provenance,
+    }
+    if master.origin and cp.advertise_origin():
+        lineage["origin"] = master.origin
+    return lineage
+
+
 # A subsequent human edit can point a repair at the *previous* prepared-post
 # render (`render_<id>`), whose delivered bytes came from an earlier repair and
 # not directly from the Control Plane producer. Walk that bounded chain back to
@@ -414,17 +441,7 @@ def resolve_parent_authority(
     )
     if master is None:
         raise SourceRegenerationError("source_regeneration_master_unknown")
-    if not _equal_dict(master_lineage, {
-        "sourceId": master.source_id,
-        "sha256": master.sha256,
-        "bytes": master.bytes,
-        "filename": master.filename,
-        "mimeType": master.mime_type,
-        "storageKey": master.storage_key,
-        "durationMs": master.duration_ms,
-        "sourceOffsetMs": master.source_offset_ms,
-        "provenance": master.provenance,
-    }):
+    if not _equal_dict(master_lineage, expected_master_lineage(master)):
         raise SourceRegenerationError("source_regeneration_master_mismatch")
 
     start_ms = cut_window.get("libraryStartMs")
@@ -906,7 +923,8 @@ __all__ = [
     "ARTIFACT_NAME", "COMMAND_SCHEMA", "ENVELOPE_SCHEMA", "OBJECT_KEY_PREFIX",
     "RECEIPT_SCHEMA", "REQUEST_SCHEMA", "SOURCE_ACK_SCHEMA", "SourceAckRequest",
     "SourceRegenerationError", "SourceRegenerationRequest", "artifact_path",
-    "canonical_json", "completed_envelope", "fetch_master", "malformed_authority",
+    "canonical_json", "completed_envelope", "expected_master_lineage",
+    "fetch_master", "malformed_authority",
     "object_key", "pending_command", "regenerate", "revalidate_parent_authority",
     "resolve_parent_authority", "verify_envelope",
 ]

@@ -15,8 +15,24 @@ from services.source_treatment import normalized_visual_treatment
 from tests.test_control_plane_source_execution import (  # noqa: F401  (pytest fixtures)
     PAGE_ID, _probe_duration, headers, job_body, lab, publication,
 )
+from tests.source_dna_fixture import isolate_source_dna_registry
 from tests.test_post_render import NOW, STYLE, request as render_request
 from tests.test_post_render_jobs import client_for, submission
+
+
+@pytest.fixture(autouse=True)
+def _isolated_source_dna(monkeypatch, tmp_path):
+    """Retired chase/BTL libraries are deleted, so source-dna tests run against
+    an isolated copy of the registry plus the non-retired dirt-bike fixture."""
+    isolate_source_dna_registry(monkeypatch, tmp_path)
+
+
+@pytest.fixture(autouse=True)
+def _reset_layer_b_probe_breaker():
+    cp._layer_b_probe_unreadable_count = 0
+    cp._layer_b_probe_unreadable_times.clear()
+    cp._layer_b_probe_unreadable_tripped = False
+
 
 TOKEN = "only-this-test-service-token"
 PARENT_GRADE = {"brightness": 0.7}
@@ -494,8 +510,10 @@ def test_real_repair_cuts_the_same_window_from_the_original_master_once(
 
     The parent fixture registers a synthetic master, so the bytes here stand in
     for that registered master file: the command's master identity is replaced
-    with the fixture file's own SHA/bytes before the cut. Registered-master
-    authority binding is proved separately against the captured real shapes.
+    with the fixture file's own SHA/bytes before the cut. The synthetic-parent
+    authority tests separately check the registered identity and retirement.
+    Captured retired-parent receipts remain historical evidence, not permission
+    to regenerate their footage.
     """
     master = source_parent["master"]
     master_sha = sha256(master.read_bytes())
@@ -572,7 +590,8 @@ def real_authority(monkeypatch, tmp_path):
     Only file/registry transport is stubbed: the job store and the registered
     recipe record are the captured production bytes, and `_current_master_pages_intent`
     answers from that captured intent (the live Notion read is not available
-    here). The registered source-library manifest and the cut planner run for real.
+    here). The real source resolver must refuse the retired master before cut
+    planning; these captured bytes are historical evidence, not fresh authority.
     """
     if not (REAL_PARENT_SOURCE.is_file() and REAL_PARENT_RECIPE.is_file()):
         pytest.skip("captured production parent authority is not available")
@@ -599,36 +618,90 @@ def real_authority(monkeypatch, tmp_path):
     return store["jobs"][REAL_PARENT_ID]
 
 
-def test_real_captured_parent_resolves_the_exact_original_master_window(real_authority):
-    job = real_authority
+def test_completed_parent_loses_regeneration_authority_when_its_master_is_retired(
+    source_parent, monkeypatch,
+):
+    """Authority-only checks at queue and execution; no repair render runs."""
+    import services.control_plane_sources as sources
+    import services.source_dna_registry as registry
+
+    job = source_parent["job"]
     clip = job["clips"][0]
     lineage = clip["source"]
-    assert len(job["clips"]) == len(job["sourceCuts"]) == 10
+    master_sha = lineage["master"]["sha256"]
     request = _submission(clip["sha256"], page_id=job["pageId"]).request
-    command = regen.resolve_parent_authority(
-        page_id=job["pageId"], parent_generation_job_id=REAL_PARENT_ID, request=request,
-    )
+    args = dict(page_id=job["pageId"], parent_generation_job_id=source_parent["job_id"], request=request)
+    command = regen.resolve_parent_authority(**args)
     assert command["schema"] == regen.COMMAND_SCHEMA
-    assert command["parentGenerationJobId"] == REAL_PARENT_ID
-    assert command["parentRecipeId"] == "pov-night-core:master"
-    assert command["parentRecipeVersion"] == job["recipeVersion"] == "dossier-30e6bbaffb8d18ca"
+    assert command["parentGenerationJobId"] == source_parent["job_id"]
+    assert command["parentRecipeId"] == job["recipeId"]
+    assert command["parentRecipeVersion"] == job["recipeVersion"]
     assert command["sourceLibraryId"] == job["sourceLibraryId"]
     assert command["sourceLibraryVersion"] == lineage["sourceLibraryVersion"]
-    assert command["master"]["sha256"] == (
-        "3816ff5c4c79d73eff1694cc21f3644aff18bb68c3a97ca5b8306316feda1314")
+    assert command["master"]["sha256"] == master_sha
     assert command["master"]["bytes"] == lineage["master"]["bytes"]
-    # The cut is the master-local planned window, not a caller-supplied one.
     assert command["cut"] == {
         "start_ms": lineage["cutWindow"]["libraryStartMs"],
         "end_ms": lineage["cutWindow"]["libraryEndMs"],
         "duration_ms": lineage["cutWindow"]["durationMs"],
     }
-    # The visual comes from the stored request, never from the parent recipe.
     assert normalized_visual_treatment(json.loads(command["requestedVisualJson"]))["filters"][
         "brightness"] == DESIRED_GRADE["brightness"]
+    recipe, master = regen._reload_planned_cut(command)
+    assert recipe.source_library_id == job["sourceLibraryId"]
+    assert master.sha256 == master_sha
+
+    before = registry.load_source_dna_library(job["sourceLibraryId"])
+    assert len(before.masters) == 1 and before.masters[0].role == "primary"
+    retired = registry.RETIRED_MASTER_SHAS | {master_sha}
+    # The resolver imports this immutable set at startup. Update both real
+    # enforcement bindings to model a release retiring this exact master.
+    monkeypatch.setattr(registry, "RETIRED_MASTER_SHAS", retired)
+    monkeypatch.setattr(sources, "RETIRED_MASTER_SHAS", retired)
+    # Retirement keeps the original single-primary record readable as history.
+    assert registry.load_source_dna_library(job["sourceLibraryId"]) == before
+    with pytest.raises(regen.SourceRegenerationError) as queue_refusal:
+        regen.resolve_parent_authority(**args)
+    assert queue_refusal.value.code == "source_regeneration_recipe_unavailable"
+    with pytest.raises(regen.SourceRegenerationError) as execution_refusal:
+        regen._reload_planned_cut(command)
+    assert execution_refusal.value.code == "source_regeneration_recipe_unavailable"
 
 
-def test_real_captured_parent_refuses_a_foreign_page_and_a_rebound_window(real_authority, monkeypatch):
+def test_real_captured_retired_parent_keeps_history_but_refuses_regeneration(real_authority):
+    import services.source_dna_registry as registry
+
+    job = real_authority
+    clip = job["clips"][0]
+    lineage = clip["source"]
+    assert len(job["clips"]) == len(job["sourceCuts"]) == 10
+    assert job["jobId"] == REAL_PARENT_ID
+    assert job["recipeId"] == lineage["recipeId"] == "pov-night-core:master"
+    assert job["recipeVersion"] == "dossier-30e6bbaffb8d18ca"
+    assert job["sourceLibraryId"] == lineage["sourceLibraryId"]
+    assert lineage["sourceLibraryVersion"] == f"sha256:{job['sourceLibraryHash']}"
+    master = lineage["master"]
+    assert master["sha256"] == "3816ff5c4c79d73eff1694cc21f3644aff18bb68c3a97ca5b8306316feda1314"
+    assert master["sha256"] in registry.RETIRED_MASTER_SHAS
+    assert master["bytes"] > 0
+    window = lineage["cutWindow"]
+    assert window["libraryEndMs"] == window["libraryStartMs"] + window["durationMs"]
+    assert window["originalStartMs"] == master["sourceOffsetMs"] + window["libraryStartMs"]
+    assert window["originalEndMs"] == master["sourceOffsetMs"] + window["libraryEndMs"]
+    matching = [cut for cut in job["sourceCuts"]
+                if cut["masterSha256"] == master["sha256"]
+                and cut["startMs"] == cut["libraryStartMs"] == window["libraryStartMs"]
+                and cut["durationMs"] == window["durationMs"]]
+    assert len(matching) == 1
+    request = _submission(clip["sha256"], page_id=job["pageId"]).request
+    with pytest.raises(regen.SourceRegenerationError) as refused:
+        regen.resolve_parent_authority(
+            page_id=job["pageId"], parent_generation_job_id=REAL_PARENT_ID, request=request,
+        )
+    assert refused.value.code == "source_regeneration_recipe_unavailable"
+
+
+def test_real_captured_parent_refuses_a_foreign_page(real_authority):
     job = real_authority
     clip = job["clips"][0]
     request = _submission(clip["sha256"], page_id=job["pageId"]).request
@@ -637,18 +710,24 @@ def test_real_captured_parent_refuses_a_foreign_page_and_a_rebound_window(real_a
             page_id="acct:some-other-page", parent_generation_job_id=REAL_PARENT_ID, request=request,
         )
     assert foreign.value.code == "source_regeneration_parent_foreign_page"
-    # The stored clip no longer matches a planned window of that master.
+
+
+def test_unretired_parent_refuses_an_internally_consistent_rebound_window(source_parent, monkeypatch):
+    job = source_parent["job"]
+    clip = job["clips"][0]
+    request = _submission(clip["sha256"], page_id=job["pageId"]).request
+    args = dict(page_id=job["pageId"], parent_generation_job_id=source_parent["job_id"], request=request)
+    assert regen.resolve_parent_authority(**args)["master"]["sha256"] == clip["source"]["master"]["sha256"]
     rebound = json.loads(json.dumps(job))
-    # Keep local/original provenance internally consistent while selecting a
-    # window absent from the immutable parent sourceCuts.
+    # Preserve local/original provenance consistency, but choose a window
+    # absent from the immutable parent sourceCuts. Use an unretired parent so
+    # the earlier retirement refusal cannot mask this planned-window check.
     window = rebound["clips"][0]["source"]["cutWindow"]
     for field in ("libraryStartMs", "libraryEndMs", "originalStartMs", "originalEndMs"):
         window[field] += 333
-    monkeypatch.setattr(cp, "_load_jobs", lambda: {"jobs": {REAL_PARENT_ID: rebound}})
+    monkeypatch.setattr(cp, "_load_jobs", lambda: {"jobs": {source_parent["job_id"]: rebound}})
     with pytest.raises(regen.SourceRegenerationError) as refused:
-        regen.resolve_parent_authority(
-            page_id=job["pageId"], parent_generation_job_id=REAL_PARENT_ID, request=request,
-        )
+        regen.resolve_parent_authority(**args)
     assert refused.value.code == "source_regeneration_cut_unplanned"
 
 
@@ -1072,3 +1151,94 @@ def test_parent_strategy_flip_after_queue_refuses_before_io(source_parent, tmp_p
     job = worker.status(prepared["id"])
     assert job["state"] == "failed"
     assert job["error_code"] == "source_regeneration_parent_changed"
+
+
+def test_master_origin_mismatch_refuses_regeneration_when_receipt_lacks_origin(
+    source_parent, monkeypatch,
+):
+    """`origin` participates in the master-mismatch check, not just the receipt.
+
+    The recipe's master now records an origin but the parent clip's stored
+    lineage does not carry it, so authority resolution must refuse. Deleting the
+    origin term from the `_equal_dict` comparison would let this resolve green.
+    The G39 gate applies (expected_master_lineage expects `origin` only
+    behind CONTENT_LAB_ADVERTISE_ORIGIN, the same gate that writes it into
+    receipts), so this flag-on test sets it.
+    """
+    from dataclasses import replace
+
+    monkeypatch.setenv(cp.ADVERTISE_ORIGIN_ENV, "1")
+    origin = {
+        "originSourceId": "vt5im2TRAKw",
+        "originStartMs": 120_000,
+        "originEndMs": 300_000,
+    }
+    resolve = cp._dossier_source_recipe
+
+    def with_origin(payload):
+        recipe = resolve(payload)
+        return replace(recipe, masters=tuple(
+            replace(master, origin=dict(origin)) for master in recipe.masters
+        ))
+
+    monkeypatch.setattr(cp, "_dossier_source_recipe", with_origin)
+    clip = source_parent["job"]["clips"][0]
+    request = _submission(clip["sha256"], PAGE_ID).request
+    with pytest.raises(regen.SourceRegenerationError) as refused:
+        regen.resolve_parent_authority(
+            page_id=PAGE_ID,
+            parent_generation_job_id=source_parent["job_id"],
+            request=request,
+        )
+    assert refused.value.code == "source_regeneration_master_mismatch"
+
+
+def test_legacy_receipt_without_origin_still_matches_a_master_without_origin(source_parent):
+    """A legacy receipt (no origin) still resolves against a no-origin master."""
+    clip = source_parent["job"]["clips"][0]
+    assert "origin" not in clip["source"]["master"]
+    request = _submission(clip["sha256"], PAGE_ID).request
+    command = regen.resolve_parent_authority(
+        page_id=PAGE_ID,
+        parent_generation_job_id=source_parent["job_id"],
+        request=request,
+    )
+    assert command["masterSha256"] == clip["source"]["master"]["sha256"]
+
+
+def test_flag_off_receipt_without_origin_matches_a_master_with_origin(
+    source_parent, monkeypatch,
+):
+    """Flag OFF, the other half of the G39 gate on the lineage comparison.
+
+    The recipe's master records an origin (o-origin-restore) while the flag
+    is off, so the stored receipt legitimately lacks it: resolution must NOT
+    refuse. Deleting the advertise_origin() term in expected_master_lineage
+    would raise source_regeneration_master_mismatch here.
+    """
+    from dataclasses import replace
+
+    monkeypatch.delenv(cp.ADVERTISE_ORIGIN_ENV, raising=False)
+    origin = {
+        "originSourceId": "vt5im2TRAKw",
+        "originStartMs": 120_000,
+        "originEndMs": 300_000,
+    }
+    resolve = cp._dossier_source_recipe
+
+    def with_origin(payload):
+        recipe = resolve(payload)
+        return replace(recipe, masters=tuple(
+            replace(master, origin=dict(origin)) for master in recipe.masters
+        ))
+
+    monkeypatch.setattr(cp, "_dossier_source_recipe", with_origin)
+    clip = source_parent["job"]["clips"][0]
+    assert "origin" not in clip["source"]["master"]
+    request = _submission(clip["sha256"], PAGE_ID).request
+    command = regen.resolve_parent_authority(
+        page_id=PAGE_ID,
+        parent_generation_job_id=source_parent["job_id"],
+        request=request,
+    )
+    assert command["masterSha256"] == clip["source"]["master"]["sha256"]

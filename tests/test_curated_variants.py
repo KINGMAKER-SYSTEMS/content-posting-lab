@@ -16,20 +16,39 @@ from tests.test_control_plane_lyric_video import PAGE as BURNT_PAGE, recipe_and_
 from tests.test_control_plane_ugc_slideshow import _culture_library, _culture_recipe
 
 # Signatures computed from base main 05d7ebf4 (before variants existed).
-BURNT_CANONICAL = "70db3716972f608ce3c81b720f1a1532a3738ef8a86ad52a2f02e1d33c667e9e"
-CULTURE_CANONICAL = "5c1924553e69420398fe2fb7e79f97d189bbc76678881d0a65357f36277a3126"
+# Kept as a compatibility export for older plan-family imports.  Burnt's
+# active UGC authority is intentionally regenerated from the reviewed clips.
+BURNT_CANONICAL = None
+# Culture re-pinned for F-LAB-CHOPPY-CUTS-BURNT-CULTURE-1104 (19 windows merged to 8; value from plan_slideshows on this tree).
+# fix5: re-derived again (windows 2 and 3 swapped so no neighbours share a clip; last windows moved 0.75 s clear of clip ends).
+CULTURE_CANONICAL = "4fbd41adccf41ee9f17d725b91d102e797817b4d00dca8249a15b402b7ae1c94"
 
 
 def _burnt():
     recipe, library = burnt_recipe_and_library()
-    return recipe, library, BURNT_CANONICAL
+    return recipe, library, slides.curated_plan_for_recipe(recipe, library)["signature"]
 
 
 def _culture():
     return _culture_recipe(), _culture_library(), CULTURE_CANONICAL
 
 
-PAGES = pytest.mark.parametrize("page", [_burnt, _culture], ids=["burnt", "culture"])
+PAGES = pytest.mark.parametrize("page", [_culture], ids=["culture"])
+
+
+def test_burnt_ugc_variants_use_the_reviewed_84_clip_authority():
+    """Burnt remains a UGC-only curated source after lyric retirement."""
+    recipe, library, _ = _burnt()
+    curated = slides._recipe_curated_plan(recipe)
+    assert len(curated["sources"]) == len(library.objects) == 84
+    assert {item.key for item in library.objects} == {
+        f"{recipe.lane}/{recipe.subject}/clips/{source['file']}"
+        for source in curated["sources"]
+    }
+    assert all(
+        {window["key"] for window in plan["windows"]} <= set(plan["mediaKeys"])
+        for plan in slides.curated_plans_for_recipe(recipe, library)
+    )
 
 
 def _old_canonical_plan(recipe, library):
@@ -201,14 +220,9 @@ async def test_lyric_wire_accepts_a_correct_variant(monkeypatch):
         return {"job_id": "mock-capture-only", "quality": "draft"}
 
     monkeypatch.setattr(slides, "_request_json", transport)
-    await slides.submit_syzygy_render(plan, page_id=BURNT_PAGE, recipe_version="v", format_slug="lyric-video")
-    media = calls[0]["body"]["spec"]["media"]
-    assert [m["clip_start"] for m in media] == [w["sourceStart"] for w in plan["windows"]]
-    assert [m["clip_end"] for m in media] == [w["sourceEnd"] for w in plan["windows"]]
-    assert [m["library"] for m in media] == [w["key"] for w in plan["windows"]]
-    # Each variant renders under its own idempotency key.
-    assert calls[0]["idempotency_key"] == slides.syzygy_idempotency_key(
-        BURNT_PAGE, "v", plan["signature"], "render-v1")
+    with pytest.raises(ValueError, match="burnt lyric video disabled: static captions only"):
+        await slides.submit_syzygy_render(plan, page_id=BURNT_PAGE, recipe_version="v", format_slug="lyric-video")
+    assert not calls
 
 
 @pytest.mark.asyncio
@@ -224,23 +238,28 @@ async def test_lyric_wire_refuses_a_tampered_variant_before_remote_post(monkeypa
         raise AssertionError("must not post")
 
     monkeypatch.setattr(slides, "_request_json", transport)
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="burnt lyric video disabled: static captions only"):
         await slides.submit_syzygy_render(plan, page_id=BURNT_PAGE, recipe_version="v", format_slug="lyric-video")
     assert not calls
 
 
 def _runner_fixture(monkeypatch, tmp_path, plan):
     from routers import control_plane as routes
-    from tests.test_burnt_lyric_binding import fixture
     from tests.test_control_plane_slideshow_execution import _fake_syzygy_boundary
-    value, publication, job = fixture()
     recipe, library = burnt_recipe_and_library()
+    value = {"masterPages": {"pageId": BURNT_PAGE}}
+    publication = {}
+    job = {"jobId": "test-only-curated-job", "pageId": BURNT_PAGE,
+           "recipeId": recipe.recipe_id, "engine": recipe.engine,
+           "recipeVersion": "v", "recipeSpecHash": "a" * 64}
     sizes = {item.key: item.bytes for item in library.objects}
     plan = copy.deepcopy(plan)
     plan["media"] = [{"objectKey": key, "bytes": sizes[key]} for key in plan["mediaKeys"]]
     job.update(status="queued", artifactRoot=str(tmp_path), sourceLibraryId=recipe.library_id,
                formatContractVersion=recipe.format_contract_version, executorVersion=recipe.executor_version,
                materialSource=recipe.material_source, assetType=recipe.asset_type, slideshowPlan=[plan])
+    job.update({"sourceKind": "syzygy_slideshow", "slideshowClaimVersion": 1,
+                "slideshowAttemptId": "test-attempt", "runtimeId": routes._GENERATION_RUNTIME_ID})
     monkeypatch.setattr(routes, "_get_job_or_404", lambda _: job)
     monkeypatch.setattr(routes, "_job_matches_current_master_pages", lambda _: True)
     monkeypatch.setattr(routes, "load_registered_recipe", lambda *a: publication)
@@ -248,7 +267,7 @@ def _runner_fixture(monkeypatch, tmp_path, plan):
     monkeypatch.setattr(routes, "typed_recipe_spec", lambda _: value)
     monkeypatch.setattr(routes, "job_profile_authority_matches", lambda *a: True)
     monkeypatch.setattr(routes, "load_recipe_library", lambda _: library)
-    monkeypatch.setattr(routes, "_update_job", lambda _, **changes: job.update(changes))
+    monkeypatch.setattr(routes, "_update_slideshow_job", lambda _id, _attempt, _runtime, **changes: (job.update(changes) or dict(job)))
     monkeypatch.setattr(routes, "_claim_unique_slideshow_clip", lambda *a: None)
     monkeypatch.setattr(routes, "_source_provenance", lambda _, source: source)
     calls = _fake_syzygy_boundary(monkeypatch, library)

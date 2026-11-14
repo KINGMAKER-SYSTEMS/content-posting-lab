@@ -18,6 +18,7 @@ from __future__ import annotations
 from typing import Any
 
 from services.control_plane_sources import (
+    SOURCE_MASTER_RETIRED,
     SOURCE_MASTER_TOO_SHORT,
     SOURCE_WINDOWS_EXHAUSTED,
     SOURCE_WINDOWS_RESERVED_ELSEWHERE,
@@ -47,8 +48,8 @@ PLAN_AVAILABLE = "plan_available"
 # The closed photo-hold page's pinned base photos are gone from the live
 # library (bytes changed or missing): restore them, not "re-point the recipe".
 PINNED_PHOTOS_MISSING = "pinned_photos_missing"
-# The Syzygy slideshow runtime is not configured: an outage, not a registry
-# or recipe problem.
+# The Syzygy slideshow runtime is not configured, or generation mode is
+# deliberately off: an outage or an off mode, not a registry or recipe problem.
 SLIDESHOW_RUNTIME_UNAVAILABLE = "slideshow_runtime_unavailable"
 # The binding did not resolve to a runnable recipe for any other reason
 # (contract drift / generation resolve failures). Carries the Lab's exact
@@ -56,6 +57,9 @@ SLIDESHOW_RUNTIME_UNAVAILABLE = "slideshow_runtime_unavailable"
 RECIPE_UNRESOLVED = "recipe_unresolved"
 # A source master has no canonical HTTPS source identity.
 SOURCE_IDENTITY_MISSING = "source_identity_missing"
+# A listed pool-supplied page posts finished clips from the Worker's vault pool;
+# the Lab never renders it, so its capability is terminal at zero by design.
+POOL_SUPPLIED = "pool_supplied"
 
 
 # code -> (family, terminal_by_design, remedy in plain words).
@@ -119,7 +123,7 @@ REASONS: dict[str, tuple[str, bool, str]] = {
     ),
     SLIDESHOW_RUNTIME_UNAVAILABLE: (
         "library", False,
-        "The Syzygy slideshow runtime is not configured; restore it.",
+        "The Syzygy slideshow runtime is not configured, or generation mode is off; turn it on when the page should make slideshows.",
     ),
     RECIPE_UNRESOLVED: (
         "registry", False,
@@ -137,6 +141,10 @@ REASONS: dict[str, tuple[str, bool, str]] = {
         "slideshow", False,
         "A fresh plan is still available; the explainer was called on a non-empty plan.",
     ),
+    SOURCE_MASTER_RETIRED: (
+        "source-dna", True,
+        "Use an active source library that does not contain a retired master.",
+    ),
     SOURCE_MASTER_TOO_SHORT: (
         "source-dna", True,
         "No master fits even the shortest allowed cut; add a longer master.",
@@ -148,6 +156,10 @@ REASONS: dict[str, tuple[str, bool, str]] = {
     SOURCE_WINDOWS_RESERVED_ELSEWHERE: (
         "source-dna", False,
         "Never-cut windows remain but other pages reserved them; retry later.",
+    ),
+    POOL_SUPPLIED: (
+        "pool", True,
+        "The Worker supplies this page's finished clips from its vault pool; the Lab never renders it.",
     ),
 }
 
@@ -184,6 +196,7 @@ def explain_empty_slideshow_plan(
     from services.control_plane_slideshows import (
         CLEAN_VIDEO_FORMATS,
         _generic_clean_video_chunk,
+        _generic_clean_video_objects,
         _permutation_plan_candidates,
         curated_plans_for_recipe,
         requires_curated_video_plan,
@@ -218,15 +231,20 @@ def explain_empty_slideshow_plan(
         template = recipe.templates[0]
         if opaque_reserved_media:
             return GENERIC_MEDIA_EXHAUSTED
+        eligible_objects = _generic_clean_video_objects(recipe, library)
         objects_in_order = [
-            item for item in library.objects
+            item for item in eligible_objects
             if item.key not in (reserved_media_keys or set())
         ]
         for chunk in range(len(objects_in_order) + 1):
             plan = _generic_clean_video_chunk(template, objects_in_order, chunk)
             if plan is None:
                 if chunk == 0:
-                    return TEMPLATE_MEDIA_EXCEEDS_LIBRARY
+                    return (
+                        TEMPLATE_MEDIA_EXCEEDS_LIBRARY
+                        if len(eligible_objects) < template.media_count
+                        else GENERIC_MEDIA_EXHAUSTED
+                    )
                 return GENERIC_MEDIA_EXHAUSTED
             if plan["signature"] in unavailable_signatures:
                 continue
@@ -237,6 +255,13 @@ def explain_empty_slideshow_plan(
     objects = list(library.objects)
     if not any(template.media_count <= len(objects) for template in recipe.templates):
         return TEMPLATE_MEDIA_EXCEEDS_LIBRARY
+    # This call re-runs the candidate scan plan_slideshows just performed for
+    # the same (recipe, library, unavailable) inputs — on purpose. The empty
+    # path is the only caller that pays the second scan, and no shared
+    # process-wide cache sits under it: plan_slideshows hands these candidate
+    # dicts to callers (create_job mutates them in place), so a shared cache
+    # would leak one request's writes into another. The double scan is bounded
+    # by test_permutation_exhaustion_explain_stays_under_generous_perf_bound.
     if _permutation_plan_candidates(recipe, library, unavailable_signatures):
         return PLAN_AVAILABLE
     return SLIDESHOW_PERMUTATIONS_EXHAUSTED

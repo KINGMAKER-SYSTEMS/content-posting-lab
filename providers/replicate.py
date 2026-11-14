@@ -201,7 +201,12 @@ def _build_flux_2_pro_input(prompt: str, params: dict) -> dict:
     return payload
 
 
+def _build_h3_highspeed_input(prompt: str, params: dict) -> dict:
+    return {"prompt": prompt, "ratio": "9:16", "duration": 8}
+
+
 _INPUT_BUILDERS = {
+    "minimax/h3-highspeed": _build_h3_highspeed_input,
     "minimax/hailuo-2.3": _build_hailuo_input,
     "wan-video/wan-2.2-t2v-fast": _build_wan_t2v_input,
     "wan-video/wan-2.2-i2v-a14b": _build_wan_i2v_input,

@@ -4,17 +4,25 @@ import copy
 import json
 from pathlib import Path
 
+import pytest
+
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from routers.control_plane_dossier import REQUEST_SCHEMA, router
 from routers.control_plane_recipes import LANE
 from tests.master_pages_fixtures import master_pages
+from tests.source_dna_fixture import isolate_source_dna_registry
 from services.master_pages_contract import intent_hash
 
 
 TOKEN = "test-control-plane-token"
 PAGE_ID = "acct:truck-page"
+
+
+@pytest.fixture(autouse=True)
+def _isolated_source_dna(monkeypatch, tmp_path):
+    isolate_source_dna_registry(monkeypatch, tmp_path)
 
 
 def _client(monkeypatch) -> TestClient:
@@ -284,13 +292,13 @@ def test_selected_version_ignores_display_only_model_labels(monkeypatch):
 def test_selected_source_version_ignores_an_unselected_page_library(monkeypatch):
     import services.dossier_ingredients as ingredients
 
-    page_id = "tt-chase-miles-4l"
+    page_id = "tt-fixture-dirt-bike"
     intent, revision = master_pages(
-        page_id, handle="chase.miles.4l",
+        page_id, handle="fixture.dirt.bike",
         content_niche="POV - Dirtbike", content_engine="sourced_video",
     )
     before = ingredients.build_dossier_ingredient_catalog(page_id, intent, revision)
-    library_id = "pov-dirt-bike-chase-miles-4l-v1"
+    library_id = "pov-dirt-bike-fixture-v1"
     selected_before = _source_selection(
         before, "pov-dirt-bike", library_id,
     )["catalogVersion"]
@@ -610,20 +618,21 @@ def test_shipstream_page_source_is_bound_only_to_its_matching_format(monkeypatch
 
 
 def test_newest_ready_shipstream_import_binds_over_legacy_source_dna(monkeypatch):
-    """chase.miles.4l's imported vault master supersedes its source-dna master."""
+    """An imported vault master supersedes the page's registered source-dna master."""
     import services.dossier_ingredients as ingredients
     from services.shipstream_source_manifest import (
         parse_shipstream_source_projection,
     )
 
-    page_id = "tt-chase-miles-4l"
+    page_id = "tt-fixture-dirt-bike"
+    handle = "fixture.dirt.bike"
     notion_page_id = "3981465b-b829-8067-9317-eccc81093e4b"
     intent, _ = master_pages(
         page_id,
-        handle="chase.miles.4l",
+        handle=handle,
         content_niche="POV - Dirtbike",
         content_engine="sourced_video",
-        vault_url="https://shipstream.test/vault/chase.miles.4l",
+        vault_url=f"https://shipstream.test/vault/{handle}",
     )
     intent["notionPageId"] = notion_page_id
     intent["automationMode"] = "Automation"
@@ -631,7 +640,7 @@ def test_newest_ready_shipstream_import_binds_over_legacy_source_dna(monkeypatch
     imported_sha = "a3073e1000b1a760e38dc8f054c422bbcf1bc9451101dd67e9e354c81148a6dd"
     manifest = {
         "schema": "shipstream.source-manifest.v1",
-        "page": "chase.miles.4l",
+        "page": handle,
         "notion": {
             "pageId": notion_page_id,
             "contentEngine": "sourced_video",
@@ -642,13 +651,13 @@ def test_newest_ready_shipstream_import_binds_over_legacy_source_dna(monkeypatch
         "sourceAuthority": {
             "kind": "content_lab_page_source_import",
             "pageId": page_id,
-            "pageHandle": "chase.miles.4l",
+            "pageHandle": handle,
             "notionPageId": notion_page_id,
             "replacementEligible": True,
         },
         "master": {
             "sha256": imported_sha,
-            "storageKey": f"vault/chase.miles.4l/masters/{imported_sha}.mp4",
+            "storageKey": f"vault/{handle}/masters/{imported_sha}.mp4",
             "bytes": 99_140_709,
             "media": {"durationSeconds": 120.0},
             "originSourceUrl": "https://www.youtube.com/watch?v=vt5im2TRAKw",
@@ -675,7 +684,7 @@ def test_newest_ready_shipstream_import_binds_over_legacy_source_dna(monkeypatch
     assert master["binding"]["libraryId"] == projection.source_library.library_id
     assert master["binding"]["masters"][0]["sha256"] == imported_sha
     assert {option["libraryId"] for option in master["options"]} == {
-        "pov-dirt-bike-chase-miles-4l-v1",
+        "pov-dirt-bike-fixture-v1",
         projection.source_library.library_id,
     }
     assert "master-source-video:selection_required" not in dirtbike["blockers"]
@@ -689,14 +698,15 @@ def test_an_imported_master_never_replaces_a_pooled_library_primary(monkeypatch,
         parse_shipstream_source_projection,
     )
 
-    page_id = "tt-chase-miles-4l"
+    page_id = "tt-fixture-dirt-bike"
+    handle = "fixture.dirt.bike"
     notion_page_id = "3981465b-b829-8067-9317-eccc81093e4b"
     intent, _ = master_pages(
         page_id,
-        handle="chase.miles.4l",
+        handle=handle,
         content_niche="POV - Dirtbike",
         content_engine="sourced_video",
-        vault_url="https://shipstream.test/vault/chase.miles.4l",
+        vault_url=f"https://shipstream.test/vault/{handle}",
     )
     intent["notionPageId"] = notion_page_id
     intent["automationMode"] = "Automation"
@@ -704,7 +714,7 @@ def test_an_imported_master_never_replaces_a_pooled_library_primary(monkeypatch,
     imported_sha = "a3073e1000b1a760e38dc8f054c422bbcf1bc9451101dd67e9e354c81148a6dd"
     manifest = {
         "schema": "shipstream.source-manifest.v1",
-        "page": "chase.miles.4l",
+        "page": handle,
         "notion": {
             "pageId": notion_page_id,
             "contentEngine": "sourced_video",
@@ -715,13 +725,13 @@ def test_an_imported_master_never_replaces_a_pooled_library_primary(monkeypatch,
         "sourceAuthority": {
             "kind": "content_lab_page_source_import",
             "pageId": page_id,
-            "pageHandle": "chase.miles.4l",
+            "pageHandle": handle,
             "notionPageId": notion_page_id,
             "replacementEligible": True,
         },
         "master": {
             "sha256": imported_sha,
-            "storageKey": f"vault/chase.miles.4l/masters/{imported_sha}.mp4",
+            "storageKey": f"vault/{handle}/masters/{imported_sha}.mp4",
             "bytes": 99_140_709,
             "media": {"durationSeconds": 120.0},
             "originSourceUrl": "https://www.youtube.com/watch?v=vt5im2TRAKw",
@@ -740,26 +750,25 @@ def test_an_imported_master_never_replaces_a_pooled_library_primary(monkeypatch,
         ingredients, "load_shipstream_source_projection", lambda *args, **kwargs: projection,
     )
 
+    # The isolated registry already holds the fixture library; add a backup so
+    # it becomes a pooled library whose primary is never replaced by an import.
     registry = Path(ingredients.SOURCE_DNA_MANIFEST_DIR)
-    for path in registry.glob("*.json"):
-        (tmp_path / path.name).write_bytes(path.read_bytes())
-    pooled_path = tmp_path / "pov-dirt-bike-chase-miles-4l-v1.json"
+    pooled_path = registry / "pov-dirt-bike-fixture-v1.json"
     pooled = json.loads(pooled_path.read_bytes())
     backup = {**pooled["masters"][0], "role": "backup", "sourceId": "zz-backup-night", "sha256": "d" * 64,
               "storageKey": "source-dna/backup/" + "d" * 64 + ".mp4"}
     pooled["masters"].append(backup)
     pooled_path.write_bytes((json.dumps(pooled, sort_keys=True, separators=(",", ":")) + "\n").encode())
-    monkeypatch.setattr(ingredients, "SOURCE_DNA_MANIFEST_DIR", tmp_path)
 
     catalog = ingredients.build_dossier_ingredient_catalog(page_id, intent, revision)
     dirtbike = _format(catalog, "pov-dirt-bike")
     master = _ingredient(dirtbike, "master-source-video")
 
     assert master["status"] == "bound"
-    assert master["binding"]["libraryId"] == "pov-dirt-bike-chase-miles-4l-v1"
+    assert master["binding"]["libraryId"] == "pov-dirt-bike-fixture-v1"
     assert imported_sha not in {item["sha256"] for item in master["binding"]["masters"]}
     assert {option["libraryId"] for option in master["options"]} == {
-        "pov-dirt-bike-chase-miles-4l-v1",
+        "pov-dirt-bike-fixture-v1",
         projection.source_library.library_id,
     }
     assert "master-source-video:selection_required" not in dirtbike["blockers"]
@@ -838,3 +847,61 @@ def test_request_fails_closed_on_auth_lane_or_master_pages_drift(monkeypatch):
         "/api/control-plane/v1/dossier-ingredients", json=request,
         headers=_headers(),
     ).status_code == 409
+
+
+def test_a_retired_master_library_is_never_offered_in_the_dossier(monkeypatch):
+    """Rule #1: a library that still holds a retired master is dropped from the
+    Dossier even if its manifest parses (single-primary history). The editor can
+    never Save & apply retired footage again."""
+    import services.dossier_ingredients as ingredients
+    import services.source_dna_registry as registry
+    from services.shipstream_source_manifest import ShipStreamSourceMissing
+
+    def missing(*_args, **_kwargs):
+        raise ShipStreamSourceMissing("no vault manifest in this test")
+
+    monkeypatch.setattr(ingredients, "load_shipstream_source_projection", missing)
+
+    page = "tt-retired-dirt-bike"
+    retired_sha = "c434bf9678fbaa20b9b081c68260cca75eb3dd109ddc1cb82df556ec59ae5bd5"
+    library = {
+        "schema": "content-lab.source-dna-library.v2",
+        "libraryId": "pov-dirt-bike-retired-v1",
+        "format": "pov-dirt-bike",
+        "pageId": page,
+        "masters": [{
+            "sourceId": "youtube-retired-120-300",
+            "sha256": retired_sha,
+            "bytes": 414027449,
+            "filename": "retired_master.mp4",
+            "mimeType": "video/mp4",
+            "storageKey": f"source-dna/pov-dirt-bike/{page}/{retired_sha}.mp4",
+            "durationMs": 180000,
+            "sourceOffsetMs": 120000,
+            "provenance": {
+                "sourceUrl": "https://www.youtube.com/watch?v=vt5im2TRAKw",
+                "acquiredAt": "2026-07-29T17:37:41Z",
+                "authority": "test fixture: retired footage",
+            },
+        }],
+    }
+    (registry.MANIFEST_DIR / "pov-dirt-bike-retired-v1.json").write_bytes(
+        (json.dumps(library, sort_keys=True, separators=(",", ":")) + "\n").encode()
+    )
+
+    intent, revision = master_pages(
+        page, handle="retired.dirt.bike",
+        content_niche="POV - Dirtbike", content_engine="sourced_video",
+        vault_url="https://shipstream.test/vault/retired.dirt.bike",
+    )
+    catalog = ingredients.build_dossier_ingredient_catalog(page, intent, revision)
+    dirtbike = _format(catalog, "pov-dirt-bike")
+    master = _ingredient(dirtbike, "master-source-video")
+
+    assert master["options"] == []
+    assert master["binding"] is None
+    assert master["status"] == "missing"
+    assert not any(
+        entry["sourceLibraryId"] == "pov-dirt-bike-retired-v1"
+        for entry in dirtbike["productionSelections"]
+    )

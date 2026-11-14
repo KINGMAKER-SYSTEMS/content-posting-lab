@@ -19,7 +19,7 @@ from providers import PROVIDERS
 from routers.video import PROVIDER_SCHEMAS
 from services.content_engine_registry import MaterialProfile, load_engine_registry
 from services.control_plane_image_video import IMAGE_VIDEO_FORMATS, image_video_plan_for_format
-from services.content_format_contracts import FormatContract, load_format_contracts
+from services.content_format_contracts import FormatContract, format_page_admits, load_format_contracts
 from services.control_plane_generation import (
     load_prompt_catalog,
     render_treatment_capability,
@@ -38,8 +38,10 @@ from services.control_plane_source_libraries import (
 )
 from services.dossier_catalog_version import dossier_catalog_version
 from services.master_pages_contract import exact_intent
+from services.pool_supplied_pages import is_pool_supplied
 from services.source_dna_registry import (
     MANIFEST_DIR as SOURCE_DNA_MANIFEST_DIR,
+    RETIRED_MASTER_SHAS,
     SourceDnaLibrary,
     SourceDnaError,
     parse_source_dna_manifest,
@@ -57,6 +59,19 @@ from services.shipstream_source_manifest import (
 
 SCHEMA = "content-lab.dossier-ingredient-catalog.v1"
 SELECTION_AUTHORITY_SCHEMA = "content-lab.dossier-selection-authority.v1"
+# Lab-supply-only ingredients the Worker's vault pool replaces for listed pages.
+POOL_SUPPLIED_INGREDIENT_IDS = frozenset(
+    {"image-library", "slideshow-treatment", "lyric-timing"}
+)
+# Formats on LISTED pool-supplied pages that advertise the Look-only grade
+# dials (Worker Dossier draws the 7 dials only for kind render_treatment).
+# Speed and crop are not offered: the binding carries filters only, every
+# default is the identity, so a page that never touches a dial keeps posting
+# the clip exactly as the pool supplies it.
+POOL_LOOK_TREATMENT_FORMATS = frozenset({
+    "lyric-edits", "coffee-slideshow", "image-video", "meme-slideshow",
+    "single-image-video", "ugc-slideshow",
+})
 DOSSIER_LIBRARY_TIMEOUT_SECONDS = 2.0
 PINNED_LEGACY_DOSSIER_CATALOG_VERSIONS_BY_PUBLICATION = {
     # Exact active v3 publications inventoried through the live dossier
@@ -346,7 +361,7 @@ def _selection_catalog_version(
         ), None)
         if selected_source is None:
             return None
-    elif source is not None:
+    elif source is not None and source.get("status") != "pool_supplied":
         return None
 
     treatment = next((
@@ -437,11 +452,26 @@ def _production_selections(format_entry: dict[str, Any]) -> list[dict[str, Any]]
             "modelId": None,
             "sourceLibraryId": option.get("libraryId"),
         } for option in source.get("options", [])]
+        if source.get("status") == "pool_supplied":
+            # A pool-supplied page registers with no Lab library id; keep any
+            # explicit library options beside it so an explicit id still has
+            # to match an advertised option at registration.
+            identities.append({
+                **base,
+                "providerId": None,
+                "modelId": None,
+                "sourceLibraryId": None,
+            })
     else:
         identities = []
-    timing = (ingredients.get("lyric-timing") or {}).get("binding")
+    timing_ingredient = ingredients.get("lyric-timing")
+    timing = (timing_ingredient or {}).get("binding")
     if isinstance(timing, dict):
         identities = [{**identity, "controls": {"lyricTimingSetId": timing["id"]}} for identity in identities]
+    # No bound lyricTimingSetId means no lyric-video selection (base behavior):
+    # the Worker requires a timed selection's controls to be exactly
+    # {lyricTimingSetId: <bounded string>}, so a timing-less selection can never
+    # be expressed and must not be emitted for listed or unlisted pages alike.
     selections: list[dict[str, Any]] = []
     for identity in identities:
         version = _selection_catalog_version(format_entry, identity)
@@ -773,6 +803,18 @@ def _sourced_ingredients(
         )
         options.append(projected_cuts)
     master_options = _master_source_options(format_slug, page_id, shipstream_library)
+    # Retired masters (Rule #1) are never offered as a Dossier option, even
+    # though the low-level _master_source_options still enumerates their
+    # registered library for history/provenance tests. A library that still
+    # holds a retired master (primary or backup) is dropped here so the editor
+    # can never Save & apply it again.
+    master_options = [
+        option for option in master_options
+        if not any(
+            master["sha256"] in RETIRED_MASTER_SHAS
+            for master in [*option.get("masters", []), *option.get("backupMasters", [])]
+        )
+    ]
     # A valid page manifest is ShipStream's current source authority. When it
     # supersedes a legacy source-dna registration, keep both choices visible but
     # bind the ShipStream library so replacement can proceed without an
@@ -901,6 +943,10 @@ def _format_entry(
     master_pages: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if profile.content_engine == "ai_video":
+        if contract.format_slug == "pov-seasonal":
+            catalog, _ = load_prompt_catalog(contract.format_slug)
+            # The selected H3 portrait preset defines this route's provider settings.
+            model_options = [dict(option, controls={}) for option in _model_options(catalog)]
         ingredients = _generated_ingredients(contract.format_slug, catalog, model_options)
     elif profile.content_engine == "sourced_video":
         ingredients = _sourced_ingredients(
@@ -916,7 +962,7 @@ def _format_entry(
         current_slideshow_page = (
             master_pages
             if isinstance(master_pages, dict)
-            and contract.content_niche == master_pages.get("contentNiche")
+            and format_page_admits(contract.format_slug, contract.content_niche, master_pages)
             and contract.content_engine == master_pages.get("contentEngine")
             else None
         )
@@ -924,6 +970,56 @@ def _format_entry(
     if contract.format_slug == "lyric-video":
         from services.control_plane_lyric_video import lyric_ingredient
         ingredients.append(lyric_ingredient(page_id=page_id, master_pages=master_pages))
+    if is_pool_supplied(page_id):
+        # The Worker's vault pool supplies finished clips for this page, so a
+        # Lab image library and slideshow treatment must not block Save & apply.
+        # Lyric-video still needs a bound timing set to produce a valid selection.
+        for ingredient in ingredients:
+            if ingredient["ingredientId"] not in POOL_SUPPLIED_INGREDIENT_IDS:
+                continue
+            if (
+                contract.format_slug == "lyric-video"
+                and ingredient["ingredientId"] == "lyric-timing"
+                and ingredient.get("binding") is None
+            ):
+                continue
+            ingredient["required"] = False
+            ingredient["status"] = "pool_supplied"
+        # Look-only grade dials for the pool pages (F-LAB-POOL-LOOK-DIALS-1103):
+        # the Worker's pool cutter (pixel89) applies the saved grade, so the
+        # channels are exactly the shared render_treatment filters with their
+        # advertised ranges and identity defaults — never an auto-darkened
+        # clip. clipSpeed and clipCrop are advertised but pinned to the identity
+        # (the same key shapes the full capability uses, with min == max ==
+        # default), so the Worker Dossier does not draw speed/framing/crop dials
+        # the Lab never applies on pool pages.
+        if contract.format_slug in POOL_LOOK_TREATMENT_FORMATS:
+            capability = render_treatment_capability()
+            ingredients.append(_ingredient(
+                "clip-treatment", "render_treatment", required=False,
+                status="bound",
+                binding={
+                    "filters": capability["filters"],
+                    "clipSpeed": {
+                        **capability["clipSpeed"],
+                        "minimum": 1.0, "maximum": 1.0, "default": 1.0,
+                    },
+                    "clipCrop": {
+                        "zoom": {
+                            **capability["clipCrop"]["zoom"],
+                            "minimum": 1.0, "maximum": 1.0, "default": 1.0,
+                        },
+                        "focusX": {
+                            **capability["clipCrop"]["focusX"],
+                            "minimum": 0.5, "maximum": 0.5, "default": 0.5,
+                        },
+                        "focusY": {
+                            **capability["clipCrop"]["focusY"],
+                            "minimum": 0.5, "maximum": 0.5, "default": 0.5,
+                        },
+                    },
+                },
+            ))
     ingredients.extend([
         _ingredient("caption-bank", "caption_bank", required=True, status="page_binding_required"),
         _ingredient("sound-collection", "sound_collection", required=True, status="page_binding_required"),
@@ -982,7 +1078,7 @@ def build_dossier_ingredient_catalog(
     current_source_formats = [
         format_slug
         for format_slug, contract in contracts.items()
-        if contract.content_niche == intent["contentNiche"]
+        if format_page_admits(format_slug, contract.content_niche, intent)
         and contract.content_engine == intent["contentEngine"]
     ]
     expected_source_format = (
@@ -1012,7 +1108,7 @@ def build_dossier_ingredient_catalog(
     current_format_candidates = [
         entry["formatId"]
         for entry in formats
-        if entry["contentNiche"] == intent["contentNiche"]
+        if format_page_admits(entry["formatId"], entry["contentNiche"], intent)
         and entry["contentEngine"] == intent["contentEngine"]
     ]
     for entry in formats:
@@ -1057,7 +1153,7 @@ def selected_dossier_catalog_version(
     if (
         contract is None
         or profile is None
-        or contract.content_niche != intent["contentNiche"]
+        or not format_page_admits(format_id, contract.content_niche, intent)
         or contract.content_engine != intent["contentEngine"]
     ):
         return None
