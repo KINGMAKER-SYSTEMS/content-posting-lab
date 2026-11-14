@@ -1,0 +1,812 @@
+"""Pool-supplied pages: the Lab treats their image library as non-blocking.
+
+The Worker posts FINISHED clips for a small committed list of pages from
+``vault/<handle>/pool``, not from a Lab-rendered image library. Those pages
+must still Save & apply their recipe (registration accepts ``sourceLibraryId``
+null) and still appear in getCapabilities (at zero, so replenish is blocked),
+while every unlisted page keeps the same catalog it would have with the pool
+classifier disabled, and its registration rules stay unchanged.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+
+import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
+import routers.control_plane_recipes as recipes
+import services.dossier_ingredients as di
+import services.pool_supplied_pages as psp
+from services import control_plane_plan_reasons as reasons
+from services.dossier_ingredients import (
+    build_dossier_ingredient_catalog,
+    catalog_selection_version,
+)
+from tests.master_pages_fixtures import master_pages
+
+
+TOKEN = "test-control-plane-token"
+LISTED_PAGE = "acct:chemically-lit"
+UNLISTED_TRUCK = "acct:truck-page"
+
+# The truck selection is scoped to its own format and should not drift when
+# other formats are added to the global catalog.
+BASE_TRUCK_SELECTION_VERSION = "sha256:2b853d4639dc71241435790429d1cfd1b8508c311ec447bcfab4254d9275c442"
+
+
+@pytest.fixture(autouse=True)
+def _no_live_syzygy(monkeypatch):
+    def unavailable(profile, master_pages, *, timeout):
+        raise di.SyzygyError("test: no live library")
+    monkeypatch.setattr(di, "load_syzygy_library", unavailable)
+
+
+def _listed_intent():
+    return master_pages(
+        LISTED_PAGE,
+        handle="chemically.lit",
+        content_niche="lyric-edits",
+        content_engine="lyrics_slideshows",
+    )
+
+
+def _format(catalog, format_id):
+    return next(entry for entry in catalog["formats"] if entry["formatId"] == format_id)
+
+
+def _ingredient(format_entry, ingredient_id):
+    return next(
+        entry for entry in format_entry["ingredients"]
+        if entry["ingredientId"] == ingredient_id
+    )
+
+
+def _v3_body(page_id, *, intent, revision, format_id, source_library_id, filters=None,
+              clip_speed=None, clip_crop=None):
+    catalog = build_dossier_ingredient_catalog(page_id, intent, revision)
+    production = {
+        "catalogVersion": "",
+        "providerId": None,
+        "modelId": None,
+        "promptModuleId": None,
+        "referenceSetId": None,
+        "sourceLibraryId": source_library_id,
+        "variationValues": {},
+        "controls": {},
+    }
+    production["catalogVersion"] = (
+        catalog_selection_version(catalog, format_id, production)
+        or catalog["catalogVersion"]
+    )
+    render = {
+        "stylePreset": None,
+        "filters": {} if filters is None else filters,
+        "captionStyle": {},
+    }
+    if clip_speed is not None:
+        render["clipSpeed"] = clip_speed
+    if clip_crop is not None:
+        render["clipCrop"] = clip_crop
+    spec = {
+        "schema": "dossier.recipe-spec.v3",
+        "masterPages": intent,
+        "masterPagesHash": revision,
+        "renderTreatment": render,
+        "demand": {"formatMix": {format_id: 1}},
+        "production": production,
+    }
+    canonical = json.dumps(spec, sort_keys=True, separators=(",", ":"))
+    body = {
+        "schema": recipes.REQUEST_SCHEMA,
+        "pageId": page_id,
+        "lane": recipes.LANE,
+        "recipeId": f"{format_id}:master",
+        "engine": "lyrics_slideshows" if format_id in {"lyric-edits", "lyric-video"} else "sourced_slideshow",
+        "recipeVersion": "dossier-1234567890abcdef",
+        "dossierRevision": "rev-1",
+        "recipeSpecHash": "sha256:" + hashlib.sha256(canonical.encode()).hexdigest(),
+        "recipeSpecCanonical": canonical,
+    }
+    return body
+
+
+def _truck_v2_body(*, clip_speed=None, clip_crop=None):
+    """Unlisted ai_video truck-scenic publication (v2, no production selection)."""
+    page_id = UNLISTED_TRUCK
+    intent, revision = master_pages(
+        page_id, handle="truck.page",
+        content_niche="TRUCK", content_engine="ai_video",
+    )
+    render = {
+        "stylePreset": "warm-truck",
+        "filters": {"brightness": 1.03},
+        "captionStyle": {},
+    }
+    if clip_speed is not None:
+        render["clipSpeed"] = clip_speed
+    if clip_crop is not None:
+        render["clipCrop"] = clip_crop
+    spec = {
+        "schema": "dossier.recipe-spec.v2",
+        "masterPages": intent,
+        "masterPagesHash": revision,
+        "renderTreatment": render,
+        "demand": {"formatMix": {"truck-scenic": 1}},
+    }
+    canonical = json.dumps(spec, sort_keys=True, separators=(",", ":"))
+    return {
+        "schema": recipes.REQUEST_SCHEMA,
+        "pageId": page_id,
+        "lane": recipes.LANE,
+        "recipeId": "truck-scenic:master",
+        "engine": "ai_video",
+        "recipeVersion": "dossier-1234567890abcdef",
+        "dossierRevision": "rev-1",
+        "recipeSpecHash": "sha256:" + hashlib.sha256(canonical.encode()).hexdigest(),
+        "recipeSpecCanonical": canonical,
+    }
+
+
+@pytest.fixture
+def lab(monkeypatch, tmp_path):
+    monkeypatch.setenv("CONTROL_PLANE_TOKEN", TOKEN)
+    monkeypatch.setenv("CONTENT_LAB_RECIPE_ROOT", str(tmp_path / "dossier-recipes"))
+    app = FastAPI()
+    app.include_router(recipes.router, prefix="/api/control-plane")
+    return TestClient(app)
+
+
+def _headers(page_id=LISTED_PAGE):
+    return {
+        "Authorization": f"Bearer {TOKEN}",
+        "X-RT-Lane": recipes.LANE,
+        "X-RT-Page-Id": page_id,
+        "Idempotency-Key": "dossier:pool-supplied",
+    }
+
+
+# ── (a) listed page: no image-library blocker + registration accepts null ────
+def test_listed_page_pool_supply_keeps_missing_lyric_video_timing_visible():
+    intent, revision = _listed_intent()
+    catalog = build_dossier_ingredient_catalog(LISTED_PAGE, intent, revision)
+
+    edits = _format(catalog, "lyric-edits")
+    for ingredient_id in ("image-library", "slideshow-treatment"):
+        ingredient = _ingredient(edits, ingredient_id)
+        assert ingredient["required"] is False, ingredient
+        assert ingredient["status"] == "pool_supplied", ingredient
+    assert not any(
+        blocker.startswith(("image-library:", "slideshow-treatment:", "lyric-timing:"))
+        for blocker in edits["blockers"]
+    )
+
+    video = _format(catalog, "lyric-video")
+    timing = _ingredient(video, "lyric-timing")
+    assert timing["required"] is True
+    assert timing["status"] == "missing"
+    assert "lyric-timing:missing" in video["blockers"]
+
+    # caption-bank / sound-collection page_binding_required are unchanged.
+    assert _ingredient(edits, "caption-bank") == {
+        "ingredientId": "caption-bank",
+        "kind": "caption_bank",
+        "required": True,
+        "status": "page_binding_required",
+        "binding": None,
+        "options": [],
+    }
+
+
+def test_listed_page_registration_accepts_null_source_library(lab):
+    intent, revision = _listed_intent()
+    body = _v3_body(
+        LISTED_PAGE, intent=intent, revision=revision,
+        format_id="lyric-edits", source_library_id=None,
+    )
+    response = lab.post(
+        "/api/control-plane/v1/recipes", json=body, headers=_headers(),
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "registered"
+
+
+def test_listed_lyric_video_registration_without_timing_is_refused_like_base(lab):
+    """A listed page with no bound lyricTimingSetId cannot register lyric-video.
+
+    Base refused this (no expressible selection, so the stale-catalog 409 fires).
+    A timing-less lyric-video selection can never be expressed on the wire (the
+    Worker requires controls exactly {lyricTimingSetId}), so the fix restores
+    base behavior: no selection, registration refused.
+    """
+    intent, revision = _listed_intent()
+    body = _v3_body(
+        LISTED_PAGE, intent=intent, revision=revision,
+        format_id="lyric-video", source_library_id=None,
+    )
+    response = lab.post(
+        "/api/control-plane/v1/recipes", json=body, headers=_headers(),
+    )
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"] == "production selection uses a stale Content Lab catalog"
+
+
+def test_listed_page_explicit_source_library_must_match_an_advertised_option(lab, monkeypatch):
+    intent, revision = _listed_intent()
+    body = _v3_body(
+        LISTED_PAGE, intent=intent, revision=revision,
+        format_id="lyric-edits", source_library_id="syzygy:not-advertised",
+    )
+    # Bypass only the stale-catalog gate (as a pinned legacy publication would)
+    # so the explicit-source check is the one that fires. Its exact message must
+    # be the advertised-option 409, proving that check runs rather than the
+    # stale-catalog one.
+    monkeypatch.setattr(
+        recipes, "is_pinned_legacy_catalog_version", lambda *a, **k: True,
+    )
+    response = lab.post(
+        "/api/control-plane/v1/recipes", json=body, headers=_headers(),
+    )
+    assert response.status_code == 409
+    assert response.json()["detail"] == "selected source library is not registered as master source DNA"
+
+
+# ── (b) unlisted page: pool isolation + registration 409 unchanged ─────────
+def test_unlisted_page_catalog_ignores_pool_classifier(monkeypatch):
+    intent, revision = master_pages(
+        UNLISTED_TRUCK, handle="truck.page",
+        content_niche="TRUCK", content_engine="ai_video",
+    )
+    catalog = build_dossier_ingredient_catalog(UNLISTED_TRUCK, intent, revision)
+    raw = di.canonical_catalog_bytes(UNLISTED_TRUCK, intent, revision)
+
+    assert not psp.is_pool_supplied(UNLISTED_TRUCK)
+    with monkeypatch.context() as disabled:
+        disabled.setattr(di, "is_pool_supplied", lambda _page_id: False)
+        without_pool = di.canonical_catalog_bytes(UNLISTED_TRUCK, intent, revision)
+    assert raw == without_pool
+    assert not any(
+        ingredient.get("status") == "pool_supplied"
+        for entry in catalog["formats"]
+        for ingredient in entry["ingredients"]
+    )
+
+    production = {
+        "catalogVersion": "",
+        "providerId": "hailuo",
+        "modelId": "minimax/hailuo-2.3",
+        "promptModuleId": "truck",
+        "referenceSetId": None,
+        "sourceLibraryId": None,
+        "variationValues": {},
+        "controls": {},
+    }
+    production["catalogVersion"] = catalog_selection_version(
+        catalog, "truck-scenic", production,
+    )
+    assert production["catalogVersion"] == BASE_TRUCK_SELECTION_VERSION
+
+
+def test_unlisted_slideshow_registration_still_requires_source_library(lab):
+    page_id = "acct:meme-page"
+    intent, revision = master_pages(
+        page_id, handle="meme.page",
+        content_niche="meme", content_engine="sourced_slideshow",
+    )
+    body = _v3_body(
+        page_id, intent=intent, revision=revision,
+        format_id="meme-slideshow", source_library_id=None,
+    )
+    response = lab.post(
+        "/api/control-plane/v1/recipes", json=body, headers=_headers(page_id=page_id),
+    )
+    assert response.status_code == 409
+    detail = response.json()["detail"]
+    assert "sourceLibraryId is required" in detail or "stale" in detail
+
+
+# ── (c) malformed list fails closed for everyone + logs ALERT ────────────────
+def test_malformed_list_fails_closed_and_logs_alert(monkeypatch, tmp_path, caplog):
+    import logging
+    path = tmp_path / "pool-supplied-pages.v1.json"
+    path.write_text("{not json", encoding="utf-8")
+    monkeypatch.setattr(psp, "_PATH", path)
+    caplog.set_level(logging.ERROR)
+
+    assert psp.load_pool_supplied_page_ids() == frozenset()
+    assert psp.is_pool_supplied(LISTED_PAGE) is False
+    assert any("ALERT pool-supplied-pages" in r.getMessage() for r in caplog.records)
+
+
+def test_wrong_schema_or_duplicate_page_fails_closed(monkeypatch, tmp_path):
+    # Each round breaks exactly one rule, so each fail-closed check in the
+    # loader is the only thing that can turn its round into an empty list.
+    for bad in (
+        [LISTED_PAGE],  # top level is not an object
+        {"schema": "wrong", "pages": [LISTED_PAGE]},
+        {"schema": psp.SCHEMA, "pages": [LISTED_PAGE], "extra": 1},
+        {"schema": psp.SCHEMA, "pages": {LISTED_PAGE: True}},  # not a list
+        {"schema": psp.SCHEMA, "pages": [1]},  # id is not a string
+        {"schema": psp.SCHEMA, "pages": ["../not-safe"]},
+        {"schema": psp.SCHEMA, "pages": [LISTED_PAGE, LISTED_PAGE]},
+    ):
+        path = tmp_path / "pool-supplied-pages.v1.json"
+        path.write_text(json.dumps(bad), encoding="utf-8")
+        monkeypatch.setattr(psp, "_PATH", path)
+        # The list is cached per path, so drop the cache each round; otherwise
+        # later rounds would only see round 1's cached answer.
+        psp.reset_pool_supplied_page_ids_cache()
+        assert psp._load_pool_supplied_page_ids_uncached() == frozenset(), bad
+        assert psp.load_pool_supplied_page_ids() == frozenset(), bad
+
+
+def test_missing_list_file_fails_closed(monkeypatch, tmp_path):
+    monkeypatch.setattr(psp, "_PATH", tmp_path / "no-such-list.json")
+    psp.reset_pool_supplied_page_ids_cache()
+    assert psp.load_pool_supplied_page_ids() == frozenset()
+    assert psp.is_pool_supplied(LISTED_PAGE) is False
+
+
+def test_invalid_utf8_list_fails_closed_with_alert(monkeypatch, tmp_path, caplog):
+    import logging
+    path = tmp_path / "pool-supplied-pages.v1.json"
+    # A lone 0xff byte inside the JSON string: json.loads(bytes) decodes UTF-8
+    # and raises UnicodeDecodeError (a ValueError), which the base loader did
+    # not catch and crashed every request on.
+    path.write_bytes(b'{"schema": "\xff"}')
+    monkeypatch.setattr(psp, "_PATH", path)
+    caplog.set_level(logging.ERROR)
+
+    assert psp.load_pool_supplied_page_ids() == frozenset()
+    assert psp.is_pool_supplied(LISTED_PAGE) is False
+    assert any("ALERT pool-supplied-pages" in r.getMessage() for r in caplog.records)
+
+
+def test_deeply_nested_list_fails_closed_with_alert(monkeypatch, tmp_path, caplog):
+    import logging
+    path = tmp_path / "pool-supplied-pages.v1.json"
+    # 200k nested arrays raise RecursionError in CPython 3.14's json parser
+    # (verified); base did not catch it and crashed every request on.
+    path.write_text("[" * 200_000 + "]" * 200_000, encoding="utf-8")
+    monkeypatch.setattr(psp, "_PATH", path)
+    caplog.set_level(logging.ERROR)
+
+    assert psp.load_pool_supplied_page_ids() == frozenset()
+    assert psp.is_pool_supplied(LISTED_PAGE) is False
+    assert any("ALERT pool-supplied-pages" in r.getMessage() for r in caplog.records)
+
+
+def test_list_is_loaded_once_and_alerts_once_per_process(monkeypatch, tmp_path, caplog):
+    import logging
+    path = tmp_path / "pool-supplied-pages.v1.json"
+    path.write_text("{not json", encoding="utf-8")
+    monkeypatch.setattr(psp, "_PATH", path)
+    psp.reset_pool_supplied_page_ids_cache()
+    caplog.set_level(logging.ERROR)
+
+    assert psp.load_pool_supplied_page_ids() == frozenset()
+    assert psp.load_pool_supplied_page_ids() == frozenset()
+    assert psp.is_pool_supplied(LISTED_PAGE) is False
+
+    alerts = [r for r in caplog.records if "ALERT pool-supplied-pages" in r.getMessage()]
+    assert len(alerts) == 1, [r.getMessage() for r in caplog.records]
+
+
+def test_concurrent_cold_start_alerts_exactly_once(monkeypatch, tmp_path, caplog):
+    import logging
+    import threading
+
+    path = tmp_path / "pool-supplied-pages.v1.json"
+    path.write_text("{not json", encoding="utf-8")
+    monkeypatch.setattr(psp, "_PATH", path)
+    psp.reset_pool_supplied_page_ids_cache()
+    caplog.set_level(logging.ERROR)
+
+    start = threading.Barrier(16)
+    results: list[frozenset[str]] = []
+    results_lock = threading.Lock()
+
+    def cold_start() -> None:
+        start.wait()
+        ids = psp.load_pool_supplied_page_ids()
+        with results_lock:
+            results.append(ids)
+
+    threads = [threading.Thread(target=cold_start) for _ in range(16)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=30)
+
+    assert len(results) == 16
+    assert all(ids == frozenset() for ids in results)
+    alerts = [r for r in caplog.records if "ALERT pool-supplied-pages" in r.getMessage()]
+    assert len(alerts) == 1, [r.getMessage() for r in alerts]
+
+
+# ── registration list check is authoritative even if the catalog drifts ─────
+def _registration_unit_test(monkeypatch, page_id):
+    """Drive _validate_production_selection with a crafted catalog whose image
+    library is still required=True (the pre-fix dossier view), so the null
+    sourceLibraryId decision is made by the registration list check itself."""
+    from fastapi import HTTPException
+
+    catalog = {
+        "currentFormatCandidates": ["lyric-edits"],
+        "formats": [{
+            "formatId": "lyric-edits",
+            "ingredients": [{
+                "ingredientId": "image-library",
+                "kind": "image_library",
+                "required": True,
+                "status": "missing",
+                "binding": None,
+                "options": [],
+            }],
+            "productionSelections": [{
+                "catalogVersion": "sha256:unit",
+                "providerId": None,
+                "modelId": None,
+                "promptModuleId": None,
+                "referenceSetId": None,
+                "sourceLibraryId": None,
+            }],
+        }],
+    }
+    monkeypatch.setattr(
+        recipes, "build_dossier_ingredient_catalog",
+        lambda *a, **k: catalog,
+    )
+    spec = {
+        "schema": "dossier.recipe-spec.v3",
+        "masterPages": {"pageId": page_id},
+        "masterPagesHash": "sha256:" + "ab" * 32,
+        "renderTreatment": {"stylePreset": None, "filters": {}, "captionStyle": {}},
+        "demand": {"formatMix": {"lyric-edits": 1}},
+        "production": {
+            "catalogVersion": "sha256:unit",
+            "providerId": None, "modelId": None, "promptModuleId": None,
+            "referenceSetId": None, "sourceLibraryId": None,
+            "variationValues": {}, "controls": {},
+        },
+    }
+    try:
+        recipes._validate_production_selection(
+            spec, page_id=page_id, recipe_id="lyric-edits:master",
+            recipe_version="v1", dossier_revision="r1",
+            recipe_spec_hash="sha256:" + "cd" * 32,
+        )
+    except HTTPException as error:
+        return error.status_code, error.detail
+    return None, None
+
+
+def test_registration_list_check_accepts_only_listed_pages(monkeypatch):
+    listed_status, _ = _registration_unit_test(monkeypatch, LISTED_PAGE)
+    assert listed_status is None
+
+    unlisted_status, unlisted_detail = _registration_unit_test(
+        monkeypatch, "acct:unlisted-page",
+    )
+    assert unlisted_status == 409
+    assert unlisted_detail == "sourceLibraryId is required for sourced master DNA"
+
+
+
+def test_listed_page_capability_advertises_zero(monkeypatch, tmp_path):
+    monkeypatch.setenv("CONTENT_LAB_ADVERTISE_ZERO_REASONS", "1")
+    from routers import control_plane as cp
+    from services.json_store import atomic_save
+
+    cp._jobs_snapshot = None
+    cp._jobs_decode_pending.clear()
+    cp._capabilities_cache.clear()
+    monkeypatch.setattr(cp, "_jobs_path", lambda: tmp_path / "jobs.json")
+    atomic_save(
+        tmp_path / "jobs.json",
+        {"jobs": {}, "version": 1, "byIdempotency": {}, "served": {}},
+    )
+    monkeypatch.setattr(
+        cp, "_current_intent_for_capabilities",
+        lambda _: ({"contentNiche": "lyric-edits", "contentEngine": "lyrics_slideshows"}, "h"),
+    )
+    spec = {
+        "schema": "dossier.recipe-spec.v3",
+        "masterPages": {"pageId": LISTED_PAGE},
+        "masterPagesHash": "sha256:" + "ab" * 32,
+        "renderTreatment": {"stylePreset": None, "filters": {}, "captionStyle": {}},
+        "demand": {"formatMix": {"lyric-edits": 1}},
+        "production": {"sourceLibraryId": None},
+    }
+    publication = {
+        "recipeId": "lyric-edits:master",
+        "engine": "lyrics_slideshows",
+        "recipeVersion": "v1",
+        "recipeSpecHash": "sha256:" + "cd" * 32,
+        "recipeSpecCanonical": json.dumps(spec, sort_keys=True, separators=(",", ":")),
+    }
+    monkeypatch.setattr(cp, "list_registered_recipe_bindings", lambda *a: [("k", publication)])
+    monkeypatch.setattr(cp, "load_engine_registry", lambda: ({}, "h"))
+    monkeypatch.setattr(cp, "resolve_slideshow_recipe", lambda publication: None)
+    monkeypatch.setattr(cp, "resolve_generation_recipe_with_reason", lambda publication: (None, None))
+    monkeypatch.setattr(cp, "_dossier_source_recipe", lambda publication, refusal_reasons=None: None)
+    monkeypatch.setattr(cp, "syzygy_runtime_available", lambda: True)
+
+    response = cp.capabilities(x_rt_page_id=LISTED_PAGE, x_page_id=None)
+    assert response["capabilities"] == [{
+        "recipeId": "lyric-edits:master",
+        "engine": "lyrics_slideshows",
+        "recipeVersion": "v1",
+        "maxQuantity": 0,
+        "zeroReason": reasons.POOL_SUPPLIED,
+    }]
+
+
+def test_bootstrap_pool_inventory_uses_real_http_registry_and_job_snapshot(monkeypatch, tmp_path):
+    """First-publication discovery must not advertise Lab render inventory."""
+    from routers import control_plane as cp
+    from services.content_engine_registry import load_engine_registry
+    from services.json_store import atomic_save
+
+    unlisted_page = "acct:unlisted-lyric"
+    intents = {
+        LISTED_PAGE: _listed_intent(),
+        unlisted_page: master_pages(
+            unlisted_page, handle="unlisted.lyric",
+            content_niche="lyric-edits", content_engine="lyrics_slideshows",
+        ),
+    }
+    profiles, _ = load_engine_registry()
+    ceiling = profiles["lyric-edits"].max_quantity
+    assert ceiling > 0
+
+    monkeypatch.setenv("CONTROL_PLANE_TOKEN", TOKEN)
+    monkeypatch.setenv("CONTENT_LAB_ADVERTISE_ZERO_REASONS", "1")
+    monkeypatch.setenv("CONTENT_LAB_RECIPE_ROOT", str(tmp_path / "recipes"))
+    monkeypatch.setattr(
+        cp, "_current_master_pages_intent",
+        lambda page_id, asserted=None: intents.get(page_id),
+    )
+    jobs_path = tmp_path / "jobs.json"
+    atomic_save(jobs_path, {"jobs": {}, "version": 1, "byIdempotency": {}, "served": {}})
+    monkeypatch.setattr(cp, "_jobs_path", lambda: jobs_path)
+    monkeypatch.setattr(cp, "_jobs_snapshot", None)
+    cp._jobs_decode_pending.clear()
+    cp._capabilities_cache.clear()
+
+    app = FastAPI()
+    app.include_router(cp.router, prefix="/api/control-plane")
+    url = "/api/control-plane/v1/capabilities"
+    with TestClient(app) as client:
+        assert client.get(url, headers={"X-RT-Page-Id": LISTED_PAGE}).status_code == 401
+
+        def capability(page_id):
+            response = client.get(url, headers={
+                "X-RT-Page-Id": page_id,
+                "Authorization": f"Bearer {TOKEN}",
+            })
+            assert response.status_code == 200, response.text
+            rows = response.json()["capabilities"]
+            assert len(rows) == 1, rows
+            return rows[0]
+
+        listed = capability(LISTED_PAGE)
+        job_views = cp._capabilities_job_views
+
+        def fail_on_cache_miss(*_args):
+            raise AssertionError("cached capability request recomputed job views")
+
+        monkeypatch.setattr(cp, "_capabilities_job_views", fail_on_cache_miss)
+        assert capability(LISTED_PAGE) == listed
+        monkeypatch.setattr(cp, "_capabilities_job_views", job_views)
+        unlisted = capability(unlisted_page)
+
+    assert listed["recipeId"] == "lyric-edits:master"
+    assert listed["maxQuantity"] == 0
+    assert listed["zeroReason"] == reasons.POOL_SUPPLIED
+    assert unlisted["maxQuantity"] == ceiling
+    assert "zeroReason" not in unlisted
+    cp._capabilities_cache.clear()
+
+
+# ── Look-only grade dials on LISTED pool pages (F-LAB-POOL-LOOK-DIALS-1103) ──
+LOOK_FORMATS = {
+    "lyric-edits", "coffee-slideshow", "image-video", "meme-slideshow",
+    "single-image-video", "ugc-slideshow",
+}
+IDENTITY_FILTER_DEFAULTS = {
+    "brightness": 1.0, "contrast": 1.0, "saturation": 1.0,
+    "warmth": 0.0, "fade": 0.0, "grain": 0.0, "vignette": 0.0,
+}
+
+
+def _look_treatment(catalog, format_id):
+    edits = _format(catalog, format_id)
+    return next(
+        (entry for entry in edits["ingredients"]
+         if entry["ingredientId"] == "clip-treatment"),
+        None,
+    )
+
+
+def test_listed_pages_advertise_look_only_treatment_dials():
+    from services.control_plane_generation import render_treatment_capability
+
+    intent, revision = _listed_intent()
+    catalog = build_dossier_ingredient_catalog(LISTED_PAGE, intent, revision)
+
+    # ai_video / sourced_video formats keep their own required clip-treatment
+    # (base behavior); only the slideshow family gains the pool Look dial.
+    slideshow_family = LOOK_FORMATS | {"lyric-video"}
+    carrying = set()
+    for entry in catalog["formats"]:
+        if entry["formatId"] not in slideshow_family:
+            continue
+        treatment = next(
+            (i for i in entry["ingredients"] if i["ingredientId"] == "clip-treatment"),
+            None,
+        )
+        if treatment is not None:
+            carrying.add(entry["formatId"])
+            assert treatment["kind"] == "render_treatment", treatment
+            assert treatment["required"] is False, treatment
+            assert treatment["status"] == "bound", treatment
+            binding = treatment["binding"]
+            capability = render_treatment_capability()
+            # Speed and crop are advertised but pinned to the identity (min ==
+            # max == default) so the Worker Dossier draws no speed/framing/crop
+            # dials the Lab never applies on pool pages.
+            assert set(binding) == {"filters", "clipSpeed", "clipCrop"}, binding
+            assert binding["filters"] == capability["filters"]
+            assert binding["clipSpeed"] == {
+                **capability["clipSpeed"],
+                "minimum": 1.0, "maximum": 1.0, "default": 1.0,
+            }
+            assert binding["clipCrop"]["zoom"] == {
+                **capability["clipCrop"]["zoom"],
+                "minimum": 1.0, "maximum": 1.0, "default": 1.0,
+            }
+            assert binding["clipCrop"]["focusX"] == {
+                **capability["clipCrop"]["focusX"],
+                "minimum": 0.5, "maximum": 0.5, "default": 0.5,
+            }
+            assert binding["clipCrop"]["focusY"] == {
+                **capability["clipCrop"]["focusY"],
+                "minimum": 0.5, "maximum": 0.5, "default": 0.5,
+            }
+            for name, default in IDENTITY_FILTER_DEFAULTS.items():
+                assert binding["filters"][name]["default"] == default, (
+                    f"{name} default must stay the identity ({default}), "
+                    "never an auto-graded clip"
+                )
+            assert not any(
+                blocker.startswith("clip-treatment:") for blocker in entry["blockers"]
+            )
+    assert carrying == LOOK_FORMATS, sorted(carrying)
+
+
+def test_unlisted_lyric_page_has_no_look_dials_or_pool_catalog_changes(monkeypatch):
+    page_id = "acct:unlisted-lyric"
+    intent, revision = master_pages(
+        page_id, handle="unlisted.lyric",
+        content_niche="lyric-edits", content_engine="lyrics_slideshows",
+    )
+    catalog = build_dossier_ingredient_catalog(page_id, intent, revision)
+    for entry in catalog["formats"]:
+        if entry["formatId"] not in LOOK_FORMATS | {"lyric-video"}:
+            continue
+        assert not any(
+            i["ingredientId"] == "clip-treatment" for i in entry["ingredients"]
+        ), entry["formatId"]
+    assert not psp.is_pool_supplied(page_id)
+    raw = di.canonical_catalog_bytes(page_id, intent, revision)
+    with monkeypatch.context() as disabled:
+        disabled.setattr(di, "is_pool_supplied", lambda _page_id: False)
+        without_pool = di.canonical_catalog_bytes(page_id, intent, revision)
+    assert raw == without_pool
+    with monkeypatch.context() as listed:
+        listed.setattr(di, "is_pool_supplied", lambda _page_id: True)
+        as_pool_page = di.canonical_catalog_bytes(page_id, intent, revision)
+    assert raw != as_pool_page
+    assert not any(
+        ingredient.get("status") == "pool_supplied"
+        for entry in catalog["formats"]
+        for ingredient in entry["ingredients"]
+    )
+
+
+def test_listed_page_look_registration_accepts_in_range_filters(lab):
+    intent, revision = _listed_intent()
+    body = _v3_body(
+        LISTED_PAGE, intent=intent, revision=revision,
+        format_id="lyric-edits", source_library_id=None,
+        filters={"brightness": 0.7},
+    )
+    response = lab.post(
+        "/api/control-plane/v1/recipes", json=body, headers=_headers(),
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "registered"
+
+
+def test_listed_page_look_registration_refuses_out_of_range_filter(lab):
+    intent, revision = _listed_intent()
+    body = _v3_body(
+        LISTED_PAGE, intent=intent, revision=revision,
+        format_id="lyric-edits", source_library_id=None,
+        filters={"brightness": 3.5},
+    )
+    response = lab.post(
+        "/api/control-plane/v1/recipes", json=body, headers=_headers(),
+    )
+    assert response.status_code == 400, response.text
+    assert "brightness" in response.json()["detail"]
+
+
+def test_listed_page_look_registration_refuses_unknown_filter_channel(lab):
+    intent, revision = _listed_intent()
+    body = _v3_body(
+        LISTED_PAGE, intent=intent, revision=revision,
+        format_id="lyric-edits", source_library_id=None,
+        filters={"sepia": 0.2},
+    )
+    response = lab.post(
+        "/api/control-plane/v1/recipes", json=body, headers=_headers(),
+    )
+    assert response.status_code == 400, response.text
+    assert "sepia" in response.json()["detail"]
+
+
+def test_listed_page_look_registration_refuses_speed(lab):
+    intent, revision = _listed_intent()
+    body = _v3_body(
+        LISTED_PAGE, intent=intent, revision=revision,
+        format_id="lyric-edits", source_library_id=None,
+        clip_speed=0.7,
+    )
+    response = lab.post(
+        "/api/control-plane/v1/recipes", json=body, headers=_headers(),
+    )
+    assert response.status_code == 400, response.text
+    assert response.json()["detail"] == "speed and framing are not used on pool pages"
+
+
+def test_listed_page_look_registration_refuses_crop_zoom(lab):
+    intent, revision = _listed_intent()
+    body = _v3_body(
+        LISTED_PAGE, intent=intent, revision=revision,
+        format_id="lyric-edits", source_library_id=None,
+        clip_crop={"zoom": 1.35, "focusX": 0.5, "focusY": 0.5},
+    )
+    response = lab.post(
+        "/api/control-plane/v1/recipes", json=body, headers=_headers(),
+    )
+    assert response.status_code == 400, response.text
+    assert response.json()["detail"] == "speed and framing are not used on pool pages"
+
+
+def test_listed_page_look_registration_accepts_neutral_speed_and_crop(lab):
+    intent, revision = _listed_intent()
+    body = _v3_body(
+        LISTED_PAGE, intent=intent, revision=revision,
+        format_id="lyric-edits", source_library_id=None,
+        clip_speed=1.0,
+        clip_crop={"zoom": 1.0, "focusX": 0.5, "focusY": 0.5},
+    )
+    response = lab.post(
+        "/api/control-plane/v1/recipes", json=body, headers=_headers(),
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "registered"
+
+
+def test_unlisted_truck_scenic_still_accepts_speed(lab):
+    body = _truck_v2_body(clip_speed=0.7)
+    response = lab.post(
+        "/api/control-plane/v1/recipes", json=body,
+        headers=_headers(page_id=UNLISTED_TRUCK),
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "registered"

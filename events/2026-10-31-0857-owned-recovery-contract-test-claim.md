@@ -1,0 +1,3 @@
+# 2026-10-31 08:57 UTC — terminal runner contract test correction claim
+
+Before editing, claim OWN test-only successor of frozen70521bfcae0e04b9dbceccfdbbf847934693f35a after its unchanged old317 oracle produced the independently verified expected call AssertionError at line138 (first real new-job positive passed). Keep that old source/red evidence. Preserve first new-job test exactly; require failed ambiguous runner replay/duplicate dispatch to remain terminal with no new effects, and separately exercise actual submit-adapter same-active-job key/body/cache identity. No runtime changes, failed-row resets, fake success, test deletion, native execution, provider/media/install, push or publication. Root/peer admission precedes focused controls and semantic mutants.

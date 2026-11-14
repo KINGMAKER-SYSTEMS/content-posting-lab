@@ -1,0 +1,6 @@
+{
+  "recipes/content-engine-registry.v1.json": "all legacy entries identical; only image-video added",
+  "recipes/content-format-contracts.v1.json": "all legacy entries identical; only image-video added",
+  "recipes/executors/syzygy-slideshow.v1.json": "485feda76c885d7aab19be256f61c749edcce19417ebc560d265ba92b60974ad",
+  "recipes/executors/syzygy-slideshow-ugc.v1.json": "1c800420efd659f1f0a38608f6e34d3a38d16da53a43cdf8cc27c67f7cb0440e"
+}

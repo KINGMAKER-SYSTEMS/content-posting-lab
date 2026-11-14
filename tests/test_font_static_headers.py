@@ -54,8 +54,14 @@ def test_replaced_font_bytes_change_the_validator_even_with_the_same_size_and_mt
     replacement.replace(font)
     digest = hashlib.sha256(content).hexdigest()
 
+    # Only send If-None-Match: the etag is the byte-hash validator under
+    # test. Sending the restored stale If-Modified-Since as well makes
+    # Starlette's is_not_modified() fall through from the (mismatched) etag
+    # to the (matching, because this test deliberately restores mtime) date
+    # check and return 304 — masking the validator change this test exists
+    # to prove.
     response = client.get(f"/fonts/Face.ttf?v={original.headers['etag'][1:17]}", headers={
-        "If-None-Match": original.headers["etag"], "If-Modified-Since": original.headers["last-modified"],
+        "If-None-Match": original.headers["etag"],
     })
     assert response.status_code == 200
     assert response.content == content

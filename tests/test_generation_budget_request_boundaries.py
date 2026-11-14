@@ -241,7 +241,11 @@ async def test_ui_wan_validates_actual_input_before_any_debit(monkeypatch, provi
     def handler(request):
         if request.method == "POST":
             posts.append(json.loads(request.content))
-            assert generation_budget.spent_usd_at(generation_budget.jobs_store_path()) == pytest.approx(cost * len(posts))
+            # Both queued calls may reserve before the first provider POST.
+            # Every observed call must already be covered; reservations may
+            # not exceed this request's exact two-call budget.
+            spent = generation_budget.spent_usd_at(generation_budget.jobs_store_path())
+            assert cost * len(posts) <= spent <= cost * 2
             return httpx.Response(201, json={"id": f"paid-id-{len(posts)}"})
         return httpx.Response(200, json={"status": "succeeded", "output": "https://fixture.test/video.mp4"})
     original_client = httpx.AsyncClient

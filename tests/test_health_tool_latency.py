@@ -54,18 +54,31 @@ async def test_health_tool_refresh_is_single_flight_and_nonblocking(monkeypatch)
 
 @pytest.mark.asyncio
 async def test_startup_tool_check_runs_concurrently_and_records_missing(monkeypatch):
-    def slow(result):
-        time.sleep(0.1)
+    # The guarantee is that the two tool checks overlap (run concurrently),
+    # not that they finish within some wall-clock budget — a loaded host
+    # pushes two 0.1s thread-pool sleeps past any tight deadline. Peak
+    # overlap measures exactly what matters: both checkers in-flight at once.
+    active = 0
+    peak = 0
+    lock = threading.Lock()
+
+    def tracked(result):
+        nonlocal active, peak
+        with lock:
+            active += 1
+            peak = max(peak, active)
+        time.sleep(0.05)
+        with lock:
+            active -= 1
         return result
 
-    monkeypatch.setattr(app_module, "_check_ffmpeg", lambda: slow(False))
-    monkeypatch.setattr(app_module, "_check_ytdlp", lambda: slow(True))
+    monkeypatch.setattr(app_module, "_check_ffmpeg", lambda: tracked(False))
+    monkeypatch.setattr(app_module, "_check_ytdlp", lambda: tracked(True))
     start = time.monotonic()
     await app_module._refresh_tool_status()
-    elapsed = time.monotonic() - start
-    assert elapsed < 0.19
     assert app_module._tool_status == (False, True)
     assert app_module._tool_checked_at >= start
+    assert peak == 2, "tool checks must run concurrently (peak overlap)"
 
 
 @pytest.mark.asyncio

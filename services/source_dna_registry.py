@@ -27,11 +27,40 @@ MASTER_FIELDS = {
     "durationMs", "sourceOffsetMs", "provenance",
 }
 PROVENANCE_FIELDS = {"sourceUrl", "acquiredAt", "authority"}
+ORIGIN_FIELDS = {"originSourceId", "originStartMs", "originEndMs"}
+# A master's place in its page's pool (Eric 2026-10-22). Absent means primary:
+# the page's main footage, cut as much as possible. A backup is cut only when
+# the primaries have no fresh window, or as an occasional variety cut
+# (services/control_plane_sources.py plan_source_cuts). A backup is added only
+# by a reviewed commit to this registry; nothing automatic writes it.
+MASTER_ROLES = ("primary", "backup")
+# A backup master may declare its own brightness (Eric 2026-10-22). Brightness
+# only, inside GRADE_OVERRIDE_BOUNDS; applied at cut time on clip-varying pages
+# (refused at parse time on any other page) and written into the clip's
+# receipt. Lead 2026-10-26: BTL backups render at the page look, so they
+# declare none. The master file itself is never re-encoded.
+GRADE_OVERRIDE_BOUNDS = {"brightness": (0.4, 1.0)}
 MIME_TYPES = {"video/mp4", "video/quicktime"}
 MAX_MANIFEST_BYTES = 1_048_576
 MAX_MASTERS = 500
 MAX_SOURCE_BYTES = 20_000_000_000
 MAX_DURATION_MS = 86_400_000
+
+# Retired masters (Rule #1): footage retired network-wide must never come back
+# into a source-DNA library as a fresh primary or a backup. A retired SHA may
+# remain ONLY as a library's single original primary (the immutable historical
+# library of a page that has since moved on, e.g. the retired old-tt library),
+# so history stays pinned without making the retired footage cuttable again.
+# The canonical list = control-plane tools/originality/origguard/retired-origins.json
+# (origin-keyed; originality runs `origguard lab-check --registry <lab>/recipes/source-dna`
+# before each Lab gap that touches source-dna, which fails on drift either way).
+RETIRED_MASTER_SHAS = frozenset({
+    # 3816ff5c = IMG_4962 family (BTL v1 + automation-v1).
+    "3816ff5c4c79d73eff1694cc21f3644aff18bb68c3a97ca5b8306316feda1314",
+    # c434bf96 = pov-dirt-bike footage shared between chase.miles.4l and
+    # soul.revival83 (sibling 9ff3fe74, ~103 s overlap).
+    "c434bf9678fbaa20b9b081c68260cca75eb3dd109ddc1cb82df556ec59ae5bd5",
+})
 
 
 class SourceDnaError(ValueError):
@@ -49,6 +78,9 @@ class MasterSource:
     duration_ms: int
     source_offset_ms: int
     provenance: dict[str, str | None]
+    origin: dict[str, Any] | None = None
+    role: str = "primary"
+    grade_override: dict[str, float] | None = None
 
 
 @dataclass(frozen=True)
@@ -108,8 +140,12 @@ def parse_source_dna_manifest(raw: bytes, expected_library_id: str | None = None
     hashes: set[str] = set()
     storage_keys: set[str] = set()
     for index, row in enumerate(rows):
-        if not isinstance(row, dict) or set(row) != MASTER_FIELDS:
+        if not isinstance(row, dict) or set(row) - {"role", "gradeOverride", "origin"} != MASTER_FIELDS:
             raise SourceDnaError(f"source DNA masters[{index}] fields are invalid")
+        role = row.get("role", "primary")
+        if role not in MASTER_ROLES:
+            raise SourceDnaError(f"source DNA masters[{index}].role is invalid")
+        grade_override = _grade_override(row.get("gradeOverride"), role, index, page_id)
         source_id = row.get("sourceId")
         sha256 = row.get("sha256")
         byte_count = row.get("bytes")
@@ -119,6 +155,7 @@ def parse_source_dna_manifest(raw: bytes, expected_library_id: str | None = None
         duration_ms = row.get("durationMs")
         source_offset_ms = row.get("sourceOffsetMs")
         provenance = row.get("provenance")
+        origin = row.get("origin")
         if not isinstance(source_id, str) or not TOKEN.fullmatch(source_id) or source_id in source_ids:
             raise SourceDnaError(f"source DNA masters[{index}].sourceId is invalid or duplicated")
         if not isinstance(sha256, str) or not SHA256.fullmatch(sha256) or sha256 in hashes:
@@ -144,22 +181,114 @@ def parse_source_dna_manifest(raw: bytes, expected_library_id: str | None = None
                 or not _nonblank(provenance.get("acquiredAt"), 100) \
                 or not _nonblank(provenance.get("authority"), 500):
             raise SourceDnaError(f"source DNA masters[{index}].provenance is incomplete")
+        origin = _origin(origin, duration_ms, source_offset_ms, index)
         source_ids.add(source_id)
         hashes.add(sha256)
         storage_keys.add(storage_key)
         masters.append(MasterSource(
             source_id, sha256, byte_count, filename, mime_type, storage_key,
-            duration_ms, source_offset_ms, dict(provenance),
+            duration_ms, source_offset_ms, dict(provenance), origin, role, grade_override,
         ))
     if [item.source_id for item in masters] != sorted(source_ids):
         raise SourceDnaError("source DNA masters must be sorted by sourceId")
+    if not any(item.role == "primary" for item in masters):
+        raise SourceDnaError("source DNA library needs at least one primary master")
+    for master in masters:
+        if master.sha256 in RETIRED_MASTER_SHAS and (master.role == "backup" or len(masters) != 1):
+            raise SourceDnaError(
+                f"source DNA master {master.sha256} is retired; it may only remain as a "
+                "library's single original primary, never as a backup or an added master"
+            )
     return SourceDnaLibrary(
         library_id=library_id,
         format_slug=format_slug,
         page_id=page_id,
         masters=tuple(masters),
-        sha256=hashlib.sha256(raw).hexdigest(),
+        sha256=_primary_version(value, raw),
     )
+
+
+def _origin(
+    value: Any, duration_ms: int, source_offset_ms: int, index: int,
+) -> dict[str, Any] | None:
+    """The upstream origin of a master: its id and the window it claims on it.
+
+    Optional because legacy libraries predate origin recording; when present it
+    must name the origin id and a window whose length is the master duration and
+    whose start equals the already-projected ``sourceOffsetMs``.
+    """
+    if value is None:
+        return None
+    if not isinstance(value, dict) or set(value) != ORIGIN_FIELDS:
+        raise SourceDnaError(f"source DNA masters[{index}].origin fields are invalid")
+    origin_source_id = value.get("originSourceId")
+    start_ms = value.get("originStartMs")
+    end_ms = value.get("originEndMs")
+    if not _nonblank(origin_source_id, 100):
+        raise SourceDnaError(f"source DNA masters[{index}].origin.originSourceId is invalid")
+    if (
+        isinstance(start_ms, bool)
+        or not isinstance(start_ms, int)
+        or isinstance(end_ms, bool)
+        or not isinstance(end_ms, int)
+        or not 0 <= start_ms < end_ms <= MAX_DURATION_MS
+    ):
+        raise SourceDnaError(f"source DNA masters[{index}].origin window is invalid")
+    if end_ms - start_ms != duration_ms:
+        raise SourceDnaError(f"source DNA masters[{index}].origin window does not match media duration")
+    if start_ms != source_offset_ms:
+        raise SourceDnaError(f"source DNA masters[{index}].origin start does not match sourceOffsetMs")
+    return {"originSourceId": origin_source_id, "originStartMs": start_ms, "originEndMs": end_ms}
+
+
+def _grade_override(value: Any, role: str, index: int, page_id: str) -> dict[str, float] | None:
+    if value is None:
+        return None
+    # Applied only where cuts vary (services/clip_variation.py), so a declared
+    # grade on any other page would be silently ignored: refuse it instead.
+    from services.clip_variation import varies_clips
+    if not varies_clips(page_id):
+        raise SourceDnaError(f"source DNA masters[{index}].gradeOverride is only allowed on a clip-varying page")
+    if (role != "backup" or not isinstance(value, dict) or not value
+            or set(value) - set(GRADE_OVERRIDE_BOUNDS)
+            or any(isinstance(item, bool) or not isinstance(item, (int, float))
+                   or not GRADE_OVERRIDE_BOUNDS[name][0] <= item <= GRADE_OVERRIDE_BOUNDS[name][1]
+                   for name, item in value.items())):
+        raise SourceDnaError(f"source DNA masters[{index}].gradeOverride must be a backup's brightness from 0.4 to 1.0")
+    return {name: float(item) for name, item in value.items()}
+
+
+def _primary_version(value: dict, raw: bytes) -> str:
+    """The library version, pinned to its primary masters only.
+
+    Adding or removing a backup must not move the version: the Worker binds a
+    page's clips and planned posts to it (pageSourceLockstep), so a moved
+    version would read every current clip as an old source. A library with no
+    backup hashes its exact bytes, as before; one with backups hashes the same
+    canonical form (sorted keys, compact, trailing newline: the registry's own
+    format) with the backups and every role key left out.
+
+    ``origin`` is likewise identity-free: it names upstream footage that does
+    not change which bytes a master is, so recording it (or dropping it) must
+    not move the version. An origin-bearing library with no role keys is the
+    ShipStream projection shape: hash its pre-origin compact byte identity so
+    the version is unchanged from before origin recording.
+    """
+    rows = value["masters"]
+    has_role_key = any("role" in row for row in rows)
+    has_origin = any("origin" in row for row in rows)
+    if not has_role_key and not has_origin:
+        return hashlib.sha256(raw).hexdigest()
+    primary = {**value, "masters": [
+        {key: item for key, item in row.items() if key not in ("role", "origin")}
+        for row in rows if row.get("role", "primary") == "primary"
+    ]}
+    canonical = json.dumps(
+        primary, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+    )
+    if has_role_key:
+        canonical += "\n"
+    return hashlib.sha256(canonical.encode()).hexdigest()
 
 
 def load_source_dna_library(library_id: str) -> SourceDnaLibrary:

@@ -1,0 +1,29 @@
+{
+  "schema": "content-lab.syzygy-slideshow-executor.v1",
+  "executorId": "syzygy-slideshow",
+  "source": "syzygy_r2_library",
+  "selection": "deterministic_variety_without_replacement",
+  "reservation": "active_jobs_and_completed_outputs",
+  "formats": {
+    "lyric-video": {
+      "lane": "slideshow-webweaving",
+      "minimumLibraryItems": 20,
+      "templates": [
+        {
+          "slug": "curated-video-montage",
+          "mediaCount": 20
+        }
+      ]
+    }
+  },
+  "pageTreatments": {},
+  "output": {
+    "container": "video/mp4",
+    "aspectRatio": "9:16",
+    "width": 1080,
+    "height": 1920,
+    "encodePreset": "tiktok_delivery_v1",
+    "audioPolicy": "campaign_sound_bound_downstream"
+  }
+}
+

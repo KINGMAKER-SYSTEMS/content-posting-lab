@@ -1689,103 +1689,72 @@ Independent review found that executable permission errors and unexpected checke
 _________________________________________________________________________________
 
 _________________________________________________________________________________
-time: [08:16P] [10-15-26] EDT; actual UTC: 2026-10-16T00:16:08Z
-agent: [Claude Code] [Sonnet 5.5] [tr03p5 labglyph builder]
-worktree: [tr03p5-labglyph] /Users/ecfromthedc/dev/tides-ec976d/b5-labglyph
-type: [bug report]: Never report a caption render as done unless its text can be drawn and is drawn
+time: [9:14PM] [10-16-26] EDT; actual UTC: 2026-10-17T01:14:55Z
+agent: [Claude Code] [claude-opus-5-5] [Floyd source import]
+worktree: [fix/roster-handle-lowercase-1016] /Users/ecfromthedc/dev/wt/lab-handle-lowercase-1016
+type: [bug report]: Page handles cross to the control plane in lowercase
 area: [backend], [testing]
 
-Every allowed TikTokSans font draws its missing-glyph box for a character it lacks (emoji, U+FE0F, U+2800, U+3164, U+FFA0, kana) and there is no fallback font, so such a caption rendered boxes, passed every check and the job still succeeded. `render_caption_overlay` now refuses any caption with a character the font cannot draw (`CAPTION_GLYPH_MISSING`, listing the code points, never dropping them) and a caption with no drawable letter or digit (`CAPTION_NO_TEXT`); the dead `CAPTION_EMPTY` arm is deleted. `render_post` now compares the burned QA frame with the same source frame at the same time (same delivery graph, no caption), on glyph pixels only, and refuses a caption that did not change the picture as it should (`CAPTION_NOT_DRAWN`, below 40% of the expected change) or cannot change it at all for this clip and look (`CAPTION_LOW_CONTRAST`); the measure is recorded in `decode.json` as `caption_ink_share`, the receipt is unchanged. All four new codes are terminal (not in `RETRY_CODES`). Tests: glyph gate table incl. the real 2026-10-02 lovenightdrives caption, the ink check on real footage and framed bands, and the Worker's shared vectors. No merge, deploy or Railway action.
+acct:oceaneyes7764's Notion title is "Oceaneyes7764". The roster sent that spelling as the Master Pages handle, and ShipStream refused both source imports with `source_registration_invalid` because vault handles must be lowercase. `_snapshot_page` now lowercases the handle, so the roster projection and the current-intent resolver both carry the TikTok spelling. Only this page and one archived page had mixed-case handles in the control plane, so no other page's intent hash moves. New regression test in `tests/test_control_plane_roster.py` fails on the old code and passes now.
 _________________________________________________________________________________
 
 _________________________________________________________________________________
-time: [08:25P] [10-15-26] EDT; actual UTC: 2026-10-16T00:25:20Z
-agent: [Claude Code] [Sonnet 5.5] [tr03p5 labglyph builder, round 2]
-worktree: [tr03p5-labglyph] /Users/ecfromthedc/dev/tides-ec976d/b5-labglyph
-type: [bug report]: Strip format characters before the glyph gate
+time: [2026-10-20T06:49Z]
+agent: [DeepSeek remote builder; Codex independent review] [deepseek-v4-pro] [source identity alias]
+worktree: [codex/between-source-identity-alias-1020] /Users/seenorising/rt-work/between-source-identity-alias-1020
+type: [config]: Retain Between The Lines source under its recreated automation identity
 area: [backend], [testing]
 
-The Lab gate saw the raw text and refused a caption holding a Unicode Cf character (soft hyphen, U+200B-U+200D, U+2060, U+FEFF), which draws nothing. `render_caption_overlay` now applies one canonical rule, the one the Worker and rail use (lane capvisible): strip Cf, then glyph-check what remains, before drawing. U+FE0F, emoji and the blank fillers are not Cf and are still refused.
-
+Added a new source-DNA manifest for acct:between-the-lines66. Only libraryId and
+pageId differ from the retained old-tt manifest; every master record and its
+storage/provenance fields remain equal, including the 800-second, 205190968-byte
+master SHA 3816ff5c4c79d73eff1694cc21f3644aff18bb68c3a97ca5b8306316feda1314.
+The old manifest bytes remain unchanged. Five new regression tests verify the
+identity-only delta and current-page ingredient eligibility. Independent remote
+verification: 29 source-registry, ingredient and packaged-import tests pass.
+No source-media bytes were downloaded, copied, modified or rendered. No deployment.
 _________________________________________________________________________________
 
-_________________________________________________________________________________
-time: [08:34P] [10-15-26] EDT; actual UTC: 2026-10-16T00:34:57Z
-agent: [Claude Code] [Sonnet 5.5] [tr03p5 labglyph builder, round 3]
-worktree: [tr03p5-labglyph] /Users/ecfromthedc/dev/tides-ec976d/b5-labglyph
-type: [bug report]: Pre-review fixes for the caption glyph gate
+2026-10-20
+type: [feature]: Add a scoped managed timed-lyric backend for Burnt Mill Road
 area: [backend], [testing]
 
-Reviews of the glyph gate and ink check, fixed: (1) glyph coverage is now read from the font's cmap table, not from a rendered probe, so the verdict no longer depends on Pillow's layout engine (raqm can hide a missing U+FE0F); Pillow is pinned in requirements.txt. (2) The ink check now measures change against the source frame at the same time (same delivery graph, no caption): glyph pixels only, never a background box, so white text on a white clip, or a missing overlay behind a same-colour box, is refused as CAPTION_NOT_DRAWN, and thin fonts on busy footage pass. (3) NFC before the Cf strip, and saved line_breaks normalised exactly like the caption. (4) The Worker's shared admission vectors and drawable table are pinned as test fixtures; every vector the Worker admits the Lab admits and draws.
-
+Added a separate immutable20s27-window/20-video source program and page-owned
+Heavy Foot timing selection. The typed prepared renderer2 creates timed PNG
+phrases over silent already-treated source, checks decoded edge-phrase glyphs,
+and records a v2 receipt. Durable jobs preserve v1 behavior and reject foreign
+sound/timing/source-program identities. Actual background execution emits a
+source-bound lyricTiming capsule; artifact reads reject missing/stale producer
+proof. Legacy format records/executor bytes and static renderer remain unchanged.
+This is draft integration: Worker producer/admission support, full/image gates,
+publication/hardware and release remain separate. No paid render or deployment.
 _________________________________________________________________________________
 
-_________________________________________________________________________________
-time: [10:07P] [10-15-26] EDT; actual UTC: 2026-10-16T02:07:11Z
-agent: [Claude Code] [Sonnet 5.5] [tr03p5 labglyph builder, round 4]
-worktree: [tr03p5-labglyph] /Users/ecfromthedc/dev/tides-ec976d/b5-labglyph
-type: [bug report]: Split "cannot be seen" from "was not drawn"
-area: [backend], [testing]
+11:15 — Independent Burnt v2 review: durable output authority now refuses a self-consistent receipt/decode duration outside the registered 20-second timing set’s existing 34 ms tolerance, including non-integer values. The renderer already enforced 20 seconds; this closes the durable acceptance backstop while leaving v1 unchanged. Five negative queued-row cases failed before the fix; three tolerance controls remained valid. Affected renderer/durable suites pass 117 tests, including real FFmpeg output. Exact-head broader qualification, full suite, image and release gates remain separate. No deployment or paid render.
 
-The ink check had one code for two causes. Now `CAPTION_LOW_CONTRAST` means the caption cannot be told apart from this clip (fewer than 64 glyph pixels would change by more than 48 levels, such as white text with no outline on a white clip): a fact about the clip and look. `CAPTION_NOT_DRAWN` is kept for a renderer fault (contrast expected, frame did not change). Both are terminal. `numpy` is declared in requirements.txt (floor only) and imported at the top of post_render.py so a missing install fails at build or import, not at the first render.
-_________________________________________________________________________________
+### 2026-10-20 — Exact managed lyric manifest capsule
 
-_________________________________________________________________________________
-time: [11:28P] [10-15-26] EDT; actual UTC: 2026-10-16T03:28:25Z
-agent: [Claude Code] [Sonnet 5.5] [tr03p5 labglyph builder, round 5]
-worktree: [tr03p5-labglyph] /Users/ecfromthedc/dev/tides-ec976d/b5-labglyph
-type: [bug report]: Measure the words against their own box
-area: [backend], [testing]
+Managed lyric completion now retains the registered timing manifest's original UTF-8 bytes as artifact.lyricTiming.manifestJson. The existing immutable timing SHA, closed seven-phrase authority and page/sound/Notion/program scope remain authoritative; artifact readback compares the complete recomputed producer capsule. The ingredient catalog remains scalar metadata and does not duplicate the raw manifest. No operator backfill or v1 renderer change.
 
-Two review HIGHs on the ink check, one method. The reference frame is now the same source frame and delivery graph with the caption's box or highlight drawn but the words left out (the bare source frame when there is no box). A box alone can no longer prove the words (it is already in the reference), and white words on a dark box over a white clip are measured against the box, so they pass instead of being refused as low contrast. The box itself must also show its colour (60% match), so no overlay at all cannot pass when the clip happens to be the words' colour. `CAPTION_NOT_DRAWN`: words or box missing; `CAPTION_LOW_CONTRAST`: the words cannot be told apart from what is directly behind them. Calibration on 3,150 real renders is in docs/caption-ink-calibration.md and tests/fixtures/caption_ink_calibration/. The Worker's drawable table fixture is re-pinned (header now embeds the font shas), and a no-skip test fails if any Lab font is added, removed or changed.
-_________________________________________________________________________________
+Focused producer/readback/authority tests: 29 passed. Isolated source mutations that omit the producer field or reserialize the manifest both fail their behavioral regressions; restored source passes. The normal runner fixture executes managed completion with mocked remote transport/media and synthetic durable authority/store, not a paid render. The preceding 41eb9f4 relevant gate passed 699 tests; this successor requires its own gate. Full-suite, built-image and visual quality qualifications remain separate; no deployment.
 
-_________________________________________________________________________________
-time: [12:16P] [10-15-26] EDT; actual UTC: 2026-10-16T04:16:13Z
-agent: [Claude Code] [Sonnet 5.5] [tr03p5 labglyph builder, round 6]
-worktree: [tr03p5-labglyph] /Users/ecfromthedc/dev/tides-ec976d/b5-labglyph
-type: [bug report]: Saved lines are compared with the caption by the same canonical rule
-area: [backend], [testing]
+### 2026-10-23 — t73 in-app dual-render candidate
 
-The check that saved `line_breaks` spell the caption did not strip Unicode format characters, so lines that differ from the caption only by one (a soft hyphen, ZWJ, BOM) were rejected with a 422 where the Worker accepts them. It now applies the same NFC, Cf strip and whitespace collapse as the drawn caption, then lowercases, before comparing. Lines that really differ still fail.
-_________________________________________________________________________________
+Prepared v1 in-app slots now render clean and normal captioned variants up
+front under one source/caption/treatment binding. Receipt fallback hashes and
+authenticated fallback downloads support downstream admission without a
+delivery-only successor. Both variants must validate before a job succeeds.
+Disk reservation includes both bounded final and QA artifacts. No deployment,
+installation, migration or production write; downstream activation remains
+subject to Worker/rail authority gates. Synthetic maj costs and the exact
+artifact contract are recorded in docs/post-render-setup.md.
 
-_________________________________________________________________________________
-time: [12:25P] [10-15-26] EDT; actual UTC: 2026-10-16T04:25:27Z
-agent: [Claude Code] [Sonnet 5.5] [tr03p5 labglyph builder, round 7]
-worktree: [tr03p5-labglyph] /Users/ecfromthedc/dev/tides-ec976d/b5-labglyph
-type: [docs]: Document the line-spelling order; test the drawn words
-area: [backend], [testing]
 
-The saved-lines check compares lines with the caption in one fixed order that is the same on the Worker, the rail and the Lab: NFC, strip Cf, collapse whitespace, lowercase. The order is now written in the code and in AGENTS.md, and tests pin it (a format character between two spaces is accepted only in this order). The accept tests now assert the words that are drawn, not only that no format character is drawn.
-_________________________________________________________________________________
-
-_________________________________________________________________________________
-time: [01:51P] [10-15-26] EDT; actual UTC: 2026-10-16T05:51:34Z
-agent: [Claude Code] [Sonnet 5.5] [tr03p5 labglyph builder, round 8]
-worktree: [tr03p5-labglyph] /Users/ecfromthedc/dev/tides-ec976d/b5-labglyph
-type: [testing]: Run the Worker's line-spelling vectors through the saved-lines check
-area: [backend], [testing]
-
-The Worker's shared line-spelling vectors (21 cases, tr03p5-lostpost 89e39a58b) are copied byte for byte into tests/fixtures/caption_admission/ and sha-pinned. Every vector gets the same accept or reject from `CaptionRenderRequest` as from the Worker. Two points of the rule the vectors do not exercise (lowercase not casefold, whitespace collapsed after the Cf strip) are pinned by a Lab-side test.
-_________________________________________________________________________________
-
-_________________________________________________________________________________
-time: [02:57P] [10-15-26] EDT; actual UTC: 2026-10-16T06:57:17Z
-agent: [Claude Code] [Sonnet 5.5] [tr03p5 labglyph builder, round 9]
-worktree: [tr03p5-labglyph] /Users/ecfromthedc/dev/tides-ec976d/b5-labglyph
-type: [bug report]: A mid-grey box cannot count as shown when nothing was burned
-area: [backend], [testing]
-
-Light-grey footage, a #c0c0c0 box and white words passed both ink checks with no overlay in the video: the words were measured against the box (0.76) and the footage sat within the 64-level colour match of the box. A box pixel now counts as shown only if the burned colour is nearer the box colour than the bare source frame is at that pixel (the bare frame is cut as well for box looks); where the box is within 24 levels of the source nothing can be told and the pixel counts. Calibration redone on 3,102 real renders including mid-grey boxes. The Worker's line-spelling vectors are re-pinned at 25 cases.
-_________________________________________________________________________________
-
-_________________________________________________________________________________
-time: [04:38P] [10-16-26] EDT; actual UTC: 2026-10-16T08:38:52Z
-agent: [Claude Code] [Sonnet 5.5] [tr03p5 labglyph builder, round 10]
-worktree: [tr03p5-labglyph] /Users/ecfromthedc/dev/tides-ec976d/b5-labglyph
-type: [bug report]: Unchanged footage can never count as caption ink
-area: [backend], [testing]
-
-A flat #e0e0e0 source, a #c8c8c8 box (24 levels away, "indistinct") and white words passed both ink checks with no overlay: the words were measured against the hypothetical box, so unchanged footage scored 0.436 over the 0.40 gate. Now what is behind the words is the box colour only where the box really differs from the source (more than 24 levels) and the bare source otherwise; near a box a word pixel scores the lower of its judgement against the source and against the box, and needs 48 levels of contrast against both. Indistinct box pixels are left out of the box tally instead of counting as shown or as failed. The decision is one function (`_ink_refusal`) and a class-guard grid over source level, box level, words colour and outline (both sides of the 24-level boundary) asserts that nothing missing passes and a real render is never not-drawn. Calibration redone on 3,384 real renders including a fast-motion real clip; codec drift measured on real footage.
-_________________________________________________________________________________
+Dual-render jobs now reserve the captioned fallback identity under a SQLite
+writer transaction. Distinct captions may share clean video bytes while status,
+receipts and retirement retain each job's actual clean hash. Identical captioned
+outputs still refuse across dual and ordinary jobs. Paired media requires its
+own admission acknowledgement before automatic retirement; another caption's
+shared clean object is insufficient proof. Focused jobs tests cover real render
+pairs, concurrent duplicate claims, restart, retirement and cross-mode repeats;
+local-history reservation costs are recorded in docs/post-render-setup.md.

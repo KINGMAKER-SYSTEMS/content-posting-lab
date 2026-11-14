@@ -61,6 +61,7 @@ _LINE_BREAK_MAX_CHARS = 500
 _BACKGROUNDS_NEEDING_COLOR = ("box", "highlight")
 # Where an inverted caption always sits (see CaptionStyle.center_inverted_caption).
 _INVERTED_PLACEMENT = {"position": "middle", "offset_pct": 0}
+
 # Fit inside the visible picture (owner rule, 2026-10-04). The style's size is
 # the maximum: a caption that stays inside the picture is drawn exactly as
 # styled, however big, and one that would leave it only shrinks. The picture is
@@ -175,10 +176,10 @@ def caption_style_contract() -> dict:
     (contracts/caption-style.v1.json) lets the Worker check in its own CI that
     every caption style it can send is one this renderer takes. Not in it:
     render-time refusals that depend on the installed fonts and the rendered
-    size (CAPTION_FONT_UNAVAILABLE, italic fonts, CAPTION_OUT_OF_FRAME for a
-    caption that cannot fit the visible picture even at 12 pt, and
-    CAPTION_GLYPH_MISSING / CAPTION_NO_TEXT for text the font cannot draw), and
-    the request rule that line_breaks must spell the caption. tests/test_caption_transforms.py fails when the copy drifts;
+    size (CAPTION_FONT_UNAVAILABLE, italic fonts, CAPTION_GLYPH_MISSING,
+    CAPTION_NO_TEXT, and CAPTION_OUT_OF_FRAME for a caption that cannot fit the
+    visible picture even at 12 pt), and the request rule that line_breaks must spell
+    the caption. tests/test_caption_transforms.py fails when the copy drifts;
     regenerate it with ``python scripts/export_caption_style_contract.py``.
     """
 
@@ -595,94 +596,81 @@ def _drawn_line(text: str, text_case: str) -> str:
     return " ".join(_normalized(_cased(text, text_case)).split())
 
 
-# A character the font has no glyph for is drawn as the font's own missing-glyph
-# box ("tofu"), and there is no fallback font. Emoji, U+FE0F, U+2800, U+3164 and
-# kana are missing from every TikTokSans file. The box is real ink, so every later
-# check passes; the caption has to be refused here instead (owner rule,
-# 2026-10-15: no emoji on a caption, and never a post without its caption).
-# Coverage is read from the font's own cmap table, never from a rendered mask:
-# a rendered probe depends on the Pillow layout engine (raqm can hide a missing
-# default-ignorable character such as U+FE0F), the cmap does not. It is the same
-# source as the Worker's drawable-codepoints table.
-_GLYPH_ERROR_CHARS_MAX = 8
+@functools.lru_cache(maxsize=32)
+def _font_codepoints(font_bytes: bytes) -> frozenset[int]:
+    """Read real glyph coverage from the installed font's cmap, not Pillow's layout."""
 
+    def u16(offset: int) -> int:
+        return struct.unpack_from(">H", font_bytes, offset)[0]
 
-def _read_cmap(data: bytes) -> frozenset[int]:
-    """Every code point the font maps to a real glyph (glyph id 0 is the missing-glyph box)."""
+    def u32(offset: int) -> int:
+        return struct.unpack_from(">I", font_bytes, offset)[0]
 
-    u16 = lambda offset: struct.unpack_from(">H", data, offset)[0]
-    u32 = lambda offset: struct.unpack_from(">I", data, offset)[0]
-    table = None
-    for index in range(u16(4)):
-        record = 12 + 16 * index
-        if data[record:record + 4] == b"cmap":
-            table = u32(record + 8)
-    if table is None:
-        raise ValueError("no cmap table")
-    covered: set[int] = set()
-    for index in range(u16(table + 2)):
-        platform, encoding, offset = u16(table + 4 + 8 * index), u16(table + 6 + 8 * index), u32(table + 8 + 8 * index)
-        if not (platform == 0 or (platform == 3 and encoding in (1, 10))):
-            continue
-        sub = table + offset
-        fmt = u16(sub)
-        if fmt == 4:
-            segments = u16(sub + 6) // 2
-            ends, starts = sub + 14, sub + 16 + 2 * segments
-            deltas, ranges = starts + 2 * segments, starts + 4 * segments
-            for seg in range(segments):
-                end, start, delta, range_offset = u16(ends + 2 * seg), u16(starts + 2 * seg), u16(deltas + 2 * seg), u16(ranges + 2 * seg)
-                for code in range(start, end + 1):
-                    if range_offset == 0:
-                        glyph = (code + delta) & 0xFFFF
-                    else:
-                        glyph = u16(ranges + 2 * seg + range_offset + 2 * (code - start))
-                        glyph = (glyph + delta) & 0xFFFF if glyph else 0
-                    if glyph:
-                        covered.add(code)
-        elif fmt == 12:
-            for group in range(u32(sub + 12)):
-                start, end, glyph = (u32(sub + 16 + 12 * group + step) for step in (0, 4, 8))
-                covered.update(code for code in range(start, end + 1) if glyph + (code - start))
-    if not covered:
-        raise ValueError("cmap maps nothing")
-    return frozenset(covered)
-
-
-@functools.lru_cache(maxsize=64)
-def _font_codepoints(font_path: str) -> frozenset[int]:
     try:
-        return _read_cmap(Path(font_path).read_bytes())
-    except (OSError, ValueError, struct.error) as error:
+        table = None
+        for index in range(u16(4)):
+            record = 12 + 16 * index
+            if font_bytes[record:record + 4] == b"cmap":
+                table = u32(record + 8)
+        if table is None:
+            raise ValueError("missing cmap")
+        covered: set[int] = set()
+        for index in range(u16(table + 2)):
+            record = table + 4 + 8 * index
+            platform, encoding, offset = u16(record), u16(record + 2), u32(record + 4)
+            if not (platform == 0 or (platform == 3 and encoding in (1, 10))):
+                continue
+            subtable = table + offset
+            fmt = u16(subtable)
+            if fmt == 4:
+                segments = u16(subtable + 6) // 2
+                ends = subtable + 14
+                starts = subtable + 16 + 2 * segments
+                deltas = starts + 2 * segments
+                ranges = starts + 4 * segments
+                for segment in range(segments):
+                    end = u16(ends + 2 * segment)
+                    start = u16(starts + 2 * segment)
+                    delta = u16(deltas + 2 * segment)
+                    range_offset = u16(ranges + 2 * segment)
+                    for codepoint in range(start, end + 1):
+                        if range_offset == 0:
+                            glyph = (codepoint + delta) & 0xFFFF
+                        else:
+                            glyph = u16(ranges + 2 * segment + range_offset + 2 * (codepoint - start))
+                            glyph = (glyph + delta) & 0xFFFF if glyph else 0
+                        if glyph:
+                            covered.add(codepoint)
+            elif fmt == 12:
+                for group in range(u32(subtable + 12)):
+                    start = u32(subtable + 16 + 12 * group)
+                    end = u32(subtable + 20 + 12 * group)
+                    first_glyph = u32(subtable + 24 + 12 * group)
+                    covered.update(
+                        codepoint for codepoint in range(start, end + 1)
+                        if first_glyph + codepoint - start
+                    )
+        if not covered:
+            raise ValueError("empty cmap")
+        return frozenset(covered)
+    except (ValueError, struct.error) as error:
         raise CaptionRenderError("CAPTION_FONT_INVALID", "installed font's character table could not be read") from error
 
 
-def _require_drawable_text(font_path: Path, lines: list[str]) -> None:
-    """Refuse a caption the font cannot fully draw, or one with no letter or digit left.
+def _require_drawable_text(font_bytes: bytes, lines: list[str]) -> None:
+    """Refuse the whole caption if the chosen font cannot draw every character."""
 
-    Never drops a character: a caption that cannot be drawn as written is
-    handed back so the caller can use another caption.
-    """
-
-    covered = _font_codepoints(str(font_path))
-    missing: list[str] = []
-    readable = False
-    for char in dict.fromkeys("".join(lines)):
-        if char.isspace():
-            continue
-        if ord(char) not in covered:
-            missing.append(char)
-        elif unicodedata.category(char)[0] in "LN":
-            readable = True
+    covered = _font_codepoints(font_bytes)
+    missing = sorted({
+        ord(char) for line in lines for char in line
+        if not char.isspace() and ord(char) not in covered
+    })
     if missing:
-        shown = ", ".join(f"U+{ord(char):04X}" for char in missing[:_GLYPH_ERROR_CHARS_MAX])
-        if len(missing) > _GLYPH_ERROR_CHARS_MAX:
-            shown += f" and {len(missing) - _GLYPH_ERROR_CHARS_MAX} more"
-        raise CaptionRenderError(
-            "CAPTION_GLYPH_MISSING",
-            f"caption has characters the font cannot draw: {shown}",
-        )
-    if not readable:
+        shown = ", ".join(f"U+{codepoint:04X}" for codepoint in missing[:8])
+        if len(missing) > 8:
+            shown += f" and {len(missing) - 8} more"
+        raise CaptionRenderError("CAPTION_GLYPH_MISSING", f"caption has characters the font cannot draw: {shown}")
+    if not any(unicodedata.category(char)[0] in "LN" for line in lines for char in line):
         raise CaptionRenderError("CAPTION_NO_TEXT", "caption has no letter or digit the font can draw")
 
 
@@ -892,12 +880,17 @@ def _render_caption(
         return fonts[size]
 
     rendered_source = _normalized(_cased(request.caption, style.case))
-    lines = ([_drawn_line(line, style.case) for line in style.line_breaks]
-             if style.line_breaks is not None
-             else _wrap_preserving_explicit_newlines(rendered_source, style.line_balance))
-    # The wrap always returns a line and the request needs one visible
-    # character, so "no lines" cannot happen; this refuses what a line holds.
-    _require_drawable_text(font_path, lines)
+    if style.line_breaks is not None:
+        lines = [_drawn_line(line, style.case) for line in style.line_breaks]
+    else:
+        lines = rendered_source.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    # The split always returns a line and the request needs one visible
+    # character, so "no lines" cannot happen; _require_drawable_text refuses
+    # what a line holds.
+
+    if style.line_breaks is None:
+        lines = _wrap_preserving_explicit_newlines("\n".join(lines), style.line_balance)
+    _require_drawable_text(font_bytes, lines)
 
     max_width_px = round(FRAME_WIDTH * (_MAX_WIDTH_PCT / 100))
     horizontal_margin_px = (FRAME_WIDTH - max_width_px) // 2

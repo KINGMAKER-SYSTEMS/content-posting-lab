@@ -1,0 +1,53 @@
+{
+  "baseline_commit": "7cb7a47ea27f5c85c7a500862821acfb945f78c7",
+  "files_hex": {
+    "decode.json": "7b2266696e616c5f736861323536223a202261333733666166623837633435336337343130353939323263636134303564383836313936336363323931343131613566666334303536633334303164396538222c202271615f6672616d655f736861323536223a202239383131613032386331376664336237323832626630376335363465313432656632623432626163376262616134393232323532666333653039343962316437222c20226465636f6465645f766964656f5f6672616d6573223a2033302c202266696e616c5f70726f6265223a207b226475726174696f6e5f6d73223a20313030307d7d",
+    "final.mp4": "6c656761637920636c65616e",
+    "qa.jpg": "7161206672616d65",
+    "receipt.json": "7b22736c6f745f6964223a2022736c6f743a6c6567616379222c2022736c6f745f7061796c6f61645f736861323536223a202234353339663366343338373635323632613266663333316231396234393861356437386164643563376264303838663966316334333533356638666137646430222c2022706167655f6964223a2022706167652d61222c202270726f6772616d5f6964223a2022706c61796c6973743a66697874757265222c20226465766963655f73657269616c223a2022666978747572652d6f6e6c79222c20226163636f756e74223a2022666978747572652e6163636f756e74222c2022736f757263655f736861323536223a202234316366363739346261343230306238333963353335333135353566306633393938646634636262303161346435636230623934653363613565323339343764222c202263617074696f6e5f736861323536223a202239326232336462303266316666363834353339383165373033396434356334336235336662336432376664316666613964393133373962303638333765643131222c202274726561746d656e745f736861323536223a202231356431623731613564313831376230363265613235303733376333356532643063656631613362663164383036353964363034313030373133666336366262222c202272656e64657265725f6964223a2022636f6e74656e742d6c61622e70726570617265642d706f7374222c202272656e64657265725f76657273696f6e223a202231222c2022736368656d61223a2022706f7374696e672d70726570617265642d61727469666163742f7631222c202266696e616c5f736861323536223a202261333733666166623837633435336337343130353939323263636134303564383836313936336363323931343131613566666334303536633334303164396538222c202266696e616c5f627974655f6c656e677468223a2031322c202271615f6672616d655f736861323536223a202239383131613032386331376664336237323832626630376335363465313432656632623432626163376262616134393232323532666333653039343962316437222c202266696e616c5f6f626a6563745f6b6579223a2022706f7374696e672f66696e616c2f613337336661666238376334353363373431303539393232636361343035643838363139363363633239313431316135666663343035366333343031643965382e6d7034222c20226d696d655f74797065223a2022766964656f2f6d7034222c20227769647468223a20313038302c2022686569676874223a20313932302c20226475726174696f6e5f6d73223a20313030302c2022636f6d706c657465645f61745f6d73223a20313830303030303030303030302c202263617074696f6e5f64656c6976657279223a2022696e5f617070227d"
+  },
+  "tables": {
+    "attempts": [
+      {
+        "ended_at_ms": 1800000000000,
+        "error_code": null,
+        "id": "7196867067274a0696efd56e314ab20b",
+        "job_id": "render_018044bc31a595647afd95bd9c524eb3",
+        "started_at_ms": 1800000000000,
+        "state": "succeeded"
+      }
+    ],
+    "idempotency": [
+      {
+        "job_id": "render_018044bc31a595647afd95bd9c524eb3",
+        "key": "request:legacy",
+        "request_hash": "7dbf9e7a5025f2327269b05c76f382e2877e8749238fe9470fe3859312bf00d5"
+      }
+    ],
+    "jobs": [
+      {
+        "acknowledged_at_ms": null,
+        "age_out_checked_at_ms": null,
+        "attempt_id": "7196867067274a0696efd56e314ab20b",
+        "attempts": 1,
+        "available_at_ms": 1800000000000,
+        "created_at_ms": 1800000000000,
+        "error_code": null,
+        "final_byte_length": 12,
+        "final_sha256": "a373fafb87c453c741059922cca405d8861963cc291411a5ffc4056c3401d9e8",
+        "id": "render_018044bc31a595647afd95bd9c524eb3",
+        "output_authority_json": "{\"decode\":{\"decoded_video_frames\":30,\"final_probe\":{\"duration_ms\":1000},\"final_sha256\":\"a373fafb87c453c741059922cca405d8861963cc291411a5ffc4056c3401d9e8\",\"qa_frame_sha256\":\"9811a028c17fd3b7282bf07c564e142ef2b42bac7bbaa4922252fc3e0949b1d7\"},\"final_byte_length\":12,\"final_sha256\":\"a373fafb87c453c741059922cca405d8861963cc291411a5ffc4056c3401d9e8\",\"qa_frame_sha256\":\"9811a028c17fd3b7282bf07c564e142ef2b42bac7bbaa4922252fc3e0949b1d7\",\"receipt\":{\"account\":\"fixture.account\",\"caption_delivery\":\"in_app\",\"caption_sha256\":\"92b23db02f1ff68453981e7039d45c43b53fb3d27fd1ffa9d91379b06837ed11\",\"completed_at_ms\":1800000000000,\"device_serial\":\"fixture-only\",\"duration_ms\":1000,\"final_byte_length\":12,\"final_object_key\":\"posting/final/a373fafb87c453c741059922cca405d8861963cc291411a5ffc4056c3401d9e8.mp4\",\"final_sha256\":\"a373fafb87c453c741059922cca405d8861963cc291411a5ffc4056c3401d9e8\",\"height\":1920,\"mime_type\":\"video/mp4\",\"page_id\":\"page-a\",\"program_id\":\"playlist:fixture\",\"qa_frame_sha256\":\"9811a028c17fd3b7282bf07c564e142ef2b42bac7bbaa4922252fc3e0949b1d7\",\"renderer_id\":\"content-lab.prepared-post\",\"renderer_version\":\"1\",\"schema\":\"posting-prepared-artifact/v1\",\"slot_id\":\"slot:legacy\",\"slot_payload_sha256\":\"4539f3f438765262a2ff331b19b498a5d78add5c7bd088f9f1c43535f8fa7dd0\",\"source_sha256\":\"41cf6794ba4200b839c53531555f0f3998df4cbb01a4d5cb0b94e3ca5e23947d\",\"treatment_sha256\":\"15d1b71a5d1817b062ea250737c35e2d0cef1a3bf1d80659d604100713fc66bb\",\"width\":1080},\"receipt_sha256\":\"b846dfcd1ac6b7f633ef450940d2cd996faf137c5bdec68b526dcb016d3756a2\",\"schema\":\"content-lab.post-render-output-authority.v1\"}",
+        "planned_at_ms": null,
+        "qa_frame_sha256": "9811a028c17fd3b7282bf07c564e142ef2b42bac7bbaa4922252fc3e0949b1d7",
+        "receipt_sha256": "b846dfcd1ac6b7f633ef450940d2cd996faf137c5bdec68b526dcb016d3756a2",
+        "request_hash": "7dbf9e7a5025f2327269b05c76f382e2877e8749238fe9470fe3859312bf00d5",
+        "retired_at_ms": null,
+        "slot_hash": "4539f3f438765262a2ff331b19b498a5d78add5c7bd088f9f1c43535f8fa7dd0",
+        "slot_id": "slot:legacy",
+        "state": "succeeded",
+        "submission_json": "{\"schema\":\"content-lab.post-render-job.v1\",\"request\":{\"schema\":\"content-lab.post-render-request.v1\",\"slot_id\":\"slot:legacy\",\"slot_payload_sha256\":\"4539f3f438765262a2ff331b19b498a5d78add5c7bd088f9f1c43535f8fa7dd0\",\"page_id\":\"page-a\",\"program_id\":\"playlist:fixture\",\"device_serial\":\"fixture-only\",\"account\":\"fixture.account\",\"source_sha256\":\"41cf6794ba4200b839c53531555f0f3998df4cbb01a4d5cb0b94e3ca5e23947d\",\"caption\":\"legacy caption\",\"caption_sha256\":\"92b23db02f1ff68453981e7039d45c43b53fb3d27fd1ffa9d91379b06837ed11\",\"render_treatment_json\":\"{\\\"captionDelivery\\\":\\\"in_app\\\",\\\"captionStyle\\\":{\\\"align\\\":\\\"center\\\",\\\"background\\\":\\\"none\\\",\\\"case\\\":\\\"as_written\\\",\\\"color\\\":\\\"#ffffff\\\",\\\"font\\\":\\\"TikTokSans16pt-Bold.ttf\\\",\\\"line_balance\\\":0,\\\"offset_pct\\\":0,\\\"outline\\\":\\\"#000000\\\",\\\"position\\\":\\\"middle\\\",\\\"size_pt\\\":24},\\\"clipCrop\\\":{\\\"focusX\\\":0.5,\\\"focusY\\\":0.5,\\\"zoom\\\":1},\\\"clipSpeed\\\":1.5,\\\"filters\\\":{\\\"brightness\\\":0.85,\\\"saturation\\\":0.5},\\\"stylePreset\\\":\\\"treated-source-test\\\"}\",\"treatment_sha256\":\"15d1b71a5d1817b062ea250737c35e2d0cef1a3bf1d80659d604100713fc66bb\",\"source_visual_treatment_json\":\"{\\\"clipCrop\\\":{\\\"focusX\\\":0.5,\\\"focusY\\\":0.5,\\\"zoom\\\":1.0},\\\"clipSpeed\\\":1.5,\\\"filters\\\":{\\\"brightness\\\":0.85,\\\"contrast\\\":1.0,\\\"fade\\\":0.0,\\\"grain\\\":0.0,\\\"saturation\\\":0.5,\\\"vignette\\\":0.0,\\\"warmth\\\":0.0}}\",\"source_visual_treatment_sha256\":\"c780d0a8801dd84261a0f3b0855c60fbb1ba0f9bd2bf5d8d085245f436cd4027\",\"renderer_id\":\"content-lab.prepared-post\",\"renderer_version\":\"1\",\"created_at_ms\":1799999999000},\"slot_payload_json\":\"{\\\"schema_version\\\":4,\\\"slot_id\\\":\\\"slot:legacy\\\",\\\"page_id\\\":\\\"page-a\\\",\\\"handle\\\":\\\"fixture.account\\\",\\\"asset\\\":{\\\"sha256\\\":\\\"41cf6794ba4200b839c53531555f0f3998df4cbb01a4d5cb0b94e3ca5e23947d\\\"},\\\"device_hint\\\":{\\\"device_serial\\\":\\\"fixture-only\\\"},\\\"caption\\\":{\\\"text\\\":\\\"legacy caption\\\"},\\\"render_treatment\\\":{\\\"captionDelivery\\\":\\\"in_app\\\",\\\"captionStyle\\\":{\\\"align\\\":\\\"center\\\",\\\"background\\\":\\\"none\\\",\\\"case\\\":\\\"as_written\\\",\\\"color\\\":\\\"#ffffff\\\",\\\"font\\\":\\\"TikTokSans16pt-Bold.ttf\\\",\\\"line_balance\\\":0,\\\"offset_pct\\\":0,\\\"outline\\\":\\\"#000000\\\",\\\"position\\\":\\\"middle\\\",\\\"size_pt\\\":24},\\\"clipCrop\\\":{\\\"focusX\\\":0.5,\\\"focusY\\\":0.5,\\\"zoom\\\":1},\\\"clipSpeed\\\":1.5,\\\"filters\\\":{\\\"brightness\\\":0.85,\\\"saturation\\\":0.5},\\\"stylePreset\\\":\\\"treated-source-test\\\"}}\",\"source_provenance\":{\"schema\":\"posting-source-treatment/v1\",\"source_sha256\":\"41cf6794ba4200b839c53531555f0f3998df4cbb01a4d5cb0b94e3ca5e23947d\",\"source_visual_treatment_sha256\":\"c780d0a8801dd84261a0f3b0855c60fbb1ba0f9bd2bf5d8d085245f436cd4027\",\"provenance_id\":\"generation:explicit-fixture\"}}",
+        "updated_at_ms": 1800000000000
+      }
+    ]
+  }
+}

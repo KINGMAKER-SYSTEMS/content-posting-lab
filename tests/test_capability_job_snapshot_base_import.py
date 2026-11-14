@@ -36,6 +36,13 @@ import pytest
 from routers import control_plane as cp
 from services.json_store import atomic_save
 
+
+@pytest.fixture(autouse=True)
+def _advertise_zero_reasons(monkeypatch):
+    """These tests check the zero-plan reason fields, which the Lab sends
+    only when CONTENT_LAB_ADVERTISE_ZERO_REASONS is on."""
+    monkeypatch.setenv("CONTENT_LAB_ADVERTISE_ZERO_REASONS", "1")
+
 BASE_SHA = "8ad9ab32f3804cc98e50384571ee648f978437b6"
 NUM_STATES = 200
 PAGES = [f"page-{i}" for i in range(8)]
@@ -200,7 +207,15 @@ def _wire(module, monkeypatch, *, job_path, master_pages, bindings_present):
     monkeypatch.setattr(module, "load_engine_registry", lambda: ({"truck-scenic": bootstrap_profile}, "hash"))
 
     monkeypatch.setattr(module, "resolve_generation_recipe", lambda publication: _stub_generation_recipe())
-    monkeypatch.setattr(module, "_dossier_source_recipe", lambda publication: _stub_source_recipe())
+    # head's capabilities() resolves the recipe and its failure reason in one
+    # call; base has no such symbol, so create it identically on both sides
+    # (raising=False) with the same stub recipe and no reason.
+    monkeypatch.setattr(
+        module, "resolve_generation_recipe_with_reason",
+        lambda publication: (_stub_generation_recipe(), None),
+        raising=False,
+    )
+    monkeypatch.setattr(module, "_dossier_source_recipe", lambda publication, refusal_reasons=None: _stub_source_recipe())
     # sourced_slideshow/lyrics_slideshows are not in the field list this
     # file is scoped to (per the ruling); force that branch off identically
     # on both sides rather than wiring its own deep material-profile chain.
@@ -221,6 +236,16 @@ def _wire(module, monkeypatch, *, job_path, master_pages, bindings_present):
     monkeypatch.setattr(
         module, "plan_source_cuts",
         lambda recipe, quantity, served_slots, *a, **k: list(range(max(0, quantity - len(served_slots)))),
+    )
+    # The zero-plan reason fields are this task's deliberate additive change,
+    # not part of the C6 narrowing this file proves byte-identical. Stub the
+    # reason decision identically on both sides (base has no such function; the
+    # attribute is simply created) and normalize the two new fields out of the
+    # comparison below, so the C6 proof keeps testing exactly what it always
+    # tested while head is free to carry zeroReason/zeroPlanRecipes.
+    monkeypatch.setattr(
+        module, "explain_empty_source_plan",
+        lambda *a, **k: "source_windows_exhausted", raising=False,
     )
     # Truck candidate I/O: stubbed IDENTICALLY on both sides (this file's
     # scope excludes the truck field; see module docstring). Neutralizing
@@ -249,6 +274,17 @@ def test_head_matches_base_capabilities_over_random_states(seed, tmp_path, monke
     _wire(cp_base, monkeypatch, job_path=job_path, master_pages=master_pages, bindings_present=bindings_present)
     base_result = cp_base.capabilities(x_rt_page_id=page_id, x_page_id=None)
 
-    assert json.dumps(head_result, sort_keys=True) == json.dumps(base_result, sort_keys=True), (
+    def _strip_zero_plan_fields(result):
+        result = json.loads(json.dumps(result))
+        result.pop("zeroPlanRecipes", None)
+        for entry in result.get("capabilities", []):
+            # Only a zero entry may carry a zeroReason; a served (maxQuantity > 0)
+            # entry leaking one is itself a behavior change C6 must catch.
+            if entry.get("maxQuantity") == 0:
+                entry.pop("zeroReason", None)
+        return result
+
+    assert json.dumps(_strip_zero_plan_fields(head_result), sort_keys=True) \
+        == json.dumps(_strip_zero_plan_fields(base_result), sort_keys=True), (
         seed, page_id, head_result, base_result,
     )

@@ -26,10 +26,12 @@ TREATMENT = {"stylePreset": "treated-source-test", "filters": {"brightness": 0.8
 _NO_FRAME = object()
 
 
-def request(source_sha="a" * 64, frame=_NO_FRAME, frame_fit=_NO_FRAME, **changes):
+def request(source_sha="a" * 64, frame=_NO_FRAME, frame_fit=_NO_FRAME, caption_delivery=_NO_FRAME, **changes):
     slot_treatment = TREATMENT if frame is _NO_FRAME else {**TREATMENT, "frame": frame}
     if frame_fit is not _NO_FRAME:
         slot_treatment = {**slot_treatment, "frameFit": frame_fit}
+    if caption_delivery is not _NO_FRAME:
+        slot_treatment = {**slot_treatment, "captionDelivery": caption_delivery}
     treatment = json.dumps(slot_treatment, sort_keys=True, separators=(",", ":"))
     visual_json = json.dumps(normalized_visual_treatment(TREATMENT), sort_keys=True, separators=(",", ":"))
     payload = {"schema": render.REQUEST_SCHEMA, "slot_id": "slot:page-a:20260908T120000Z",
@@ -47,9 +49,9 @@ def request(source_sha="a" * 64, frame=_NO_FRAME, frame_fit=_NO_FRAME, **changes
 
 @pytest.fixture(scope="module", params=[
     ("1080x1920", "1"), ("606x1080", "1"), ("606x1080", "0"), ("1080x1920", "0"),
-    ("704x1280", "1"),
+    ("704x1280", "1"), ("432x768", "1"), ("432x768", "0"),
 ], ids=["full", "provider-crop", "provider-crop-unspecified-sar", "full-unspecified-sar",
-        "wan-near-vertical"])
+        "wan-near-vertical", "hailuo-768p", "hailuo-768p-unspecified-sar"])
 def actual_source(tmp_path_factory, request):
     if not shutil.which("ffmpeg") or not shutil.which("ffprobe"):
         pytest.skip("ffmpeg/ffprobe are required for actual render proof")
@@ -215,6 +217,7 @@ def test_size_retry_changes_encoding_only_and_is_bounded_to_two_attempts(monkeyp
     (1920, 1080, "1:1", 0), (560, 1080, "1:1", 0),
     (606, 1080, "2:1", 0), (1080, 1920, "1:1", 90),
     (304, 540, "1:1", 0),
+    (430, 766, "1:1", 0),
 ])
 def test_wrong_source_geometry_fails_without_compositing(monkeypatch, tmp_path, geometry):
     source = tmp_path / "source"
@@ -612,9 +615,9 @@ def _deliver(monkeypatch, transform):
         return result, background
     real_encode = render._encode_final
 
-    def encode(source, overlay, final, source_probe, tools, frame_height=None):
+    def encode(source, overlay, final, source_probe, tools, frame_height=None, **kwargs):
         overlay.write_bytes(transform(overlay.read_bytes(), captured["background"]))
-        return real_encode(source, overlay, final, source_probe, tools, frame_height)
+        return real_encode(source, overlay, final, source_probe, tools, frame_height, **kwargs)
     monkeypatch.setattr(render, "render_caption_with_background", spy)
     monkeypatch.setattr(render, "_encode_final", encode)
 
@@ -903,6 +906,88 @@ def test_words_on_a_contrasting_box_have_enough_contrast_even_when_they_match_th
     assert render._caption_ink(png, _composite(white, png), white)[1] < render.CAPTION_INK_MIN_PIXELS
 
 
+def _two_line_overlay(style_overrides=None, caption="first line\nsecond line"):
+    import base64
+    from services.caption_render import CaptionRenderRequest, render_caption_with_background
+    caption_request = CaptionRenderRequest.model_validate({
+        "schema": "content-lab.caption-render-request.v1", "caption": caption,
+        "style": {**STYLE, "size_pt": 32, "line_balance": 0, **(style_overrides or {})}})
+    fonts = Path(render.__file__).parents[1] / "fonts"
+    result, background = render_caption_with_background(caption_request, font_dir=fonts)
+    centers = [line.center_y_px for line in result.plan.lines if line.text]
+    assert len(centers) == 2
+    return base64.b64decode(result.overlay.base64), background, render._line_rows(centers)
+
+
+def _split_frame(cut, top, bottom):
+    frame = Image.new("RGB", (1080, 1920), bottom)
+    frame.paste(Image.new("RGB", (1080, cut), top), (0, 0))
+    return frame
+
+
+def test_line_rows_give_every_row_to_the_nearest_line_centre():
+    assert render._line_rows([900, 1000]) == [(0, 950), (950, 1920)]
+    assert render._line_rows([1000, 900, 1100]) == [(0, 950), (950, 1050), (1050, 1920)]
+    assert render._line_rows([960]) == [(0, 1920)]
+
+
+def test_a_second_line_the_colour_of_the_picture_behind_it_is_refused_though_the_first_line_shows():
+    # Review P2 (2026-10-28): one global mean let a whole invisible second line pass on the first line's ink.
+    png, background, rows = _two_line_overlay({"color": "#ffffff", "outline": None})
+    assert background is None
+    cut = rows[0][1]
+    source = _split_frame(cut, (0, 0, 0), (255, 255, 255))
+    burned = _composite(source, png)
+    share, pixels, box_match = render._caption_ink(png, burned, source)
+    # The caption as a whole looks fine: the old check passed it.
+    assert share >= 0.99 and pixels >= render.CAPTION_INK_MIN_PIXELS
+    assert render._ink_refusal(share, pixels, box_match) is None
+    lines = render._caption_line_ink(png, burned, source, rows)
+    (first_share, first_pixels, _), (_, second_pixels, second_words) = lines
+    assert first_share >= 0.99 and first_pixels > 1000
+    assert second_words > 1000 and second_pixels < render.CAPTION_INK_MIN_PIXELS
+    assert render._ink_refusal(share, pixels, box_match, lines) == (
+        "CAPTION_LOW_CONTRAST", "caption line 2 cannot be told apart from the picture behind it")
+    # Flipped (invisible first line over white, visible second over black) it is refused the same way.
+    flipped = _split_frame(cut, (255, 255, 255), (0, 0, 0))
+    lines = render._caption_line_ink(png, _composite(flipped, png), flipped, rows)
+    assert render._ink_refusal(*render._caption_ink(png, _composite(flipped, png), flipped), lines)[0] == (
+        "CAPTION_LOW_CONTRAST")
+    # With an outline both lines can be told apart from both halves and the caption passes.
+    png, _, rows = _two_line_overlay({"color": "#ffffff", "outline": "#000000"})
+    source = _split_frame(rows[0][1], (0, 0, 0), (255, 255, 255))
+    burned = _composite(source, png)
+    lines = render._caption_line_ink(png, burned, source, rows)
+    assert all(line_share >= 0.9 for line_share, _, _ in lines)
+    assert render._ink_refusal(*render._caption_ink(png, burned, source), lines) is None
+
+
+def test_a_caption_with_only_its_first_line_burned_is_refused_as_not_drawn():
+    png, _, rows = _two_line_overlay()
+    source = Image.new("RGB", (1080, 1920), (120, 120, 120))
+    burned = _composite(source, png)
+    # Keep the burned pixels only in the first line's rows: the second line never reached the video.
+    half = source.copy()
+    half.paste(burned.crop((0, 0, 1080, rows[0][1])), (0, 0))
+    share, pixels, box_match = render._caption_ink(png, half, source)
+    lines = render._caption_line_ink(png, half, source, rows)
+    assert lines[0][0] >= 0.99 and abs(lines[1][0]) < 0.01 and lines[1][1] > 1000
+    assert render._ink_refusal(share, pixels, box_match, lines) == (
+        "CAPTION_NOT_DRAWN", "caption line 2 is not visible in the burned QA frame")
+    assert render._ink_refusal(*render._caption_ink(png, burned, source),
+                               render._caption_line_ink(png, burned, source, rows)) is None
+
+
+def test_lines_with_no_drawn_pixels_in_their_rows_are_not_judged():
+    png, _, rows = _two_line_overlay()
+    source = Image.new("RGB", (1080, 1920), (120, 120, 120))
+    burned = _composite(source, png)
+    # A row band with nothing drawn (an empty saved line) reports no word pixels and cannot refuse.
+    lines = render._caption_line_ink(png, burned, source, rows + [(0, 10)])
+    assert lines[-1] == (0.0, 0, 0)
+    assert render._ink_refusal(*render._caption_ink(png, burned, source), lines) is None
+
+
 def _verdict(row):
     """The verdict the current thresholds give a recorded measurement."""
     refusal = render._ink_refusal(float(row["share"]), int(row["pixels"]),
@@ -1178,3 +1263,135 @@ def test_a_box_only_frame_with_codec_drift_is_not_word_ink_for_an_indistinct_box
     # The same words really burned in score fully, drift or not.
     burned = Image.eval(_composite(source, png), lambda v: min(255, v + 9))
     assert render._caption_ink(png, burned, box_only, background, source)[0] > 0.9
+
+
+# --- captionDelivery: "in_app" clean render ---------------------------------
+# The caption stays sha-bound but is not drawn, so TikTok's own text can sit on
+# the video in the app. Absent key means today's burned behaviour (byte-identical).
+_BASE_TREATMENT_SHA = "22eeef40060ec7f79b03a4dd4acea7fcdb2c567735bd03346317f3039d526c93"
+
+
+def test_fixture_treatment_hash_is_pinned_and_absent_caption_delivery_defaults_to_burned():
+    # The treatment JSON without captionDelivery is byte-identical to BASE;
+    # adding the optional key must not change its serialization or hash.
+    raw = json.dumps(TREATMENT, sort_keys=True, separators=(",", ":"))
+    assert render.sha256(raw.encode()) == _BASE_TREATMENT_SHA
+    assert request().treatment_sha256 == _BASE_TREATMENT_SHA
+    assert render._caption_delivery(request()) is None
+
+
+def test_in_app_graph_omits_the_overlay_input():
+    exact = render.MediaProbe(1080, 1920, 1000, "h264", "yuv420p", "1:1", 0)
+    assert render._video_graph(exact, None, in_app=True) == "[0:v:0]format=yuv420p[v]"
+    assert render._video_graph(exact, 608, in_app=True) == (
+        "[0:v:0]crop=1080:608:0:656,pad=1080:1920:0:656:black[delivery];[delivery]format=yuv420p[v]")
+    # The burned graph is unchanged by the new optional path.
+    assert render._video_graph(exact, None) == "[0:v:0][1:v:0]overlay=0:0:format=auto[v]"
+
+
+@pytest.mark.parametrize("value", [True, None, "", "burned", "IN_APP", "in-app", ["in_app"], {"v": "in_app"}])
+def test_unknown_caption_delivery_is_refused_before_any_io(tmp_path, value):
+    output = tmp_path / "render"
+    with pytest.raises(render.PostRenderError) as error:
+        render.render_post(tmp_path / "missing", output, request(caption_delivery=value), clock_ms=lambda: NOW)
+    assert error.value.code == "caption_delivery_invalid"
+    assert not output.exists()
+
+
+def test_in_app_with_inverted_is_refused_before_any_io(tmp_path):
+    treatment = {**TREATMENT, "captionStyle": {**STYLE, "inverted": True}, "captionDelivery": "in_app"}
+    raw = json.dumps(treatment, sort_keys=True, separators=(",", ":"))
+    req = request(render_treatment_json=raw, treatment_sha256=render.sha256(raw.encode()))
+    output = tmp_path / "render"
+    with pytest.raises(render.PostRenderError) as error:
+        render.render_post(tmp_path / "missing", output, req, clock_ms=lambda: NOW)
+    assert error.value.code == "in_app_inverted_unsupported"
+    assert not output.exists()
+
+
+def test_in_app_render_omits_overlay_and_matches_source_crop_within_tolerance(actual_source, tmp_path):
+    sha = render.sha256(actual_source.read_bytes())
+    burned = render.render_post(actual_source, tmp_path / "burned", request(sha), clock_ms=lambda: NOW)
+    in_app = render.render_post(actual_source, tmp_path / "in_app",
+                                request(sha, caption_delivery="in_app"), clock_ms=lambda: NOW)
+    burned_receipt = json.loads(burned.receipt_json)
+    in_app_receipt = json.loads(in_app.receipt_json)
+    # The delivery mode is bound only on the in_app receipt.
+    assert in_app_receipt["caption_delivery"] == "in_app"
+    assert "caption_delivery" not in burned_receipt
+    assert in_app_receipt["caption_sha256"] == burned_receipt["caption_sha256"] == render.sha256(b"already treated")
+    fallback = in_app_receipt["burned_fallback"]
+    fallback_dir = tmp_path / "in_app" / "burned"
+    assert fallback["final_sha256"] == render.sha256((fallback_dir / "final.mp4").read_bytes())
+    assert fallback["qa_frame_sha256"] == render.sha256((fallback_dir / "qa.jpg").read_bytes())
+    assert fallback["final_object_key"] == f"posting/dual-final/{fallback['final_sha256']}.mp4"
+    assert fallback["final_byte_length"] == (fallback_dir / "final.mp4").stat().st_size
+    assert fallback["final_sha256"] == burned_receipt["final_sha256"]
+    assert fallback["qa_frame_sha256"] == burned_receipt["qa_frame_sha256"]
+    assert json.loads((fallback_dir / "receipt.json").read_text())["treatment_sha256"] == in_app_receipt["treatment_sha256"]
+    # The primary clean directory has no overlay; the fallback has the exact caption.
+
+    assert not (tmp_path / "in_app" / "caption-render.json").exists()
+    assert not (tmp_path / "in_app" / "overlay.png").exists()
+    assert (tmp_path / "burned" / "caption-render.json").exists()
+    # The fresh encode still holds: final differs from source.
+    assert in_app_receipt["final_sha256"] != sha
+    assert (in_app_receipt["width"], in_app_receipt["height"]) == (1080, 1920)
+
+    def caption_region(qa_path):
+        with Image.open(qa_path) as frame:
+            frame.load()
+            return frame.convert("RGB").crop((250, 900, 830, 1030))
+
+    # The burned clip carries caption pixels in that region; the clean clip does not.
+    burned_region, in_app_region = caption_region(burned.qa_frame_path), caption_region(in_app.qa_frame_path)
+    assert max(ImageStat.Stat(ImageChops.difference(burned_region, in_app_region)).mean) > 6
+
+    # The in_app caption region equals the clean source frame within tolerance,
+    # and the burned one does not (its caption text diverges by a wide margin).
+    reference = tmp_path / "reference.png"
+    reference_filter = "scale=1080:1920:flags=lanczos,setsar=1"
+    if in_app.source_probe.width == 704:
+        reference_filter = ("scale=1080:1920:force_original_aspect_ratio=increase:flags=lanczos,"
+                            "crop=1080:1920,setsar=1")
+    subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-ss", f"{in_app.qa_at_ms / 1000:.3f}",
+                    "-i", str(actual_source), "-vf", reference_filter,
+                    "-frames:v", "1", "-update", "1", str(reference)],
+                   check=True, timeout=20, capture_output=True)
+    with Image.open(reference) as before:
+        source_region = before.convert("RGB").crop((250, 900, 830, 1030))
+        in_app_delta = max(ImageStat.Stat(ImageChops.difference(source_region, in_app_region)).mean)
+        burned_delta = max(ImageStat.Stat(ImageChops.difference(source_region, burned_region)).mean)
+    assert in_app_delta < 12
+    assert burned_delta > 15
+
+
+def test_in_app_pair_matches_when_source_ends_on_half_a_delivery_frame(tmp_path):
+    if not shutil.which("ffmpeg") or not shutil.which("ffprobe"):
+        pytest.skip("ffmpeg/ffprobe are required for actual render proof")
+    source = tmp_path / "source.mp4"
+    # 226 frames at 24 fps end 282.5 frames into the 30 fps delivery clock.
+    subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-f", "lavfi", "-i",
+                    "color=c=navy:s=432x768:r=24", "-frames:v", "226", "-an",
+                    "-c:v", "libx264", "-preset", "ultrafast", "-threads", "2", str(source)],
+                   check=True, timeout=30, capture_output=True)
+    output = tmp_path / "dual"
+    render.render_post(source, output, request(render.sha256(source.read_bytes()),
+                       caption_delivery="in_app"), clock_ms=lambda: NOW)
+    clean = json.loads((output / "decode.json").read_text())
+    burned = json.loads((output / "burned" / "decode.json").read_text())
+    assert clean["decoded_video_frames"] == burned["decoded_video_frames"] == 283
+    assert clean["final_probe"]["duration_ms"] == burned["final_probe"]["duration_ms"] == 9433
+
+
+def test_dual_render_fallback_failure_removes_clean_artifact(actual_source, tmp_path, monkeypatch):
+    original = render._render_post_single
+    def fail_fallback(*args, **kwargs):
+        if kwargs.get("burned_fallback"):
+            raise render.PostRenderError("process_timeout", "fallback timed out")
+        return original(*args, **kwargs)
+    monkeypatch.setattr(render, "_render_post_single", fail_fallback)
+    with pytest.raises(render.PostRenderError, match="fallback timed out"):
+        render.render_post(actual_source, tmp_path / "dual", request(
+            render.sha256(actual_source.read_bytes()), caption_delivery="in_app"), clock_ms=lambda: NOW)
+    assert not (tmp_path / "dual").exists()

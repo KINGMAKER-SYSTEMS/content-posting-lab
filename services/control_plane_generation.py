@@ -177,7 +177,10 @@ def _catalog_path() -> Path:
 
 
 def load_prompt_catalog(format_slug: str | None = None) -> tuple[dict[str, Any], str]:
-    raw = _catalog_path().read_bytes()
+    path = _catalog_path()
+    if format_slug == "pov-seasonal" and path == CATALOG_PATH.resolve():
+        path = CATALOG_PATH.with_name("christmas_pov.v1.json")
+    raw = path.read_bytes()
     catalog = json.loads(raw)
     if not isinstance(catalog, dict):
         raise ValueError("prompt catalog must be an object")
@@ -188,7 +191,7 @@ def load_prompt_catalog(format_slug: str | None = None) -> tuple[dict[str, Any],
     # Keep unrelated saved recipes bound to their unchanged catalog bytes.
     # A custom catalog is self-contained; only the bundled catalog has this
     # separately versioned silhouette replacement.
-    if _catalog_path() == CATALOG_PATH.resolve():
+    if path == CATALOG_PATH.resolve():
         still_raw = CATALOG_PATH.with_name("silhouette_stills.v1.json").read_bytes()
         still = json.loads(still_raw)
         for field, names in {
@@ -201,7 +204,7 @@ def load_prompt_catalog(format_slug: str | None = None) -> tuple[dict[str, Any],
             catalog[field].update(still[field])
         if format_slug == "silhouette-truck":
             version = hashlib.sha256(still_raw).hexdigest()
-    if _catalog_path() == CATALOG_PATH.resolve():
+    if path == CATALOG_PATH.resolve():
         boat_raw = CATALOG_PATH.with_name("boat_minimax.v1.json").read_bytes()
         boat = json.loads(boat_raw)
         for field, names in {
@@ -305,17 +308,72 @@ def typed_recipe_spec(publication: dict[str, Any]) -> dict[str, Any] | None:
     return _typed_recipe_spec(publication)
 
 
+class _GenerationUnavailable(Exception):
+    """A recipe resolved to nothing for one bounded, loggable reason."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
 def _unavailable(publication: dict[str, Any], reason: str) -> None:
-    """Record one bounded reason without logging recipe bytes or credentials."""
+    """Record one bounded reason without logging recipe bytes or credentials.
+
+    Raises so the caller can carry the exact reason string (zeroPlanRecipes
+    ``detail``) instead of collapsing every resolve failure to one code.
+    """
     log.warning(
         "registered dossier recipe unavailable page=%s recipe=%s version=%s reason=%s",
         publication.get("pageId"), publication.get("recipeId"),
         publication.get("recipeVersion"), reason,
     )
-    return None
+    raise _GenerationUnavailable(reason)
+
+
+def resolve_generation_recipe_with_reason(
+    publication: dict[str, Any], *, require_runtime: bool = True,
+) -> tuple[GenerationRecipe | None, str | None]:
+    """Run the resolver once and return ``(recipe, reason)``.
+
+    ``reason`` is the resolver's exact loggable ``reason=`` string on failure
+    and None otherwise. This is the single resolver call behind both public
+    functions below, so a caller that needs both the recipe and the failure
+    reason (capabilities() zero-plan ``detail``) does not run the resolver —
+    and the catalog load and warning log — twice per binding.
+    """
+    try:
+        recipe = _resolve_generation_recipe(publication, require_runtime=require_runtime)
+    except _GenerationUnavailable as exc:
+        return None, exc.reason
+    return recipe, None
 
 
 def resolve_generation_recipe(
+    publication: dict[str, Any], *, require_runtime: bool = True,
+) -> GenerationRecipe | None:
+    recipe, _reason = resolve_generation_recipe_with_reason(
+        publication, require_runtime=require_runtime,
+    )
+    return recipe
+
+
+def generation_recipe_unavailable_reason(
+    publication: dict[str, Any], *, require_runtime: bool = True,
+) -> str | None:
+    """The Lab's exact reason= string when the recipe fails to resolve.
+
+    None when the recipe resolves (or when the resolve failure has no bounded
+    reason, which the current resolver never produces). This is the same value
+    the resolver writes to the log line, so zeroPlanRecipes can name the cause
+    without re-deriving the decision tree.
+    """
+    _recipe, reason = resolve_generation_recipe_with_reason(
+        publication, require_runtime=require_runtime,
+    )
+    return reason
+
+
+def _resolve_generation_recipe(
     publication: dict[str, Any], *, require_runtime: bool = True,
 ) -> GenerationRecipe | None:
     recipe_id = publication.get("recipeId")
@@ -746,8 +804,24 @@ def generation_options(recipe: GenerationRecipe) -> dict[str, Any]:
     return options
 
 
+def new_generation_options(recipe: GenerationRecipe) -> dict[str, Any]:
+    """Pin the economical Hailuo tier for newly admitted automation jobs.
+
+    Keep the catalog and saved publication bytes intact: existing paid jobs
+    must still reconstruct their original input hash when resumed.
+    """
+    options = generation_options(recipe)
+    if recipe.engine == "hailuo" and recipe.provider_model == "minimax/hailuo-2.3":
+        options.update(resolution="768p", duration=6)
+    return options
+
+
 def dossier_filters_to_color_correction(recipe: GenerationRecipe) -> dict[str, float]:
-    filters = recipe.recipe_spec["renderTreatment"]["filters"]
+    return filters_to_color_correction(recipe.recipe_spec["renderTreatment"]["filters"])
+
+
+def filters_to_color_correction(filters: dict) -> dict[str, float]:
+    """The ffmpeg colour-correction sliders for one Dossier filter map."""
     result: dict[str, float] = {}
     for source, target in (
         ("brightness", "brightness"),

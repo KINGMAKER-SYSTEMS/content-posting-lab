@@ -1,11 +1,14 @@
 """Durable pre-lease render jobs. No phone, schedule mutation, or caller-selected URL."""
 from __future__ import annotations
 
+import base64
+import binascii
 import contextlib
 import fcntl
 import hashlib
 import json
 import logging
+import math
 import os
 import re
 import shutil
@@ -16,7 +19,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable, Literal
+from typing import Annotated, Callable, Literal
 from urllib.parse import quote, urlsplit
 
 import httpx
@@ -24,8 +27,22 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from services.post_render import (
     Hash, Identity, MAX_SOURCE_BYTES, MAX_FINAL_BYTES, MAX_OVERLAY_BYTES, MAX_QA_BYTES,
-    PostRenderError, PostRenderRequest, RenderedPost, render_post, sha256, source_visual_matches,
+    PostRenderError, PostRenderRequest, RenderedPost, render_post, sha256, source_visual_matches, _caption_delivery,
+    _unique_object, _reject_nonfinite, source_duration_repair_enabled,
 )
+
+from services.post_render_timed import (
+    DURATION_TOLERANCE_MS, TimedPostRenderRequest, render_timed_post, _resolve_timing,
+)
+
+from services import slot_source_regeneration as slot_source
+from services.pool_supplied_pages import is_pool_supplied
+
+
+def render_prepared_post(source, output, request, **kwargs):
+    if isinstance(request, TimedPostRenderRequest):
+        return render_timed_post(source, output, request, **kwargs)
+    return render_post(source, output, request, **kwargs)
 
 log = logging.getLogger("content_lab.post_render_jobs")
 
@@ -44,7 +61,7 @@ DEFAULT_RETIRE_AFTER_MS = 24 * 60 * 60 * 1000
 DEFAULT_MIN_FREE_BYTES = 1 * 1024 * 1024 * 1024
 # One attempt holds the fetched source and render_post's verified copy at once.
 # At peak it also holds the bounded overlay, a JSON copy with base64 expansion,
-# one final, one QA frame, and bounded request/receipt/decode metadata. Encoding
+# two finals and two QA frames for in-app slots, and bounded metadata. Encoding
 # retries unlink the first final before writing the second, so only one final is
 # counted. This is a disk reservation, not an estimate of typical output size.
 MAX_RENDER_METADATA_BYTES = 1 * 1024 * 1024
@@ -53,8 +70,8 @@ PEAK_RENDER_WORKSPACE_BYTES = (
     2 * MAX_SOURCE_BYTES
     + MAX_OVERLAY_BYTES
     + MAX_CAPTION_RENDER_JSON_BYTES
-    + MAX_FINAL_BYTES + 1
-    + MAX_QA_BYTES + 1
+    + 2 * (MAX_FINAL_BYTES + 1)
+    + 2 * (MAX_QA_BYTES + 1)
     + MAX_RENDER_METADATA_BYTES
 )
 # Failed/interrupted attempt bytes are diagnostic only; bound them separately
@@ -64,14 +81,11 @@ FAILED_MEDIA_RETENTION_MS = 24 * 60 * 60 * 1000
 # (including request, receipt/final/QA hashes and counters) and every
 # idempotency row are no-repeat authority and are never deleted by this GC.
 AUXILIARY_HISTORY_RETENTION_MS = 30 * 24 * 60 * 60 * 1000
-# Delivered-media age-out. The Worker does not call /acknowledge, so without
-# this sweep every succeeded render's media stayed on the volume forever. A
-# succeeded, unretired job is retired once (a) its window has passed since it
-# succeeded and since its planned slot time (so the slot's 1 h admission-retry
-# window is over) and (b) the Control Plane confirms that exact final is
-# admitted: its /prepared-video door answers 206 only for a `ready` post
-# artifact with that final_object_key whose R2 object exists. An unconfirmed
-# job is never deleted; it is re-checked later.
+# Delivered-media age-out. Ordinary renders can retire when their window has
+# passed and Control Plane confirms their exact primary final is admitted.
+# Dual jobs require their own acknowledgement: another caption may share the
+# same clean bytes, so primary presence cannot prove this pair was admitted.
+# Unacknowledged pairs retain both variants and are rechecked later.
 #
 # The sweep acts on volume pressure by itself instead of waiting for a person:
 #   normal  free >= 25% of the volume        delivered window 72 h, every 5 min
@@ -86,6 +100,22 @@ AGE_OUT_INTERVAL_MS = {"normal": 5 * 60 * 1000, "tight": 60 * 1000, "floor": 60 
 AGE_OUT_RECHECK_MS = {"normal": 6 * 60 * 60 * 1000, "tight": 60 * 60 * 1000, "floor": 15 * 60 * 1000}
 AGE_OUT_BATCH = 120
 AGE_OUT_TIME_BUDGET_MS = 60 * 1000
+
+
+def _paired_duration_matches(clean_ms, burned_ms, clean_frames, burned_frames) -> bool:
+    def positive_finite(value):
+        return (type(value) in (int, float) and value > 0
+                and (type(value) is int or math.isfinite(value)))
+
+    if not positive_finite(clean_ms) or not positive_finite(burned_ms):
+        return False
+    if clean_ms == burned_ms:
+        return True
+    # Separate encodes of the same decoded frames can round their container
+    # duration to adjacent milliseconds. This is not a general timing tolerance.
+    return (abs(clean_ms - burned_ms) == 1
+            and positive_finite(clean_frames) and positive_finite(burned_frames)
+            and clean_frames == burned_frames)
 
 
 def render_claim_floor_bytes(worker_count: int | None = None) -> int:
@@ -207,7 +237,7 @@ class SourceProvenance(BaseModel):
 class RenderJobSubmission(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
     schema_: Literal[JOB_SCHEMA] = Field(alias="schema")
-    request: PostRenderRequest
+    request: Annotated[PostRenderRequest | TimedPostRenderRequest, Field(discriminator="schema_")]
     slot_payload_json: str = Field(min_length=2, max_length=256 * 1024)
     source_provenance: SourceProvenance | None = None
 
@@ -226,12 +256,23 @@ class RenderJobSubmission(BaseModel):
                     and slot.get("caption", {}).get("text") == request.caption)
         if not required:
             raise ValueError("render request does not match immutable slot")
+        # The request marker alone is not authority to omit a caption. Bind it
+        # to the exact hashed slot's lyric source and already-empty text.
+        lyric_source = slot["caption"].get("source") == "lyric"
+        if (request.source_text_mode == "lyric") != lyric_source:
+            raise ValueError("lyric source marker does not match immutable slot")
+        if lyric_source and slot["caption"].get("text") != "":
+            raise ValueError("lyric source must not contain caption text")
         if "program_id" in slot and slot["program_id"] != request.program_id:
             raise ValueError("slot program mismatch")
         # Structural equality only. Cross-language treatment hashing uses original request bytes.
         supplied = json.loads(request.render_treatment_json)
         if json.dumps(slot.get("render_treatment"), sort_keys=True, allow_nan=False) != json.dumps(supplied, sort_keys=True, allow_nan=False):
             raise ValueError("slot treatment does not match render request")
+        if isinstance(request, TimedPostRenderRequest):
+            _resolve_timing(request)
+            if not isinstance(slot.get("sound"), dict) or slot["sound"].get("music_id") != request.sound_id:
+                raise ValueError("timed request does not match the immutable official slot sound")
         provenance = self.source_provenance
         if provenance is not None and (provenance.source_sha256 != request.source_sha256
                 or provenance.source_visual_treatment_sha256 != request.source_visual_treatment_sha256):
@@ -367,13 +408,19 @@ class ProcessLock:
 
 class PostRenderJobs:
     """SQLite owns job truth; OS locks fence live writers and clear when a process dies."""
-    def __init__(self, root: Path, *, fetcher: Callable | None = None, renderer: Callable = render_post,
+    def __init__(self, root: Path, *, fetcher: Callable | None = None, renderer: Callable = render_prepared_post,
                  clock_ms: Callable[[], int] = lambda: time.time_ns() // 1_000_000,
-                 confirm_final: Callable[[str, int], bool | None] = confirm_admitted_final):
+                 confirm_final: Callable[[str, int], bool | None] = confirm_admitted_final,
+                 source_regenerator: Callable | None = None,
+                 source_loop=None):
         if not root.is_absolute():
             raise RenderJobError("job_root_must_be_absolute")
         self.root, self.renderer, self.clock_ms = root, renderer, clock_ms
         self.confirm_final = confirm_final
+        # The source-repair lane renders the original registered master, never
+        # the already treated prepared source, so it is a separate renderer.
+        self.source_regenerator = source_regenerator or slot_source.regenerate
+        self.source_loop = source_loop
         self._age_out_lock = threading.Lock()
         self._next_age_out_ms = 0
         self._last_age_out_ms = -AGE_OUT_INTERVAL_MS["floor"]
@@ -445,6 +492,134 @@ class PostRenderJobs:
                 if planned is not None:
                     db.execute("UPDATE jobs SET planned_at_ms=? WHERE id=?", (planned, row["id"]))
 
+        # Rebuild on every service start, including after a rollback to older code.
+        # The old runtime must be stopped before starting this version on this DB.
+        with self._db() as db:
+            if self._needs_identity_backfill(db):
+                db.execute("BEGIN IMMEDIATE")
+                self._backfill_output_identities(db)
+
+    @staticmethod
+    def _identity_key(identity: str) -> str:
+        # Slash is outside the public idempotency-key alphabet. These permanent
+        # internal reservations cannot collide with a client's request key.
+        return "/output-identity/v1/" + identity
+
+    @staticmethod
+    def _ordinary_history(submission_json: str) -> bool:
+        """Recognize burned history without applying today's submission schema.
+
+        Both saved treatment copies must agree on the treatment body, carry no
+        in-app delivery opt-in in either copy, and the request copy must match
+        its saved hash.
+        Unreadable or conflicting history remains uncertain, never ordinary.
+        This classification grants no artifact or request validity.
+        """
+        try:
+            saved = json.loads(submission_json, object_pairs_hook=_unique_object, parse_constant=_reject_nonfinite)
+            raw = saved["request"]["render_treatment_json"]
+            treatment = json.loads(raw, object_pairs_hook=_unique_object, parse_constant=_reject_nonfinite)
+            slot = json.loads(saved["slot_payload_json"], object_pairs_hook=_unique_object, parse_constant=_reject_nonfinite)
+            slot_treatment = slot["render_treatment"]
+            if not (isinstance(treatment, dict) and isinstance(slot_treatment, dict)):
+                return False
+            if sha256(raw.encode()) != saved["request"]["treatment_sha256"]:
+                return False
+            # captionDelivery is a delivery hint, not part of the burned
+            # treatment body. Compare the body and each copy's opt-in
+            # separately so a conflicting copy fails closed through its own
+            # guard instead of the shared hash/equality checks.
+            core_equal = {k: v for k, v in treatment.items() if k != "captionDelivery"} == \
+                         {k: v for k, v in slot_treatment.items() if k != "captionDelivery"}
+            request_burned = "captionDelivery" not in treatment
+            slot_burned = "captionDelivery" not in slot_treatment
+            return core_equal and request_burned and slot_burned
+        except (ValueError, TypeError, KeyError, RecursionError):
+            return False
+
+    @staticmethod
+    def _mismatched_uncertain_markers(db) -> list:
+        """Uncertainty markers whose key does not embed their own job_id.
+
+        The only valid uncertainty key is '/output-uncertain/v1/<job_id>'. A
+        hand-made marker with a different suffix is never cleared by the normal
+        per-job path (which rebuilds the key from the job id) and would keep
+        forcing a startup write pass on every boot.
+        """
+        return db.execute(
+            "SELECT key, job_id FROM idempotency "
+            "WHERE key >= '/output-uncertain/v1/' AND key < '/output-uncertain/v10' "
+            "AND key != '/output-uncertain/v1/' || job_id"
+        ).fetchall()
+
+    @staticmethod
+    def _needs_identity_backfill(db) -> bool:
+        """Ordinary-only startup writes only to remove a stale uncertainty marker."""
+        # Heal markers left by the older startup code, even if no in-app row
+        # exists to trigger the write pass. Never clear unclassifiable history.
+        if PostRenderJobs._mismatched_uncertain_markers(db):
+            return True
+        for row in db.execute("SELECT jobs.submission_json FROM idempotency JOIN jobs ON jobs.id=idempotency.job_id "
+                              "WHERE key >= '/output-uncertain/v1/' AND key < '/output-uncertain/v10'"):
+            if PostRenderJobs._ordinary_history(row["submission_json"]):
+                return True
+        needed = False
+        for row in db.execute("SELECT * FROM jobs WHERE state='succeeded' OR receipt_sha256 IS NOT NULL"):
+            try:
+                request = RenderJobSubmission.model_validate_json(row["submission_json"]).request
+                if _caption_delivery(request) == "in_app":
+                    needed = True
+                elif row["output_authority_json"]:
+                    json.loads(row["output_authority_json"])
+            except (ValueError, TypeError, RecursionError):
+                log.warning("post render identity backfill skipped invalid authority job=%s", row["id"])
+                # Old ordinary submissions may fail today's stricter schema.
+                if not PostRenderJobs._ordinary_history(row["submission_json"]):
+                    needed = True
+        return needed
+
+    def _backfill_output_identities(self, db) -> None:
+        """Recover in-app identities; quarantine unverifiable in-app history."""
+        for mismatched in PostRenderJobs._mismatched_uncertain_markers(db):
+            db.execute("DELETE FROM idempotency WHERE key=?", (mismatched["key"],))
+            log.warning("post render identity backfill deleted mismatched uncertainty marker key=%s job=%s",
+                        mismatched["key"], mismatched["job_id"])
+        for marked in db.execute("SELECT jobs.* FROM idempotency JOIN jobs ON jobs.id=idempotency.job_id "
+                                 "WHERE key >= '/output-uncertain/v1/' AND key < '/output-uncertain/v10'").fetchall():
+            if self._ordinary_history(marked["submission_json"]):
+                self._clear_ordinary_uncertainty(db, marked)
+        for candidate in db.execute("SELECT * FROM jobs WHERE state='succeeded' OR receipt_sha256 IS NOT NULL"):
+            try:
+                request = RenderJobSubmission.model_validate_json(candidate["submission_json"]).request
+                if _caption_delivery(request) != "in_app":
+                    try:
+                        if candidate["output_authority_json"]:
+                            json.loads(candidate["output_authority_json"])
+                    except (ValueError, TypeError, RecursionError):
+                        log.warning("post render identity backfill skipped invalid authority job=%s", candidate["id"])
+                    continue
+                authority = self._validate_output_authority(candidate, self._load_output_authority(candidate))
+                fallback = authority.get("burned_fallback")
+                identity = fallback["artifact"]["final_sha256"] if fallback else authority["final_sha256"]
+            except (ValueError, TypeError, AttributeError, KeyError, RecursionError):
+                if self._ordinary_history(candidate["submission_json"]):
+                    log.warning("post render identity backfill skipped invalid ordinary submission job=%s", candidate["id"])
+                    continue
+                log.warning("post render identity backfill quarantined authority job=%s", candidate["id"])
+                db.execute("INSERT OR IGNORE INTO idempotency(key,job_id,request_hash) VALUES(?,?,?)",
+                           ("/output-uncertain/v1/" + candidate["id"], candidate["id"], candidate["request_hash"]))
+                continue
+            db.execute("DELETE FROM idempotency WHERE key=?", ("/output-uncertain/v1/" + candidate["id"],))
+            db.execute("INSERT OR IGNORE INTO idempotency(key,job_id,request_hash) VALUES(?,?,?)",
+                       (self._identity_key(identity), candidate["id"], identity))
+
+    @staticmethod
+    def _clear_ordinary_uncertainty(db, row) -> None:
+        key = "/output-uncertain/v1/" + row["id"]
+        if db.execute("SELECT 1 FROM idempotency WHERE key=?", (key,)).fetchone():
+            db.execute("DELETE FROM idempotency WHERE key=?", (key,))
+            log.warning("post render identity backfill cleared stale ordinary uncertainty job=%s", row["id"])
+
     @contextlib.contextmanager
     def _db(self):
         db = sqlite3.connect(self.root / "jobs.sqlite", timeout=5)
@@ -478,12 +653,17 @@ class PostRenderJobs:
                 raise RenderJobError("idempotency_conflict")
             if not existing:
                 has_provenance = submission.source_provenance is not None
-                matches = has_provenance and source_visual_matches(request)
+                pool_without_provenance = not has_provenance and is_pool_supplied(request.page_id)
+                matches = pool_without_provenance or (has_provenance and source_visual_matches(request))
                 state = "queued" if matches else "regeneration_needed"
                 reason = None if matches else "source_treatment_mismatch" if has_provenance else "source_treatment_provenance_missing"
                 planned_at_ms = _planned_at_ms(submission.slot_payload_json)
                 db.execute("INSERT INTO jobs(id,slot_id,slot_hash,request_hash,submission_json,state,available_at_ms,created_at_ms,updated_at_ms,error_code,planned_at_ms) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
                            (job_id, request.slot_id, request.slot_payload_sha256, request_hash, payload, state, now, now, now, reason, planned_at_ms))
+            elif slot_source.pending_command(existing) is not None or slot_source.completed_envelope(existing) is not None:
+                # A source repair owns this job's state machine until it is
+                # finished; a fresh key may not reset its attempts or command.
+                raise RenderJobError("source_regeneration_pending")
             elif (existing["state"] == "failed" and existing["error_code"] == "source_response_rejected"
                     and existing["attempts"] >= MAX_ATTEMPTS):
                 # A fresh key is an explicit Control Plane recovery request. The
@@ -512,6 +692,15 @@ class PostRenderJobs:
         if request.page_id != page_id:
             raise RenderJobError("job_not_found")
 
+    def set_source_loop(self, loop) -> None:
+        """The one ASGI loop captured at startup; the source lane dispatches onto it."""
+        self.source_loop = loop
+
+    def _optional_row(self, job_id: str):
+        """A durable row or None, for bounded prior-hop ancestry resolution."""
+        with self._db() as db:
+            return db.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
+
     def status(self, job_id: str) -> dict:
         row = self._row(job_id)
         result = {key: row[key] for key in ("id", "slot_id", "slot_hash", "state", "attempts", "created_at_ms", "updated_at_ms", "error_code", "acknowledged_at_ms", "retired_at_ms")}
@@ -519,12 +708,30 @@ class PostRenderJobs:
         if row["state"] == "regeneration_needed":
             result["next_action"] = "regenerate_source_with_treatment_provenance"
         result["retryable"] = row["state"] == "failed" and row["attempts"] < MAX_ATTEMPTS
+        envelope = slot_source.completed_envelope(row)
+        if envelope is not None and row["state"] == "regeneration_needed":
+            result["source_regeneration"] = envelope
         if row["state"] == "succeeded":
             result["receipt_sha256"] = row["receipt_sha256"]
-            if row["final_sha256"] is not None:
-                result["final_sha256"] = row["final_sha256"]
-                result["qa_frame_sha256"] = row["qa_frame_sha256"]
-            result["artifacts"] = {kind: f"/api/control-plane/v1/post-renders/{job_id}/artifacts/{kind}" for kind in ("final", "qa", "receipt")}
+            # Shared clean bytes may have one UNIQUE column owner. Every job
+            # retains its actual primary hash in verified output authority.
+            request = RenderJobSubmission.model_validate_json(row["submission_json"]).request
+            if _caption_delivery(request) == "in_app":
+                authority = self._validate_output_authority(row, self._load_output_authority(row))
+            else:
+                authority = row if row["final_sha256"] is not None else None
+                if authority is None and row["output_authority_json"]:
+                    try:
+                        authority = self._validate_output_authority(row, self._load_output_authority(row))
+                    except (ValueError, TypeError, AttributeError, KeyError, RecursionError):
+                        log.warning("post render status omitted invalid authority job=%s", row["id"])
+            if authority is not None:
+                result["final_sha256"] = authority["final_sha256"]
+                result["qa_frame_sha256"] = authority["qa_frame_sha256"]
+            result["artifacts"] = {kind: f"/api/control-plane/v1/post-renders/{job_id}/artifacts/{kind}" for kind in (("final", "qa", "receipt", "burned_final", "burned_qa")
+                    if authority is not None and not self._legacy_clean_output(row, authority)
+                    and _caption_delivery(RenderJobSubmission.model_validate_json(row["submission_json"]).request) == "in_app"
+                    else ("final", "qa", "receipt"))}
         return result
 
     def retry(self, job_id: str) -> dict:
@@ -547,6 +754,8 @@ class PostRenderJobs:
                 raise RenderJobError("job_not_found")
             if row["request_hash"] == request_hash:
                 return self.status(job_id)
+            if slot_source.pending_command(row) is not None:
+                raise RenderJobError("source_regeneration_pending")
             old = RenderJobSubmission.model_validate_json(row["submission_json"]).model_dump(by_alias=True)
             new = submission.model_dump(by_alias=True)
             for value in (old, new):
@@ -566,8 +775,260 @@ class PostRenderJobs:
                         None if matches else "source_treatment_mismatch", now, now, job_id))
         return self.status(job_id)
 
+    def request_source_regeneration(self, job_id: str, page_id: str, request, key: str) -> dict:
+        """Queue one original-master repair for a source-mismatched prepared job.
+
+        The wire body carries identity only. Everything the repair needs (page,
+        account, slot payload hash, requested visual, source SHA, parent recipe
+        and exact cut window) comes from the immutable submission and the
+        parent generation job, so nothing here can redirect the cut. Every
+        authority failure refuses before queueing and before any media IO, and
+        the immutable submission_json is never rewritten.
+        """
+        if not re.fullmatch(r"[A-Za-z0-9._:-]{8,200}", key):
+            raise RenderJobError("invalid_idempotency_key")
+        request = slot_source.SourceRegenerationRequest.model_validate(request.model_dump(by_alias=True))
+        parent_id = request.parent_generation_job_id
+        request_hash = sha256(slot_source.canonical_json({
+            "schema": slot_source.REQUEST_SCHEMA, "jobId": job_id,
+            "pageId": page_id, "parentGenerationJobId": parent_id,
+        }).encode())
+        row = self._row(job_id)
+        submission = RenderJobSubmission.model_validate_json(row["submission_json"])
+        if submission.request.page_id != page_id:
+            raise RenderJobError("job_not_found")
+        queued = slot_source.pending_command(row) or slot_source.completed_envelope(row)
+        if queued is not None:
+            # A repeated key observes the current state instead of re-deciding.
+            return self._replay_source_regeneration(job_id, key, request_hash, queued, parent_id)
+        if (row["state"] != "regeneration_needed" or row["attempts"] != 0
+                or row["acknowledged_at_ms"] is not None or row["retired_at_ms"] is not None):
+            raise RenderJobError("source_regeneration_not_needed")
+        try:
+            command = slot_source.resolve_parent_authority(
+                page_id=page_id, parent_generation_job_id=parent_id, request=submission.request,
+                prior_row_loader=self._optional_row,
+            )
+        except slot_source.SourceRegenerationError as error:
+            raise RenderJobError(error.code) from error
+        command["submissionSha256"] = row["request_hash"]
+        encoded, now = slot_source.canonical_json(command), self.clock_ms()
+        job_lock = _locked(self.root / "locks" / (job_id + ".lock"))
+        if job_lock is None:
+            raise RenderJobError("source_regeneration_busy")
+        with job_lock, self._db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            current = db.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
+            if current is None:
+                raise RenderJobError("job_not_found")
+            keyed = db.execute("SELECT * FROM idempotency WHERE key=?", (key,)).fetchone()
+            if keyed is not None:
+                if keyed["request_hash"] != request_hash or keyed["job_id"] != job_id:
+                    raise RenderJobError("idempotency_conflict")
+                return self.status(job_id)
+            landed = slot_source.pending_command(current) or slot_source.completed_envelope(current)
+            if landed is not None:
+                raise RenderJobError("source_regeneration_conflict")
+            changed = db.execute(
+                "UPDATE jobs SET state='queued',available_at_ms=?,updated_at_ms=?,output_authority_json=? "
+                "WHERE id=? AND state='regeneration_needed' AND attempts=0 "
+                "AND acknowledged_at_ms IS NULL AND retired_at_ms IS NULL "
+                "AND output_authority_json IS NULL",
+                (now, now, encoded, job_id),
+            ).rowcount
+            if changed != 1:
+                raise RenderJobError("source_regeneration_conflict")
+            db.execute("INSERT INTO idempotency(key,job_id,request_hash) VALUES(?,?,?)",
+                       (key, job_id, request_hash))
+        return self.status(job_id)
+
+    def _replay_source_regeneration(self, job_id: str, key: str, request_hash: str,
+                                    existing: dict, parent_id: str) -> dict:
+        """Only the queueing key replays; any other key observes a conflict.
+
+        A queued command names its parent at the top level; a completed
+        envelope names it on the nested receipt. Both must match the caller's
+        id, and only the queueing key may observe the current state.
+        """
+        stored_parent = existing.get("parentGenerationJobId")
+        if stored_parent is None and isinstance(existing.get("receipt"), dict):
+            stored_parent = existing["receipt"].get("parent_generation_job_id")
+        if stored_parent != parent_id:
+            raise RenderJobError("source_regeneration_conflict")
+        with self._db() as db:
+            keyed = db.execute("SELECT * FROM idempotency WHERE key=?", (key,)).fetchone()
+        if keyed is None:
+            raise RenderJobError("source_regeneration_pending")
+        if keyed["request_hash"] != request_hash or keyed["job_id"] != job_id:
+            raise RenderJobError("idempotency_conflict")
+        return self.status(job_id)
+
+    def _run_source_regenerator(self, command: dict, work_dir, job_id: str, attempt_id: str):
+        """Dispatch the source repair onto the one captured ASGI loop.
+
+        The default renderer reaches services.ffmpeg.run_color_correct, whose
+        process-wide asyncio.Semaphore must share the main loop. A missing loop
+        fails closed rather than spinning a private asyncio.run loop inside the
+        worker thread; injected test regenerators stay loop-free.
+        """
+        regenerator = self.source_regenerator
+        if regenerator is slot_source.regenerate:
+            if self.source_loop is None:
+                raise slot_source.SourceRegenerationError("source_regeneration_runtime_unavailable")
+            return regenerator(
+                command, work_dir, job_id=job_id, attempt_id=attempt_id, loop=self.source_loop,
+            )
+        return regenerator(command, work_dir, job_id=job_id, attempt_id=attempt_id)
+
+    def _execute_source_regeneration(self, old, command: dict) -> None:
+        """One fenced attempt of the original-master repair lane."""
+        if not self._has_workspace_capacity(job_id=old["id"]):
+            return
+        now, attempt_id = self.clock_ms(), uuid.uuid4().hex
+        with self._db() as db:
+            if old["attempts"] >= MAX_ATTEMPTS:
+                db.execute("UPDATE jobs SET state='failed',error_code='retry_budget_exhausted',"
+                           "updated_at_ms=? WHERE id=?", (now, old["id"]))
+                return
+            if old["state"] == "running":
+                db.execute("UPDATE attempts SET state='interrupted',ended_at_ms=?,"
+                           "error_code='incomplete_after_restart' WHERE id=?",
+                           (now, old["attempt_id"]))
+            db.execute("UPDATE jobs SET state='running',attempt_id=?,attempts=attempts+1,"
+                       "updated_at_ms=? WHERE id=? AND attempt_id IS ?",
+                       (attempt_id, now, old["id"], old["attempt_id"]))
+            db.execute("INSERT INTO attempts(id,job_id,state,started_at_ms) VALUES(?,?,'running',?)",
+                       (attempt_id, old["id"], now))
+        if command.get("submissionSha256") != old["request_hash"]:
+            with self._db() as db:
+                db.execute("UPDATE jobs SET state='failed',error_code='source_regeneration_command_stale',"
+                           "updated_at_ms=? WHERE id=? AND attempt_id=?",
+                           (now, old["id"], attempt_id))
+                db.execute("UPDATE attempts SET state='failed',error_code=?,ended_at_ms=? WHERE id=?",
+                           ("source_regeneration_command_stale", now, attempt_id))
+            return
+        attempt_root = self.root / "attempts" / old["id"] / attempt_id
+        try:
+            slot_source.revalidate_parent_authority(command)
+            attempt_root.mkdir(parents=True, exist_ok=False, mode=0o700)
+            envelope = self._run_source_regenerator(
+                command, attempt_root / "source-regeneration", old["id"], attempt_id,
+            )
+            self._finish_source_regeneration(old["id"], attempt_id, envelope)
+        except Exception as error:
+            code = getattr(error, "code", "source_regeneration_failed")
+            log.warning("post render source repair failed job=%s attempt=%s reason=%s",
+                        old["id"], attempt_id, code, exc_info=log.isEnabledFor(logging.DEBUG))
+            now = self.clock_ms()
+            state = "queued" if code in RETRY_CODES and old["attempts"] < MAX_ATTEMPTS else "failed"
+            with self._db() as db:
+                # The repair command stays in output_authority_json, so the
+                # existing retry door re-runs this same fenced lane.
+                db.execute("UPDATE jobs SET state=?,error_code=?,available_at_ms=?,updated_at_ms=? "
+                           "WHERE id=? AND attempt_id=? AND state='running'",
+                           (state, code, now + 5000 * old["attempts"], now, old["id"], attempt_id))
+                db.execute("UPDATE attempts SET state='failed',error_code=?,ended_at_ms=? WHERE id=?",
+                           (code, now, attempt_id))
+
+    def _fail_source_regeneration(self, row, code: str) -> None:
+        """Refuse rather than silently fall back to the prepared caption renderer."""
+        now = self.clock_ms()
+        with self._db() as db:
+            db.execute("UPDATE jobs SET state='failed',error_code=?,updated_at_ms=? "
+                       "WHERE id=? AND state IN ('queued','running')", (code, now, row["id"]))
+            if row["attempt_id"]:
+                db.execute("UPDATE attempts SET state='failed',error_code=?,ended_at_ms=? "
+                           "WHERE id=? AND ended_at_ms IS NULL", (code, now, row["attempt_id"]))
+
+    def _finish_source_regeneration(self, job_id: str, attempt_id: str, envelope: dict) -> None:
+        """Publish the repaired-source envelope; the job never becomes succeeded."""
+        row = self._row(job_id)
+        request = RenderJobSubmission.model_validate_json(row["submission_json"]).request
+        slot_source.verify_envelope(
+            envelope, root=self.root, job_id=job_id, attempt_id=attempt_id,
+            not_before_ms=request.created_at_ms, not_after_ms=self.clock_ms(),
+        )
+        if slot_source.pending_command(row) is None and slot_source.completed_envelope(row) is None:
+            raise RenderJobError("source_regeneration_command_missing")
+        encoded, now = slot_source.canonical_json(envelope), self.clock_ms()
+        with self._db() as db:
+            changed = db.execute(
+                "UPDATE jobs SET state='regeneration_needed',output_authority_json=?,updated_at_ms=? "
+                "WHERE id=? AND attempt_id=? AND state='running' "
+                "AND final_sha256 IS NULL AND qa_frame_sha256 IS NULL",
+                (encoded, now, job_id, attempt_id),
+            ).rowcount
+            if changed != 1:
+                raise RenderJobError("attempt_fenced")
+            db.execute("UPDATE attempts SET state='succeeded',ended_at_ms=? WHERE id=?", (now, attempt_id))
+
+    def _resume_source_regeneration(self, row) -> bool:
+        """Finish a repair whose envelope landed but whose state write did not."""
+        envelope = slot_source.completed_envelope(row)
+        if envelope is None or not row["attempt_id"]:
+            return False
+        try:
+            self._finish_source_regeneration(row["id"], row["attempt_id"], envelope)
+            return True
+        except (OSError, ValueError, TypeError):
+            # Unverifiable or incomplete bytes: rerun the same command authority.
+            return False
+
     def _output(self, row) -> Path:
         return self.root / "attempts" / row["id"] / row["attempt_id"] / "render"
+
+    @staticmethod
+    def _legacy_clean_output(row, authority: dict) -> bool:
+        """Recognize already-committed clean-only success, never a new attempt.
+
+        The retained authority must agree exactly with the candidate facts and
+        all four durable byte pins. Absence of media alone is not a legacy
+        signal: any promised fallback (even null/malformed) still requires the
+        pair. No request, receipt, or authority is rewritten for compatibility.
+        """
+        if row["state"] != "succeeded" or not isinstance(authority, dict):
+            return False
+        receipt = authority.get("receipt")
+        if (not isinstance(receipt, dict) or receipt.get("caption_delivery") != "in_app"
+                or "burned_fallback" in receipt or "burned_fallback" in authority):
+            return False
+        if any(not row[key] or row[key] != authority.get(key) for key in
+               ("receipt_sha256", "final_sha256", "qa_frame_sha256", "final_byte_length")):
+            return False
+        try:
+            retained = json.loads(row["output_authority_json"])
+            if not isinstance(retained, dict):
+                return False
+            return {k: v for k, v in retained.items() if k != "receipt_bytes_b64"} == {k: v for k, v in authority.items() if k != "receipt_bytes_b64"}
+        except (TypeError, ValueError, RecursionError):
+            return False
+
+    def _authenticate_receipt(self, row, authority: dict) -> None:
+        """Match decoded receipt contents AND exact bytes to the immutable pin.
+
+        Old canonical receipts can be reconstructed and checked, never guessed.
+        Other old encodings require their still-present original file. A retired
+        receipt whose bytes cannot be recovered refuses without paid rerender.
+        """
+        receipt = authority["receipt"]
+        encoded = authority.get("receipt_bytes_b64")
+        try:
+            if encoded is not None:
+                if not isinstance(encoded, str) or len(encoded) > 87384:
+                    raise ValueError("receipt encoding")
+                raw = base64.b64decode(encoded, validate=True)
+            else:
+                raw = json.dumps(receipt, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+                if sha256(raw) != authority["receipt_sha256"]:
+                    with (self._output(row) / "receipt.json").open("rb") as file:
+                        raw = file.read(65537)
+            if (len(raw) > 65536 or sha256(raw) != authority["receipt_sha256"]
+                    or json.loads(raw) != receipt
+                    or row["state"] == "succeeded" and not row["receipt_sha256"]):
+                raise ValueError("receipt binding")
+        except (OSError, ValueError, TypeError, RecursionError, binascii.Error) as error:
+            log.warning("post render receipt authentication refused job=%s", row["id"])
+            raise RenderJobError("output_authority_changed") from error
 
     def _validate_output_authority(self, row, authority: dict) -> dict:
         """Validate durable output facts against the immutable request and job row."""
@@ -582,6 +1043,42 @@ class PostRenderJobs:
                       "source_sha256", "caption_sha256", "treatment_sha256", "renderer_id", "renderer_version"):
             if receipt.get(field) != getattr(request, field):
                 raise RenderJobError("receipt_binding_mismatch")
+        repair = getattr(request, "source_duration_repair", None)
+        if repair is not None:
+            from services.source_duration_repair import command_digest
+            if receipt.get("source_duration_repair_sha256") != command_digest(repair):
+                raise RenderJobError("receipt_binding_mismatch")
+        elif "source_duration_repair_sha256" in receipt:
+            raise RenderJobError("receipt_binding_mismatch")
+        expected_schema = "posting-prepared-artifact/v2" if isinstance(request, TimedPostRenderRequest) else "posting-prepared-artifact/v1"
+        if receipt.get("schema") != expected_schema:
+            raise RenderJobError("receipt_binding_mismatch")
+        if isinstance(request, TimedPostRenderRequest):
+            timing, phrases = _resolve_timing(request)
+            duration = receipt.get("duration_ms")
+            if (type(duration) is not int
+                    or abs(duration - timing["durationMs"]) > DURATION_TOLERANCE_MS):
+                raise RenderJobError("receipt_binding_mismatch")
+            for field in ("lyric_timing_set_id", "lyric_timing_sha256", "sound_id", "source_program_id", "source_program_sha256"):
+                if receipt.get(field) != getattr(request, field):
+                    raise RenderJobError("receipt_binding_mismatch")
+            supplied_phrases = receipt.get("phrases")
+            if (not isinstance(supplied_phrases, list) or len(supplied_phrases) != len(phrases)
+                    or any(not isinstance(got, dict) or {k: got.get(k) for k in ("startMs", "endMs", "text")} != expected
+                           or not re.fullmatch(r"[0-9a-f]{64}", str(got.get("pngSha256", "")))
+                           for got, expected in zip(supplied_phrases, phrases))):
+                raise RenderJobError("receipt_binding_mismatch")
+            expected_frames = [(index, frame) for index in sorted({0, len(phrases) - 1})
+                               for frame in sorted({math.ceil(phrases[index]["startMs"] * 30 / 1000), math.ceil(phrases[index]["endMs"] * 30 / 1000) - 1})]
+            checks = receipt.get("phrase_frame_evidence")
+            if (not isinstance(checks, list) or len(checks) != len(expected_frames)
+                    or any(not isinstance(check, dict) or (check.get("phraseIndex"), check.get("frame")) != expected
+                           or type(check.get("maxMeanGlyphError")) not in (int, float)
+                           or not math.isfinite(check["maxMeanGlyphError"]) or not 0 <= check["maxMeanGlyphError"] <= 35
+                           or not re.fullmatch(r"[0-9a-f]{64}", str(check.get("sha256", "")))
+                           for check, expected in zip(checks, expected_frames))
+                    or evidence.get("decoded_video_frames") != 600):
+                raise RenderJobError("lyric_frame_evidence_missing")
         final_sha = authority.get("final_sha256")
         qa_sha = authority.get("qa_frame_sha256")
         final_length = authority.get("final_byte_length")
@@ -593,13 +1090,50 @@ class PostRenderJobs:
                 or receipt.get("qa_frame_sha256") != qa_sha or final_sha == request.source_sha256
                 or receipt.get("final_object_key") != f"posting/final/{final_sha}.mp4"
                 or receipt.get("mime_type") != "video/mp4" or receipt.get("width") != 1080 or receipt.get("height") != 1920
-                or not request.created_at_ms <= receipt.get("completed_at_ms", -1) <= self.clock_ms()):
+                or type(receipt.get("completed_at_ms")) not in (int, float)
+                or not request.created_at_ms <= receipt["completed_at_ms"] <= self.clock_ms()):
             raise RenderJobError("artifact_binding_mismatch")
+        # Retained JSON can be well formed while nested evidence has wrong types.
+        # Refuse before comparisons/member access; never repair paid evidence in place.
+        probe = evidence.get("final_probe")
         if (evidence.get("final_sha256") != final_sha or evidence.get("qa_frame_sha256") != qa_sha
-                or evidence.get("decoded_video_frames", 0) <= 0
-                or evidence.get("final_probe", {}).get("duration_ms") != receipt.get("duration_ms")
-                or receipt.get("duration_ms", 0) <= 0):
+                or type(evidence.get("decoded_video_frames")) not in (int, float)
+                or evidence["decoded_video_frames"] <= 0
+                or not isinstance(probe, dict)
+                or probe.get("duration_ms") != receipt.get("duration_ms")
+                or type(receipt.get("duration_ms")) not in (int, float)
+                or receipt["duration_ms"] <= 0):
             raise RenderJobError("decode_evidence_missing")
+        if _caption_delivery(request) == "in_app" and not self._legacy_clean_output(row, authority):
+            fallback = receipt.get("burned_fallback")
+            burned = authority.get("burned_fallback")
+            if (receipt.get("caption_delivery") != "in_app" or not isinstance(fallback, dict)
+                    or not isinstance(burned, dict) or fallback != burned.get("artifact")
+                    or set(fallback) != {"final_sha256", "final_byte_length", "final_object_key", "qa_frame_sha256"}
+                    or any(not re.fullmatch(r"[0-9a-f]{64}", str(fallback.get(key, "")))
+                           for key in ("final_sha256", "qa_frame_sha256"))
+                    or type(fallback.get("final_byte_length")) is not int
+                    or not 0 < fallback["final_byte_length"] <= MAX_FINAL_BYTES
+                    or fallback["final_sha256"] in {final_sha, request.source_sha256}
+                    or fallback["final_object_key"] != f"posting/dual-final/{fallback['final_sha256']}.mp4"):
+                raise RenderJobError("burned_fallback_invalid")
+            decode = burned.get("decode")
+            if not isinstance(decode, dict):
+                raise RenderJobError("burned_fallback_decode_missing")
+            probe = decode.get("final_probe")
+            if (decode.get("final_sha256") != fallback["final_sha256"]
+                    or decode.get("qa_frame_sha256") != fallback["qa_frame_sha256"]
+                    or type(decode.get("decoded_video_frames")) not in (int, float)
+                    or decode["decoded_video_frames"] <= 0
+                    or not isinstance(probe, dict)
+                    or not _paired_duration_matches(
+                        receipt.get("duration_ms"), probe.get("duration_ms"),
+                        evidence.get("decoded_video_frames"), decode.get("decoded_video_frames"))
+                    or (probe.get("width"), probe.get("height"), probe.get("video_codec"), probe.get("pixel_format"))
+                       != (1080, 1920, "h264", "yuv420p")):
+                raise RenderJobError("burned_fallback_decode_missing")
+        elif _caption_delivery(request) != "in_app" and ("burned_fallback" in receipt or "caption_delivery" in receipt):
+            raise RenderJobError("burned_fallback_invalid")
         receipt_sha = authority.get("receipt_sha256")
         if (not isinstance(receipt_sha, str) or not re.fullmatch(r"[0-9a-f]{64}", receipt_sha)
                 or row["receipt_sha256"] and row["receipt_sha256"] != receipt_sha
@@ -607,6 +1141,26 @@ class PostRenderJobs:
                 or row["qa_frame_sha256"] and row["qa_frame_sha256"] != qa_sha
                 or row["final_byte_length"] and row["final_byte_length"] != final_length):
             raise RenderJobError("output_authority_changed")
+        if _caption_delivery(request) == "in_app":
+            self._authenticate_receipt(row, authority)
+        return authority
+
+    @staticmethod
+    def _load_output_authority(row) -> dict:
+        """Decode retained evidence through the existing typed refusal contract.
+
+        Missing or corrupt authority is retained unchanged. Status/replay must
+        not invent authority from primary pins or start another render.
+        """
+        encoded = row["output_authority_json"]
+        if not encoded:
+            raise RenderJobError("output_authority_missing")
+        try:
+            authority = json.loads(encoded)
+        except (TypeError, ValueError, RecursionError) as error:
+            raise RenderJobError("output_authority_invalid") from error
+        if not isinstance(authority, dict):
+            raise RenderJobError("output_authority_invalid")
         return authority
 
     def _verify_output(self, row) -> dict:
@@ -615,22 +1169,15 @@ class PostRenderJobs:
         output = self._output(row)
         required = tuple(output / name for name in ("receipt.json", "final.mp4", "qa.jpg", "decode.json"))
         if not output.is_dir() or not all(path.is_file() for path in required):
-            encoded = row["output_authority_json"]
-            if not encoded:
-                raise RenderJobError("output_authority_missing")
-            try:
-                authority = json.loads(encoded)
-            except (TypeError, ValueError) as error:
-                raise RenderJobError("output_authority_invalid") from error
-            if not isinstance(authority, dict):
-                raise RenderJobError("output_authority_invalid")
-            return self._validate_output_authority(row, authority)
+            return self._validate_output_authority(row, self._load_output_authority(row))
         with (output / "receipt.json").open("rb") as file:
             receipt_bytes = file.read(64 * 1024 + 1)
         if len(receipt_bytes) > 64 * 1024:
             raise RenderJobError("receipt_invalid")
         receipt = json.loads(receipt_bytes)
-        if receipt.get("schema") != "posting-prepared-artifact/v1":
+        request = RenderJobSubmission.model_validate_json(row["submission_json"]).request
+        expected_schema = "posting-prepared-artifact/v2" if isinstance(request, TimedPostRenderRequest) else "posting-prepared-artifact/v1"
+        if receipt.get("schema") != expected_schema:
             raise RenderJobError("receipt_invalid")
         final_sha, final_length = _file_hash(output / "final.mp4", MAX_FINAL_BYTES)
         qa_sha, _ = _file_hash(output / "qa.jpg", MAX_QA_BYTES)
@@ -649,6 +1196,21 @@ class PostRenderJobs:
             "receipt": receipt,
             "decode": evidence,
         }
+        if _caption_delivery(request) == "in_app":
+            authority["receipt_bytes_b64"] = base64.b64encode(receipt_bytes).decode("ascii")
+        if _caption_delivery(request) == "in_app" and not self._legacy_clean_output(row, authority):
+            try:
+                burned_sha, burned_length = _file_hash(output / "burned/final.mp4", MAX_FINAL_BYTES)
+                burned_qa, _ = _file_hash(output / "burned/qa.jpg", MAX_QA_BYTES)
+                decode_bytes = (output / "burned/decode.json").read_bytes()
+                if len(decode_bytes) > 64 * 1024:
+                    raise ValueError("oversized decode")
+                authority["burned_fallback"] = {"artifact": {
+                    "final_sha256": burned_sha, "final_byte_length": burned_length,
+                    "final_object_key": f"posting/dual-final/{burned_sha}.mp4", "qa_frame_sha256": burned_qa},
+                    "decode": json.loads(decode_bytes)}
+            except (OSError, ValueError) as error:
+                raise RenderJobError("burned_fallback_invalid") from error
         return self._validate_output_authority(row, authority)
 
     @staticmethod
@@ -661,26 +1223,87 @@ class PostRenderJobs:
             json.dumps(authority, sort_keys=True, separators=(",", ":")),
         )
 
+    def _reserve_output_identity(self, db, row, authority: dict) -> str | None:
+        """Reserve the captioned output inside the caller's writer transaction.
+
+        Clean bytes alone omit the caption and are reusable only with a distinct
+        verified burned fallback. Keep the existing UNIQUE primary column and
+        use its existing NULL/shared-authority convention for later clean owners.
+        """
+        primary = authority["final_sha256"]
+        fallback = authority.get("burned_fallback")
+        identity = fallback["artifact"]["final_sha256"] if fallback else primary
+        request = RenderJobSubmission.model_validate_json(row["submission_json"]).request
+        if _caption_delivery(request) == "in_app":
+            self._validate_output_authority(row, authority)
+            duplicate = db.execute("SELECT id FROM jobs WHERE id<>? AND final_sha256=? LIMIT 1",
+                                   (row["id"], identity)).fetchone()
+            if duplicate:
+                raise RenderJobError("duplicate_output")
+            key = self._identity_key(identity)
+            reserved = db.execute("SELECT job_id FROM idempotency WHERE key=?", (key,)).fetchone()
+            if reserved and reserved["job_id"] != row["id"]:
+                raise RenderJobError("duplicate_output")
+            uncertain = db.execute("SELECT job_id FROM idempotency WHERE key>=? AND key<? LIMIT 1",
+                                   ("/output-uncertain/v1/", "/output-uncertain/v10")).fetchone()
+            if uncertain:
+                raise RenderJobError("output_authority_uncertain")
+            db.execute("INSERT OR IGNORE INTO idempotency(key,job_id,request_hash) VALUES(?,?,?)",
+                       (key, row["id"], identity))
+        else:
+            # A retained in-app burned identity also fences ordinary outputs,
+            # even when its historical JSON was damaged after reservation.
+            reserved = db.execute("SELECT job_id FROM idempotency WHERE key=?",
+                                  (self._identity_key(identity),)).fetchone()
+            if reserved and reserved["job_id"] != row["id"]:
+                raise RenderJobError("duplicate_output")
+            # Preserve ordinary writes and duplicate semantics; isolate bad JSON.
+            duplicate = db.execute(
+                "SELECT id FROM jobs WHERE id<>? AND (final_sha256=? OR "
+                "COALESCE(json_extract(CASE WHEN json_valid(output_authority_json) THEN output_authority_json END,'$.burned_fallback.artifact.final_sha256'),"
+                "json_extract(CASE WHEN json_valid(output_authority_json) THEN output_authority_json END,'$.final_sha256'))=?) LIMIT 1",
+                (row["id"], identity, identity)).fetchone()
+            if duplicate:
+                raise RenderJobError("duplicate_output")
+        owner = db.execute("SELECT id FROM jobs WHERE final_sha256=? AND id<>?",
+                           (primary, row["id"])).fetchone()
+        if owner and not fallback:
+            raise RenderJobError("duplicate_output")
+        return None if owner else primary
+
     def _persist_output_authority(self, row, authority: dict) -> None:
         values = self._authority_values(authority)
         try:
             with self._db() as db:
-                duplicate = db.execute(
-                    "SELECT id FROM jobs WHERE final_sha256=? AND id<>?",
-                    (authority["final_sha256"], row["id"]),
-                ).fetchone()
-                if duplicate:
-                    raise RenderJobError("duplicate_output")
+                db.execute("BEGIN IMMEDIATE")
+                stored_primary = self._reserve_output_identity(db, row, authority)
                 db.execute(
                     "UPDATE jobs SET receipt_sha256=?,final_sha256=?,qa_frame_sha256=?,"
                     "final_byte_length=?,output_authority_json=? WHERE id=?",
-                    (*values, row["id"]),
+                    (values[0], stored_primary, *values[2:], row["id"]),
                 )
         except sqlite3.IntegrityError as error:
             raise RenderJobError("duplicate_output") from error
 
     def artifact(self, job_id: str, kind: str) -> Path:
-        names = {"final": "final.mp4", "qa": "qa.jpg", "receipt": "receipt.json"}
+        if kind == "source":
+            # Exact repaired-source bytes for the authenticated download door,
+            # re-verified against the durable envelope before every reuse.
+            row = self._row(job_id)
+            envelope = slot_source.completed_envelope(row)
+            if (envelope is None or row["state"] != "regeneration_needed"
+                    or row["retired_at_ms"] is not None or not row["attempt_id"]):
+                raise RenderJobError("artifact_not_ready")
+            try:
+                request = RenderJobSubmission.model_validate_json(row["submission_json"]).request
+                return slot_source.verify_envelope(
+                    envelope, root=self.root, job_id=job_id, attempt_id=row["attempt_id"],
+                    not_before_ms=request.created_at_ms, not_after_ms=self.clock_ms(),
+                )
+            except slot_source.SourceRegenerationError as error:
+                raise RenderJobError("artifact_not_ready") from error
+        names = {"final": "final.mp4", "qa": "qa.jpg", "receipt": "receipt.json",
+                 "burned_final": "burned/final.mp4", "burned_qa": "burned/qa.jpg"}
         if kind not in names:
             raise RenderJobError("artifact_not_found")
         row = self._row(job_id)
@@ -690,27 +1313,61 @@ class PostRenderJobs:
         if not all((output / name).is_file() for name in ("receipt.json", "final.mp4", "qa.jpg", "decode.json")):
             raise RenderJobError("artifact_not_ready")
         self._verify_output(row)
-        return self._output(row) / names[kind]
+        path = self._output(row) / names[kind]
+        if not path.is_file():
+            raise RenderJobError("artifact_not_found")
+        return path
 
-    def acknowledge(self, job_id: str) -> dict:
-        """Record downstream admission. Only a succeeded job may be acknowledged.
+    def acknowledge(self, job_id: str, source_ack=None) -> dict:
+        """Record downstream admission.
 
-        Idempotent: a replay after acknowledgment (including after retirement)
-        returns the current status without re-verifying deleted media.
+        A bodyless ACK marks a succeeded final admitted; a closed source-ack
+        body marks a completed source-only attempt admitted by its exact
+        attempt id, source SHA and slot payload SHA. Both are idempotent: a
+        replay after acknowledgment (including after retirement) returns the
+        current status from durable metadata without re-verifying deleted media.
         """
         row = self._row(job_id)
-        if row["state"] != "succeeded":
-            raise RenderJobError("acknowledge_not_ready")
-        if row["acknowledged_at_ms"]:
+        if source_ack is None:
+            if row["state"] != "succeeded":
+                raise RenderJobError("acknowledge_not_ready")
+            if row["acknowledged_at_ms"]:
+                return self.status(job_id)
+            authority = self._verify_output(row)
+            self._persist_output_authority(row, authority)
+            now = self.clock_ms()
+            with self._db() as db:
+                db.execute(
+                    "UPDATE jobs SET acknowledged_at_ms=? WHERE id=? AND acknowledged_at_ms IS NULL",
+                    (now, job_id),
+                )
             return self.status(job_id)
-        authority = self._verify_output(row)
-        self._persist_output_authority(row, authority)
+        return self._acknowledge_source(row, source_ack)
+
+    def _acknowledge_source(self, row, source_ack) -> dict:
+        """Acknowledge one completed source-only attempt by its exact identity."""
+        if row["state"] != "regeneration_needed":
+            raise RenderJobError("acknowledge_not_ready")
+        envelope = slot_source.completed_envelope(row)
+        if envelope is None:
+            raise RenderJobError("acknowledge_not_ready")
+        receipt, artifact = envelope.get("receipt"), envelope.get("artifact")
+        if (
+            not isinstance(receipt, dict)
+            or not isinstance(artifact, dict)
+            or source_ack.attempt_id != row["attempt_id"]
+            or source_ack.attempt_id != receipt.get("attempt_id")
+            or source_ack.source_sha256 != receipt.get("source_sha256")
+            or source_ack.source_sha256 != artifact.get("sha256")
+            or source_ack.slot_payload_sha256 != row["slot_hash"]
+        ):
+            raise RenderJobError("source_ack_mismatch")
         now = self.clock_ms()
         with self._db() as db:
-            changed = db.execute(
+            db.execute(
                 "UPDATE jobs SET acknowledged_at_ms=? WHERE id=? AND acknowledged_at_ms IS NULL",
-                (now, job_id),
-            ).rowcount
+                (now, job_id := row["id"]),
+            )
         return self.status(job_id)
 
     def retire(self, job_id: str) -> dict:
@@ -789,9 +1446,49 @@ class PostRenderJobs:
                 self._retire_row(row)
             except (OSError, ValueError, TypeError):
                 log.exception("post render retirement failed job=%s", row["id"])
+        self._gc_source_media(cutoff)
         self._gc_failed_attempt_media()
         if self._gc_auxiliary_history():
             self._checkpoint_wal()
+
+    def _gc_source_media(self, cutoff: int) -> int:
+        """Retire acknowledged completed source-only attempt media after the window.
+
+        Source repairs stay in state='regeneration_needed' with a completed
+        envelope (never 'succeeded'), so the ordinary state='succeeded' GC never
+        reaches their media. Once the Worker acknowledges the exact source bytes,
+        the attempt directory is removed while the jobs row (request, envelope,
+        ancestry, idempotency, tombstone) and the attempts row are retained.
+        """
+        with self._db() as db:
+            rows = db.execute(
+                "SELECT * FROM jobs WHERE state='regeneration_needed' "
+                "AND acknowledged_at_ms IS NOT NULL AND retired_at_ms IS NULL "
+                "AND acknowledged_at_ms<=?",
+                (cutoff,),
+            ).fetchall()
+        removed = 0
+        for row in rows:
+            if slot_source.completed_envelope(row) is None:
+                continue
+            attempt_dir = self.root / "attempts" / row["id"]
+            try:
+                if attempt_dir.exists():
+                    shutil.rmtree(attempt_dir)
+            except OSError:
+                log.exception("post render source-media retirement failed job=%s", row["id"])
+                continue
+            if attempt_dir.exists():
+                log.error("post render source-media retirement failed job=%s directory remains", row["id"])
+                continue
+            with self._db() as db:
+                db.execute(
+                    "UPDATE jobs SET retired_at_ms=? WHERE id=? AND retired_at_ms IS NULL",
+                    (self.clock_ms(), row["id"]),
+                )
+                db.execute("UPDATE attempts SET state='retired' WHERE job_id=?", (row["id"],))
+            removed += 1
+        return removed
 
     def _maybe_age_out(self, *, force: bool = False) -> dict | None:
         """One age-out pass when due (or forced); tightens itself under volume pressure."""
@@ -849,7 +1546,10 @@ class PostRenderJobs:
                 break
             try:
                 authority = self._verify_output(row)
-                confirmed = self.confirm_final(authority["final_sha256"], authority["final_byte_length"])
+                # Another caption may share these clean bytes. Only this job's
+                # acknowledgement proves both members of its pair were admitted.
+                confirmed = (row["acknowledged_at_ms"] is not None if "burned_fallback" in authority
+                             else self.confirm_final(authority["final_sha256"], authority["final_byte_length"]))
                 if confirmed is not True:
                     summary["unconfirmed"] += 1
                     with self._db() as db:
@@ -965,11 +1665,15 @@ class PostRenderJobs:
 
     def _finish(self, row, authority: dict):
         output = self._output(row)
-        for path in output.iterdir():
-            if path.is_file():
-                with path.open("rb") as file:
-                    os.fsync(file.fileno())
-        for directory in (output, output.parent, output.parent.parent, self.root / "attempts", self.root):
+        artifact_directories = [output]
+        if "burned_fallback" in authority:
+            artifact_directories.insert(0, output / "burned")
+        for directory in artifact_directories:
+            for path in directory.iterdir():
+                if path.is_file():
+                    with path.open("rb") as file:
+                        os.fsync(file.fileno())
+        for directory in (*artifact_directories, output.parent, output.parent.parent, self.root / "attempts", self.root):
             descriptor = os.open(directory, os.O_RDONLY)
             try:
                 os.fsync(descriptor)
@@ -979,17 +1683,13 @@ class PostRenderJobs:
         values = self._authority_values(authority)
         try:
             with self._db() as db:
-                duplicate = db.execute(
-                    "SELECT id FROM jobs WHERE final_sha256=? AND id<>?",
-                    (authority["final_sha256"], row["id"]),
-                ).fetchone()
-                if duplicate:
-                    raise RenderJobError("duplicate_output")
+                db.execute("BEGIN IMMEDIATE")
+                stored_primary = self._reserve_output_identity(db, row, authority)
                 changed = db.execute(
                     "UPDATE jobs SET state='succeeded',receipt_sha256=?,final_sha256=?,"
                     "qa_frame_sha256=?,final_byte_length=?,output_authority_json=?,updated_at_ms=?,"
                     "error_code=NULL WHERE id=? AND attempt_id=? AND state='running'",
-                    (*values, now, row["id"], row["attempt_id"]),
+                    (values[0], stored_primary, *values[2:], now, row["id"], row["attempt_id"]),
                 ).rowcount
                 if changed != 1:
                     raise RenderJobError("attempt_fenced")
@@ -1028,6 +1728,24 @@ class PostRenderJobs:
                     row = self._row(row["id"])
                     if row["state"] not in {"queued", "running"}:
                         continue
+                    if slot_source.malformed_authority(row):
+                        # A nonblank authority that is none of the typed variants
+                        # must never fall through to the ordinary renderer.
+                        self._fail_source_regeneration(row, "source_regeneration_authority_corrupt")
+                        return True
+                    command = slot_source.pending_command(row)
+                    completed = slot_source.completed_envelope(row)
+                    if command is not None or completed is not None:
+                        # Only the source-repair lane may act on its own authority
+                        # variant; the normal prepared path never treats it as a
+                        # final output and never fetches a prepared source grant.
+                        if row["state"] == "running" and completed is not None                                 and self._resume_source_regeneration(row):
+                            return True
+                        if command is not None:
+                            self._execute_source_regeneration(row, command)
+                        else:
+                            self._fail_source_regeneration(row, "source_regeneration_command_missing")
+                        return True
                     if row["state"] == "running":
                         try:
                             self._finish(row, self._verify_output(row))
@@ -1056,8 +1774,22 @@ class PostRenderJobs:
         source = attempt_root / "source.mp4"
         try:
             submission = RenderJobSubmission.model_validate_json(row["submission_json"])
-            self.fetcher(submission.request, source)
-            self.renderer(source, self._output(row), submission.request, clock_ms=self.clock_ms)
+            request = submission.request
+            if request.source_duration_repair is not None:
+                # A durable repaired job is never run bare: without the capability
+                # it is fenced with a typed refusal, and a timed repair is refused
+                # regardless of the capability flag.
+                if isinstance(request, TimedPostRenderRequest):
+                    raise RenderJobError("TIMED_REPAIR_UNSUPPORTED")
+                if not source_duration_repair_enabled():
+                    raise RenderJobError("SOURCE_DURATION_REPAIR_UNSUPPORTED")
+            self.fetcher(request, source)
+            renderer_kwargs = {"clock_ms": self.clock_ms}
+            if submission.source_provenance is None and is_pool_supplied(request.page_id):
+                # A listed pool page supplies a finished clip, so this is the
+                # one path permitted to cross the renderer's no-receipt gate.
+                renderer_kwargs["allow_pool_supplied_without_provenance"] = True
+            self.renderer(source, self._output(row), request, **renderer_kwargs)
             authority = self._verify_output(row)
             self._finish(row, authority)
         except Exception as error:

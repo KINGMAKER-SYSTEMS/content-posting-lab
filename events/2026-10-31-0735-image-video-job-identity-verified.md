@@ -1,0 +1,3 @@
+# Bind image render keys to the Lab job
+
+Forward the existing Lab job identity through the image-video adapter. Same-job retries keep one key; new jobs use distinct keys. Legacy callers retain their original key and every photo spec stays unchanged. Six new assertions fail before the fix and pass after; 65 related checks pass with one page-fixture skip. Dropping the forwarded identity in a separate copy fails all six assertions; exact restoration passes. Transport is fake. The release depends on the slideshow ownership and failed-partial reservation fix; combined full qualification is recorded separately.

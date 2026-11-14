@@ -30,6 +30,8 @@ from urllib.parse import urlparse
 import httpx
 from PIL import Image
 
+from services import ocr_engine
+
 SCHEMA = "content-lab.visual-admission.v1"
 MODEL = "glm-4.6v-flash"
 DEFAULT_VISION_URL = "https://api.z.ai/api/paas/v4/chat/completions"
@@ -173,10 +175,17 @@ def _ocr(frame, width, height, deadline, frame_budget):
     # count; it is never a fixed wall-clock allowance per frame.
     pixel_ratio = (width * height) / max(1, (OCR_LONG_EDGE or max(width, height)) ** 2)
     per_frame = (TIMEOUT * 4 * pixel_ratio) / max(1, frame_budget)
+    ocr_deadline = min(deadline, time.monotonic() + per_frame)
+    if ocr_engine.ENGINE == "ppocr":
+        # PP-OCRv6 rec is orientation-robust, so there is no 180° retry (the
+        # Syzygy door records orientations [0]). recognize() runs the model
+        # (and its one-time load/burn-in) inside a bounded worker, so a hung
+        # inference fails closed at both the per-frame and whole-scan deadlines
+        # and frees the single scanner gate.
+        return ocr_engine.recognize(frame, ocr_width, ocr_height, deadline=ocr_deadline)
     # PSM12 orientation detection can misread upside-down words at low confidence.
     # Retry the opposite orientation before calling the frame OCR-clean. Both
     # subprocesses share the original per-frame and whole-scan deadlines.
-    ocr_deadline = min(deadline, time.monotonic() + per_frame)
     for rotation in (0, 180):
         pixels = frame if rotation == 0 else Image.frombytes(
             "RGB", (ocr_width, ocr_height), frame
@@ -415,8 +424,11 @@ def _vision(samples, deadline):
 
 
 # v6: all providers share the scene-text/added-overlay policy. Earlier tokens
-# must rescan the same exact bytes rather than reuse the old text policy.
-ALGORITHM = "tesseract-psm12-words-vision-corroborated-v6"
+# must rescan the same exact bytes rather than reuse the old text policy. The
+# algorithm token is engine-specific so a decision stored under one OCR engine
+# can never be served as if the other produced it.
+ALGORITHM = ("pp-ocrv6-small-vision-corroborated-v1" if ocr_engine.ENGINE == "ppocr"
+             else "tesseract-psm12-words-vision-corroborated-v6")
 VISION_JPEG_QUALITY = 95
 
 # These failures describe a service/runtime that can be retried next cycle.
@@ -458,12 +470,24 @@ def is_final_decision(decision) -> bool:
 
 
 def pending_decision(*, page_id, job_id, index, sha256, byte_count):
+    if ocr_engine.ENGINE == "ppocr":
+        ocr = {"engine": "pp-ocrv6-small", "status": "unavailable",
+               "workingLongEdge": OCR_LONG_EDGE or "native",
+               "minimumConfidence": ocr_engine.OCR_WORD_CONFIDENCE / 100,
+               "minimumAlphanumericCharacters": ocr_engine.OCR_MIN_ALNUM,
+               "orientations": [0], "candidateFrames": []}
+    else:
+        ocr = {"engine": "tesseract", "status": "unavailable", "psm": 12,
+               "languages": ["eng", "osd"], "workingLongEdge": OCR_LONG_EDGE or "native",
+               "minimumWordConfidence": OCR_WORD_CONFIDENCE,
+               "minimumAlphanumericCharacters": 2, "orientations": [0, 180],
+               "candidateFrames": []}
     return {"schema": SCHEMA, "verdict": "unavailable", "jobId": job_id, "outputIndex": index,
         "pageId": page_id, "sha256": sha256, "bytes": byte_count,
         "scannedAt": datetime.now(timezone.utc).isoformat(), "reason": "scan_pending",
         "sampling": {"mode": "all_frames", "algorithm": ALGORITHM, "frameCount": 0, "expectedFrameCount": 0},
         "model": {"name": MODEL, "provider": VISION_PROVIDER, "urlHost": urlparse(VISION_URL).hostname, "status": "unavailable", "fallback": False, "fallbackReason": None, "sampledFrames": []},
-        "ocr": {"engine": "tesseract", "status": "unavailable", "psm": 12, "languages": ["eng", "osd"], "workingLongEdge": OCR_LONG_EDGE or "native", "minimumWordConfidence": OCR_WORD_CONFIDENCE, "minimumAlphanumericCharacters": 2, "orientations": [0, 180], "candidateFrames": []}}
+        "ocr": ocr}
 
 
 def scan_artifact(path: Path, *, page_id: str, job_id: str, index: int, sha256: str, byte_count: int):
@@ -485,7 +509,12 @@ def scan_artifact(path: Path, *, page_id: str, job_id: str, index: int, sha256: 
             return decision
         if byte_count < 1 or byte_count > MAX_BYTES or path.stat().st_size != byte_count or _hash(path) != sha256:
             raise RuntimeError("artifact_identity_mismatch")
-        if not all(shutil.which(tool) for tool in ("ffmpeg", "ffprobe", "tesseract")):
+        if not all(shutil.which(tool) for tool in ("ffmpeg", "ffprobe")):
+            raise RuntimeError("ocr_or_decoder_unavailable")
+        if ocr_engine.ENGINE == "ppocr":
+            if not ocr_engine.models_available():
+                raise RuntimeError("ocr_or_decoder_unavailable")
+        elif not shutil.which("tesseract"):
             raise RuntimeError("ocr_or_decoder_unavailable")
         width, height, expected, duration = _probe(path, deadline)
         decision["sampling"].update(expectedFrameCount=expected, width=width, height=height,

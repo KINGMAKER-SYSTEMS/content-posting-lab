@@ -50,6 +50,8 @@ TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled"})
 SOURCE_DNA_UNAVAILABLE_STATUSES = frozenset({"queued", "running", "completed"})
 ARCHIVE_INDEX_KEY = "archiveIndex"
 ARCHIVE_INDEX_VERSION = 1
+# Advisory scan position only; old versions ignore it and may repeat or starve.
+COMPACTION_SCAN_NEXT_KEY = "compactionScanNextJobId"
 DEFAULT_RETENTION_DAYS = 30
 DEFAULT_BATCH_SIZE = 2000
 DEFAULT_SIZE_THRESHOLD_BYTES = 50 * 1024 * 1024
@@ -120,7 +122,7 @@ def empty_index() -> dict[str, Any]:
         "version": ARCHIVE_INDEX_VERSION,
         "sourceIdentities": {},       # pageId -> sorted list of canonical identities
         "sourceDnaCuts": [],          # completed dossier_source_dna cut projections
-        "slideshow": [],              # {pageId, sourceLibraryId, signature}
+        "slideshow": [],              # {pageId, sourceLibraryId, signature, mediaKeys}
         "truckRecoveryMasters": [],   # sha256 of recovered masters (permanent)
         "truckCandidateJobs": [],     # completed generated truck clips (re-crop)
         "usedClipSha256": {},         # pageId -> sorted list of clip sha256
@@ -135,13 +137,78 @@ def _canonical_identity(value: Any) -> str | None:
 
 def _clip_sha256s(job: dict[str, Any]) -> list[str]:
     out: list[str] = []
-    for clip in job.get("clips", []):
+    clips = job.get("clips", [])
+    if not isinstance(clips, list):
+        raise ValueError("completed_clips_not_a_list")
+    for clip in clips:
         if not isinstance(clip, dict):
             continue
         digest = clip.get("sha256")
         if isinstance(digest, str) and _SHA256_RE.fullmatch(digest):
             out.append(digest)
     return out
+
+
+def truck_recovery_reserved_masters(job: dict[str, Any]) -> list[str]:
+    """Keep every master whose recovery is active or may have exposed clips."""
+    if job.get("sourceKind") != "truck_master_recovery":
+        return []
+    clips = job.get("clips")
+    if job.get("status") not in SOURCE_DNA_UNAVAILABLE_STATUSES and not clips:
+        return []
+    masters = job.get("recoveryMasters")
+    if not isinstance(masters, list) or not masters:
+        if clips:
+            raise ValueError("truck_partial_master_invalid")
+        return []
+    digests = []
+    for master in masters:
+        digest = master.get("sha256") if isinstance(master, dict) else None
+        if not isinstance(digest, str) or not _SHA256_RE.fullmatch(digest):
+            if clips:
+                raise ValueError("truck_partial_master_invalid")
+            continue
+        digests.append(digest)
+    if clips:
+        if not isinstance(clips, list):
+            raise ValueError("truck_partial_clip_invalid")
+        for clip in clips:
+            digest = clip.get("sha256") if isinstance(clip, dict) else None
+            if not isinstance(digest, str) or not _SHA256_RE.fullmatch(digest):
+                raise ValueError("truck_partial_clip_invalid")
+    return digests
+
+
+def slideshow_reserved_plans(job: dict[str, Any]) -> list[dict[str, Any]]:
+    """Keep active plans and plans whose clips may already have been served."""
+    if job.get("sourceKind") != "syzygy_slideshow":
+        return []
+    plans = job.get("slideshowPlan")
+    clips = job.get("clips")
+    if not clips:
+        return plans if job.get("status") in SOURCE_DNA_UNAVAILABLE_STATUSES and isinstance(plans, list) else []
+    if not isinstance(clips, list) or not isinstance(plans, list) or not plans:
+        raise ValueError("slideshow_partial_reservation_invalid")
+    valid = {p.get("signature"): p for p in plans if isinstance(p, dict)
+             and isinstance(p.get("signature"), str) and _SHA256_RE.fullmatch(p["signature"])}
+    if len(valid) != len(plans):
+        raise ValueError("slideshow_partial_reservation_invalid")
+    signatures = []
+    ambiguous = False
+    for clip in clips:
+        source = clip.get("source") if isinstance(clip, dict) else None
+        sig = source.get("planSignature") if isinstance(source, dict) else None
+        digest = clip.get("sha256") if isinstance(clip, dict) else None
+        if not isinstance(digest, str) or not _SHA256_RE.fullmatch(digest):
+            raise ValueError("slideshow_partial_digest_invalid")
+        if not isinstance(sig, str) or sig not in valid:
+            ambiguous = True
+        else:
+            signatures.append(sig)
+    if ambiguous or job.get("status") in SOURCE_DNA_UNAVAILABLE_STATUSES:
+        # Unknown legacy evidence cannot prove any plan safe to release.
+        return list(valid.values())
+    return [valid[sig] for sig in dict.fromkeys(signatures)]
 
 
 def extract_index_entries(job: dict[str, Any]) -> dict[str, Any]:
@@ -168,7 +235,10 @@ def extract_index_entries(job: dict[str, Any]) -> dict[str, Any]:
         # recent ones and prefer the least recently cut footage. Entries
         # archived before they existed simply count as the oldest.
         used_at = job.get("completedAt") or job.get("createdAt")
-        for cut_index, cut in enumerate(job.get("sourceCuts", [])):
+        source_cuts = job.get("sourceCuts", [])
+        if not isinstance(source_cuts, list):
+            raise ValueError("completed_source_cuts_not_a_list")
+        for cut_index, cut in enumerate(source_cuts):
             if not isinstance(cut, dict):
                 continue
             entries["sourceDnaCuts"].append({
@@ -183,25 +253,29 @@ def extract_index_entries(job: dict[str, Any]) -> dict[str, Any]:
                 "cutIndex": cut_index,
             })
 
-    if kind == "syzygy_slideshow" and job.get("status") == "completed":
-        for plan in job.get("slideshowPlan", []):
+    if kind == "syzygy_slideshow" and (job.get("status") == "completed" or job.get("clips")):
+        for plan in slideshow_reserved_plans(job):
             signature = plan.get("signature") if isinstance(plan, dict) else None
             if isinstance(signature, str) and _SHA256_RE.fullmatch(signature):
                 entries["slideshow"].append({
                     "pageId": page_id,
                     "sourceLibraryId": job.get("sourceLibraryId"),
                     "signature": signature,
+                    "templateSlug": plan.get("templateSlug"),
+                    "mediaKeys": plan.get("mediaKeys"),
                 })
 
-    if kind == "truck_master_recovery" and job.get("status") == "completed":
-        for master in job.get("recoveryMasters", []):
-            sha256 = master.get("sha256") if isinstance(master, dict) else None
-            if isinstance(sha256, str) and _SHA256_RE.fullmatch(sha256):
-                entries["truckRecoveryMasters"].append(sha256)
+    if kind == "truck_master_recovery" and (job.get("status") == "completed" or job.get("clips")):
+        entries["truckRecoveryMasters"].extend(truck_recovery_reserved_masters(job))
 
-    # Use the live readers' exact status predicate. Archived jobs are terminal,
-    # so only completed jobs can contribute permanent delivered-byte facts.
-    if job.get("status") in SOURCE_DNA_UNAVAILABLE_STATUSES:
+    # Preserve completed bytes and slideshow or truck-recovery bytes already
+    # exposed by the artifact endpoint, even when the runner later fails.
+    if (job.get("status") in SOURCE_DNA_UNAVAILABLE_STATUSES
+            or (kind in {"syzygy_slideshow", "truck_master_recovery"} and job.get("clips"))):
+        if kind == "syzygy_slideshow" and job.get("clips"):
+            slideshow_reserved_plans(job)  # refuse opaque malformed plans before archiving
+        if kind == "truck_master_recovery" and job.get("clips"):
+            truck_recovery_reserved_masters(job)
         for digest in _clip_sha256s(job):
             entries["usedClipSha256"].append((page_id, digest))
 
@@ -272,9 +346,9 @@ def _key_id_for_engine(engine: Any) -> str | None:
     return PROVIDERS.get(engine, {}).get("key_id")
 
 
-def fold_into_index(index: dict[str, Any], job: dict[str, Any]) -> None:
+def fold_into_index(index: dict[str, Any], job: dict[str, Any], *, entries: dict[str, Any] | None = None) -> None:
     """Fold one archived job's compact facts into ``index`` (mutates it)."""
-    e = extract_index_entries(job)
+    e = entries if entries is not None else extract_index_entries(job)
     page_id = job.get("pageId")
 
     for (pid, identity) in e["sourceIdentities"]:
@@ -438,7 +512,12 @@ def compact_job_store(
     jobs are the original dicts moved out of ``jobs``.
     """
     cutoff = now - timedelta(days=retention_days)
-    archived_ids = archivable_job_ids(store, cutoff)[:batch_size]
+    candidates = archivable_job_ids(store, cutoff)
+    cursor = store.get(COMPACTION_SCAN_NEXT_KEY)
+    start = candidates.index(cursor) if isinstance(cursor, str) and cursor in candidates else 0
+    # Preserve the first pass's insertion order. Each pass examines at most one
+    # batch, then starts at its next untouched eligible row on the next pass.
+    archived_ids = candidates[start:start + batch_size] if batch_size > 0 else []
 
     jobs = dict(store.get("jobs", {}))
     by_idem = dict(store.get("byIdempotency", {}))
@@ -460,8 +539,15 @@ def compact_job_store(
     archived: list[dict[str, Any]] = []
     for job_id in archived_ids:
         job = jobs[job_id]
+        try:
+            entries = extract_index_entries(job)
+        except ValueError as error:
+            # Keep opaque records intact; they must not starve valid peers in
+            # this bounded batch or publish partial reservation evidence.
+            log.warning("ALERT-LABJOBSTORE compaction retained malformed job %s: %s", job_id, error)
+            continue
+        fold_into_index(index, job, entries=entries)
         archived.append(job)
-        fold_into_index(index, job)
         del jobs[job_id]
 
     # Normalize lists for deterministic on-disk shape.
@@ -477,6 +563,18 @@ def compact_job_store(
         "byIdempotency": by_idem,
         ARCHIVE_INDEX_KEY: index,
     }
+    # The cursor never grants archive authority. Its target is an eligible row
+    # not examined this pass; after the tail, wrap to the first retained row.
+    if batch_size > 0:
+        end = start + len(archived_ids)
+        if end < len(candidates):
+            new_store[COMPACTION_SCAN_NEXT_KEY] = candidates[end]
+        else:
+            retained = next((job_id for job_id in candidates if job_id in jobs), None)
+            if retained is None:
+                new_store.pop(COMPACTION_SCAN_NEXT_KEY, None)
+            else:
+                new_store[COMPACTION_SCAN_NEXT_KEY] = retained
     return new_store, archived
 
 
