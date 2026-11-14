@@ -55,6 +55,10 @@ ALLOWLIST = {
     "events.md": "append-only devlog of production events, never loaded at runtime",
     "docs/post-render-setup.md": "deploy doc: the production ingress origins an operator sets",
     "docs/visual-admission.md": "deploy doc: where the production visual gate runs",
+    "recipes/source-dna/pov-night-core-miles-of-memories77-v2.json": (
+        "source-DNA provenance: the primary's ShipStream intake URL is the master's source "
+        "identity that cross-page window exclusions match on, never a service origin"
+    ),
 }
 
 _URL_HOST = re.compile(

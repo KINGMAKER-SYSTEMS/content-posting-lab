@@ -1,27 +1,25 @@
-"""Originality show-limit enforcement for the Scrambler, from the REAL ledger.
+"""Unused-origin-footage enforcement for the Scrambler, from the real ledger.
 
 Rule #1 (originality) is immutable: transforms never make reused footage new.
 When the Scrambler is ON for a page, its planner refuses any candidate source
 window whose ORIGIN seconds the real usage ledger (usage.jsonl - the exact
 producer row shape, never a parallel schema) shows were already used:
 
-- at most 2 shows per origin-second per page per 30 days (a SECOND show is
-  legal once it is >= 7 days after the first; the third is refused),
-- zero shows by any OTHER page within 90 days.
+- zero prior shows of the same origin second, on any page, at any age;
+- use a genuinely unused moment of the SAME master; transforms add no runway.
 
 A prior row that NAMES its origin but lost the window (null offsets) is never
 fresh evidence: it is stored as a WILDCARD show for that origin identity,
 conservatively counting for ANY candidate window of that origin - other page
-blocks 90 days, own page counts toward the 30-day cap and the 7-day gap.
+blocks on every page, without an age-based release.
 Refusing the whole feed over one such row would brick unrelated fresh
 sources, so the wildcard stays scoped to its own origin. A row whose
 ``posted_at`` lies up to 24 h in the future (accepted clock skew) clamps its
-age to 0: an own-page future show still blocks the 7-day gap and the 2-show
-cap instead of being skipped.
+future observation remains used instead of being skipped.
 
 Shows are keyed by the CANONICAL ORIGIN IDENTITY ``(origin_kind, origin_id,
 origin_second)`` - never by master SHA alone: the same underlying video
-re-encoded under a second master SHA must not slip a 90-day exclusivity. Real
+re-encoded under a second master SHA must not slip a canonical identity check. Real
 origin ids are case-sensitive Drive/YouTube ids and are never lowercased.
 The candidate master's canonical origin comes from the real ``origins.json``
 producer map (master SHA -> page, origin_kind, origin_id, origin_start_s/
@@ -64,21 +62,22 @@ stored show-entry - duplicates on the same second included - before it is
 allocated. Usage is checked with stat, and every feed (usage, origins,
 retired) is read with
 a byte bound, so a file that grows between stat and read cannot bypass the
-cap. Rows older than 90 days (the longest lookback) are never indexed.
+cap. All supplied historical rows are indexed, with the same byte/row/entry
+budgets. A rolling/pruned producer feed cannot prove all-time unused coverage:
+restore complete history before declaring the network rule fully enforced.
 
 Posted-asset release evidence (PRIVATE): the planner may hold a private
 allocation hold over a queued/rendered-unposted Lab asset. The ONLY key
 that releases such a hold is an OBSERVED POSTED usage row - the real
 ledger's ``asset_sha`` naming that exact asset - never a Lab render, a
 source-window overlap, or another asset's row. During load, every
-validated row inside the 90-day lookback that carries an ``asset_sha``
+validated row in the supplied feed that carries an ``asset_sha``
 keeps one COMPACT posting record (verbatim producer ``posted_at`` string,
 page, covered whole origin seconds - the same floor/ceil accounting the
 limits use) keyed by ``(asset_sha, origin_kind, origin_id)``: no
 per-second expansion, and each record is counted in the SAME aggregate
-entry budget BEFORE it is stored. Rows older than 90 days are skipped
-before capture, so posting proof for them is UNAVAILABLE from this module
-by design - the caller persists a copied actual observation when it sees
+entry budget BEFORE it is stored. Rows absent from the supplied feed leave posting proof UNAVAILABLE;
+this reader does not expire retained historical evidence - the caller persists a copied actual observation when it sees
 one; that copied row is real evidence, never a faked ``posted_at``.
 ``OriginalityIndex.posted_asset_observation`` answers the release query
 and returns None conservatively on any mismatch. Its result is private
@@ -132,10 +131,6 @@ SHOW_WINDOW_MAX_S = 3600.0
 # A posted_at further in the future than a day of clock skew is corrupt.
 POSTED_FUTURE_SKEW_S = 24 * 3600.0
 
-SAME_PAGE_WINDOW_S = 30 * 86_400.0
-SAME_PAGE_MAX_SHOWS = 2
-SAME_PAGE_GAP_S = 7 * 86_400.0
-CROSS_PAGE_WINDOW_S = 90 * 86_400.0
 
 _logged_once: set[str] = set()
 
@@ -344,10 +339,9 @@ class OriginalityIndex:
         inside the master's mapped extent is refused. Retired masters and
         retired origin aliases refuse outright. Wildcard prior usage (known
         origin, lost window) counts for EVERY candidate second of that
-        origin. Every whole origin second the window covers must then satisfy
-        all three show limits; the first violated second names the refusal.
-        A same-page show up to 24 h in the future clamps its age to 0, so it
-        still blocks the 7-day gap and counts toward the 2-show cap.
+        origin. Every whole origin second the window covers must have zero
+        prior shows in the supplied history. The first used second names the
+        refusal; a prior show has no age-based release.
         """
         master = _normalize_master_sha(master_sha) or (master_sha or "").lower()
         now = now_epoch if now_epoch is not None else datetime.now(timezone.utc).timestamp()
@@ -371,40 +365,16 @@ class OriginalityIndex:
                 f"candidate_window_outside_master:[{start_ms}, {end_ms}] ms "
                 f"not within {mapping.window[0] * 1000:.0f}..{mapping.window[1] * 1000:.0f} ms"
             )
-        mine = frozenset(normalize_handle(h) for h in page_handles)
-        # Wildcard prior usage (known origin, lost window) blocks ANY
-        # candidate window of this origin - it is never fresh evidence.
-        wildcard_own_recent = 0
-        for show in self.wildcard_shows.get((mapping.origin_kind, mapping.origin_id), ()):
-            own = show.page == page_id or normalize_handle(show.page) in mine
-            age = now - show.posted_epoch
-            if not own:
-                if age < CROSS_PAGE_WINDOW_S:
-                    return False, "cross_page_90d:origin_window_unknown"
-                continue
-            own_age = max(age, 0.0)
-            if own_age < SAME_PAGE_WINDOW_S:
-                if own_age < SAME_PAGE_GAP_S:
-                    return False, "page_second_gap_7d:origin_window_unknown"
-                wildcard_own_recent += 1
+        # A prior show never becomes fresh merely by aging, switching page,
+        # changing treatment or entering through a different master alias.
+        origin_key = (mapping.origin_kind, mapping.origin_id)
+        if self.wildcard_shows.get(origin_key):
+            return False, "origin_already_shown:origin_window_unknown"
         first = int(start_ms // 1_000)
         last = int(max(start_ms, end_ms - 1) // 1_000)
         for second in range(first, last + 1):
-            same_page_recent = wildcard_own_recent
-            for show in self.shows.get((mapping.origin_kind, mapping.origin_id, second), ()):
-                own = show.page == page_id or normalize_handle(show.page) in mine
-                age = now - show.posted_epoch
-                if not own:
-                    if age < CROSS_PAGE_WINDOW_S:
-                        return False, f"cross_page_90d:second={second}"
-                    continue
-                own_age = max(age, 0.0)
-                if own_age < SAME_PAGE_WINDOW_S:
-                    if own_age < SAME_PAGE_GAP_S:
-                        return False, f"page_second_gap_7d:second={second}"
-                    same_page_recent += 1
-            if same_page_recent >= SAME_PAGE_MAX_SHOWS:
-                return False, f"page_second_cap_2_30d:second={second}"
+            if self.shows.get((*origin_key, second)):
+                return False, f"origin_already_shown:second={second}"
         return True, ""
 
     def posted_asset_observation(
@@ -430,8 +400,8 @@ class OriginalityIndex:
         invalid bounds - returns None CONSERVATIVELY: a hold is never
         released on another asset's row, a partial range, an invented
         timestamp, a Lab render, or source-window overlap alone. Rows
-        older than the 90-day lookback left no proof here (documented
-        unavailability). This is evidence only: ``window_allowed`` still
+        absent from the supplied feed leave no proof here. Prior observations
+        are never expired by this reader. This is evidence only: ``window_allowed`` still
         governs the posted show limits without double counting the hold,
         and the returned dict is private metadata that must NEVER be
         written into hashes, wire formats, or library fields; mutating it
@@ -492,9 +462,9 @@ def _row_show(row: dict, *, number: int, origins: dict[str, _OriginWindow],
     but carries an impossible window or timestamp fails closed: half-known
     evidence never under-counts silently.
 
-    A row older than 90 days (the longest lookback of any limit) is skipped
-    un-indexed: it can never block a candidate, so millions of stale
-    entries are not allocated for it. A row that NAMES an origin but lost
+    Historical rows have no age-based release. Byte, row and entry budgets
+    bound the retained feed; exceeding a budget refuses instead of discarding
+    old usage. A row that NAMES an origin but lost
     the window entirely (both offsets null) comes back with null seconds:
     the caller stores it as a WILDCARD show for that origin identity -
     known-origin prior usage with an unknown window is never fresh.
@@ -512,8 +482,6 @@ def _row_show(row: dict, *, number: int, origins: dict[str, _OriginWindow],
         raise ScramblerOriginalityUnavailable(
             f"usage_row_invalid: line {number}: posted_at in the future"
         )
-    if now_epoch - posted >= CROSS_PAGE_WINDOW_S:
-        return None  # older than every lookback: irrelevant, never indexed
     kind = row.get("origin_kind")
     origin_id = row.get("origin_id")
     master = _normalize_master_sha(row.get("master_sha"))

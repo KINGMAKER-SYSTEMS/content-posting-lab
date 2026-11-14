@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import io
 import json
 import math
 import os
@@ -20,12 +21,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, Callable, Literal
 
+import numpy as np
 from PIL import Image
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator, model_serializer
 from pydantic_core import PydanticCustomError
 
 from burn_quality_gate import overlay_geometry_reasons
-from services.caption_render import CaptionRenderRequest, CaptionStyle, render_caption_overlay
+from services.caption_render import CaptionRenderRequest, CaptionStyle, render_caption_with_background
 from services.ffmpeg import delivery_encode_args
 from services.page_frame import frame_band_height, frame_band_rows, frame_fit, letterbox_filter
 from services.pool_supplied_pages import is_pool_supplied
@@ -42,6 +44,36 @@ MAX_QA_BYTES = 2 * 1024 * 1024
 # conservative explicit bound so the job scheduler can reserve peak disk.
 MAX_OVERLAY_BYTES = 16 * 1024 * 1024
 MAX_DURATION_MS = 600_000
+# Proof the caption's words are in the delivered pixels, measured as CHANGE against
+# the picture around them. The reference is the same source frame at the same time,
+# through the same delivery graph, with the caption's background (box or highlight)
+# drawn but the words left out. Where the words would change that reference by more
+# than CAPTION_INK_CONTRAST levels, the burned frame must have moved at least
+# CAPTION_INK_MIN_SHARE of the way toward the words' colour, on average. A box alone
+# cannot pass (the reference already has it), matching colours alone prove nothing
+# (white text on a white clip "matches" whether or not it was drawn), and white text
+# on a dark box over a white clip is measured against the box, so it is visible and
+# passes. Too few changed pixels means the words cannot be seen against what is
+# directly behind them (no box and the same colour as the picture, or text in its own
+# box's colour): CAPTION_LOW_CONTRAST. Enough contrast but no change in the burned
+# frame: CAPTION_NOT_DRAWN.
+CAPTION_INK_MIN_SHARE = 0.40
+CAPTION_INK_ALPHA_MIN = 200
+CAPTION_INK_CONTRAST = 48
+CAPTION_INK_MIN_PIXELS = 64
+# The box or highlight itself must be in the burned frame too. Words measured against a box-only reference would
+# otherwise pass when nothing at all was drawn and the clip happens to be the words' colour (white words on a
+# black box over a white clip, with no overlay in the video). A box pixel counts as shown only when the burned
+# colour is nearer the box colour than the bare source frame's colour at that pixel (a plain colour match is not
+# enough: light-grey footage sits within tolerance of a #c0c0c0 box without any overlay). Box pixels within
+# CAPTION_BOX_DISTINCT levels of the source are left out of that tally (a black box over a black clip burns the source
+# colour and is a real caption; nothing can be told either way), and there the words are judged against the bare
+# source, so an unchanged source pixel can never count as ink. At least CAPTION_BOX_MIN_MATCH of the counted box
+# pixels must be shown.
+CAPTION_BOX_ALPHA_MIN = 200
+CAPTION_BOX_WORDS_TOLERANCE = 24
+CAPTION_BOX_DISTINCT = 24
+CAPTION_BOX_MIN_MATCH = 0.60
 Hash = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
 Identity = Annotated[str, Field(min_length=1, max_length=512)]
 
@@ -432,6 +464,260 @@ def _encode_final(source: Path, overlay: Path | None, final: Path, source_probe:
     raise PostRenderError("delivery_budget_exceeded", "both bounded encodes exceeded the byte or duration contract")
 
 
+@dataclass(frozen=True)
+class _InkField:
+    """Per-pixel ink evidence inside the overlay's bounding box (rows from ``top``)."""
+
+    top: int
+    measured: np.ndarray
+    progress: np.ndarray
+    words: np.ndarray
+    box_match: float | None
+
+
+def _ink_field(overlay_png: bytes, qa_frame: Image.Image, reference_frame: Image.Image,
+               background_png: bytes | None = None,
+               source_frame: Image.Image | None = None) -> _InkField | None:
+    """Per-pixel ink evidence over the overlay's bounding box; None when the overlay is empty.
+
+    The single measurement behind ``_caption_ink`` (one score for the caption) and
+    ``_caption_line_ink`` (one score per drawn line); see ``_caption_ink`` for the rules.
+    """
+    if background_png is not None and source_frame is None:
+        raise ValueError("a background needs the bare source frame to tell it from the burned frame")
+    with Image.open(io.BytesIO(overlay_png)) as opened:
+        overlay = opened.convert("RGBA")
+    box = overlay.getchannel("A").getbbox()
+    if box is None:
+        return None
+    layer = np.asarray(overlay.crop(box), dtype=np.float32)
+    alpha, colour = layer[..., 3], layer[..., :3]
+    reference = np.asarray(reference_frame.convert("RGB").crop(box), dtype=np.float32)
+    burned = np.asarray(qa_frame.convert("RGB").crop(box), dtype=np.float32)
+    behind = reference
+    near_box = None
+    box_match = None
+    words = alpha >= CAPTION_INK_ALPHA_MIN
+    if background_png is not None:
+        with Image.open(io.BytesIO(background_png)) as opened:
+            background = np.asarray(opened.convert("RGBA").crop(box), dtype=np.float32)
+        bare = np.asarray(source_frame.convert("RGB").crop(box), dtype=np.float32)
+        box_colour = background[..., :3]
+        under_box = background[..., 3] >= CAPTION_BOX_ALPHA_MIN
+        distinct = np.abs(box_colour - bare).max(axis=-1) > CAPTION_BOX_DISTINCT
+        behind = np.where((under_box & distinct)[..., None], reference, bare)
+        near_box = under_box & ~distinct
+        box_coloured = under_box & (np.abs(colour - box_colour).max(axis=-1) <= CAPTION_BOX_WORDS_TOLERANCE)
+        # Overlay pixels in the box's own colour are the box, not the words.
+        words &= ~box_coloured
+        box_pixels = box_coloured & distinct
+        if box_pixels.any():
+            shown = np.abs(burned - box_colour).sum(axis=-1) < np.abs(burned - bare).sum(axis=-1)
+            box_match = float(shown[box_pixels].mean())
+    a3 = (alpha / 255.0)[..., None]
+    expected = colour * a3 + behind * (1.0 - a3)
+    change = expected - behind
+    measured = (alpha >= CAPTION_INK_ALPHA_MIN) & (np.abs(change).max(axis=-1) > CAPTION_INK_CONTRAST)
+
+    def progress_of(wanted: np.ndarray, got: np.ndarray) -> np.ndarray:
+        power = (wanted * wanted).sum(axis=-1)
+        return np.clip((wanted * got).sum(axis=-1) / np.where(power > 0, power, 1.0), -0.5, 1.5)
+
+    progress = progress_of(change, burned - behind)
+    if near_box is not None:
+        change_box = colour * a3 + reference * (1.0 - a3) - reference
+        measured &= ~near_box | (np.abs(change_box).max(axis=-1) > CAPTION_INK_CONTRAST)
+        progress = np.where(near_box, np.minimum(progress, progress_of(change_box, burned - reference)), progress)
+    return _InkField(box[1], measured, np.where(measured, progress, 0.0), words, box_match)
+
+
+def _caption_ink(overlay_png: bytes, qa_frame: Image.Image, reference_frame: Image.Image,
+                 background_png: bytes | None = None,
+                 source_frame: Image.Image | None = None) -> tuple[float, int, float | None]:
+    """What of the caption reached the burned frame: ``(words share, words pixels measured, box match)``.
+
+    The overlay is laid over the 1080x1920 delivery frame at 0:0 (see
+    ``_video_graph``), a framed page's band included, so its pixels line up with
+    all the frames without any offset. Only the overlay's own bounding box is read.
+
+    ``reference_frame`` is the delivery frame with the caption's background drawn and
+    the words left out (the bare source frame when the style has no background);
+    ``background_png`` is that background on its own, or None; ``source_frame`` is the
+    bare delivery frame (required with a background).
+
+    What is directly behind a word pixel is the box colour when the box really differs
+    from the source there (more than CAPTION_BOX_DISTINCT levels), and the bare source
+    otherwise. A box that hardly differs from the picture is no evidence of anything, so an
+    unchanged source pixel can never count as ink: there the words are judged against the
+    bare source AND against the box, and a pixel scores the lower of the two (unchanged
+    footage scores nothing against the source, a box with no words scores nothing against
+    the box). Codec drift on an unchanged pixel is under CAPTION_INK_CONTRAST x
+    CAPTION_INK_MIN_SHARE levels (about 19), which is what keeps it below the gate.
+
+    For each overlay pixel with alpha at least CAPTION_INK_ALPHA_MIN the overlay should
+    turn what is behind it into the expected colour. A box or highlight pixel expects what
+    is already there, so it changes nothing and is skipped with every other pixel whose
+    expected change is under CAPTION_INK_CONTRAST. Each measured pixel scores how far the
+    burned frame moved from what is behind it toward the expected colour (1.0 is all the
+    way, 0.0 not at all, clipped to -0.5..1.5); the words share is the mean, and
+    ``(0.0, count, ...)`` when fewer than CAPTION_INK_MIN_PIXELS pixels can be measured.
+
+    The box match is the share of the box's own pixels (the background, away from the
+    words) that are shown in the burned frame: nearer the box colour than the bare source
+    is at that pixel. Box pixels within CAPTION_BOX_DISTINCT levels of the source are left
+    out of the tally altogether (a black box over a black clip burns the source colour and
+    is a real caption; nothing can be told either way); None when none are left.
+    """
+    field = _ink_field(overlay_png, qa_frame, reference_frame, background_png, source_frame)
+    if field is None:
+        return 0.0, 0, None
+    count = int(field.measured.sum())
+    if count < CAPTION_INK_MIN_PIXELS:
+        return 0.0, count, field.box_match
+    return float(field.progress[field.measured].mean()), count, field.box_match
+
+
+def _line_rows(line_centers: list[int], height: int = 1920) -> list[tuple[int, int]]:
+    """The frame rows each drawn line owns: every row goes to the nearest line centre.
+
+    ``line_centers`` are the plan's ``center_y_px`` of the lines that hold text (an
+    inverted caption's centres are already turned). Splitting halfway between
+    neighbouring centres gives each line its ascenders, descenders and outline without
+    any font metrics, and never drops a row.
+    """
+    centers = sorted(line_centers)
+    cuts = [0] + [(a + b + 1) // 2 for a, b in zip(centers, centers[1:])] + [height]
+    return list(zip(cuts, cuts[1:]))
+
+
+def _caption_line_ink(overlay_png: bytes, qa_frame: Image.Image, reference_frame: Image.Image,
+                      line_rows: list[tuple[int, int]], background_png: bytes | None = None,
+                      source_frame: Image.Image | None = None) -> list[tuple[float, int, int]]:
+    """``(share, measured pixels, word pixels)`` for each line's rows, in the order given.
+
+    The same measure as ``_caption_ink``, kept per line so one well-drawn line cannot
+    carry an invisible one through the mean (a two-line caption whose second line is
+    the colour of the picture behind it). Word pixels are the overlay's opaque pixels
+    that are not the box's own colour; a line with none (nothing drawn in its rows) is
+    reported as ``(0.0, 0, 0)`` and judged by nothing.
+    """
+    field = _ink_field(overlay_png, qa_frame, reference_frame, background_png, source_frame)
+    results = []
+    for top, bottom in line_rows:
+        if field is None:
+            results.append((0.0, 0, 0))
+            continue
+        rows = slice(max(0, top - field.top), max(0, bottom - field.top))
+        measured, words = field.measured[rows], field.words[rows]
+        count = int(measured.sum())
+        share = float(field.progress[rows][measured].mean()) if count else 0.0
+        results.append((share, count, int(words.sum())))
+    return results
+
+
+def _line_ink_needs(word_pixels: int) -> int:
+    """Measured pixels a line needs to count as told apart from its picture.
+
+    CAPTION_INK_MIN_PIXELS, or half the line's own word pixels for a line so small
+    (a lone short word at the fit floor) that it has fewer than twice that.
+    """
+    return min(CAPTION_INK_MIN_PIXELS, max(1, word_pixels // 2))
+
+
+def _ink_refusal(share: float, pixels: int, box_match: float | None,
+                 lines: list[tuple[float, int, int]] | None = None) -> tuple[str, str] | None:
+    """The refusal (code, message) the ink measures call for, or None when the caption is shown.
+
+    One decision for the render and the class-guard tests. A box that is not in the burned frame
+    is a renderer fault whatever the words look like, so it is judged first; then words that
+    cannot be told apart from what is behind them (a fact about this clip and look); then words
+    that should show but did not change the frame (a renderer fault).
+
+    ``lines`` (from ``_caption_line_ink``) applies the same two word rules to every drawn line
+    as well, so a caption passes only when each line on its own is shown: a line that should
+    show but did not change the frame is CAPTION_NOT_DRAWN (judged before contrast, since it is
+    a renderer fault), and a line with too few measurable pixels for its size is
+    CAPTION_LOW_CONTRAST even when the rest of the caption is plainly visible.
+    """
+    if box_match is not None and box_match < CAPTION_BOX_MIN_MATCH:
+        return "CAPTION_NOT_DRAWN", "the caption's box is not visible in the burned QA frame"
+    drawn = [line for line in lines or [] if line[2] > 0]
+    for index, (line_share, line_pixels, word_pixels) in enumerate(drawn):
+        if line_pixels >= _line_ink_needs(word_pixels) and line_share < CAPTION_INK_MIN_SHARE:
+            return "CAPTION_NOT_DRAWN", f"caption line {index + 1} is not visible in the burned QA frame"
+    if pixels < CAPTION_INK_MIN_PIXELS:
+        # A fact about this clip and this look (the words are the colour of what is behind them), not a renderer fault.
+        return "CAPTION_LOW_CONTRAST", "the caption cannot be told apart from the picture behind it"
+    if share < CAPTION_INK_MIN_SHARE:
+        # Contrast was expected but the burned frame did not change at the words: the renderer did not draw them.
+        return "CAPTION_NOT_DRAWN", "the caption is not visible in the burned QA frame"
+    for index, (_, line_pixels, word_pixels) in enumerate(drawn):
+        if line_pixels < _line_ink_needs(word_pixels):
+            return "CAPTION_LOW_CONTRAST", f"caption line {index + 1} cannot be told apart from the picture behind it"
+    return None
+
+
+def _check_caption_ink(output_directory: Path, qa_path: Path, qa_at_ms: int, overlay_bytes: bytes,
+                       background_png: bytes | None, line_centers: list[int], *, reference_source: Path,
+                       frame_height: int | None, normalize_pair_timing: bool, tools: RenderTools) -> dict:
+    """Refuse a burned final whose QA frame does not show the caption; return the decode.json facts.
+
+    The reference is the same frame of the clip the final was encoded from (the trimmed
+    clip for a duration repair), through the same delivery graph, with the caption's
+    background (box or highlight) but without its words: what the burned frame must
+    differ from at the words. With no background it is the bare delivery frame. With a
+    background the bare frame is cut too: it is what the burned frame looks like at the
+    box if the overlay never made it into the video. Every line is judged on its own as
+    well as the caption as a whole (``_ink_refusal``).
+    """
+    clip_probe = _probe(reference_source, tools)
+    seek = ["-nostdin", "-v", "error", "-xerror", "-protocol_whitelist", "file,pipe",
+            "-noautorotate", "-ss", f"{qa_at_ms / 1000:.3f}", "-f", "mov", "-i", str(reference_source)]
+    cut = ["-map", "[v]", "-frames:v", "1", "-q:v", "3", "-update", "1"]
+    reference_path = output_directory / "reference.jpg"
+    bare_path = output_directory / "bare.jpg" if background_png is not None else None
+    background_path = output_directory / "background.png"
+    try:
+        if background_png is None:
+            _run([tools.ffmpeg, *seek, "-filter_complex",
+                  _video_graph(clip_probe, frame_height, in_app=True, normalize_pair_timing=normalize_pair_timing),
+                  *cut, str(reference_path)], tools, output_file=reference_path, output_limit=MAX_QA_BYTES)
+        else:
+            background_path.write_bytes(background_png)
+            _run([tools.ffmpeg, *seek, "-protocol_whitelist", "file,pipe", "-i", str(background_path), "-filter_complex",
+                  _video_graph(clip_probe, frame_height, normalize_pair_timing=normalize_pair_timing),
+                  *cut, str(reference_path)], tools, output_file=reference_path, output_limit=MAX_QA_BYTES)
+            _run([tools.ffmpeg, *seek, "-filter_complex",
+                  _video_graph(clip_probe, frame_height, in_app=True, normalize_pair_timing=normalize_pair_timing),
+                  *cut, str(bare_path)], tools, output_file=bare_path, output_limit=MAX_QA_BYTES)
+        frames = [Image.open(path) for path in (qa_path, reference_path, bare_path) if path is not None]
+        try:
+            for image in frames:
+                image.load()
+                if image.size != (1080, 1920):
+                    raise PostRenderError("qa_frame_invalid", "source reference frame is not 1080x1920")
+            frame, reference = frames[0], frames[1]
+            bare = frames[2] if bare_path is not None else None
+            share, pixels, box_match = _caption_ink(overlay_bytes, frame, reference, background_png, bare)
+            lines = _caption_line_ink(overlay_bytes, frame, reference, _line_rows(line_centers), background_png, bare)
+        finally:
+            for image in frames:
+                image.close()
+    finally:
+        for path in (reference_path, bare_path, background_path):
+            if path is not None:
+                path.unlink(missing_ok=True)
+    refusal = _ink_refusal(share, pixels, box_match, lines)
+    if refusal is not None:
+        raise PostRenderError(*refusal)
+    return {
+        "caption_ink_share": round(share, 4), "caption_ink_pixels": pixels,
+        "caption_ink_lines": [{"share": round(line_share, 4), "pixels": line_pixels, "word_pixels": words}
+                              for line_share, line_pixels, words in lines],
+        **({"caption_box_match": round(box_match, 4)} if box_match is not None else {}),
+    }
+
+
 def source_visual_matches(request: PostRenderRequest, *,
                           allow_pool_supplied_without_provenance: bool = False) -> bool:
     """Return whether the source has the requested visual treatment.
@@ -507,8 +793,8 @@ def _render_post_single(source_path: Path, output_directory: Path, request: Post
             # framed page's band, or the whole canvas when full-screen (owner
             # rule, 2026-10-04). The gate checks the same area.
             band_rows = frame_band_rows(band_height) if band_height is not None else None
-            overlay = render_caption_overlay(caption_request, font_dir=font_dir or Path(__file__).parents[1] / "fonts",
-                                             fit_rows=band_rows)
+            overlay, background_png = render_caption_with_background(
+                caption_request, font_dir=font_dir or Path(__file__).parents[1] / "fonts", fit_rows=band_rows)
             overlay_bytes = base64.b64decode(overlay.overlay.base64, validate=True)
             if (not 0 < len(overlay_bytes) <= MAX_OVERLAY_BYTES
                     or sha256(overlay_bytes) != overlay.overlay.sha256.removeprefix("sha256:")
@@ -558,6 +844,14 @@ def _render_post_single(source_path: Path, output_directory: Path, request: Post
             frame.load()
             if frame.size != (1080, 1920) or frame.format != "JPEG":
                 raise PostRenderError("qa_frame_invalid", "final QA frame is not a decodable 1080x1920 JPEG")
+        ink = None
+        if not no_overlay:
+            # The delivered pixels must show the words, not only the receipt.
+            ink = _check_caption_ink(
+                output_directory, qa_path, qa_at_ms, overlay_bytes, background_png,
+                [record.center_y_px for record in overlay.plan.lines if record.text],
+                reference_source=(output_directory / "repair" / "trimmed.mp4") if repair is not None else source,
+                frame_height=band_height, normalize_pair_timing=paired_caption, tools=tools)
         final_sha, final_length = _file_hash(final_path, MAX_FINAL_BYTES)
         qa_sha, _ = _file_hash(qa_path, MAX_QA_BYTES)
         if final_sha == request.source_sha256:
@@ -587,6 +881,7 @@ def _render_post_single(source_path: Path, output_directory: Path, request: Post
             "source_probe": source_probe.__dict__, "final_probe": final_probe.__dict__,
             "decoded_video_frames": frames[-1], "qa_at_ms": qa_at_ms,
             "final_sha256": final_sha, "qa_frame_sha256": qa_sha,
+            **(ink or {}),
         }, sort_keys=True))
         source.unlink()
         return RenderedPost(final_path, qa_path, receipt_path, receipt_json, sha256(receipt_json),

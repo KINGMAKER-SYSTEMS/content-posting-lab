@@ -773,7 +773,7 @@ export interface AutoCreateEmailResponse {
 
 export interface UploadJob {
   job_id: string;
-  status: 'queued' | 'uploading' | 'completed' | 'failed' | 'cancelled';
+  status: 'queued' | 'uploading' | 'completed' | 'failed' | 'cancelled' | 'held';
   video_path: string;
   account_name: string;
   description: string;
@@ -795,6 +795,7 @@ export interface UploadJob {
 export interface UploadQueueStats {
   queued: number;
   uploading: number;
+  held: number;
   completed: number;
   failed: number;
   cancelled: number;

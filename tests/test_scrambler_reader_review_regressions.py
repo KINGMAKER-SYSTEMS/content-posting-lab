@@ -9,7 +9,7 @@ def test_lab_id_is_not_an_implicit_handle_alias(tmp_path):
     allowed, reason = index.window_allowed("labpage", SHA, 1200000, 1203000,
         page_handles=frozenset({"@different.page"}), now_epoch=NOW.timestamp())
     assert not allowed
-    assert reason.startswith("cross_page_90d")
+    assert reason.startswith("origin_already_shown")
 
 
 @pytest.mark.parametrize(("start", "end", "duration", "expected_start", "expected_end"), [

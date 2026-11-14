@@ -156,8 +156,56 @@
   The local quality-check request carries the same optional `picture_frame`;
   its typed placement and bounds use that picture band and retain full-canvas
   behavior when the field is absent.
+- `services/caption_render.py` applies one canonical rule, the same one the
+  Worker and the rail use (lane capvisible): NFC, strip Unicode format and
+  zero-width characters (category Cf: soft hyphen, U+200B-U+200F, U+2060, U+FEFF;
+  they draw nothing), then glyph-check what remains. Saved `line_breaks` lines
+  get the same treatment as the caption (plus whitespace collapsed to single
+  spaces), and the request check that they spell the caption compares both in
+  one fixed order, the same on the Worker, the rail and here: NFC, strip Cf,
+  collapse whitespace, lowercase. It refuses, and never drops, any remaining character the chosen font
+  has no glyph for (emoji, U+FE0F, U+2800, U+3164, kana and the rest: the font
+  would draw its missing-glyph box) with `CAPTION_GLYPH_MISSING`, and a caption
+  with no drawable letter or digit with `CAPTION_NO_TEXT`. Coverage is read from
+  the font's own cmap table (never from rendered pixels, which depend on Pillow's
+  layout engine), the same source as the Worker's drawable-codepoints table.
+  `tests/fixtures/caption_admission/` holds the Worker's shared vectors and that
+  table, sha-pinned.
 - `services/post_render.py` owns local prepared-final rendering and exact artifact
-  receipts; control-plane admission remains downstream authority.
+  receipts; control-plane admission remains downstream authority. After the QA
+  frame is cut it compares that frame with a reference: the same source frame at
+  the same time, through the same delivery graph, with the caption's box or
+  highlight drawn but its words left out (the bare source frame when the style
+  has no background; box looks also cut the bare source frame). What is behind the
+  words is the box colour where the box differs from the source by more than 24
+  levels and the bare source otherwise, so an unchanged source pixel can never
+  count as ink (near a box a pixel scores the lower of its judgement against the
+  source and against the box). Where the words would change what is behind them by
+  more than 48 levels, the burned frame must have moved at least 40% of the way
+  toward the words' colour; and a box or highlight must itself be shown: at least
+  60% of its counted pixels nearer the box colour than the bare source is (pixels
+  within 24 levels of the source are left out of that tally). A box alone never
+  proves the words, and white words on a dark box over a white clip are measured
+  against the box and pass. A box that is not in the burned frame is judged first
+  (`CAPTION_NOT_DRAWN`); then fewer than 64 word pixels that the words would
+  change (white text with no outline on a white clip, text in its own box's colour)
+  fails `CAPTION_LOW_CONTRAST`, a fact about that clip and look; then contrast
+  expected but no change at the words fails `CAPTION_NOT_DRAWN`, a renderer
+  fault. The same word rules also hold for every drawn line on its own (rows split
+  halfway between the plan's line centres), so one well-drawn line cannot carry an
+  invisible one through the mean: a line that should show but did not change the
+  frame fails `CAPTION_NOT_DRAWN`, and a line with fewer than 64 measurable pixels
+  (or half its own word pixels, for a tiny line) fails `CAPTION_LOW_CONTRAST`.
+  One function, `_ink_refusal`, makes the decision. The check runs only when an
+  overlay is burned (not for in-app or lyric delivery); a duration repair is
+  judged against its trimmed clip, and paired renders use the same fps step. The
+  measures are in `decode.json` (`caption_ink_share`, `caption_ink_pixels`,
+  `caption_ink_lines`, `caption_box_match`).
+  All four new codes are terminal (not in `RETRY_CODES`). `numpy` is a direct
+  requirement (floor only; imported at the top of `services/post_render.py`). The
+  calibration behind the thresholds, including the codec drift measured on real
+  footage, is in `docs/caption-ink-calibration.md` and
+  `tests/fixtures/caption_ink_calibration/`.
 - `services/post_render_jobs.py` and `routers/post_renders.py` own durable pre-lease
   render jobs, authenticated page-scoped status/artifacts and source acquisition.
 - `docs/post-render-setup.md` owns prepared-render storage, authentication and
@@ -392,6 +440,13 @@
   reserved indefinitely, including when the remote result is ambiguous.
   Malformed archived slideshow evidence refuses new direct or ordinary photo
   plans and capacity reads instead of treating a possibly used plan as available.
+- Managed photo pages (PenPal and Twin image-video formats) pause new photo
+  jobs after two consecutive terminal failures, ordered by terminal time.
+  Capabilities advertise zero with `photo_jobs_cooldown` and job creation
+  returns HTTP 409 `photo_jobs_cooldown`; idempotent replays still return the
+  original job. A later completed photo job or thirty minutes after the latest
+  failure reopens admission. The pause is inferred from saved job rows only:
+  no schema or stored breaker state, and it never cancels running jobs.
 
 - `services/abn_factory.py` kinetic-template parameters remain inert JSON inside
   the HTML script. Escape HTML script delimiters while preserving decoded values.
@@ -415,6 +470,71 @@
 - `routers/upload.py` passes the legacy cookie-login account to its static
   Python subprocess runner as an argv value. Request values must never be
   interpolated into executable source; the exact account argument is preserved.
+- TikTok upload and cookie-login admission refuse Railway before queue writes
+  or login subprocess creation:
+  a mounted JSON file alone cannot coordinate worker claims or reconcile an
+  ambiguous browser Post after a crash. Enabling hosted uploads requires a
+  durable original-attempt receipt/reconciliation and single-writer claim
+  contract, plus the provider runtime and volume-backed queue migration.
+  Local installs retain the checkout-relative queue and must have an importable
+  callable uploader; upload submission also requires a job store whose existing
+  records have the queue-readable shape and unique job IDs. New records must
+  pass the same shape check before persistence; invalid submissions return 400.
+  Corrupt records are preserved and
+  never replaced with an empty queue. Missing prerequisites or failed
+  writes return 503; the job store itself must be explicitly provisioned as
+  an empty `[]` file for first use. If it is missing later, admission, queue
+  processing, listing and polling fail closed until the original history is
+  restored or an operator rules out prior attempts before provisioning anew.
+  Admission never proves a TikTok publication. A queued,
+  uploading, held, failed, or unproved completed job for the same captured resolved video path or device/inode and cookie account
+  blocks another submission with 409 until the original attempt is reconciled;
+  admission captures that identity and a SHA-256 digest in a worker thread,
+  outside the queue write lock, with a 1 GiB and 30-second streaming budget.
+  Admission and staging accept only regular source files; nonblocking opens
+  and post-open file-type checks refuse FIFOs and devices before any read or
+  provider call, including if a path changes between stat and open.
+  It rechecks the resolved path, inode and change times under the lock before
+  committing the job; concurrent submissions may use the queue meanwhile.
+  The async submit route shields its worker from request cancellation and
+  schedules queue processing when the worker finishes persisting, including
+  after a client disconnect. A wake arriving while the single queue runner is
+  active stays pending until that runner atomically rechecks idle, so a job
+  cannot be stranded between its last empty read and exit. Startup does not
+  automatically post preexisting queued jobs; a normal submission owns wake.
+  Before a new
+  identity-bearing job calls the provider, copy the original inode's bytes to a
+  private temporary file, check its identity and change times around the copy,
+  and require the staged-byte SHA-256 to match the admission digest,
+  and pass only that staged path to the provider. A retargeted request symlink
+  cannot redirect the provider to different bytes; a replaced or changing
+  source fails closed. A newly admitted row with no file identity also refuses
+  the provider call, even if its source appears later. Staging requires enough
+  free space and is removed after the provider returns. Legacy rows without
+  any captured identity fields retain their original execution behavior and
+  require separate reconciliation. A stable local file lock serializes queue writes and the queued-to-uploading
+  claim/cancel decision across worker processes. An unresolved uploading or held
+  claim also bars another provider call for that account, even for a different
+  queued job or process. A quarantined row with a readable account but invalid
+  status likewise blocks that account until reconciled. A quarantined prior
+  attempt with no readable account blocks any new submission or queued claim
+  for its real video path across accounts; if its video path is also unreadable,
+  all new upload claims wait for operator reconciliation. Preserve the original
+  row and allow unrelated known video paths to proceed. A bare provider
+  `Completed` or error return becomes a durable held result with its original
+  claim and return retained; it cannot
+  establish posting success or authorize a repeat. A completed row permits
+  explicit resubmission only with a matching canonical TikTok URL/video ID;
+  cancelled history retains its existing resubmission behavior. A conflict
+  creates no job or provider action.
+  Repeated saved copies of one upload ID, even identical rows, are all held for reconciliation;
+  no copy may execute or authorize a retry, even if one claims a terminal state.
+  Listing and polling expose the held status without making it executable;
+  queue stats count held jobs separately, and listing, polling and stats
+  return 503 rather than an empty queue when the job store is unavailable.
+  The Uploads tab shows held records in their own section with the reconciliation
+  reason and no cancel/retry actions; held records suppress the empty-queue invitation.
+  Other valid jobs remain processable while those source rows are retained.
 - `POST /api/telegram/send` delivers only a media file whose real path is under
   `projects/<project>/<videos|clips|burned|recreate|slideshow-images>/` or the
   legacy `output`/`burn_output` dirs. The volume root beside those dirs holds
@@ -512,34 +632,33 @@
   Every sourced-video capability also returns the unique immutable source URLs
   used by those masters so Control Plane can exclude already-used cross-page
   windows before it creates paid work.
-  A source window is a time frame: master SHA, start and length. Every
-  whole-second start (plus one ending on the last frame) at every allowed
-  length is a distinct clip. Queued, running and completed jobs reserve their
-  exact time frames across recipe revisions and library versions of the same
-  master bytes, so a new recipe cuts new time frames instead of re-cutting
-  delivered ones; failed jobs release theirs. Each reserved time frame keeps
-  when it was cut (job completedAt, else createdAt; archived as `usedAt`). Re-cut variety (operator rule 2026-09-30): every plan goes
-  through `plan_source_cuts`, which prefers never-cut footage, then a start far
-  from the master's last few starts, then a length unlike its last few
-  lengths, then the least recently cut footage, then a per-job seed recorded
-  as `cutPlanSeed`; one plan never holds two overlapping cuts of one master.
-  The first cut on a master uses the page's Cut length, and a cut repeats the
-  master's last length only when nothing else fits. A window is never cut
-  twice (that would render bytes the Worker refuses as a repeat): once every
-  whole-second start x length is cut, starts move inside the second (half a
-  second, then a quarter and three quarters). Masters carry no verified frame
-  rate, so starts stay at least 250 ms apart and a window counts as cut when an
-  earlier cut of the same length starts under 250 ms away. When every such
-  window is cut, capability `maxQuantity` is 0 and job creation answers 409
-  `source_windows_exhausted`: the page needs new footage. The other named
-  409s are `source_master_too_short` and `source_windows_reserved_by_other_pages`
-  (other pages' reservations arrive only with a job, so capability does not
-  count them). A plan that cannot fit another never-cut window beside its
-  other cuts ends short. Recency and variety are per master, across every page
-  that cut it. `tests/test_source_cut_path_census.py`
-  fails any new path that builds source cuts without the planner. Job creation
-  remains exact and all-or-nothing; it never silently returns fewer clips than
-  requested.
+  Owner update 2026-11-12: preserve each page's existing masters and aesthetic,
+  and cut unused moments across their full length. Every candidate interval
+  must be disjoint from supplied queued/running/completed/archived cut history,
+  regardless of prior duration, offset, age or treatment. A different window
+  identifier never makes the same moment fresh. Failed unrendered jobs release
+  their reservations; completed cuts retain theirs across recipe/library changes
+  sharing those master bytes. Timestamps influence variety only, never eligibility.
+  `plan_source_cuts` preserves existing length/treatment variety among eligible
+  unused intervals. Finer start boundaries and transformations add no footage
+  runway. When no fitting unused interval remains, `maxQuantity` is 0 and job
+  creation answers 409 `source_windows_exhausted`; extend unused coverage from
+  the SAME original source instead of cycling back or changing the aesthetic.
+  Other named 409s remain `source_master_too_short` and
+  `source_windows_reserved_by_other_pages`. External exclusions still arrive
+  with jobs rather than capability polls. Planning remains all-or-nothing for
+  the requested quantity. The planner-path census still covers new cut builders.
+  Before legacy video media acquisition, recheck durable same-master intervals
+  under the existing jobs lock, excluding the current job's own reservation.
+  Refuse only the conflicting candidate (`source_fresh_cut_needed`), or a
+  same-master history entry whose bounds are unknown
+  (`source_freshness_history_unknown`); keep disjoint siblings and normal
+  terminal/no-artifact behavior. No new receipt/wire keys or page holds.
+  Scrambler canonical eligibility rejects any supplied prior origin-second show,
+  without a seven-day re-show allowance or history-age expiry. Complete historical
+  feeds, current origin mapping and canonical legacy alias reservations remain
+  required for NETWORK-WIDE proof; this local-master repair alone does not
+  certify those external inputs. Preserve the owner's 11-09 photo-sequence rule.
 - Job `constraints` accepts `sourceWindowExclusions` and `priority`
   (`"low_runway"`); unknown keys and values are ignored and kept on the job,
   never an error. The Lab starts every job at creation, so ordering by
@@ -820,6 +939,14 @@
   is ambiguous and must never be submitted again. The existing one-time PA
   interruption retry remains bounded across restarts. Processing deadlines do
   not reset; an already-completed prediction may still be read after downtime.
+- `POST /api/control-plane/v1/job-receipts/by-idempotency-key` is a side-effect-free
+  lost-ack read. It requires the app API key and Control Plane bearer, scoped
+  page/lane/idempotency headers, and the exact original job-create JSON body.
+  It returns only the job ID and status when the durable key and canonical
+  request hash match and the saved status is queued, running, completed, or
+  failed. Missing, foreign, archived, mismatched, or legacy-unhashed jobs
+  require reconciliation; malformed saved statuses fail as unavailable. The
+  lookup must not start or resume work.
 - Application shutdown pauses checkpointed generation instead of deleting its
   paid artifacts. Authenticated, exact-page status/idempotency reads resume the
   same active job after replacement. A kernel-held per-job lock prevents two
@@ -936,9 +1063,10 @@
   HDR encode cases need only ffmpeg/ffprobe; real-master cases additionally
   use the optional `HDR_FIXTURES_DIR` fixture directory.
 
-- Run `pytest -q tests/test_upload_login_account_data.py tests/test_upload_api.py tests/test_upload_cookies.py`
+- Run `pytest -q tests/test_upload_login_account_data.py tests/test_upload_api.py tests/test_upload_locking.py tests/test_upload_cookies.py`
   for literal account transport, injected expressions, login failure responses
-  and existing upload/cookie behavior without launching a browser.
+  and existing upload/cookie behavior without launching a browser. Spawned-process
+  races cover competing claims and cancellation before the winning claim is saved.
 
 - Run `pytest -q tests/test_visual_admission.py` for observed boat-frame OCR
   noise, short readable text, rotated single-frame text, complete coverage,
@@ -950,7 +1078,7 @@
 - Run `pytest -q tests/test_control_plane_capability_auth.py` for the capability Bearer boundary and unchanged authorized response.
 - Run `pytest -q tests/test_managed_photo_reservations.py tests/test_control_plane_image_video_execution.py tests/test_job_store_compaction.py`
   for authenticated photo holds, exact replay, concurrent legacy planning,
-  exhaustion, and archived reservations.
+  exhaustion, archived reservations, and the two-failure photo-job cooldown.
 - Run `pytest -q tests/test_pool_bootstrap_capabilities.py tests/test_pool_supplied_pages.py`
   for pool slideshow discovery, registered recipe priority, the real HTTP
   registry and job snapshot path, and unlisted page capacity.
@@ -979,7 +1107,9 @@
 - Run `pytest -q tests/test_post_render_jobs.py tests/test_source_treatment.py`
   for durable crash/retry/lock/auth/source-grant and applied-video provenance checks.
 - Run `pytest -q tests/test_post_render.py` for prepared rendering, actual MP4
-  decode, treatment-once preservation, byte-budget retry and bounded failures.
+  decode, treatment-once preservation, byte-budget retry and bounded failures,
+  and the burned-frame caption ink check (`CAPTION_NOT_DRAWN`, `CAPTION_LOW_CONTRAST`, change against
+  the box-only reference frame, recorded in `decode.json` as `caption_ink_share`).
 - Run `pytest -q tests/test_page_frame_geometry.py tests/test_page_frame_cut.py
   tests/test_page_frame_no_frame_identity.py tests/test_page_frame_gate.py
   tests/test_page_frame_render.py` for page-frame table parity, the band-aware
@@ -992,7 +1122,9 @@
   Run `pytest -q tests/test_pipeline_api.py` for the intake-password 503 path.
 
 - Run `pytest -q tests/test_caption_render_contract.py` for the typed caption
-  contract, `pytest -q tests/test_caption_glyph_admission.py` for exact
+  contract, including the glyph gate (`CAPTION_GLYPH_MISSING`,
+  `CAPTION_NO_TEXT`) and the shared Worker/rail text vectors,
+  `pytest -q tests/test_caption_glyph_admission.py` for exact
   font coverage and ordinary-caption byte parity, and
   `pytest -q tests/test_burn_and_captions_api.py` for Burn API regressions.
   Run `pytest -q tests/test_burn_quality_gate.py` for legacy and
