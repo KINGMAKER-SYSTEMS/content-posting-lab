@@ -432,6 +432,13 @@
   reserved indefinitely, including when the remote result is ambiguous.
   Malformed archived slideshow evidence refuses new direct or ordinary photo
   plans and capacity reads instead of treating a possibly used plan as available.
+- Managed photo pages (PenPal and Twin image-video formats) pause new photo
+  jobs after two consecutive terminal failures, ordered by terminal time.
+  Capabilities advertise zero with `photo_jobs_cooldown` and job creation
+  returns HTTP 409 `photo_jobs_cooldown`; idempotent replays still return the
+  original job. A later completed photo job or thirty minutes after the latest
+  failure reopens admission. The pause is inferred from saved job rows only:
+  no schema or stored breaker state, and it never cancels running jobs.
 
 - `services/abn_factory.py` kinetic-template parameters remain inert JSON inside
   the HTML script. Escape HTML script delimiters while preserving decoded values.
@@ -1063,7 +1070,7 @@
 - Run `pytest -q tests/test_control_plane_capability_auth.py` for the capability Bearer boundary and unchanged authorized response.
 - Run `pytest -q tests/test_managed_photo_reservations.py tests/test_control_plane_image_video_execution.py tests/test_job_store_compaction.py`
   for authenticated photo holds, exact replay, concurrent legacy planning,
-  exhaustion, and archived reservations.
+  exhaustion, archived reservations, and the two-failure photo-job cooldown.
 - Run `pytest -q tests/test_pool_bootstrap_capabilities.py tests/test_pool_supplied_pages.py`
   for pool slideshow discovery, registered recipe priority, the real HTTP
   registry and job snapshot path, and unlisted page capacity.
