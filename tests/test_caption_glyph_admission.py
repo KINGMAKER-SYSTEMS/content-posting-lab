@@ -112,7 +112,8 @@ def test_every_advertised_font_refuses_missing_emoji(font):
     ("?!", "CAPTION_NO_TEXT"),
     ("...", "CAPTION_NO_TEXT"),
     ("- - -", "CAPTION_NO_TEXT"),
-    ("\u200c", "CAPTION_GLYPH_MISSING"),
+    # A format character draws nothing and is stripped first (the Worker/rail rule), leaving no text.
+    ("\u200c", "CAPTION_NO_TEXT"),
 ])
 def test_caption_without_readable_text_is_refused(font_dir, caption, code):
     with pytest.raises(CaptionRenderError) as error:
