@@ -49,9 +49,9 @@ def request(source_sha="a" * 64, frame=_NO_FRAME, frame_fit=_NO_FRAME, caption_d
 
 @pytest.fixture(scope="module", params=[
     ("1080x1920", "1"), ("606x1080", "1"), ("606x1080", "0"), ("1080x1920", "0"),
-    ("704x1280", "1"),
+    ("704x1280", "1"), ("432x768", "1"), ("432x768", "0"),
 ], ids=["full", "provider-crop", "provider-crop-unspecified-sar", "full-unspecified-sar",
-        "wan-near-vertical"])
+        "wan-near-vertical", "hailuo-768p", "hailuo-768p-unspecified-sar"])
 def actual_source(tmp_path_factory, request):
     if not shutil.which("ffmpeg") or not shutil.which("ffprobe"):
         pytest.skip("ffmpeg/ffprobe are required for actual render proof")
@@ -217,6 +217,7 @@ def test_size_retry_changes_encoding_only_and_is_bounded_to_two_attempts(monkeyp
     (1920, 1080, "1:1", 0), (560, 1080, "1:1", 0),
     (606, 1080, "2:1", 0), (1080, 1920, "1:1", 90),
     (304, 540, "1:1", 0),
+    (430, 766, "1:1", 0),
 ])
 def test_wrong_source_geometry_fails_without_compositing(monkeypatch, tmp_path, geometry):
     source = tmp_path / "source"
@@ -639,6 +640,24 @@ def test_in_app_render_omits_overlay_and_matches_source_crop_within_tolerance(ac
         burned_delta = max(ImageStat.Stat(ImageChops.difference(source_region, burned_region)).mean)
     assert in_app_delta < 12
     assert burned_delta > 15
+
+
+def test_in_app_pair_matches_when_source_ends_on_half_a_delivery_frame(tmp_path):
+    if not shutil.which("ffmpeg") or not shutil.which("ffprobe"):
+        pytest.skip("ffmpeg/ffprobe are required for actual render proof")
+    source = tmp_path / "source.mp4"
+    # 226 frames at 24 fps end 282.5 frames into the 30 fps delivery clock.
+    subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-f", "lavfi", "-i",
+                    "color=c=navy:s=432x768:r=24", "-frames:v", "226", "-an",
+                    "-c:v", "libx264", "-preset", "ultrafast", "-threads", "2", str(source)],
+                   check=True, timeout=30, capture_output=True)
+    output = tmp_path / "dual"
+    render.render_post(source, output, request(render.sha256(source.read_bytes()),
+                       caption_delivery="in_app"), clock_ms=lambda: NOW)
+    clean = json.loads((output / "decode.json").read_text())
+    burned = json.loads((output / "burned" / "decode.json").read_text())
+    assert clean["decoded_video_frames"] == burned["decoded_video_frames"] == 283
+    assert clean["final_probe"]["duration_ms"] == burned["final_probe"]["duration_ms"] == 9433
 
 
 def test_dual_render_fallback_failure_removes_clean_artifact(actual_source, tmp_path, monkeypatch):

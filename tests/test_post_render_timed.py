@@ -69,6 +69,20 @@ def actual_source(tmp_path_factory):
     return path
 
 
+@pytest.fixture(scope="module")
+def actual_source_15s(tmp_path_factory):
+    if not shutil.which("ffmpeg") or not shutil.which("ffprobe"):
+        pytest.skip("ffmpeg/ffprobe are required for actual render proof")
+    root = tmp_path_factory.mktemp("timed-actual-15s")
+    path = root / "source.mp4"
+    subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-f", "lavfi", "-i",
+                    "color=c=0x808080:size=1080x1920:rate=30:duration=15", "-an",
+                    "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23",
+                    "-threads", "2", "-pix_fmt", "yuv420p", "-r", "30", str(path)],
+                   check=True, timeout=60, capture_output=True)
+    return path
+
+
 def _patch_resolver(monkeypatch, result):
     calls = []
     def resolver(set_id, *, page_id, account, sound_id, expected_sha256):
@@ -114,6 +128,27 @@ def test_valid_timed_render_is_silent_20s_with_phrase_evidence(actual_source, tm
     probe = subprocess.run(["ffprobe", "-v", "error", "-show_streams", "-of", "json",
                             str(result.final_path)], check=True, capture_output=True, text=True, timeout=30)
     assert all(stream.get("codec_type") != "audio" for stream in json.loads(probe.stdout)["streams"])
+
+
+def test_non_20s_duration_derives_final_duration_and_frames(actual_source_15s, tmp_path, monkeypatch):
+    # MED-1 guard: the renderer must derive -t / bitrate / decoded-frame count
+    # from timing["durationMs"], not a compiled-in 20s/600 shape.
+    duration_ms = 15_000
+    phrases = [
+        {"startMs": 0, "endMs": 3000, "text": "one"},
+        {"startMs": 4000, "endMs": 7000, "text": "two"},
+        {"startMs": 8000, "endMs": 11000, "text": "three"},
+        {"startMs": 12000, "endMs": 15000, "text": "four"},
+    ]
+    caption = "one two three four"
+    _patch_resolver(monkeypatch, {**TIMING, "durationMs": duration_ms,
+                                  "phrases": phrases, "canonicalCaption": caption})
+    out = tmp_path / "render"
+    req = request(source_sha=v1.sha256(actual_source_15s.read_bytes()), caption=caption)
+    result = rt.render_timed_post(actual_source_15s, out, req, clock_ms=lambda: NOW)
+    assert abs(result.final_probe.duration_ms - duration_ms) <= 100
+    assert result.decoded_video_frames == duration_ms * 30 // 1000
+    assert result.decoded_video_frames != 600
 
 
 
@@ -215,7 +250,7 @@ def test_unsupported_frame_treatment_is_refused_before_encoding(tmp_path, monkey
 
 def test_missing_actual_overlay_is_rejected_by_decoded_cue_evidence(actual_source, tmp_path, monkeypatch):
     _patch_resolver(monkeypatch, TIMING)
-    def omit_overlay(source, pngs, phrases, final, probe, tools):
+    def omit_overlay(source, pngs, phrases, final, probe, tools, target_duration_ms):
         shutil.copyfile(source, final)
         return probe
     monkeypatch.setattr(rt, "_encode_timed_final", omit_overlay)

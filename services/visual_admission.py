@@ -171,22 +171,21 @@ def _ocr(frame, width, height, deadline, frame_budget):
         scale = OCR_LONG_EDGE / max(width, height)
         ocr_width, ocr_height = round(width * scale), round(height * scale)
         frame = Image.frombytes("RGB", (width, height), frame).resize((ocr_width, ocr_height)).tobytes()
-    if ocr_engine.ENGINE == "ppocr":
-        # PP-OCRv6 rec is orientation-robust, so there is no 180° retry (the
-        # Syzygy door records orientations [0]). The decode loop above already
-        # enforces the whole-scan deadline between frames; still fail closed if
-        # this frame has exhausted it.
-        if deadline - time.monotonic() <= 0:
-            raise RuntimeError("scan_timeout")
-        return ocr_engine.recognize(frame, ocr_width, ocr_height)
     # The cap is a share of the whole scan budget, derived from the probed frame
     # count; it is never a fixed wall-clock allowance per frame.
     pixel_ratio = (width * height) / max(1, (OCR_LONG_EDGE or max(width, height)) ** 2)
     per_frame = (TIMEOUT * 4 * pixel_ratio) / max(1, frame_budget)
+    ocr_deadline = min(deadline, time.monotonic() + per_frame)
+    if ocr_engine.ENGINE == "ppocr":
+        # PP-OCRv6 rec is orientation-robust, so there is no 180° retry (the
+        # Syzygy door records orientations [0]). recognize() runs the model
+        # (and its one-time load/burn-in) inside a bounded worker, so a hung
+        # inference fails closed at both the per-frame and whole-scan deadlines
+        # and frees the single scanner gate.
+        return ocr_engine.recognize(frame, ocr_width, ocr_height, deadline=ocr_deadline)
     # PSM12 orientation detection can misread upside-down words at low confidence.
     # Retry the opposite orientation before calling the frame OCR-clean. Both
     # subprocesses share the original per-frame and whole-scan deadlines.
-    ocr_deadline = min(deadline, time.monotonic() + per_frame)
     for rotation in (0, 180):
         pixels = frame if rotation == 0 else Image.frombytes(
             "RGB", (ocr_width, ocr_height), frame

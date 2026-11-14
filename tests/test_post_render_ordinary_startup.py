@@ -44,6 +44,20 @@ def run_fresh_inapp(worker):
     return worker.status(fresh["id"])
 
 
+def history(request_treatment, slot_treatment):
+    """A submission JSON whose two treatment copies hash consistently."""
+    treatment_json = json.dumps(request_treatment, separators=(",", ":"))
+    slot = {"schema_version": 4, "slot_id": "slot:old", "page_id": "page",
+            "handle": "handle", "asset": {"sha256": "a" * 64},
+            "device_hint": {"device_serial": "serial"},
+            "caption": {"text": "old"}, "render_treatment": slot_treatment}
+    slot_json = json.dumps(slot, separators=(",", ":"))
+    return json.dumps({"request": {
+        "render_treatment_json": treatment_json,
+        "treatment_sha256": jobs.sha256(treatment_json.encode()),
+    }, "slot_payload_json": slot_json})
+
+
 @pytest.mark.parametrize("defect", ["extra", "missing", "hash", "binding", "schema"])
 @pytest.mark.parametrize("stale", [False, True])
 @pytest.mark.parametrize("mixed", [False, True])
@@ -109,10 +123,92 @@ def test_conflicting_treatment_copies_do_not_clear_inapp_marker(tmp_path):
     treatment = json.loads(saved["request"]["render_treatment_json"])
     del treatment["captionDelivery"]
     saved["request"]["render_treatment_json"] = json.dumps(treatment)
+    saved["request"]["treatment_sha256"] = jobs.sha256(json.dumps(treatment).encode())
     with worker._db() as db:
         db.execute("UPDATE jobs SET submission_json=? WHERE id=?", (json.dumps(saved), jid))
     worker = service(tmp_path, renderer=dual_render)
     assert run_fresh_inapp(worker)["error_code"] == "output_authority_uncertain"
+
+
+def test_ordinary_history_requires_equal_treatment_bodies():
+    assert jobs.PostRenderJobs._ordinary_history(history({"clipSpeed": 1}, {"clipSpeed": 2})) is False
+
+
+def test_ordinary_history_requires_burned_request_copy():
+    assert jobs.PostRenderJobs._ordinary_history(
+        history({"clipSpeed": 1, "captionDelivery": "in_app"}, {"clipSpeed": 1})) is False
+
+
+def test_ordinary_history_requires_burned_slot_copy():
+    assert jobs.PostRenderJobs._ordinary_history(
+        history({"clipSpeed": 1}, {"clipSpeed": 1, "captionDelivery": "in_app"})) is False
+
+
+def test_ordinary_history_accepts_coherent_burned_history():
+    assert jobs.PostRenderJobs._ordinary_history(history({"clipSpeed": 1}, {"clipSpeed": 1})) is True
+
+
+def test_mismatched_uncertainty_marker_is_deleted_once(tmp_path):
+    worker = service(tmp_path)
+    jid = worker.enqueue(submission(slot_id="slot:old"), "request:old")["id"]
+    assert worker.run_one()
+    with worker._db() as db:
+        row = worker._row(jid)
+        db.execute("INSERT INTO idempotency(key,job_id,request_hash) VALUES(?,?,?)",
+                   ("/output-uncertain/v1/not-the-job", jid, row["request_hash"]))
+        assert jobs.PostRenderJobs._needs_identity_backfill(db)
+    worker = service(tmp_path, renderer=dual_render)
+    with worker._db() as db:
+        assert not db.execute("SELECT 1 FROM idempotency WHERE key LIKE '/output-uncertain/%'").fetchone()
+        assert not jobs.PostRenderJobs._needs_identity_backfill(db)
+    # A second restart stays healed without another startup write pass.
+    worker = service(tmp_path, renderer=dual_render)
+    with worker._db() as db:
+        assert not db.execute("SELECT 1 FROM idempotency WHERE key LIKE '/output-uncertain/%'").fetchone()
+
+
+def test_mismatched_marker_on_queued_inapp_job_is_deleted(tmp_path):
+    """The early return in _needs_identity_backfill is the ONLY trigger here.
+
+    The job is a queued in-app job: it is not succeeded and has no receipt, so
+    neither of the later loops asks for a write pass. Without the early return
+    the hand-made marker would survive every restart.
+    Adopted from the Tides adversarial test T5 (tides-b2/test_tides_adv.py).
+    """
+    worker = service(tmp_path, renderer=dual_render)
+    jid = worker.enqueue(payload("slot:q", "q"), "request:q")["id"]  # queued, never run
+    assert worker.status(jid)["state"] == "queued"
+    with worker._db() as db:
+        row = worker._row(jid)
+        db.execute("INSERT INTO idempotency(key,job_id,request_hash) VALUES(?,?,?)",
+                   ("/output-uncertain/v1/hand-made", jid, row["request_hash"]))
+        assert jobs.PostRenderJobs._needs_identity_backfill(db)
+    worker = service(tmp_path, renderer=dual_render)
+    with worker._db() as db:
+        left = [r[0] for r in db.execute("SELECT key FROM idempotency WHERE key LIKE '/output-uncertain/%'")]
+        assert left == []
+        assert not jobs.PostRenderJobs._needs_identity_backfill(db)
+
+
+def test_canonical_marker_on_queued_inapp_job_is_untouched(tmp_path):
+    """A correctly named marker is never treated as mismatched or deleted.
+
+    Pins the `key != '/output-uncertain/v1/' || job_id` predicate in
+    _mismatched_uncertain_markers: without it every marker counts as mismatched
+    and is removed at boot. The job is queued, so it is not in the re-quarantine
+    set and nothing would put a deleted marker back.
+    """
+    worker = service(tmp_path, renderer=dual_render)
+    jid = worker.enqueue(payload("slot:q", "q"), "request:q")["id"]  # queued, never run
+    key = "/output-uncertain/v1/" + jid
+    with worker._db() as db:
+        row = worker._row(jid)
+        db.execute("INSERT INTO idempotency(key,job_id,request_hash) VALUES(?,?,?)",
+                   (key, jid, row["request_hash"]))
+        assert not jobs.PostRenderJobs._needs_identity_backfill(db)
+    worker = service(tmp_path, renderer=dual_render)
+    with worker._db() as db:
+        assert db.execute("SELECT 1 FROM idempotency WHERE key=?", (key,)).fetchone()
 
 
 @pytest.mark.parametrize("candidate", [False, True])

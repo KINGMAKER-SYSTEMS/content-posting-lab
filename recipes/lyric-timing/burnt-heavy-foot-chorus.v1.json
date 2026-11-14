@@ -47,6 +47,6 @@
   "timingProvenance": "Existing published HeavyFoot phrase anchors relative to alreadytrimmed20s fixture; audio/videoQA zero measuredlag. Officialphone playbackphase not yet verified.",
   "intervalSemantics": "startinclusive,endexclusive; outputframequantization at30fps; no word-perfect alignmentclaim",
   "sourceProgramId": "burnt-heavy-foot-tirana-v3",
-  "sourceProgramSha256": "78da457008391bd873dbc23c57fc7621f9707b8e139781e8d98cea4cdb9f65c9",
+  "sourceProgramSha256": "f2ef06869ea2723e83555be2a6a90558315c346196d2139f83870f7444423e78",
   "notionPageId": "3451465b-b829-80a8-b9d1-fb7e34b98ff5"
 }

@@ -10,14 +10,16 @@ boundary while Syzygy remains the renderer.
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+import copy
+from dataclasses import dataclass, replace as _dc_replace
+import functools
 import hashlib
 import json
 import math
 import os
 from pathlib import Path
 import re
-from typing import Any
+from typing import Any, Iterable
 from urllib.parse import parse_qsl, quote, unquote, urljoin, urlsplit
 
 import httpx
@@ -25,6 +27,7 @@ import httpx
 from services.content_engine_registry import MaterialProfile, resolve_material_profile
 from services.control_plane_image_video import IMAGE_VIDEO_FORMATS, image_video_plan_for_format
 from services.control_plane_generation import typed_recipe_spec
+from services.master_pages_contract import EXTERNAL_PAGE_SOURCES
 
 
 EXECUTOR_PATH = (
@@ -37,6 +40,8 @@ EXECUTOR_PATH = (
 # the scoped copy.
 UGC_FORMAT_SLUG = "ugc-slideshow"
 LYRIC_VIDEO_FORMAT_SLUG = "lyric-video"
+COFFEE_FORMAT_SLUG = "coffee-slideshow"
+COFFEE_EXECUTOR_PATH = Path(__file__).resolve().parents[1] / "recipes/executors/syzygy-coffee-slideshow.v1.json"
 CLEAN_VIDEO_FORMATS = frozenset({UGC_FORMAT_SLUG, LYRIC_VIDEO_FORMAT_SLUG})
 LYRIC_VIDEO_EXECUTOR_PATH = Path(__file__).resolve().parents[1] / "recipes/executors/syzygy-slideshow-lyric-video.v1.json"
 # Lab plan identity, not an applied Syzygy builtin template.
@@ -280,17 +285,244 @@ def curated_plan_signature(plan: dict[str, Any]) -> str:
             for window in plan["windows"]
         ],
     }
+    # Variant 0 (the approved montage) carries no variant field, so its
+    # identity, and every reservation already recorded against it, is byte for
+    # byte what it was before variants existed. Variants 1..N sign their number.
+    variant = plan.get("variant", 0)
+    if variant != 0:
+        identity["variant"] = variant
     canonical = json.dumps(identity, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode()).hexdigest()
 
 
-def _executor_contract(format_slug: str | None = None) -> tuple[dict[str, Any], str]:
+# Curated variants. A curated page's approved montage is variant 0. Variants
+# 1..N are deterministic re-chops of the same pinned sources:
+#   * every output window keeps its exact outputStart/outputEnd, and the plan
+#     keeps audioSectionEnd, muted, speed and cropMode, so cut rhythm and lyric
+#     sync never move;
+#   * the clip that fills each window rotates among the plan's own sources;
+#   * the source moment shifts inside that clip (same window length, never past
+#     the clip's pinned duration);
+#   * the horizontal crop focus nudges a little.
+# Only the plan's pinned sources are used. Extra library clips carry no pinned
+# SHA-256 or duration, so a window inside them could not be proven in bounds or
+# checked before the paid render. There is no mirror: the render wire has no
+# flip field. Every variant is re-validated by _parse_curated_video_plan and has
+# its own signature, reserved once like any other slideshow plan.
+CURATED_VARIANT_LIMIT = 200
+_VARIANT_FOCAL_OFFSETS = (0.0, -0.06, 0.06, -0.12, 0.12)
+_VARIANT_TAIL_MARGIN = 0.75  # Tides HIGH-1: stay clear of end-of-clip fades (ytal-v-0016 fades to black from 3.80 s)
+_VARIANT_STEP = 0.6180339887498949
+_VARIANT_WINDOW_STEP = 0.4142135623730951
+
+
+def _curated_variant_windows(
+    curated: dict[str, Any], variant: int,
+) -> list[dict[str, Any]] | None:
+    """Source-file windows for one variant, or None if a window cannot fit."""
+    if variant == 0:
+        return [dict(window) for window in curated["windows"]]
+    by_file = {source["file"]: source for source in curated["sources"]}
+    order: list[str] = []
+    first_focal: dict[str, float] = {}
+    for window in curated["windows"]:
+        if window["source"] not in first_focal:
+            order.append(window["source"])
+            first_focal[window["source"]] = window["focalX"]
+    # A cutter manifest may deliberately contain more new clips than one
+    # approved output has windows.  Include those sources in the re-chop
+    # rotation too, so variants spread through the whole closed manifest
+    # rather than silently orphaning its tail.
+    for source in curated["sources"]:
+        if source["file"] not in first_focal:
+            order.append(source["file"])
+            first_focal[source["file"]] = 0.5
+    turn = variant % len(order)
+    rotate = {name: order[(index + turn) % len(order)] for index, name in enumerate(order)}
+    windows = []
+    for index, window in enumerate(curated["windows"]):
+        source = rotate[window["source"]]
+        length = window["outputEnd"] - window["outputStart"]
+        span = by_file[source]["duration"] - length
+        if span < 0:
+            return None
+        span -= min(_VARIANT_TAIL_MARGIN, span)
+        fraction = math.modf(variant * _VARIANT_STEP + index * _VARIANT_WINDOW_STEP)[0]
+        start = math.floor(fraction * span * 1000) / 1000
+        base_focal = window["focalX"] if source == window["source"] else first_focal[source]
+        offset = _VARIANT_FOCAL_OFFSETS[(variant + index) % len(_VARIANT_FOCAL_OFFSETS)]
+        windows.append({
+            "source": source,
+            "sourceStart": start,
+            "sourceEnd": start + length,
+            "outputStart": window["outputStart"],
+            "outputEnd": window["outputEnd"],
+            "focalX": round(min(1.0, max(0.0, base_focal + offset)), 3),
+        })
+    return windows
+
+
+@functools.lru_cache(maxsize=16)
+def _curated_variant_table(curated_json: str) -> tuple[dict[str, Any] | None, ...]:
+    curated = json.loads(curated_json)
+    prefix = f'{curated["lane"]}/{curated["subject"]}/clips/'
+    approved_media_keys: list[str] = []
+    for window in curated["windows"]:
+        key = prefix + window["source"]
+        if key not in approved_media_keys:
+            approved_media_keys.append(key)
+    table: list[dict[str, Any] | None] = []
+    seen: set[str] = set()
+    for variant in range(CURATED_VARIANT_LIMIT):
+        windows = _curated_variant_windows(curated, variant)
+        plan = None
+        if windows is not None:
+            try:
+                checked = _parse_curated_video_plan({**curated, "windows": windows})
+            except ValueError:
+                checked = None
+            fingerprint = json.dumps(windows, sort_keys=True, separators=(",", ":"))
+            if checked is not None and fingerprint not in seen:
+                seen.add(fingerprint)
+                by_file = {source["file"]: source for source in checked["sources"]}
+                media_keys: list[str] = []
+                for window in checked["windows"]:
+                    key = prefix + window["source"]
+                    if key not in media_keys:
+                        media_keys.append(key)
+                # Keep an unchanged signature for a plan whose every variant
+                # already uses the approved source set in the approved order.
+                # A partial-source plan (Burnt's cutter manifest) instead
+                # carries exactly the keys its rotated windows use.
+                if set(media_keys) == set(approved_media_keys):
+                    media_keys = list(approved_media_keys)
+                plan = {
+                    "templateSlug": CURATED_VIDEO_PLAN_SLUG,
+                    "mediaKeys": media_keys,
+                    "muted": checked["muted"],
+                    "speed": checked["speed"],
+                    "cropMode": checked["cropMode"],
+                    "audioSectionEnd": checked["audioSectionEnd"],
+                    "windows": [
+                        {
+                            "key": prefix + window["source"],
+                            "sourceStart": window["sourceStart"],
+                            "sourceEnd": window["sourceEnd"],
+                            "outputStart": window["outputStart"],
+                            "outputEnd": window["outputEnd"],
+                            "focalX": window["focalX"],
+                            "sourceSha256": by_file[window["source"]]["sha256"],
+                            "sourceBytes": by_file[window["source"]]["bytes"],
+                            "sourceDuration": by_file[window["source"]]["duration"],
+                        }
+                        for window in checked["windows"]
+                    ],
+                }
+                if variant:
+                    plan["variant"] = variant
+                plan["signature"] = curated_plan_signature(plan)
+        table.append(plan)
+    return tuple(table)
+
+
+def curated_variant_plans(curated: dict[str, Any]) -> list[dict[str, Any] | None]:
+    """Every variant plan of one parsed curated plan, indexed by variant number.
+
+    A None entry is a variant that cannot fit its sources or would repeat an
+    earlier variant's windows; it is never offered. Plans carry their
+    signature but no library snapshot.
+    """
+    table = _curated_variant_table(json.dumps(curated, sort_keys=True))
+    return [copy.deepcopy(plan) for plan in table]
+
+
+def curated_variant_plan(curated: dict[str, Any], variant: int) -> dict[str, Any] | None:
+    """One variant plan (with signature), or None when it is not offered."""
+    if isinstance(variant, bool) or not isinstance(variant, int):
+        return None
+    table = _curated_variant_table(json.dumps(curated, sort_keys=True))
+    if not 0 <= variant < len(table) or table[variant] is None:
+        return None
+    return copy.deepcopy(table[variant])
+
+
+def curated_variant_number(plan: Any) -> int | None:
+    """The variant a stored/wire plan claims: 0 when absent, None if malformed.
+
+    The approved plan is only ever spelled without a variant field, so an
+    explicit ``"variant": 0`` is refused rather than given a second spelling.
+    """
+    if not isinstance(plan, dict):
+        return None
+    if "variant" not in plan:
+        return 0
+    variant = plan["variant"]
+    if (isinstance(variant, bool) or not isinstance(variant, int)
+            or not 1 <= variant < CURATED_VARIANT_LIMIT):
+        return None
+    return variant
+
+
+# Retired ugc-slideshow executor versions. A Lab job is pinned to the executor
+# version it was planned under. When that file changes, jobs planned before the
+# deploy but not yet run must still render the plan they were given, so the
+# previous version stays resolvable here: exact bytes (checked against the
+# version's own sha256 on every load), the format contract version and the
+# registry profile authority hash that job carried. Bounded and closed: any
+# version not listed fails closed exactly as before. Add the outgoing version
+# here, with its file under recipes/executors/retired/, whenever the ugc file
+# changes again; drop an entry once no job can still carry it.
+RETIRED_UGC_EXECUTORS: dict[str, dict[str, str]] = {
+    # main 291fc5c3 (before the F-LAB-CHOPPY-CUTS-BURNT-CULTURE-1104 longer cuts).
+    "sha256:1097ebe82d9a955c63c9f89c4e840c70eeacb0fab62f6c848891c96ca6dffc09": {
+        "path": "retired/syzygy-slideshow-ugc.1097ebe82d9a.v1.json",
+        "formatContractVersion": "sha256:8ce242f638e2b146e5ea080dc74afa5478408965ee01ac2e20abae2330640525",
+        "engineProfileHash": "sha256:ba6ab2d13cfc7832e8563bc6f16b7dba0bbaa8dc73ef4211b4fe3af5f5fb3c76",
+    },
+}
+
+
+def retired_ugc_recipe(recipe: "SlideshowRecipe", job: dict[str, Any]) -> "SlideshowRecipe | None":
+    """The recipe a job planned under a retired ugc executor must run under, else None.
+
+    Fails closed (None): only the ugc format, only a version listed above whose
+    file still hashes to that version, and only a job whose own pins
+    (format contract, profile hash when present) are exactly the retired
+    version's. The live recipe is otherwise left alone.
+    """
+    version = job.get("executorVersion")
+    entry = RETIRED_UGC_EXECUTORS.get(version) if isinstance(version, str) else None
+    if (entry is None or recipe.format_slug != UGC_FORMAT_SLUG
+            or version == recipe.executor_version
+            or job.get("formatContractVersion") != entry["formatContractVersion"]
+            or job.get("engineProfileHash", entry["engineProfileHash"]) != entry["engineProfileHash"]):
+        return None
+    try:
+        _executor_contract(UGC_FORMAT_SLUG, version)
+    except (OSError, ValueError, json.JSONDecodeError):
+        return None
+    return _dc_replace(
+        recipe, executor_version=version,
+        format_contract_version=entry["formatContractVersion"],
+        engine_profile_hash=entry["engineProfileHash"],
+    )
+
+
+def _executor_contract(
+    format_slug: str | None = None, executor_version: str | None = None,
+) -> tuple[dict[str, Any], str]:
     if format_slug in IMAGE_VIDEO_FORMATS:
         from services.control_plane_image_video import slideshow_executor_adapter
         return slideshow_executor_adapter(format_slug)
-    path = (LYRIC_VIDEO_EXECUTOR_PATH if format_slug == LYRIC_VIDEO_FORMAT_SLUG else
+    path = (COFFEE_EXECUTOR_PATH if format_slug == COFFEE_FORMAT_SLUG else
+            LYRIC_VIDEO_EXECUTOR_PATH if format_slug == LYRIC_VIDEO_FORMAT_SLUG else
             UGC_EXECUTOR_PATH if format_slug == UGC_FORMAT_SLUG else EXECUTOR_PATH)
+    retired = format_slug == UGC_FORMAT_SLUG and executor_version in RETIRED_UGC_EXECUTORS
+    if retired:
+        path = UGC_EXECUTOR_PATH.parent / RETIRED_UGC_EXECUTORS[executor_version]["path"]
     raw = path.read_bytes()
+    if retired and f"sha256:{hashlib.sha256(raw).hexdigest()}" != executor_version:
+        raise ValueError("retired Syzygy slideshow executor bytes do not match their version")
     value = json.loads(raw)
     if (
         not isinstance(value, dict)
@@ -395,7 +627,44 @@ def _subject(handle: Any) -> str | None:
     return value if value and len(value) <= 100 else None
 
 
-def ugc_page_treatment(page_id: str, format_slug: str = UGC_FORMAT_SLUG) -> dict[str, Any] | None:
+def library_subject(page_id: Any, handle: Any, source: Any) -> str | None:
+    """Keep ordinary addresses; reserve a disjoint exact-page external subject.
+
+    The ordinary slugger collapses every punctuation run to a single hyphen,
+    so it can never produce the external ``external--`` prefix. Hashing the
+    exact bounded page token also keeps case/punctuation-distinct ids separate.
+    Both ingredients and execution use this one derivation. External writers
+    must use the advertised catalog subject, never reconstruct it from handle.
+    """
+    if isinstance(source, str) and source in EXTERNAL_PAGE_SOURCES:
+        if (not isinstance(page_id, str)
+                or not re.fullmatch(r"[A-Za-z0-9._:-]{1,128}", page_id)
+                or not re.search(r"[A-Za-z0-9]", page_id)):
+            return None
+        return "external--" + hashlib.sha256(page_id.encode("utf-8")).hexdigest()
+    return _subject(handle)
+
+
+def library_subject_holder(
+    subject: str | None, candidates: Iterable[tuple[Any, Any, Any]],
+) -> str | None:
+    """The id of the first other roster page deriving ``subject``, or None.
+
+    ``candidates`` are ``(page_id, handle, source)`` triples for every roster
+    page except the one being checked. Registration refuses a page whose
+    subject another page already derives, so no two pages share one pool.
+    """
+    if subject is None:
+        return None
+    for other_id, handle, source in candidates:
+        if library_subject(other_id, handle, source) == subject:
+            return other_id
+    return None
+
+
+def ugc_page_treatment(
+    page_id: str, format_slug: str = UGC_FORMAT_SLUG, executor_version: str | None = None,
+) -> dict[str, Any] | None:
     """Return the closed server-owned treatment for one UGC page, if any.
 
     Returns either a legacy ``{"cutMode","cuts","audioSectionEnd"}`` policy or a
@@ -404,8 +673,14 @@ def ugc_page_treatment(page_id: str, format_slug: str = UGC_FORMAT_SLUG) -> dict
     """
     if not isinstance(page_id, str) or not page_id.strip():
         return None
+    # Eric's 2026-10-24 decision retires Burnt's timed-lyric program. Keep its
+    # legacy executor bytes readable for historical authority, but never let
+    # the lyric planner turn either old or replacement clips into a footage
+    # plan. Burnt now uses the static-caption UGC treatment only.
+    if page_id == "acct:burnt-mill-rd" and format_slug == LYRIC_VIDEO_FORMAT_SLUG:
+        return None
     try:
-        executor, _ = _executor_contract(format_slug)
+        executor, _ = _executor_contract(format_slug, executor_version)
     except (OSError, ValueError, json.JSONDecodeError):
         return None
     treatment = executor.get("pageTreatments", {}).get(page_id)
@@ -426,7 +701,9 @@ def slideshow_library_address(
     if profile.executor_version != f"sha256:{digest}":
         return None
     config = executor["formats"].get(profile.format_slug)
-    subject = _subject(master_pages.get("handle"))
+    subject = library_subject(
+        master_pages.get("pageId"), master_pages.get("handle"), master_pages.get("source"),
+    )
     if not isinstance(config, dict) or subject is None:
         return None
     if profile.format_slug in IMAGE_VIDEO_FORMATS:
@@ -477,6 +754,11 @@ def _runtime() -> tuple[str, str] | None:
     ):
         return None
     return raw.rstrip("/"), key
+
+
+def syzygy_runtime_available() -> bool:
+    """The Syzygy slideshow runtime is configured and usable."""
+    return _runtime() is not None
 
 
 def _headers(key: str, idempotency_key: str | None = None) -> dict[str, str]:
@@ -651,66 +933,44 @@ def resolve_slideshow_recipe(
     )
 
 
-def _build_curated_plan(
+def _curated_library_ready(
     recipe: SlideshowRecipe, library: SyzygyLibrary, curated: dict[str, Any],
-) -> dict[str, Any] | None:
-    """Build the single closed curated video plan for one page.
+) -> bool:
+    """The recipe, live library and plan agree, and every source holds its pinned bytes.
 
-    ``mediaKeys`` are the unique ordered source keys (one per source file) for
-    source observation and the Worker receipt; ``windows`` is the full ordered
-    ordered-window expansion that drives the render wire and is bound into the plan
-    signature. Every required key must exist in the live library, and extras are
-    never selected.
+    A rotated variant may use any approved source, so all pinned sources must
+    be staged before offering even variant zero. Extras are never selected.
     """
     if (recipe.lane != curated["lane"] or recipe.subject != curated["subject"]
             or library.lane != recipe.lane or library.subject != recipe.subject
             or library.library_id != recipe.library_id):
-        return None
-    by_file = {source["file"]: source for source in curated["sources"]}
-    key_by_file: dict[str, str] = {}
-    ordered_files: list[str] = []
-    for window in curated["windows"]:
-        filename = window["source"]
-        if filename not in key_by_file:
-            key_by_file[filename] = (
-                f"{recipe.lane}/{recipe.subject}/clips/{filename}"
-            )
-            ordered_files.append(filename)
+        return False
     library_bytes = {item.key: item.bytes for item in library.objects}
-    if any(library_bytes.get(key_by_file[filename]) != by_file[filename]["bytes"]
-           for filename in ordered_files):
+    return all(
+        library_bytes.get(f"{recipe.lane}/{recipe.subject}/clips/{source['file']}")
+        == source["bytes"]
+        for source in curated["sources"]
+    )
+
+
+def _build_curated_plan(
+    recipe: SlideshowRecipe, library: SyzygyLibrary, curated: dict[str, Any],
+    variant: int = 0,
+) -> dict[str, Any] | None:
+    """Build one closed curated video plan (variant 0 = the approved montage).
+
+    ``mediaKeys`` are the unique ordered source keys (one per source file) for
+    source observation and the Worker receipt; ``windows`` is the full ordered
+    window expansion that drives the render wire and is bound into the plan
+    signature. Every required key must exist in the live library with its
+    pinned bytes.
+    """
+    if not _curated_library_ready(recipe, library, curated):
         return None
-    media_keys = [key_by_file[filename] for filename in ordered_files]
-    windows = []
-    for window in curated["windows"]:
-        filename = window["source"]
-        source = by_file[filename]
-        windows.append({
-            "key": key_by_file[filename],
-            "sourceStart": window["sourceStart"],
-            "sourceEnd": window["sourceEnd"],
-            "outputStart": window["outputStart"],
-            "outputEnd": window["outputEnd"],
-            "focalX": window["focalX"],
-            "sourceSha256": source["sha256"],
-            "sourceBytes": source["bytes"],
-            "sourceDuration": source["duration"],
-        })
-    plan = {
-        "templateSlug": CURATED_VIDEO_PLAN_SLUG,
-        "mediaKeys": media_keys,
-        "muted": curated["muted"],
-        "speed": curated["speed"],
-        "cropMode": curated["cropMode"],
-        "audioSectionEnd": curated["audioSectionEnd"],
-        "windows": windows,
-    }
-    signature = curated_plan_signature(plan)
-    return {
-        **plan,
-        "signature": signature,
-        "librarySnapshotHash": library.snapshot_hash,
-    }
+    plan = curated_variant_plan(curated, variant)
+    if plan is None:
+        return None
+    return {**plan, "librarySnapshotHash": library.snapshot_hash}
 
 
 def requires_curated_video_plan(recipe: SlideshowRecipe) -> bool:
@@ -718,99 +978,97 @@ def requires_curated_video_plan(recipe: SlideshowRecipe) -> bool:
     if recipe.format_slug not in CLEAN_VIDEO_FORMATS:
         return False
     page_id = recipe.recipe_spec.get("masterPages", {}).get("pageId")
-    treatment = ugc_page_treatment(page_id, recipe.format_slug) if isinstance(page_id, str) else None
+    treatment = ugc_page_treatment(page_id, recipe.format_slug, recipe.executor_version) if isinstance(page_id, str) else None
     return isinstance(treatment, dict) and "curatedVideoPlan" in treatment
 
 
+def _recipe_curated_plan(recipe: SlideshowRecipe) -> dict[str, Any] | None:
+    page_id = recipe.recipe_spec.get("masterPages", {}).get("pageId")
+    treatment = ugc_page_treatment(page_id, recipe.format_slug, recipe.executor_version) if isinstance(page_id, str) else None
+    curated = treatment.get("curatedVideoPlan") if isinstance(treatment, dict) else None
+    return curated if isinstance(curated, dict) else None
+
+
 def curated_plan_for_recipe(
-    recipe: SlideshowRecipe, library: SyzygyLibrary,
+    recipe: SlideshowRecipe, library: SyzygyLibrary, variant: int = 0,
 ) -> dict[str, Any] | None:
-    """The canonical curated video plan for a recipe, or None if not curated.
+    """One curated video plan variant for a recipe, or None if not curated/offered.
 
     Re-derived from the pinned executor config for the recipe's page; the recipe
     executor_version already binds the executor bytes, so this is stable across
     a job's lifecycle unless the job itself was tampered with.
     """
-    page_id = recipe.recipe_spec.get("masterPages", {}).get("pageId")
-    treatment = ugc_page_treatment(page_id, recipe.format_slug) if isinstance(page_id, str) else None
-    curated = treatment.get("curatedVideoPlan") if isinstance(treatment, dict) else None
-    if not isinstance(curated, dict):
+    curated = _recipe_curated_plan(recipe)
+    if curated is None:
         return None
-    return _build_curated_plan(recipe, library, curated)
+    return _build_curated_plan(recipe, library, curated, variant)
 
 
-def plan_slideshows(
-    recipe: SlideshowRecipe,
-    library: SyzygyLibrary,
-    count: int,
-    unavailable_signatures: set[str],
-    run_id: str,
-) -> list[dict[str, Any]]:
-    if (
-        library.library_id != recipe.library_id
-        or len(library.objects) < recipe.minimum_library_items
-        or not isinstance(count, int)
-        or isinstance(count, bool)
-        or count <= 0
-        or not isinstance(unavailable_signatures, set)
-        or any(not SHA256.fullmatch(item) for item in unavailable_signatures)
-    ):
+def curated_plans_for_recipe(
+    recipe: SlideshowRecipe, library: SyzygyLibrary,
+) -> list[dict[str, Any]] | None:
+    """Every offered curated variant for a recipe in variant order.
+
+    None when the page is not curated; [] when its live library does not hold
+    the pinned sources.
+    """
+    curated = _recipe_curated_plan(recipe)
+    if curated is None:
+        return None
+    if not _curated_library_ready(recipe, library, curated):
         return []
-    if recipe.format_slug in IMAGE_VIDEO_FORMATS:
-        from services.control_plane_image_video import recipe_image_video_plan, PHOTO_TREATMENT_COUNT
-        original = recipe_image_video_plan(recipe, library)
-        if original is None:
-            return []
-        planned = []
-        seen = set(unavailable_signatures)
-        if original["signature"] not in unavailable_signatures:
-            planned.append(original)
-            seen.add(original["signature"])
-        start = int(hashlib.sha256(run_id.encode()).hexdigest()[:16], 16) % PHOTO_TREATMENT_COUNT
-        # At most the number of reservations plus requested outputs can collide.
-        # Job creation runs this under the existing jobs-store transaction lock.
-        for offset in range(min(PHOTO_TREATMENT_COUNT, len(seen) + count)):
-            if len(planned) >= count:
-                break
-            plan = recipe_image_video_plan(recipe, library, 1 + (start + offset) % PHOTO_TREATMENT_COUNT)
-            if plan is not None and plan["signature"] not in seen:
-                planned.append(plan)
-                seen.add(plan["signature"])
-        return planned
-    # The UGC format is a curated page library. A page with a curatedVideoPlan
-    # renders that one ordered montage exactly once (never permuted); a generic
-    # page renders the first mediaCount photo objects in ordinal order. No
-    # offset/stride permutation is legal for either, so there is never
-    # "variety" to synthesize — an exhausted ordered set stays exhausted.
-    if recipe.format_slug in CLEAN_VIDEO_FORMATS:
-        has_curated_plan = requires_curated_video_plan(recipe)
-        canonical = curated_plan_for_recipe(recipe, library)
-        if has_curated_plan and canonical is None:
-            return []
-        if canonical is not None:
-            # The curated page's one ordered montage plan; exhausted once
-            # reserved, never permuted. Extras in the library are ignored.
-            if canonical["signature"] in unavailable_signatures:
-                return []
-            return [canonical]
-        template = recipe.templates[0]
-        objects_in_order = list(library.objects)
-        if template.media_count > len(objects_in_order):
-            return []
-        selected = objects_in_order[: template.media_count]
-        identity = {
-            "templateSlug": template.slug,
-            "mediaKeys": [item.key for item in selected],
-        }
-        canonical = json.dumps(identity, sort_keys=True, separators=(",", ":"))
-        signature = hashlib.sha256(canonical.encode()).hexdigest()
-        if signature in unavailable_signatures:
-            return []
-        return [{
-            **identity,
-            "signature": signature,
-            "librarySnapshotHash": library.snapshot_hash,
-        }]
+    return [
+        {**plan, "librarySnapshotHash": library.snapshot_hash}
+        for plan in curated_variant_plans(curated)
+        if plan is not None
+    ]
+
+
+def _generic_clean_video_chunk(
+    template: SyzygyTemplate, objects_in_order: list[SyzygyObject], chunk: int,
+) -> dict[str, Any] | None:
+    """One media chunk for the generic clean-video path, or None.
+
+    Chunk 0 is ``objects[:mediaCount]`` exactly as before (same signature);
+    later chunks are the next ``objects[k*n:(k+1)*n]``. The signature is
+    content-only (media keys + template slug), so adding or removing a photo
+    never re-offers a posted chunk (#266's HIGH-1 lesson: never bind an index).
+    """
+    media_count = template.media_count
+    start = chunk * media_count
+    end = start + media_count
+    if end > len(objects_in_order):
+        return None
+    selected = objects_in_order[start:end]
+    identity = {
+        "templateSlug": template.slug,
+        "mediaKeys": [item.key for item in selected],
+    }
+    canonical = json.dumps(identity, sort_keys=True, separators=(",", ":"))
+    return {
+        **identity,
+        "signature": hashlib.sha256(canonical.encode()).hexdigest(),
+    }
+
+
+def _generic_clean_video_objects(
+    recipe: SlideshowRecipe, library: SyzygyLibrary,
+) -> list[SyzygyObject]:
+    # Curated UGC plans select their pinned clips before reaching this path.
+    if recipe.format_slug == UGC_FORMAT_SLUG:
+        return [item for item in library.objects if item.media_type == "photo"]
+    return list(library.objects)
+
+
+def _permutation_plan_candidates(
+    recipe: SlideshowRecipe, library: SyzygyLibrary, unavailable_signatures: set[str],
+) -> list[dict[str, Any]]:
+    """Every unreserved stride/start permutation plan, in deterministic order.
+
+    Extracted from plan_slideshows so explain_empty_slideshow_plan can re-derive
+    exhaustion without duplicating the signature logic. The produced plan shapes
+    and signatures are byte-identical to the inline version that preceded it.
+    """
     objects = list(library.objects)
     candidates: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -839,6 +1097,81 @@ def plan_slideshows(
                     "signature": signature,
                     "librarySnapshotHash": library.snapshot_hash,
                 })
+    return candidates
+
+
+def plan_slideshows(
+    recipe: SlideshowRecipe,
+    library: SyzygyLibrary,
+    count: int,
+    unavailable_signatures: set[str],
+    run_id: str,
+    reserved_media_keys: set[str] | None = None,
+    opaque_reserved_media: bool = False,
+) -> list[dict[str, Any]]:
+    if (
+        library.library_id != recipe.library_id
+        or len(library.objects) < recipe.minimum_library_items
+        or not isinstance(count, int)
+        or isinstance(count, bool)
+        or count <= 0
+        or not isinstance(unavailable_signatures, set)
+        or any(not SHA256.fullmatch(item) for item in unavailable_signatures)
+    ):
+        return []
+    if recipe.format_slug in IMAGE_VIDEO_FORMATS:
+        from services.control_plane_image_video import recipe_image_video_plans
+        plans = recipe_image_video_plans(recipe, library)
+        if not plans:
+            return []
+        # Variant 0 is the approved photo hold; each later variant re-draws the
+        # page's own library photos and is reserved once through its own
+        # signature. Extras in the library are ignored.
+        return [
+            plan for plan in plans
+            if plan["signature"] not in unavailable_signatures
+        ][:count]
+    # The UGC format is a curated page library. A page with a curatedVideoPlan
+    # renders its approved montage (variant 0) and then its deterministic
+    # re-chop variants 1..N, each exactly once, in variant order; a generic
+    # page renders the first mediaCount photo objects in ordinal order (no
+    # offset/stride permutation) as chunk 0, then the next unreserved chunk
+    # objects[k*n:(k+1)*n] when chunk 0 is reserved, so fresh media keeps
+    # producing new plans instead of an exhausted generic set staying exhausted.
+    if recipe.format_slug in CLEAN_VIDEO_FORMATS:
+        has_curated_plan = requires_curated_video_plan(recipe)
+        variants = curated_plans_for_recipe(recipe, library)
+        if has_curated_plan and not variants:
+            return []
+        if variants:
+            # Each variant is reserved once through its own signature.
+            # Extras in the library are ignored.
+            return [
+                plan for plan in variants
+                if plan["signature"] not in unavailable_signatures
+            ][:count]
+        template = recipe.templates[0]
+        # Signature-only legacy archives cannot reveal which media was posted.
+        # Fail closed until an operator reconciles those reservations.
+        if opaque_reserved_media:
+            return []
+        reserved_media_keys = reserved_media_keys or set()
+        objects_in_order = _generic_clean_video_objects(recipe, library)
+        # Keep the original first chunk/signature when unreserved; remove
+        # reserved keys before taking the next complete, disjoint media set.
+        available = [item for item in objects_in_order if item.key not in reserved_media_keys]
+        for chunk in range(len(available) + 1):
+            plan = _generic_clean_video_chunk(template, available, chunk)
+            if plan is None:
+                break
+            if plan["signature"] in unavailable_signatures:
+                continue
+            return [{
+                **plan,
+                "librarySnapshotHash": library.snapshot_hash,
+            }]
+        return []
+    candidates = _permutation_plan_candidates(recipe, library, unavailable_signatures)
     if not candidates:
         return []
     seed = int(hashlib.sha256(run_id.encode()).hexdigest()[:16], 16)
@@ -882,6 +1215,23 @@ def ugc_encode_args(preset: str) -> list[str]:
 def syzygy_idempotency_key(*parts: str) -> str:
     canonical = "\0".join(parts)
     return "cpl-syzygy-" + hashlib.sha256(canonical.encode()).hexdigest()
+
+
+def _render_idempotency_key(
+    page_id: str, recipe_version: str, signature: str, lab_job_id: str | None,
+) -> str:
+    """One Syzygy render per Lab job and plan.
+
+    Syzygy replays a stored Idempotency-Key, including a FAILED render, so a
+    key built only from page, recipe and plan pinned every later Lab job for
+    that plan to the first failure (burnt.mill.rd, 10-31). Retries inside one
+    Lab job still share a key; a new Lab job gets a fresh render.
+    """
+    if lab_job_id is None:
+        return syzygy_idempotency_key(page_id, recipe_version, signature, "render-v1")
+    if not isinstance(lab_job_id, str) or not lab_job_id:
+        raise SyzygyError("Syzygy render needs a non-empty Lab job id")
+    return syzygy_idempotency_key(page_id, recipe_version, signature, "render-v2", lab_job_id)
 
 
 async def _request_json(
@@ -936,12 +1286,13 @@ async def syzygy_revision() -> str:
 
 async def submit_syzygy_render(
     plan: dict[str, Any], *, page_id: str, recipe_version: str,
-    format_slug: str | None = None,
+    format_slug: str | None = None, lab_job_id: str | None = None,
 ) -> tuple[str, str]:
     if format_slug in IMAGE_VIDEO_FORMATS:
         from services.control_plane_image_video import submit_image_video_render
         return await submit_image_video_render(plan.get("photoPlan"), page_id=page_id,
-            recipe_version=recipe_version, request_json=_request_json, format_slug=format_slug)
+            recipe_version=recipe_version, request_json=_request_json, format_slug=format_slug,
+            lab_job_id=lab_job_id)
     if format_slug == LYRIC_VIDEO_FORMAT_SLUG:
         from services.control_plane_lyric_video import validate_lyric_wire_plan
         validate_lyric_wire_plan(plan, page_id)
@@ -979,9 +1330,7 @@ async def submit_syzygy_render(
             "uses_original_audio": False,
             "media": media,
         }
-        key = syzygy_idempotency_key(
-            page_id, recipe_version, plan["signature"], "render-v1",
-        )
+        key = _render_idempotency_key(page_id, recipe_version, plan["signature"], lab_job_id)
         value = await _request_json(
             "POST", "/api/v1/render", body={"spec": spec},
             idempotency_key=key, timeout=90.0,
@@ -1007,7 +1356,7 @@ async def submit_syzygy_render(
         "media": media,
         "audio": {"section_start": 0, "section_end": 15},
     }
-    if format_slug == UGC_FORMAT_SLUG:
+    if format_slug in {UGC_FORMAT_SLUG, COFFEE_FORMAT_SLUG}:
         # The neutral UGC background must carry no baked copy or source audio.
         # Syzygy's builtin template style fills absent keys, so these explicit
         # blank values suppress hook/lyric/caption text and original audio.
@@ -1025,9 +1374,7 @@ async def submit_syzygy_render(
         if policy is not None:
             spec["cuts"] = {"mode": policy["cutMode"], "cuts": policy["cuts"]}
             spec["audio"]["section_end"] = policy["audioSectionEnd"]
-    key = syzygy_idempotency_key(
-        page_id, recipe_version, plan["signature"], "render-v1",
-    )
+    key = _render_idempotency_key(page_id, recipe_version, plan["signature"], lab_job_id)
     value = await _request_json(
         "POST", "/api/v1/render", body={"spec": spec},
         idempotency_key=key, timeout=90.0,
@@ -1046,6 +1393,8 @@ async def poll_syzygy_render(job_id: str) -> str:
             "GET", f"/api/v1/render/{quote(job_id)}", timeout=30.0,
         )
         status = value.get("status")
+        if not isinstance(status, str) or not status.strip():
+            raise SyzygyError("Syzygy response is invalid")
         if status == "done":
             result = value.get("result")
             play_url = result.get("play_url") if isinstance(result, dict) else None

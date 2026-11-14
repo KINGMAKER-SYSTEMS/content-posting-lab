@@ -73,7 +73,7 @@ def _write_fake_render(output, request, *, clock_ms, final, qa=b"qa frame"):
         "decoded_video_frames": 30, "final_probe": {"duration_ms": 1000}}))
 
 
-def fake_render(source, output, request, *, clock_ms):
+def fake_render(source, output, request, *, clock_ms, **_kwargs):
     _write_fake_render(
         output,
         request,
@@ -572,6 +572,77 @@ def test_missing_provenance_is_a_durable_local_regeneration_state(tmp_path):
     worker.fetcher = lambda _request, path: path.write_bytes(b"source")
     assert worker.run_one()
     assert worker.status(healthy["id"])["state"] == "succeeded"
+
+
+def vault_pool_submission(*, page_id, account, slot_id):
+    """The Worker pool contract: finished clip, no producer receipt.
+
+    The production render_962f/render_967c/render_1926 payloads are not kept
+    in this repository.  This preserves their relevant Worker shape: a
+    vault_pool finished clip with null source_provenance and no visual receipt.
+    """
+    payload = submission(slot_id=slot_id, source=b"vault-pool-finished-clip").model_dump(by_alias=True)
+    payload["source_provenance"] = None
+    payload["request"]["page_id"] = page_id
+    payload["request"]["account"] = account
+    payload["request"]["source_visual_treatment_json"] = None
+    payload["request"]["source_visual_treatment_sha256"] = None
+    slot = json.loads(payload["slot_payload_json"])
+    slot.update(page_id=page_id, handle=account)
+    payload["slot_payload_json"] = json.dumps(slot, separators=(",", ":"))
+    payload["request"]["slot_payload_sha256"] = sha256(payload["slot_payload_json"].encode())
+    return jobs.RenderJobSubmission.model_validate(payload)
+
+
+@pytest.mark.parametrize(("failed_job_id", "page_id", "account"), [
+    ("render_962f", "acct:living-our-lives6", "living.our.lives6"),
+    ("render_967c", "acct:chemically-lit", "chemically.lit"),
+    ("render_1926", "acct:sunsetsoul46", "golden.szn4"),
+])
+def test_vault_pool_finished_clip_without_receipt_queues_and_renders(tmp_path, failed_job_id, page_id, account):
+    rendered = []
+    def renderer(source, output, request, **kwargs):
+        rendered.append((source.read_bytes(), request.page_id, kwargs))
+        fake_render(source, output, request, **kwargs)
+
+    worker = service(tmp_path, renderer=renderer,
+                     fetcher=lambda _request, path: path.write_bytes(b"vault-pool-finished-clip"))
+    accepted = worker.enqueue(
+        vault_pool_submission(page_id=page_id, account=account, slot_id="slot:" + failed_job_id),
+        "vault-pool-" + failed_job_id,
+    )
+    assert accepted["state"] == "queued"
+    assert accepted["error_code"] is None
+    assert worker.run_one()
+    assert worker.status(accepted["id"])["state"] == "succeeded"
+    assert rendered == [(b"vault-pool-finished-clip", page_id,
+                         {"clock_ms": worker.clock_ms, "allow_pool_supplied_without_provenance": True})]
+
+
+def test_non_pool_or_lookalike_without_provenance_stays_regeneration_needed(tmp_path):
+    worker = service(tmp_path, fetcher=lambda *_: pytest.fail("must not fetch without provenance"))
+    for page_id in ("page-a", "acct:chemically-lit2"):
+        request = vault_pool_submission(page_id=page_id, account="ordinary.account", slot_id="slot:" + page_id)
+        accepted = worker.enqueue(request, "ordinary-" + sha256(page_id.encode())[:16])
+        assert accepted["state"] == "regeneration_needed"
+        assert accepted["error_code"] == "source_treatment_provenance_missing"
+    assert not worker.run_one()
+
+
+def test_pool_page_with_mismatched_provenance_stays_regeneration_needed(tmp_path):
+    request = vault_pool_submission(page_id="acct:chemically-lit", account="chemically.lit", slot_id="slot:pool-mismatch")
+    payload = request.model_dump(by_alias=True)
+    different = json.dumps({"filters": {}, "clipSpeed": 2, "clipCrop": {"zoom": 1, "focusX": 0.5, "focusY": 0.5}}, separators=(",", ":"))
+    payload["request"]["source_visual_treatment_json"] = different
+    payload["request"]["source_visual_treatment_sha256"] = sha256(different.encode())
+    payload["source_provenance"] = {"schema": "posting-source-treatment/v1",
+                                     "source_sha256": payload["request"]["source_sha256"],
+                                     "source_visual_treatment_sha256": sha256(different.encode()),
+                                     "provenance_id": "generation:mismatched-pool-source"}
+    worker = service(tmp_path)
+    accepted = worker.enqueue(jobs.RenderJobSubmission.model_validate(payload), "pool-mismatched-provenance")
+    assert accepted["state"] == "regeneration_needed"
+    assert accepted["error_code"] == "source_treatment_mismatch"
 
 
 def test_explicit_unlock_releases_ownership_despite_inherited_file_description(tmp_path):

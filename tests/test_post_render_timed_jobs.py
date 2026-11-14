@@ -5,7 +5,7 @@ from pydantic import ValidationError
 from services import post_render_jobs as jobs
 from services.post_render import sha256
 from services.post_render_timed import TimedPostRenderRequest, _resolve_timing
-from services.lyric_timing import lyric_timing_catalog, resolve_lyric_timing
+from services.lyric_timing import MAX_TIMING_PHRASES, lyric_timing_catalog, resolve_lyric_timing
 from tests.test_post_render_timed import request as fixture_request, NOW
 
 
@@ -52,10 +52,11 @@ def test_timed_slot_cannot_replace_canonical_caption():
 
 def test_timed_workspace_fits_unchanged_static_worker_reservation():
     # Source download remains globally bounded; the timed verified copy has a
-    # stricter22MiB cap. Seven PNGs+base64 receipts and four cue frames are
-    # covered by the existing v1 worker floor, so legacy admission is unchanged.
+    # stricter 22MiB cap. Up to MAX_TIMING_PHRASES PNGs+base64 receipts and four
+    # cue frames are covered by the existing v1 worker floor, so legacy
+    # admission is unchanged.
     timed_peak=(jobs.MAX_SOURCE_BYTES + jobs.MAX_FINAL_BYTES
-                + 7*(jobs.MAX_OVERLAY_BYTES+jobs.MAX_CAPTION_RENDER_JSON_BYTES)
+                + MAX_TIMING_PHRASES*(jobs.MAX_OVERLAY_BYTES+jobs.MAX_CAPTION_RENDER_JSON_BYTES)
                 + 4*jobs.MAX_OVERLAY_BYTES + jobs.MAX_FINAL_BYTES+1
                 + jobs.MAX_QA_BYTES+1 + jobs.MAX_RENDER_METADATA_BYTES)
     assert timed_peak <= jobs.PEAK_RENDER_WORKSPACE_BYTES

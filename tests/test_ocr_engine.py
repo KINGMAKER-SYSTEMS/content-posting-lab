@@ -10,6 +10,7 @@ import os
 import subprocess
 import sys
 import textwrap
+import time
 from pathlib import Path
 
 import pytest
@@ -89,6 +90,26 @@ def test_recognize_caps_at_500_chars(monkeypatch):
         _FakeResult(boxes=[[None]], txts=("W" * 900,), scores=(0.99,)),
     ]))
     assert len(ocr_engine.recognize(b"\0" * 12, 2, 2)) == 500
+
+
+def test_recognize_deadline_expired_fails_closed():
+    with pytest.raises(RuntimeError, match="scan_timeout"):
+        ocr_engine.recognize(b"\0" * 12, 2, 2, deadline=time.monotonic() - 1)
+
+
+def test_recognize_slow_inference_is_bounded_by_deadline(monkeypatch):
+    def slow(frame, width, height):
+        time.sleep(0.5)
+        return "LATE"
+
+    monkeypatch.setattr(ocr_engine, "_recognize_inner", slow)
+    with pytest.raises(RuntimeError, match="scan_timeout"):
+        ocr_engine.recognize(b"\0" * 12, 2, 2, deadline=time.monotonic() + 0.05)
+
+
+def test_recognize_with_deadline_returns_before_deadline(monkeypatch):
+    monkeypatch.setattr(ocr_engine, "_recognize_inner", lambda frame, width, height: "OK")
+    assert ocr_engine.recognize(b"\0" * 12, 2, 2, deadline=time.monotonic() + 1) == "OK"
 
 
 def test_missing_models_map_to_known_transient_reason(monkeypatch, tmp_path):

@@ -4,11 +4,14 @@ import asyncio
 from dataclasses import replace
 import hashlib
 import json
+import logging
 from pathlib import Path
 import shutil
 import subprocess
+import time
 
 import pytest
+from services.clip_variation import GRADE_BANDS
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -27,12 +30,27 @@ from services.dossier_ingredients import (
     catalog_selection_version,
 )
 from tests.master_pages_fixtures import bind_current_intent, master_pages
+from tests.source_dna_fixture import isolate_source_dna_registry
+
+
+@pytest.fixture(autouse=True)
+def _isolated_source_dna(monkeypatch, tmp_path):
+    """Retired chase/BTL libraries are deleted, so source-dna tests run against
+    an isolated copy of the registry plus the non-retired dirt-bike fixture."""
+    isolate_source_dna_registry(monkeypatch, tmp_path)
+
+
+@pytest.fixture(autouse=True)
+def _advertise_zero_reasons(monkeypatch):
+    """These tests check the zero-plan reason fields, which the Lab sends
+    only when CONTENT_LAB_ADVERTISE_ZERO_REASONS is on."""
+    monkeypatch.setenv("CONTENT_LAB_ADVERTISE_ZERO_REASONS", "1")
 
 
 TOKEN = "test-control-plane-token"
-PAGE_ID = "tt-chase-miles-4l"
-LIBRARY_ID = "pov-dirt-bike-chase-miles-4l-v1"
-MASTER_SHA = "c434bf9678fbaa20b9b081c68260cca75eb3dd109ddc1cb82df556ec59ae5bd5"
+PAGE_ID = "tt-fixture-dirt-bike"
+LIBRARY_ID = "pov-dirt-bike-fixture-v1"
+MASTER_SHA = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
 SOURCE_IDENTITY = "https://www.youtube.com/watch?v=vt5im2TRAKw"
 _start_source_runner = cp._start_dossier_source
 
@@ -748,6 +766,7 @@ def test_sourced_paths_never_probe_the_ai_video_resolver(lab, monkeypatch):
         raise AssertionError("sourced_video must not probe the ai_video resolver")
 
     monkeypatch.setattr(cp, "resolve_generation_recipe", unexpected_generation_probe)
+    monkeypatch.setattr(cp, "resolve_generation_recipe_with_reason", unexpected_generation_probe)
     capabilities = client.get(
         "/api/control-plane/v1/capabilities",
         headers={"X-RT-Page-Id": PAGE_ID, "Authorization": f"Bearer {TOKEN}"},
@@ -859,7 +878,7 @@ def test_capability_counts_down_to_zero_only_when_every_window_is_cut(lab, monke
     client, _, _ = lab
     resolve = cp._dossier_source_recipe
 
-    def short_master(payload):
+    def short_master(payload, refusal_reasons=None):
         recipe = resolve(payload)
         return replace(recipe, masters=tuple(
             replace(master, duration_ms=12_000) for master in recipe.masters
@@ -905,6 +924,7 @@ def test_capability_counts_down_to_zero_only_when_every_window_is_cut(lab, monke
         "sourceIdentities": ["https://www.youtube.com/watch?v=vt5im2TRAKw"],
         "recipeVersion": "dossier-feedfacefeedface",
         "maxQuantity": 0,
+        "zeroReason": "source_windows_exhausted",
         "sourceIdentities": [SOURCE_IDENTITY],
     }]
     stopped = client.post(
@@ -913,6 +933,7 @@ def test_capability_counts_down_to_zero_only_when_every_window_is_cut(lab, monke
     )
     assert stopped.status_code == 409
     assert stopped.json() == {"detail": "source_windows_exhausted"}
+    assert stopped.headers.get("X-RT-Zero-Reason") == "source_windows_exhausted"
 
 
 @pytest.mark.asyncio
@@ -1132,6 +1153,11 @@ async def test_queued_source_runner_accepts_unrelated_registry_digest_drift_and_
 
     monkeypatch.setattr(cp, "_cached_source_master", cached_source)
     monkeypatch.setattr(cp, "run_color_correct", render)
+    # These tests stub the cut encode with a non-video file; Layer B transforms
+    # (now on for every sourced page) would re-probe it, and Layer B also
+    # probes the delivered duration. Neutralize both here.
+    monkeypatch.setattr(cp, "apply_transforms", lambda *a, **k: None)
+    monkeypatch.setattr(cp, "probe_source_output_duration_seconds", lambda path: 8.0)
     await cp._run_dossier_source(job_id)
     assert calls[0][3] == {
         "scale": None,
@@ -1187,6 +1213,11 @@ async def test_runner_enforces_neutral_vertical_delivery_without_custom_crop(
 
     monkeypatch.setattr(cp, "_cached_source_master", cached_source)
     monkeypatch.setattr(cp, "run_color_correct", render)
+    # These tests stub the cut encode with a non-video file; Layer B transforms
+    # (now on for every sourced page) would re-probe it, and Layer B also
+    # probes the delivered duration. Neutralize both here.
+    monkeypatch.setattr(cp, "apply_transforms", lambda *a, **k: None)
+    monkeypatch.setattr(cp, "probe_source_output_duration_seconds", lambda path: 8.0)
     await cp._run_dossier_source(response.json()["jobId"])
     checked = cp._load_jobs()["jobs"][response.json()["jobId"]]
     assert checked["status"] == "completed", checked.get("error")
@@ -1465,7 +1496,7 @@ def test_source_capability_suppresses_unknown_original_identity(lab, monkeypatch
     from dataclasses import replace
     client, _, _ = lab
     resolve = cp._dossier_source_recipe
-    def malformed(publication):
+    def malformed(publication, refusal_reasons=None):
         recipe = resolve(publication)
         return replace(recipe, masters=tuple(replace(master, provenance={}) for master in recipe.masters))
     monkeypatch.setattr(cp, "_dossier_source_recipe", malformed)
@@ -1549,7 +1580,7 @@ def test_pov_club_unsupported_speed_is_refused_before_job_or_window_admission(la
     original_resolver = cp._dossier_source_recipe
     monkeypatch.setattr(
         cp, "_dossier_source_recipe",
-        lambda publication: replace(
+        lambda publication, refusal_reasons=None: replace(
             original_resolver(publication), format_slug="pov-club",
         ),
     )
@@ -1612,7 +1643,7 @@ async def test_pov_club_measures_output_before_admitting_manifest(lab, monkeypat
     )
     job_id = response.json()["jobId"]
     resolver = cp._dossier_source_recipe
-    monkeypatch.setattr(cp, "_dossier_source_recipe", lambda p: replace(resolver(p), format_slug="pov-club"))
+    monkeypatch.setattr(cp, "_dossier_source_recipe", lambda p, refusal_reasons=None: replace(resolver(p), format_slug="pov-club"))
     source = tmp_path / "master.mp4"
     source.write_bytes(b"master")
 
@@ -1630,6 +1661,9 @@ async def test_pov_club_measures_output_before_admitting_manifest(lab, monkeypat
 
     monkeypatch.setattr(cp, "_cached_source_master", cached_source)
     monkeypatch.setattr(cp, "run_color_correct", render)
+    # These tests stub the cut encode with a non-video file; Layer B transforms
+    # (now on for every sourced page) would re-probe it. Neutralize them here.
+    monkeypatch.setattr(cp, "apply_transforms", lambda *a, **k: None)
     monkeypatch.setattr(cp, "probe_source_output_duration_seconds", probe)
     await cp._run_dossier_source(job_id)
     job = cp._load_jobs()["jobs"][job_id]
@@ -1689,6 +1723,9 @@ async def test_runner_cuts_a_framed_page_into_its_band(lab, monkeypatch, frame, 
 
     monkeypatch.setattr(cp, "_cached_source_master", cached_source)
     monkeypatch.setattr(cp, "run_color_correct", render)
+    # These tests stub the cut encode with a non-video file; Layer B transforms
+    # (now on for every sourced page) would re-probe it. Neutralize them here.
+    monkeypatch.setattr(cp, "apply_transforms", lambda *a, **k: None)
     monkeypatch.setattr(cp, "probe_display_size", probe)
     await cp._run_dossier_source(job_id)
     job = cp._load_jobs()["jobs"][job_id]
@@ -1747,6 +1784,11 @@ async def test_runner_passes_no_frame_arguments_for_a_vertical_page(lab, monkeyp
 
     monkeypatch.setattr(cp, "_cached_source_master", cached_source)
     monkeypatch.setattr(cp, "run_color_correct", render)
+    # These tests stub the cut encode with a non-video file; Layer B transforms
+    # (now on for every sourced page) would re-probe it, and Layer B also
+    # probes the delivered duration. Neutralize both here.
+    monkeypatch.setattr(cp, "apply_transforms", lambda *a, **k: None)
+    monkeypatch.setattr(cp, "probe_source_output_duration_seconds", lambda path: 8.0)
     monkeypatch.setattr(cp, "probe_display_size", probe)
     await cp._run_dossier_source(response.json()["jobId"])
     job = cp._load_jobs()["jobs"][response.json()["jobId"]]
@@ -1784,6 +1826,11 @@ async def test_runner_cuts_fill_when_the_master_display_size_is_unprovable(lab, 
 
     monkeypatch.setattr(cp, "_cached_source_master", cached_source)
     monkeypatch.setattr(cp, "run_color_correct", render)
+    # These tests stub the cut encode with a non-video file; Layer B transforms
+    # (now on for every sourced page) would re-probe it, and Layer B also
+    # probes the delivered duration. Neutralize both here.
+    monkeypatch.setattr(cp, "apply_transforms", lambda *a, **k: None)
+    monkeypatch.setattr(cp, "probe_source_output_duration_seconds", lambda path: 8.0)
     monkeypatch.setattr(cp, "probe_display_size", probe)
     with caplog.at_level("WARNING", logger="control_plane"):
         await cp._run_dossier_source(job_id)
@@ -1832,7 +1879,716 @@ async def test_a_clip_varying_page_cuts_each_window_at_its_own_speed_and_records
         output = Path(job["artifactRoot"]) / clip["path"]
         assert _probe_duration(output) == pytest.approx(cut["durationMs"] / 1000 / clip["clipSpeed"], abs=0.2)
         looks.append((visual["clipSpeed"], tuple(sorted(visual["clipCrop"].items()))))
+        # The transforms ride on the manifest, never in the receipt.
+        assert set(clip["clipTransforms"]) == {"mirror", "motion", "reverse", "loop_swap"}
+        assert "clipTransforms" not in clip["sourceTreatment"]
+        # The trial similarity record never blocks; the second cut is compared with the first.
+        assert clip["similarity"]["mode"] == "trial"
+        assert len(clip["similarity"]["fingerprint"]) == 8
+        # The grade moved inside its bands, recorded in the receipt.
+        for name, band in GRADE_BANDS.items():
+            assert abs(visual["filters"][name] - (1.0 if name != "warmth" else 0.0)) <= band
     assert looks[0] != looks[1]
+    assert job["clips"][1]["similarity"]["nearestClip"] == f"{response.json()['jobId']}/0"
+
+
+@pytest.mark.asyncio
+async def test_a_backup_brightness_override_above_the_look_is_clamped_on_the_job_path(
+    lab, monkeypatch,
+):
+    # MED-1 (review): the clamp must be wired at the production call site, not
+    # only inside cut_grade. A clip-varying job whose backup master declares a
+    # brightness above the page look must still deliver every cut at the look.
+    # A mutant that drops the call-site `look=` kwarg leaves the override's
+    # jitter (0.61..0.65) in the receipt, so this test goes RED.
+    from dataclasses import replace as dc_replace
+
+    import services.clip_variation as clip_variation
+
+    client, tmp_path, _ = lab
+    monkeypatch.setattr(cp, "varies_clips", lambda page_id: page_id == PAGE_ID)
+    monkeypatch.setattr(clip_variation, "varies_clips", lambda page_id: page_id == PAGE_ID)
+
+    look = 0.5
+    backup_sha = "d" * 64
+    original_recipe = cp._dossier_source_recipe
+
+    def pooled(publication):
+        recipe = original_recipe(publication)
+        spec = dict(recipe.recipe_spec)
+        spec["renderTreatment"] = {**spec["renderTreatment"], "filters": {"brightness": look}}
+        recipe = dc_replace(recipe, recipe_spec=spec)
+        primary = recipe.masters[0]
+        backup = dc_replace(
+            primary, source_id="zz-backup-bright", sha256=backup_sha, role="backup",
+            storage_key="source-dna/backup/" + backup_sha + ".mp4",
+            grade_override={"brightness": 0.65},
+        )
+        return dc_replace(recipe, masters=(primary, backup))
+
+    monkeypatch.setattr(cp, "_dossier_source_recipe", pooled)
+    response = client.post(
+        "/api/control-plane/v1/jobs", json=job_body(1),
+        headers=headers("source-job-backup-override"),
+    )
+    assert response.status_code == 200, response.text
+    job_id = response.json()["jobId"]
+    store = cp._load_jobs()
+    for cut in store["jobs"][job_id]["sourceCuts"]:
+        cut.update({
+            "masterSha256": backup_sha,
+            "slotId": f"{backup_sha}:0:{cut['durationMs']}",
+            "libraryStartMs": 0,
+            "startMs": 0,
+        })
+    cp.atomic_save(cp._jobs_path(), store)
+    source = tmp_path / "master.mp4"
+    _write_av_test_clip(source, duration=40.0)
+
+    async def cached_source(*_):
+        return source
+
+    def no_transforms(*_args, **_kwargs):
+        pass
+
+    monkeypatch.setattr(cp, "_cached_source_master", cached_source)
+    monkeypatch.setattr(cp, "apply_transforms", no_transforms)
+    await cp._run_dossier_source(job_id)
+    job = cp._load_jobs()["jobs"][job_id]
+    assert job["status"] == "completed", job.get("error")
+    receipt = job["clips"][0]["sourceTreatment"]
+    assert receipt["visualTreatment"]["filters"]["brightness"] == pytest.approx(look), \
+        "a backup override above the page look is clamped back to the look on the job path"
+
+
+@pytest.mark.asyncio
+async def test_a_non_varying_sourced_page_gets_transforms_and_an_unchanged_receipt(
+    lab, monkeypatch,
+):
+    # Layer B is wider than Layer A: a non-BTL sourced source-video page gets
+    # mirror/motion/reverse on the manifest, while its cut keeps the recipe's
+    # one speed/crop/filters. The receipt schema and visualTreatment stay
+    # identical to today; sourceSha256 follows the (possibly transformed)
+    # delivered bytes.
+    client, tmp_path, _ = lab
+    response = client.post(
+        "/api/control-plane/v1/jobs", json=job_body(1),
+        headers=headers("source-job-nonvarying-transforms"),
+    )
+    job_id = response.json()["jobId"]
+    _pin_cuts_to_first_frame(job_id)
+    source = tmp_path / "master.mp4"
+    _write_av_test_clip(source, duration=40.0)
+
+    async def cached_source(*_):
+        return source
+
+    monkeypatch.setattr(cp, "_cached_source_master", cached_source)
+    await cp._run_dossier_source(job_id)
+    job = cp._load_jobs()["jobs"][job_id]
+    assert job["status"] == "completed", job.get("error")
+    clip = job["clips"][0]
+    # Layer B rides on the manifest, never in the receipt.
+    assert set(clip["clipTransforms"]) == {"mirror", "motion", "reverse", "loop_swap"}
+    # Layer A is untouched: the recipe's one look is what the bytes carry and
+    # what the receipt says.
+    receipt = clip["sourceTreatment"]
+    assert set(receipt["visualTreatment"]) == {"filters", "clipSpeed", "clipCrop"}
+    assert receipt["visualTreatment"]["clipSpeed"] == 1.0
+    assert receipt["visualTreatment"]["clipCrop"] == {"zoom": 1.0, "focusX": 0.5, "focusY": 0.5}
+    assert clip["clipSpeed"] == 1.0
+    assert clip["clipCrop"] == {"zoom": 1.0, "focusX": 0.5, "focusY": 0.5}
+    assert "clipTransforms" not in receipt
+    # The similarity TRIAL is a Layer A (clip-varying) instrument only.
+    assert "similarity" not in clip
+
+
+@pytest.mark.asyncio
+async def test_a_denied_sourced_page_gets_no_transforms(lab, monkeypatch):
+    # A page on TRANSFORM_DENY_PAGES keeps its clips exactly as delivered: no
+    # manifest transforms and no per-cut look.
+    client, tmp_path, _ = lab
+    monkeypatch.setattr(cp, "transforms_enabled", lambda page_id, slug: False)
+    response = client.post(
+        "/api/control-plane/v1/jobs", json=job_body(1),
+        headers=headers("source-job-denied-transforms"),
+    )
+    job_id = response.json()["jobId"]
+    _pin_cuts_to_first_frame(job_id)
+    source = tmp_path / "master.mp4"
+    _write_av_test_clip(source, duration=40.0)
+
+    async def cached_source(*_):
+        return source
+
+    monkeypatch.setattr(cp, "_cached_source_master", cached_source)
+    await cp._run_dossier_source(job_id)
+    job = cp._load_jobs()["jobs"][job_id]
+    assert job["status"] == "completed", job.get("error")
+    clip = job["clips"][0]
+    assert "clipTransforms" not in clip
+    assert "similarity" not in clip
+    assert clip["clipSpeed"] == 1.0
+    receipt = clip["sourceTreatment"]
+    assert set(receipt["visualTreatment"]) == {"filters", "clipSpeed", "clipCrop"}
+
+
+@pytest.mark.asyncio
+async def test_transforms_all_off_makes_a_non_varying_page_match_main(lab, monkeypatch):
+    import services.clip_transforms as ct
+
+    # TRANSFORMS_ALL off is the kill switch: a non-vary_look sourced page draws
+    # no Layer B transforms, so its clips are main's clips (no clipTransforms,
+    # the recipe's one speed/crop/filters). A switch change takes effect on the
+    # Railway service restart after the variable change (do it in a Lab gap).
+    client, tmp_path, _ = lab
+    monkeypatch.setattr(ct, "TRANSFORMS_ALL", False)
+    response = client.post(
+        "/api/control-plane/v1/jobs", json=job_body(1),
+        headers=headers("source-job-transforms-all-off"),
+    )
+    job_id = response.json()["jobId"]
+    _pin_cuts_to_first_frame(job_id)
+    source = tmp_path / "master.mp4"
+    _write_av_test_clip(source, duration=40.0)
+
+    async def cached_source(*_):
+        return source
+
+    monkeypatch.setattr(cp, "_cached_source_master", cached_source)
+    await cp._run_dossier_source(job_id)
+    job = cp._load_jobs()["jobs"][job_id]
+    assert job["status"] == "completed", job.get("error")
+    clip = job["clips"][0]
+    assert "clipTransforms" not in clip
+    assert "similarity" not in clip
+    assert clip["clipSpeed"] == 1.0
+    receipt = clip["sourceTreatment"]
+    assert set(receipt["visualTreatment"]) == {"filters", "clipSpeed", "clipCrop"}
+    assert receipt["visualTreatment"]["clipSpeed"] == 1.0
+
+
+@pytest.mark.asyncio
+async def test_a_layer_b_only_page_logs_its_drawn_transforms(lab, monkeypatch, caplog):
+    from services.clip_transforms import CutTransforms
+
+    # Releases grep Railway logs to prove Layer B applies (an 1182-line release
+    # check found zero transform lines). Every cut on a transforms-enabled page
+    # logs ONE INFO line keyed content_lab.source_cut_transforms with the drawn
+    # set and its slot id; applied=True only when apply_transforms really
+    # re-encoded the cut. Log-only: the manifest and receipt stay as they were.
+    client, tmp_path, _ = lab
+    monkeypatch.setattr(cp, "varies_clips", lambda page_id: False)
+    monkeypatch.setattr(cp, "cut_transforms", lambda *a, **k: CutTransforms(mirror=True))
+    applied = []
+    monkeypatch.setattr(cp, "apply_transforms",
+                        lambda path, transforms, encode_args: applied.append(path))
+    response = client.post(
+        "/api/control-plane/v1/jobs", json=job_body(2),
+        headers=headers("source-job-transform-log"),
+    )
+    job_id = response.json()["jobId"]
+    _pin_cuts_to_first_frame(job_id)
+    source = tmp_path / "master.mp4"
+    _write_av_test_clip(source, duration=40.0)
+
+    async def cached_source(*_):
+        return source
+
+    monkeypatch.setattr(cp, "_cached_source_master", cached_source)
+    with caplog.at_level("INFO", logger="control_plane"):
+        await cp._run_dossier_source(job_id)
+    job = cp._load_jobs()["jobs"][job_id]
+    assert job["status"] == "completed", job.get("error")
+    lines = [record for record in caplog.records
+             if record.message.split()[0] == "content_lab.source_cut_transforms"]
+    assert len(lines) == 2, [record.message for record in caplog.records]
+    logged_slots = set()
+    for record in lines:
+        fields = dict(token.split("=", 1) for token in record.message.split()[1:])
+        assert fields["job_id"] == job_id
+        assert fields["page_id"] == PAGE_ID
+        assert fields["format_slug"] == "pov-dirt-bike"
+        assert fields["cut_slot_id"].startswith(f"{MASTER_SHA}:0:")
+        assert fields["mirror"] == "True"
+        assert fields["motion"] == "None"
+        assert fields["reverse"] == "False"
+        assert fields["loop_swap"] == "False"
+        assert fields["layer"] == "B"
+        assert fields["applied"] == "True"
+        logged_slots.add(fields["cut_slot_id"])
+    # One line per cut, each naming its own slot id <master sha>:<start>:<duration>.
+    assert logged_slots == {f"{cut['masterSha256']}:{cut['startMs']}:{cut['durationMs']}"
+                            for cut in job["sourceCuts"]}
+    assert len(applied) == 2
+    # Log-only change: the manifest still carries the drawn set, the receipt not.
+    for clip in job["clips"]:
+        assert clip["clipTransforms"] == {"mirror": True, "motion": None,
+                                          "reverse": False, "loop_swap": False}
+        assert "clipTransforms" not in clip["sourceTreatment"]
+
+
+@pytest.mark.asyncio
+async def test_transforms_all_off_logs_one_reason_line_and_no_per_cut_lines(
+    lab, monkeypatch, caplog,
+):
+    import services.clip_transforms as ct
+
+    # With the kill-switch off, Layer B is off for the whole job: ONE line per
+    # job names the reason (not one per cut), and no cut logs a transform line
+    # with applied=True. A log sweep can tell "off by design" from "on but
+    # nothing drawn".
+    client, tmp_path, _ = lab
+    monkeypatch.setattr(ct, "TRANSFORMS_ALL", False)
+    response = client.post(
+        "/api/control-plane/v1/jobs", json=job_body(2),
+        headers=headers("source-job-transform-log-off"),
+    )
+    job_id = response.json()["jobId"]
+    _pin_cuts_to_first_frame(job_id)
+    source = tmp_path / "master.mp4"
+    _write_av_test_clip(source, duration=40.0)
+
+    async def cached_source(*_):
+        return source
+
+    monkeypatch.setattr(cp, "_cached_source_master", cached_source)
+    with caplog.at_level("INFO", logger="control_plane"):
+        await cp._run_dossier_source(job_id)
+    job = cp._load_jobs()["jobs"][job_id]
+    assert job["status"] == "completed", job.get("error")
+    keys = [record.message.split()[0] for record in caplog.records]
+    # Two cuts, but the off job explains itself exactly once.
+    assert keys.count("content_lab.source_cut_transforms_off") == 1
+    assert "content_lab.source_cut_transforms" not in keys
+    off = next(record for record in caplog.records
+               if record.message.split()[0] == "content_lab.source_cut_transforms_off")
+    fields = dict(token.split("=", 1) for token in off.message.split()[1:])
+    assert fields == {"job_id": job_id, "page_id": PAGE_ID,
+                      "format_slug": "pov-dirt-bike",
+                      "reason": "transforms_all_off"}
+    assert len(job["clips"]) == 2
+    for clip in job["clips"]:
+        assert "clipTransforms" not in clip
+
+
+@pytest.mark.asyncio
+async def test_a_transformed_sourced_cut_outside_the_format_bounds_is_rejected(lab, monkeypatch):
+    from services.clip_transforms import CutTransforms
+
+    # Layer B now probes the delivered duration whenever transforms were
+    # applied, not only for pov-club / Layer A. A non-vary_look sourced cut
+    # that lands outside the Worker's 5-10 s window must fail the job here.
+    client, tmp_path, _ = lab
+    monkeypatch.setattr(cp, "varies_clips", lambda page_id: False)
+    monkeypatch.setattr(cp, "cut_transforms", lambda *a, **k: CutTransforms(mirror=True))
+    # Keep the transform encode out of this test: the probe is what is pinned.
+    monkeypatch.setattr(cp, "apply_transforms", lambda path, transforms, encode_args: None)
+    monkeypatch.setattr(cp, "probe_source_output_duration_seconds", lambda path: 4.5)
+    response = client.post(
+        "/api/control-plane/v1/jobs", json=job_body(1),
+        headers=headers("source-job-transform-under-five"),
+    )
+    job_id = response.json()["jobId"]
+    _pin_cuts_to_first_frame(job_id)
+    source = tmp_path / "master.mp4"
+    _write_av_test_clip(source, duration=40.0)
+
+    async def cached_source(*_):
+        return source
+
+    monkeypatch.setattr(cp, "_cached_source_master", cached_source)
+    await cp._run_dossier_source(job_id)
+    job = cp._load_jobs()["jobs"][job_id]
+    assert job["status"] == "failed", job.get("error")
+    assert "source_output_duration_unsupported" in job["error"]
+
+
+@pytest.mark.asyncio
+async def test_a_layer_b_only_page_delivers_an_unreadable_probe(lab, monkeypatch, caplog):
+    from services.clip_transforms import CutTransforms
+
+    # MED-1 (lead review): for a Layer-B-only page (not vary_look and not
+    # pov-club), a probe that cannot read the delivered file must NOT fail the
+    # job. It logs a warning keyed content_lab.layer_b_probe_unreadable (with
+    # job and page), bumps the counter, and delivers the already-encoded cut.
+    # main's strict behaviour stays only where main had it: vary_look and
+    # pov-club still raise on None (pinned separately).
+    client, tmp_path, _ = lab
+    monkeypatch.setattr(cp, "varies_clips", lambda page_id: False)
+    monkeypatch.setattr(cp, "cut_transforms", lambda *a, **k: CutTransforms(mirror=True))
+    monkeypatch.setattr(cp, "apply_transforms", lambda path, transforms, encode_args: None)
+    monkeypatch.setattr(cp, "probe_source_output_duration_seconds", lambda path: None)
+    cp._layer_b_probe_unreadable_count = 0
+    response = client.post(
+        "/api/control-plane/v1/jobs", json=job_body(1),
+        headers=headers("source-job-layer-b-probe-unreadable"),
+    )
+    job_id = response.json()["jobId"]
+    _pin_cuts_to_first_frame(job_id)
+    source = tmp_path / "master.mp4"
+    _write_av_test_clip(source, duration=40.0)
+
+    async def cached_source(*_):
+        return source
+
+    monkeypatch.setattr(cp, "_cached_source_master", cached_source)
+    with caplog.at_level("WARNING", logger="control_plane"):
+        await cp._run_dossier_source(job_id)
+    job = cp._load_jobs()["jobs"][job_id]
+    assert job["status"] == "completed", job.get("error")
+    clip = job["clips"][0]
+    assert set(clip["clipTransforms"]) == {"mirror", "motion", "reverse", "loop_swap"}
+    assert cp._layer_b_probe_unreadable_count == 1
+    assert any("content_lab.layer_b_probe_unreadable" in record.message for record in caplog.records)
+
+
+def _reset_layer_b_probe_breaker():
+    """The Layer-B unreadable breaker is process-local module state; start clean."""
+    cp._layer_b_probe_unreadable_count = 0
+    cp._layer_b_probe_unreadable_times.clear()
+    cp._layer_b_probe_unreadable_tripped = False
+
+
+@pytest.fixture(autouse=True)
+def _reset_layer_b_probe_breaker_between_tests():
+    _reset_layer_b_probe_breaker()
+
+
+def _layer_b_unreadable_patches(monkeypatch, tmp_path):
+    """A Layer-B-only page whose delivered-duration probe never reads the file."""
+    from services.clip_transforms import CutTransforms
+
+    monkeypatch.setattr(cp, "varies_clips", lambda page_id: False)
+    monkeypatch.setattr(cp, "cut_transforms", lambda *a, **k: CutTransforms(mirror=True))
+    monkeypatch.setattr(cp, "apply_transforms", lambda path, transforms, encode_args: None)
+    monkeypatch.setattr(cp, "probe_source_output_duration_seconds", lambda path: None)
+    _reset_layer_b_probe_breaker()
+    source = tmp_path / "master.mp4"
+    _write_av_test_clip(source, duration=40.0)
+
+    async def cached_source(*_):
+        return source
+
+    monkeypatch.setattr(cp, "_cached_source_master", cached_source)
+
+
+async def _run_layer_b_unreadable_job(client, idempotency):
+    """Post and run one one-cut Layer-B-only job; return its stored record."""
+    response = client.post(
+        "/api/control-plane/v1/jobs", json=job_body(1),
+        headers=headers(idempotency),
+    )
+    job_id = response.json()["jobId"]
+    _pin_cuts_to_first_frame(job_id)
+    await cp._run_dossier_source(job_id)
+    return cp._load_jobs()["jobs"][job_id]
+
+
+def _tripped_records(caplog):
+    return [record for record in caplog.records
+            if record.message.startswith("content_lab.layer_b_probe_unreadable_tripped")]
+
+
+def test_layer_b_unreadable_max_one_retrips_after_the_window_drains(monkeypatch, caplog):
+    """A max-one incident logs again after its rolling window has drained."""
+    monkeypatch.setenv("LAYER_B_PROBE_UNREADABLE_MAX", "1")
+    readings = iter((100.0, 3_701.0))
+    monkeypatch.setattr(cp.time, "monotonic", lambda: next(readings))
+    with caplog.at_level("WARNING", logger="control_plane"):
+        with pytest.raises(RuntimeError, match="source_output_duration_unsupported"):
+            cp._layer_b_probe_unreadable(PAGE_ID, "layer-b-max-one-first")
+        with pytest.raises(RuntimeError, match="source_output_duration_unsupported"):
+            cp._layer_b_probe_unreadable(PAGE_ID, "layer-b-max-one-second")
+    assert len(_tripped_records(caplog)) == 2
+
+
+def test_layer_b_unreadable_window_samples_the_monotonic_clock(monkeypatch):
+    """The rolling window must use monotonic time, never the wall clock."""
+    monkeypatch.setenv("LAYER_B_PROBE_UNREADABLE_MAX", "3")
+    samples = []
+
+    def monotonic():
+        samples.append(10.0 + len(samples))
+        return samples[-1]
+
+    monkeypatch.setattr(cp.time, "monotonic", monotonic)
+    cp._layer_b_probe_unreadable(PAGE_ID, "layer-b-monotonic-first")
+    cp._layer_b_probe_unreadable(PAGE_ID, "layer-b-monotonic-second")
+    assert samples == [10.0, 11.0]
+    assert list(cp._layer_b_probe_unreadable_times) == [10.0, 11.0]
+
+
+@pytest.mark.asyncio
+async def test_layer_b_unreadable_under_the_max_still_delivers(lab, monkeypatch, caplog):
+    # F-LAB-LAYERB-PROBE-BOUND-1029: the warn-and-deliver fallback is now
+    # bounded by a rolling window. Two unreadable probes against a max of
+    # three stay under the budget: both jobs deliver with the warning, the
+    # counter moves, and nothing trips.
+    client, tmp_path, _ = lab
+    monkeypatch.setenv("LAYER_B_PROBE_UNREADABLE_MAX", "3")
+    _layer_b_unreadable_patches(monkeypatch, tmp_path)
+    with caplog.at_level("WARNING", logger="control_plane"):
+        first = await _run_layer_b_unreadable_job(client, "layer-b-under-max-1")
+        second = await _run_layer_b_unreadable_job(client, "layer-b-under-max-2")
+    assert first["status"] == "completed", first.get("error")
+    assert second["status"] == "completed", second.get("error")
+    assert len(second["clips"]) == 1
+    assert cp._layer_b_probe_unreadable_count == 2
+    warned = [record for record in caplog.records
+              if record.message.startswith("content_lab.layer_b_probe_unreadable ")]
+    assert len(warned) == 2
+    assert all(record.levelname == "WARNING" for record in warned)
+    assert _tripped_records(caplog) == []
+
+
+@pytest.mark.asyncio
+async def test_layer_b_unreadable_at_the_max_trips_one_error_and_fails(lab, monkeypatch, caplog):
+    # With a max of two, the second unreadable probe in the window trips the
+    # breaker: ONE error keyed content_lab.layer_b_probe_unreadable_tripped
+    # (page, job, count) and that job fails exactly like the strict path
+    # (source_output_duration_unsupported); a third unreadable cut keeps
+    # failing without a second trip error, and the delivered counter stops at
+    # the cut that shipped.
+    client, tmp_path, _ = lab
+    monkeypatch.setenv("LAYER_B_PROBE_UNREADABLE_MAX", "2")
+    _layer_b_unreadable_patches(monkeypatch, tmp_path)
+    with caplog.at_level("WARNING", logger="control_plane"):
+        first = await _run_layer_b_unreadable_job(client, "layer-b-at-max-1")
+        second = await _run_layer_b_unreadable_job(client, "layer-b-at-max-2")
+        third = await _run_layer_b_unreadable_job(client, "layer-b-at-max-3")
+    assert first["status"] == "completed", first.get("error")
+    assert second["status"] == "failed"
+    assert "source_output_duration_unsupported" in second["error"]
+    assert third["status"] == "failed"
+    assert "source_output_duration_unsupported" in third["error"]
+    assert cp._layer_b_probe_unreadable_count == 1
+    assert cp._layer_b_probe_unreadable_tripped is True
+    tripped = _tripped_records(caplog)
+    assert len(tripped) == 1
+    assert tripped[0].levelname == "ERROR"
+    fields = dict(token.split("=", 1) for token in tripped[0].message.split()[1:])
+    assert fields == {"page": PAGE_ID, "job": second["jobId"], "count": "2"}
+
+
+@pytest.mark.asyncio
+async def test_layer_b_unreadable_delivers_again_once_the_window_drains(lab, monkeypatch, caplog):
+    # The bound is a rolling window, not a latch: once the tripped
+    # timestamps age out of the 60-minute window, the next unreadable
+    # Layer-B cut delivers with the warning again (a later probe may have
+    # recovered), with no second trip error.
+    client, tmp_path, _ = lab
+    monkeypatch.setenv("LAYER_B_PROBE_UNREADABLE_MAX", "2")
+    _layer_b_unreadable_patches(monkeypatch, tmp_path)
+    with caplog.at_level("WARNING", logger="control_plane"):
+        first = await _run_layer_b_unreadable_job(client, "layer-b-drain-1")
+        second = await _run_layer_b_unreadable_job(client, "layer-b-drain-2")
+    assert first["status"] == "completed", first.get("error")
+    assert second["status"] == "failed"
+    # Age both window timestamps past the 60-minute horizon.
+    stale = time.monotonic() - (cp._LAYER_B_PROBE_WINDOW_SECONDS + 600)
+    cp._layer_b_probe_unreadable_times.clear()
+    cp._layer_b_probe_unreadable_times.extend([stale, stale])
+    with caplog.at_level("WARNING", logger="control_plane"):
+        third = await _run_layer_b_unreadable_job(client, "layer-b-drain-3")
+    assert third["status"] == "completed", third.get("error")
+    assert len(third["clips"]) == 1
+    assert cp._layer_b_probe_unreadable_count == 2
+    assert cp._layer_b_probe_unreadable_tripped is False
+    assert len(_tripped_records(caplog)) == 1
+
+
+@pytest.mark.asyncio
+async def test_layer_b_unreadable_bad_max_env_falls_back_to_the_default(lab, monkeypatch, caplog):
+    # LAYER_B_PROBE_UNREADABLE_MAX must be an int >= 1; anything else (empty,
+    # zero, negative, not a number) is the default 5. Pinned twice: the
+    # parsed budget, and behaviour — "0" is not a budget of zero unreadable
+    # cuts, so the first probe still delivers.
+    monkeypatch.delenv("LAYER_B_PROBE_UNREADABLE_MAX", raising=False)
+    assert cp._layer_b_probe_unreadable_max() == 5
+    for bad in ("", "0", "-3", "two", "2.5"):
+        monkeypatch.setenv("LAYER_B_PROBE_UNREADABLE_MAX", bad)
+        assert cp._layer_b_probe_unreadable_max() == 5, bad
+    monkeypatch.setenv("LAYER_B_PROBE_UNREADABLE_MAX", "3")
+    assert cp._layer_b_probe_unreadable_max() == 3
+
+    client, tmp_path, _ = lab
+    monkeypatch.setenv("LAYER_B_PROBE_UNREADABLE_MAX", "0")
+    _layer_b_unreadable_patches(monkeypatch, tmp_path)
+    with caplog.at_level("WARNING", logger="control_plane"):
+        job = await _run_layer_b_unreadable_job(client, "layer-b-bad-env-1")
+    assert job["status"] == "completed", job.get("error")
+    assert cp._layer_b_probe_unreadable_count == 1
+    assert _tripped_records(caplog) == []
+
+
+@pytest.mark.asyncio
+async def test_transforms_all_off_cut_bytes_match_main(lab, monkeypatch):
+    import services.clip_transforms as ct
+
+    # Recorded by running the same synthetic job on actual main commit 60db4247.
+    # Fixed encoder bytes make the complete manifest and its SHA reproducible.
+    client, tmp_path, _ = lab
+    monkeypatch.setattr(cp._secrets, "token_hex", lambda n: "a" * (n * 2))
+    monkeypatch.setattr(ct, "TRANSFORMS_ALL", False)
+    response = client.post(
+        "/api/control-plane/v1/jobs", json=job_body(1),
+        headers=headers("source-job-byte-base"),
+    )
+    job_id = response.json()["jobId"]
+    _pin_cuts_to_first_frame(job_id)
+    source = tmp_path / "master.mp4"
+    source.write_bytes(b"synthetic master")
+
+    encoder_calls = []
+
+    async def deterministic_encoder(_source, destination, *args, **kwargs):
+        encoder_calls.append({"source": Path(_source).name, "destination": Path(destination).name, "args": args, "kwargs": kwargs})
+        Path(destination).write_bytes(b"deterministic encoded clip")
+
+    monkeypatch.setattr(cp, "run_color_correct", deterministic_encoder)
+
+    async def cached_source(*_):
+        return source
+
+    monkeypatch.setattr(cp, "_cached_source_master", cached_source)
+    await cp._run_dossier_source(job_id)
+    job = cp._load_jobs()["jobs"][job_id]
+    assert job["status"] == "completed", job.get("error")
+    recorded = json.loads((Path(__file__).parent / "fixtures" / "transforms_all_off_main_60db4247.json").read_text())
+    assert job["clips"][0] == recorded
+    encoder_fixture = Path(__file__).parent / "fixtures" / "transforms_all_off_main_60db4247_encoder.json"
+    assert json.loads(json.dumps(encoder_calls)) == [json.loads(encoder_fixture.read_text())]
+
+
+def test_main_transform_off_recording_is_pinned():
+    fixture = Path(__file__).parent / "fixtures" / "transforms_all_off_main_60db4247.json"
+    assert hashlib.sha256(fixture.read_bytes()).hexdigest() == "a4a401afd85c024c728358156aacf0381ffae240899761d9b8670872aad056d3"
+    recorded = json.loads(fixture.read_text())
+    assert recorded["sourceTreatment"]["generationJobId"] == "cpl-aaaaaaaaaaaaaaaa"
+    assert len(recorded["sha256"]) == 64
+    encoder_fixture = Path(__file__).parent / "fixtures" / "transforms_all_off_main_60db4247_encoder.json"
+    assert hashlib.sha256(encoder_fixture.read_bytes()).hexdigest() == "489e9b5a03b233643c85166368c1d4fc9d5214df959cb0590d3c80072671cad0"
+
+@pytest.mark.asyncio
+async def test_a_denied_sourced_page_gets_zero_transforms_and_no_extra_encode(lab, monkeypatch):
+    import services.clip_transforms as ct
+
+    # TRANSFORM_DENY_PAGES: a denied page keeps its clips exactly as delivered —
+    # zero transforms on the manifest and no extra transform encode pass.
+    client, tmp_path, _ = lab
+    monkeypatch.setattr(ct, "TRANSFORM_DENY_PAGES", frozenset({PAGE_ID}))
+    encoded = []
+    monkeypatch.setattr(cp, "apply_transforms", lambda path, transforms, encode_args: encoded.append(transforms))
+    response = client.post(
+        "/api/control-plane/v1/jobs", json=job_body(1),
+        headers=headers("source-job-denied-zero-encode"),
+    )
+    job_id = response.json()["jobId"]
+    _pin_cuts_to_first_frame(job_id)
+    source = tmp_path / "master.mp4"
+    _write_av_test_clip(source, duration=40.0)
+
+    async def cached_source(*_):
+        return source
+
+    monkeypatch.setattr(cp, "_cached_source_master", cached_source)
+    await cp._run_dossier_source(job_id)
+    job = cp._load_jobs()["jobs"][job_id]
+    assert job["status"] == "completed", job.get("error")
+    clip = job["clips"][0]
+    assert "clipTransforms" not in clip
+    assert "similarity" not in clip
+    assert encoded == [], "a denied page must never run the transform encode pass"
+    assert clip["clipSpeed"] == 1.0
+
+
+@pytest.mark.asyncio
+async def test_a_loop_swapped_cut_is_delivered_at_or_under_nine_seconds(
+    lab, monkeypatch,
+):
+    # routers/control_plane.py:3837 is the ONLY production enforcement of the
+    # <= 9.0 s cap for a loop-swapped cut. The unit test L2 drives
+    # services/clip_variation.py directly; this test drives the real call site
+    # (real cut + real loop_swap re-encode) with loop_swap forced, and asserts
+    # the delivered clip lands at or under 9.0 s. The cut's own seed draws a
+    # speed that would exceed 9.0 s without the cap (8500 ms / 0.92 = 9.24 s),
+    # so mutating line 3837 to `None` turns this test RED.
+    from services.clip_transforms import CutTransforms
+
+    client, tmp_path, _ = lab
+    monkeypatch.setattr(cp, "varies_clips", lambda page_id: page_id == PAGE_ID)
+    # Force the loop_swap transform so the cap path is exercised on every cut.
+    monkeypatch.setattr(cp, "cut_transforms", lambda *a, **k: CutTransforms(loop_swap=True))
+    response = client.post(
+        "/api/control-plane/v1/jobs", json=job_body(1),
+        headers=headers("source-job-loop-swap-cap"),
+    )
+    job_id = response.json()["jobId"]
+    store = cp._load_jobs()
+    store["jobs"][job_id]["sourceCuts"] = [{
+        "slotId": f"{MASTER_SHA}:0:8500",
+        "masterSha256": MASTER_SHA,
+        "libraryStartMs": 0,
+        "startMs": 0,
+        "durationMs": 8500,
+    }]
+    cp.atomic_save(cp._jobs_path(), store)
+    source = tmp_path / "master.mp4"
+    _write_av_test_clip(source, duration=40.0)
+
+    async def cached_source(*_):
+        return source
+
+    monkeypatch.setattr(cp, "_cached_source_master", cached_source)
+    await cp._run_dossier_source(job_id)
+    job = cp._load_jobs()["jobs"][job_id]
+    assert job["status"] == "completed", job.get("error")
+    clip = job["clips"][0]
+    assert clip["clipTransforms"]["loop_swap"] is True
+    output = Path(job["artifactRoot"]) / clip["path"]
+    delivered = _probe_duration(output)
+    assert delivered <= 9.0, (clip["clipSpeed"], delivered)
+
+
+@pytest.mark.asyncio
+async def test_a_loop_swapped_cut_over_nine_seconds_is_rejected(lab, monkeypatch):
+    # The post-encode check enforces 9.0 s (not 10.0) for loop-swapped cuts:
+    # a cut that lands over 9.0 s must fail the job, even if the speed cap is
+    # bypassed. Force a 0.92 speed on an 8500 ms window (8500/0.92 = 9.24 s);
+    # the pre-loop-swap head allowed 10.0 s and would ship this silently.
+    from services.clip_transforms import CutTransforms
+
+    client, tmp_path, _ = lab
+    monkeypatch.setattr(cp, "varies_clips", lambda page_id: page_id == PAGE_ID)
+    monkeypatch.setattr(cp, "cut_transforms", lambda *a, **k: CutTransforms(loop_swap=True))
+    # Ignore the call-site speed cap; deliver a speed that overshoots 9.0 s.
+    monkeypatch.setattr(cp, "cut_variant", lambda *a, **k: (0.92, {"zoom": 1.0, "focusX": 0.5, "focusY": 0.5}))
+    response = client.post(
+        "/api/control-plane/v1/jobs", json=job_body(1),
+        headers=headers("source-job-loop-swap-over-nine"),
+    )
+    job_id = response.json()["jobId"]
+    store = cp._load_jobs()
+    store["jobs"][job_id]["sourceCuts"] = [{
+        "slotId": f"{MASTER_SHA}:0:8500",
+        "masterSha256": MASTER_SHA,
+        "libraryStartMs": 0,
+        "startMs": 0,
+        "durationMs": 8500,
+    }]
+    cp.atomic_save(cp._jobs_path(), store)
+    source = tmp_path / "master.mp4"
+    _write_av_test_clip(source, duration=40.0)
+
+    async def cached_source(*_):
+        return source
+
+    monkeypatch.setattr(cp, "_cached_source_master", cached_source)
+    await cp._run_dossier_source(job_id)
+    job = cp._load_jobs()["jobs"][job_id]
+    assert job["status"] == "failed", job.get("error")
+    assert "source_output_duration_unsupported" in job["error"]
 
 
 def test_the_latest_page_cut_seeds_the_next_jobs_look(monkeypatch):
@@ -1850,3 +2606,248 @@ def test_the_latest_page_cut_seeds_the_next_jobs_look(monkeypatch):
     monkeypatch.setattr(cp, "_load_jobs", lambda: {"jobs": jobs})
     assert cp._latest_page_cut_look(PAGE_ID, "running") == (0.9, {"zoom": 1.6, "focusX": 0.48, "focusY": 0.52})
     assert cp._latest_page_cut_look("acct:none", "running") is None
+
+
+@pytest.mark.asyncio
+async def test_a_varied_job_whose_history_read_fails_ends_failed_not_running(lab, monkeypatch):
+    client, tmp_path, _ = lab
+    monkeypatch.setattr(cp, "varies_clips", lambda page_id: page_id == PAGE_ID)
+    response = client.post(
+        "/api/control-plane/v1/jobs", json=job_body(1),
+        headers=headers("source-job-varied-history-fails"),
+    )
+
+    def broken(*_args, **_kwargs):
+        raise OSError("job store unreadable")
+
+    monkeypatch.setattr(cp.clip_similarity, "recent_fingerprints", broken)
+    await cp._run_dossier_source(response.json()["jobId"])
+    job = cp._load_jobs()["jobs"][response.json()["jobId"]]
+    assert job["status"] == "failed"
+    assert "job store unreadable" in job["error"]
+
+
+@pytest.mark.parametrize("backup_cuts,status", [((1,), "completed"), ((0,), "completed"), ((0, 1), "failed")])
+@pytest.mark.asyncio
+async def test_a_cut_on_a_backup_whose_file_is_missing_is_skipped_and_the_job_goes_on(
+    lab, monkeypatch, backup_cuts, status,
+):
+    from dataclasses import replace as dc_replace
+    client, tmp_path, _ = lab
+    backup_sha = "d" * 64
+    original_recipe = cp._dossier_source_recipe
+    primary_sha = None
+
+    def pooled(publication, refusal_reasons=None):
+        nonlocal primary_sha
+        recipe = original_recipe(publication)
+        primary = recipe.masters[0]
+        primary_sha = primary.sha256
+        backup = dc_replace(primary, source_id="zz-backup", sha256=backup_sha, role="backup",
+                            storage_key="source-dna/backup/" + backup_sha + ".mp4")
+        return dc_replace(recipe, masters=(primary, backup))
+
+    monkeypatch.setattr(cp, "_dossier_source_recipe", pooled)
+    response = client.post(
+        "/api/control-plane/v1/jobs", json=job_body(2),
+        headers=headers(f"source-job-backup-missing-{status}"),
+    )
+    job_id = response.json()["jobId"]
+    store = cp._load_jobs()
+    for index, cut in enumerate(store["jobs"][job_id]["sourceCuts"]):
+        start = index * 15_000
+        sha = backup_sha if index in backup_cuts else primary_sha
+        cut.update({"masterSha256": sha, "slotId": f"{sha}:{start}:{cut['durationMs']}",
+                    "libraryStartMs": start, "startMs": start})
+    planned = list(store["jobs"][job_id]["sourceCuts"])
+    cp.atomic_save(cp._jobs_path(), store)
+    source = tmp_path / "master.mp4"
+    _write_av_test_clip(source, duration=40.0)
+
+    async def cached_source(page_id, master, job):
+        if master.sha256 == backup_sha:
+            active = cp._load_jobs()["jobs"][job_id]
+            assert active["status"] == "running"
+            assert active["sourceCuts"] == planned, "all cuts remain reserved while the job runs"
+            active_recipe = pooled(publication())
+            active_reserved, _ = cp._source_dna_cut_ledger(
+                {"jobs": {job_id: active}}, active_recipe, active["recipeVersion"]
+            )
+            assert {cut["slotId"] for cut in planned} <= active_reserved
+            raise RuntimeError("source_dna_master_unavailable")
+        return source
+
+    monkeypatch.setattr(cp, "_cached_source_master", cached_source)
+    await cp._run_dossier_source(job_id)
+    job = cp._load_jobs()["jobs"][job_id]
+    assert job["status"] == status, job.get("error")
+    if status == "completed":
+        assert len(job["clips"]) == 1
+        delivered = [cut for i, cut in enumerate(planned) if i not in backup_cuts]
+        skipped = [cut for i, cut in enumerate(planned) if i in backup_cuts]
+        assert job["sourceCuts"] == delivered, "only the rendered cut remains reserved"
+        from services.job_store_compaction import extract_index_entries
+        archived = extract_index_entries(job)["sourceDnaCuts"]
+        assert [cut["slotId"] for cut in archived] == [delivered[0]["slotId"]]
+        recipe = pooled(publication())
+        reserved, _ = cp._source_dna_cut_ledger({"jobs": {job_id: job}}, recipe, job["recipeVersion"])
+        assert delivered[0]["slotId"] in reserved
+        assert skipped[0]["slotId"] not in reserved
+        archived_reserved, _ = cp._source_dna_cut_ledger(
+            {"jobs": {}, cp.compaction.ARCHIVE_INDEX_KEY: {"sourceDnaCuts": archived}}, recipe, job["recipeVersion"]
+        )
+        assert delivered[0]["slotId"] in archived_reserved
+        assert skipped[0]["slotId"] not in archived_reserved
+    else:
+        assert job["error"] == "source_dna_master_unavailable"
+
+
+def test_resolve_refuses_a_library_that_still_holds_a_retired_master(caplog):
+    """Rule #1: a stale publication naming a library that still holds a retired
+    master fails with a named, logged reason instead of resolving the retired
+    footage again. The library is a single-primary historical record, so it
+    parses; the executor is what refuses it."""
+    import services.source_dna_registry as registry
+
+    retired_page = "tt-retired-dirt-bike"
+    retired_lib = "pov-dirt-bike-retired-v1"
+    retired_sha = "c434bf9678fbaa20b9b081c68260cca75eb3dd109ddc1cb82df556ec59ae5bd5"
+    manifest = {
+        "schema": "content-lab.source-dna-library.v2",
+        "libraryId": retired_lib,
+        "format": "pov-dirt-bike",
+        "pageId": retired_page,
+        "masters": [{
+            "sourceId": "youtube-retired-120-300",
+            "sha256": retired_sha,
+            "bytes": 414027449,
+            "filename": "retired_master.mp4",
+            "mimeType": "video/mp4",
+            "storageKey": f"source-dna/pov-dirt-bike/{retired_page}/{retired_sha}.mp4",
+            "durationMs": 180000,
+            "sourceOffsetMs": 120000,
+            "provenance": {
+                "sourceUrl": "https://www.youtube.com/watch?v=vt5im2TRAKw",
+                "acquiredAt": "2026-07-29T17:37:41Z",
+                "authority": "test fixture: retired footage",
+            },
+        }],
+    }
+    (registry.MANIFEST_DIR / f"{retired_lib}.json").write_bytes(
+        (json.dumps(manifest, sort_keys=True, separators=(",", ":")) + "\n").encode()
+    )
+
+    intent, revision = master_pages(
+        retired_page, handle="retired.dirt.bike",
+        content_niche="POV - Dirtbike", content_engine="sourced_video",
+        vault_url="https://shipstream.test/vault/retired.dirt.bike",
+    )
+    spec = {
+        "schema": "dossier.recipe-spec.v4",
+        "masterPages": intent,
+        "masterPagesHash": revision,
+        "production": {
+            "catalogVersion": "sha256:" + "f" * 64,
+            "providerId": None, "modelId": None, "promptModuleId": None, "referenceSetId": None,
+            "sourceLibraryId": retired_lib,
+            "variationValues": {},
+            "controls": {"cutDurationMs": 6_000},
+        },
+        "renderTreatment": {
+            "stylePreset": None, "filters": {}, "captionStyle": {},
+            "clipSpeed": 1.0, "clipCrop": {"zoom": 1.0, "focusX": 0.5, "focusY": 0.5},
+        },
+        "captionDiscipline": {
+            "captionSet": "dirt-bike", "register": ["relatable_meme"], "slingshotShare": None,
+        },
+        "demand": {"formatMix": {"pov-dirt-bike": 1.0}},
+    }
+    canonical = json.dumps(spec, sort_keys=True, separators=(",", ":"))
+    payload = {
+        "schema": recipes.REQUEST_SCHEMA,
+        "pageId": retired_page,
+        "lane": recipes.LANE,
+        "recipeId": "pov-dirt-bike:master",
+        "engine": "sourced_video",
+        "recipeVersion": "dossier-retired000000",
+        "dossierRevision": "rev-retired-source",
+        "recipeSpecHash": "sha256:" + hashlib.sha256(canonical.encode()).hexdigest(),
+        "recipeSpecCanonical": canonical,
+    }
+    reasons = []
+    with caplog.at_level(logging.WARNING, logger="content_lab.control_plane_sources"):
+        assert resolve_source_recipe(payload, refusal_reasons=reasons) is None
+    assert reasons == ["source_master_retired"]
+    assert any("source_master_retired" in record.message for record in caplog.records)
+
+
+def test_retired_reason_is_hidden_byte_for_byte_when_flag_off(monkeypatch):
+    row = {"recipeId": "test:master", "engine": "sourced_video", "recipeVersion": "v1"}
+    monkeypatch.delenv(cp.ADVERTISE_ZERO_REASONS_ENV, raising=False)
+    before = cp._capabilities_response([], [cp._zero_plan_recipe(row, "recipe_unresolved")])
+    after = cp._capabilities_response([], [cp._zero_plan_recipe(row, "source_master_retired")])
+    assert json.dumps(before).encode() == json.dumps(after).encode()
+    monkeypatch.setenv(cp.ADVERTISE_ZERO_REASONS_ENV, "1")
+    assert cp._capabilities_response([], [cp._zero_plan_recipe(row, "source_master_retired")])["zeroPlanRecipes"][0]["zeroReason"] == "source_master_retired"
+
+
+def test_capabilities_names_retired_source_only_when_enabled(lab, monkeypatch):
+    import services.control_plane_sources as source
+
+    client, _, _ = lab
+    monkeypatch.setattr(source, "RETIRED_MASTER_SHAS", {MASTER_SHA})
+    headers_for_page = {"X-RT-Page-Id": PAGE_ID, "Authorization": f"Bearer {TOKEN}"}
+    enabled = client.get("/api/control-plane/v1/capabilities", headers=headers_for_page)
+    assert enabled.status_code == 200
+    assert enabled.json()["zeroPlanRecipes"][0]["zeroReason"] == "source_master_retired"
+    monkeypatch.delenv(cp.ADVERTISE_ZERO_REASONS_ENV)
+    disabled = client.get("/api/control-plane/v1/capabilities", headers=headers_for_page)
+    assert disabled.content == json.dumps({"schema": cp.RESPONSE_SCHEMA, "capabilities": []}, separators=(",", ":")).encode()
+
+
+@pytest.mark.asyncio
+async def test_source_receipt_carries_master_origin_into_clip_lineage(lab, monkeypatch):
+    """The terminal durability goal: the post receipt must carry master.origin.
+
+    A silent regression dropping `origin` from the emitted receipt would ship
+    green otherwise (the planner never reads it), so this asserts the receipt
+    actually carries the master's origin id + window. The G39 wire gate
+    applies (routers/control_plane.py): origin reaches the receipt only
+    behind CONTENT_LAB_ADVERTISE_ORIGIN, so this flag-on test sets it; the
+    flag-off side is pinned by tests/test_cut_window_recipe.py
+    (test_flag_off_receipt_keeps_exactly_the_base_keys).
+    """
+    monkeypatch.setenv(cp.ADVERTISE_ORIGIN_ENV, "1")
+    client, tmp_path, _ = lab
+    origin = {
+        "originSourceId": "vt5im2TRAKw",
+        "originStartMs": 120_000,
+        "originEndMs": 300_000,
+    }
+    resolve = cp._dossier_source_recipe
+
+    def with_origin(payload):
+        recipe = resolve(payload)
+        return replace(recipe, masters=tuple(
+            replace(master, origin=dict(origin)) for master in recipe.masters
+        ))
+
+    response = client.post(
+        "/api/control-plane/v1/jobs", json=job_body(1),
+        headers=headers("source-job-origin-receipt"),
+    )
+    assert response.status_code == 200, response.text
+    job_id = response.json()["jobId"]
+    _pin_cuts_to_first_frame(job_id)
+    monkeypatch.setattr(cp, "_dossier_source_recipe", with_origin)
+    source = tmp_path / "master.mp4"
+    _write_av_test_clip(source)
+
+    async def cached_source(*_):
+        return source
+
+    monkeypatch.setattr(cp, "_cached_source_master", cached_source)
+    await cp._run_dossier_source(job_id)
+    job = cp._load_jobs()["jobs"][job_id]
+    assert job["status"] == "completed", job.get("error")
+    assert job["clips"][0]["source"]["master"]["origin"] == origin

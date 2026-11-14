@@ -2,11 +2,13 @@
 
 import hashlib
 import json
+import subprocess
 
 import pytest
 
-from providers.base import API_KEYS
-from providers.replicate import _build_flux_2_pro_input
+from providers import PROVIDERS
+from providers.base import API_KEYS, _strip_video_audio
+from providers.replicate import _build_flux_2_pro_input, _build_h3_highspeed_input
 from services.control_plane_generation import (
     GenerationRecipe,
     compose_prompt,
@@ -14,6 +16,7 @@ from services.control_plane_generation import (
     dossier_clip_speed,
     dossier_filters_to_color_correction,
     generation_options,
+    new_generation_options,
     load_generation_anchor,
     load_prompt_catalog,
     plan_prompt_combinations,
@@ -25,7 +28,15 @@ from services.dossier_ingredients import (
     build_dossier_ingredient_catalog,
     catalog_selection_version,
 )
+from services.generation_budget import per_gen_cost_usd
 from tests.master_pages_fixtures import master_pages
+
+
+@pytest.fixture(autouse=True)
+def _advertise_zero_reasons(monkeypatch):
+    """These tests check the zero-plan reason fields, which the Lab sends
+    only when CONTENT_LAB_ADVERTISE_ZERO_REASONS is on."""
+    monkeypatch.setenv("CONTENT_LAB_ADVERTISE_ZERO_REASONS", "1")
 
 
 def publication(**overrides):
@@ -115,6 +126,68 @@ def test_typed_v3_truck_recipe_uses_the_exact_advertised_dossier_catalog_version
     assert recipe is not None
     assert recipe.recipe_spec["production"]["catalogVersion"] == production["catalogVersion"]
     assert recipe.recipe_spec["production"]["controls"]["crop_mode"] == "both"
+
+
+def test_christmas_dossier_routes_to_native_vertical_generation_without_a_source_library():
+    payload = publication(pageId="acct:christmas-test", recipeId="pov-seasonal:master")
+    spec = json.loads(payload["recipeSpecCanonical"])
+    intent, revision = master_pages(payload["pageId"], content_niche="XMAS")
+    catalog = build_dossier_ingredient_catalog(payload["pageId"], intent, revision)
+    assert catalog["currentFormatCandidates"] == ["pov-seasonal"]
+    christmas = next(entry for entry in catalog["formats"] if entry["formatId"] == "pov-seasonal")
+    model = next(entry for entry in christmas["ingredients"] if entry["ingredientId"] == "visual-model")
+    assert model["options"][0]["controls"] == {}
+    selection, = christmas["productionSelections"]
+    assert selection["sourceLibraryId"] is None
+    assert selection["referenceSetId"] is None
+    spec.update(
+        schema="dossier.recipe-spec.v3",
+        masterPages=intent,
+        masterPagesHash=revision,
+        demand={"formatMix": {"pov-seasonal": 1.0}},
+        production={**selection, "variationValues": {}, "controls": {}},
+    )
+    payload["recipeSpecCanonical"] = json.dumps(spec, sort_keys=True, separators=(",", ":"))
+
+    recipe = resolve_generation_recipe(payload)
+    assert recipe is not None
+    assert recipe.planned_provider_calls(3) == 3
+    assert recipe.provider_model == "minimax/h3-highspeed"
+    assert recipe.provider_config["cost_per_gen_usd"] == 0.24
+    assert per_gen_cost_usd(recipe.engine, 8, resolution="768p") == 0.24
+    assert prompt_combination_space(recipe) == 320
+    prompt, _ = compose_prompt(recipe, "christmas-test", 0)
+    options = new_generation_options(recipe)
+    assert "crop_mode" not in options
+    assert options == {"aspect_ratio": "9:16", "duration": 8, "resolution": "768p"}
+    assert _build_h3_highspeed_input(prompt, options) == {
+        "prompt": prompt, "ratio": "9:16", "duration": 8,
+    }
+    assert PROVIDERS[recipe.engine]["strip_audio"] is True
+
+
+def test_h3_audio_removal_preserves_video_packets(tmp_path):
+    path = tmp_path / "h3.mp4"
+    subprocess.run(
+        ["ffmpeg", "-v", "error", "-f", "lavfi", "-i", "color=size=64x112:rate=24",
+         "-f", "lavfi", "-i", "sine", "-t", "1", "-c:v", "libx264", "-c:a", "aac", str(path)],
+        check=True,
+    )
+
+    def probe():
+        return json.loads(subprocess.check_output(
+            ["ffprobe", "-v", "error", "-show_streams", "-show_packets",
+             "-show_data_hash", "sha256", "-of", "json", str(path)],
+        ))
+
+    before = probe()
+    _strip_video_audio(path)
+    after = probe()
+    assert [s["codec_type"] for s in before["streams"]] == ["video", "audio"]
+    assert [s["codec_type"] for s in after["streams"]] == ["video"]
+    assert [p["data_hash"] for p in after["packets"]] == [
+        p["data_hash"] for p in before["packets"] if p["codec_type"] == "video"
+    ]
 
 
 def test_typed_v4_truck_recipe_preserves_the_control_plane_caption_selection():
@@ -333,6 +406,28 @@ def test_only_the_silhouette_flux_recipe_sends_a_raised_safety_tolerance():
         assert "safety_tolerance" not in generation_options(other)
 
 
+@pytest.mark.parametrize("format_slug", ["truck-scenic", "boat-lake"])
+def test_new_hailuo_jobs_use_768p_six_seconds_even_with_saved_premium_controls(format_slug):
+    recipe = resolve_generation_recipe(_format_publication(
+        format_slug, f"{format_slug}:master", "ai_video",
+    ))
+    recipe.recipe_spec["production"] = {"controls": {"resolution": "1080p", "duration": 10}}
+    original = generation_options(recipe)
+    economical = new_generation_options(recipe)
+    assert economical == {**original, "resolution": "768p", "duration": 6}
+    assert economical["crop_mode"] == "both"
+    # Old paid predictions can still reconstruct the identical original input.
+    assert generation_options(recipe) == original
+    assert original["resolution"] == "1080p" and original["duration"] == 10
+
+
+def test_new_job_economy_options_leave_other_models_unchanged():
+    recipe = resolve_generation_recipe(_format_publication(
+        "silhouette-truck", "silhouette-truck:master", "ai_video",
+    ))
+    assert new_generation_options(recipe) == generation_options(recipe)
+
+
 def test_safety_tolerance_leaves_the_silhouette_catalog_and_prompt_plan_unchanged():
     # The silhouette catalog bytes are its version and the prompt-plan
     # authority; the moderation level must not re-version saved recipes.
@@ -546,3 +641,52 @@ def test_frame_fit_without_a_frame_or_unknown_is_not_executable(render):
     spec["renderTreatment"].update(render)
     payload["recipeSpecCanonical"] = json.dumps(spec, sort_keys=True, separators=(",", ":"))
     assert resolve_generation_recipe(payload) is None
+
+
+def _logged_reason(caplog):
+    lines = [r.getMessage() for r in caplog.records if "registered dossier recipe unavailable" in r.getMessage()]
+    assert len(lines) == 1, lines
+    return lines[0].rsplit("reason=", 1)[1]
+
+
+def test_unavailable_reason_returns_the_exact_logged_reason(monkeypatch, caplog):
+    """zeroPlanRecipes ``detail`` is the resolver's own logged reason= string,
+    exercised through the REAL function (no stub), for three failure cases;
+    each case must equal its own logged reason, and the two causes the test
+    compares as distinct (engine mismatch vs generation mode off) are asserted
+    non-equal."""
+    from services.control_plane_generation import generation_recipe_unavailable_reason
+    import logging
+
+    # A recipe that resolves has no reason.
+    assert resolve_generation_recipe(publication()) is not None
+    assert generation_recipe_unavailable_reason(publication()) is None
+
+    cases = []
+    cases.append(("engine", lambda: publication(engine="wan-i2v-fast")))
+
+    def mode_off():
+        monkeypatch.setenv("CONTENT_LAB_GENERATION_MODE", "off")
+        return publication()
+
+    def no_key():
+        monkeypatch.setenv("CONTENT_LAB_GENERATION_MODE", "ready")
+        monkeypatch.setitem(API_KEYS, "replicate", None)
+        return publication()
+
+    cases.append(("mode_off", mode_off))
+    cases.append(("no_key", no_key))
+    seen = {}
+    for name, make in cases:
+        payload = make()
+        caplog.clear()
+        with caplog.at_level(logging.WARNING):
+            assert resolve_generation_recipe(payload) is None
+        logged = _logged_reason(caplog)
+        caplog.clear()
+        with caplog.at_level(logging.WARNING):
+            got = generation_recipe_unavailable_reason(payload)
+        assert got is not None and got == logged, (name, got, logged)
+        seen[name] = got
+    # The reasons are real, distinct causes, not one collapsed label.
+    assert seen["engine"] != seen["mode_off"], seen

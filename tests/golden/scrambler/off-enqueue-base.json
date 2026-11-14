@@ -1,0 +1,516 @@
+{
+ "artifacts": {
+  "artifacts": [
+   {
+    "bytes": 494,
+    "sha256": "57ec932ddca20d57134f400e41f7843c9e9a6aba0fe2c8e281c7d2622aa49672",
+    "source": {
+     "contentEngine": "sourced_video",
+     "contentNiche": "POV - Dirtbike",
+     "cutWindow": {
+      "durationMs": 6000,
+      "libraryEndMs": 83000,
+      "libraryStartMs": 77000,
+      "originalEndMs": 203000,
+      "originalStartMs": 197000
+     },
+     "master": {
+      "bytes": 414027449,
+      "durationMs": 180000,
+      "filename": "fixture_master.mp4",
+      "mimeType": "video/mp4",
+      "provenance": {
+       "acquiredAt": "2026-07-29T17:37:41Z",
+       "authority": "test fixture: operator-reviewed original footage (non-retired)",
+       "sourceUrl": "https://www.youtube.com/watch?v=vt5im2TRAKw"
+      },
+      "sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "sourceId": "youtube-fixture-120-300",
+      "sourceOffsetMs": 120000,
+      "storageKey": "source-dna/pov-dirt-bike/tt-fixture-dirt-bike/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee.mp4"
+     },
+     "masterPagesHash": "sha256:06d7988c4495fbfbf866eff078c434d686fd85bbb30854fadab6fef7440f8530",
+     "pageId": "tt-fixture-dirt-bike",
+     "recipeId": "pov-dirt-bike:master",
+     "sourceLibraryId": "pov-dirt-bike-fixture-v1",
+     "sourceLibraryVersion": "sha256:db1247b9ee3366fd5488970947082cea84ba9474ad4d627203d3ba6f3901c746",
+     "vaultUrl": "https://shipstream.test/vault/chase.miles.4l"
+    },
+    "sourceTreatment": {
+     "generationJobId": "cpl-ffffffffffffffff",
+     "recipeSpecHash": "sha256:5be10a893d55d9dcccf70b06083969fcc4f98cc8c5219959b1733c8cdd5d20bb",
+     "schema": "content-lab.source-treatment.v1",
+     "sourceRecipeTreatment": {
+      "captionStyle": {},
+      "clipCrop": {
+       "focusX": 0.5,
+       "focusY": 0.5,
+       "zoom": 1.0
+      },
+      "clipSpeed": 1.0,
+      "filters": {},
+      "stylePreset": null
+     },
+     "sourceSha256": "57ec932ddca20d57134f400e41f7843c9e9a6aba0fe2c8e281c7d2622aa49672",
+     "visualTreatment": {
+      "clipCrop": {
+       "focusX": 0.5,
+       "focusY": 0.5,
+       "zoom": 1.0
+      },
+      "clipSpeed": 1.0,
+      "filters": {
+       "brightness": 1.0,
+       "contrast": 1.0,
+       "fade": 0.0,
+       "grain": 0.0,
+       "saturation": 1.0,
+       "vignette": 0.0,
+       "warmth": 0.0
+      }
+     }
+    },
+    "thumbnail": {
+     "bytes": 14,
+     "sha256": "a15e98193da4cce55486e251fb883417f02b0597cae7456f2a59b857a801d81b",
+     "type": "image/jpeg",
+     "url": "http://testserver/api/control-plane/v1/jobs/cpl-ffffffffffffffff/thumbnail/0?token=gggggggggggggggggggggggg"
+    },
+    "type": "video",
+    "url": "http://testserver/api/control-plane/v1/jobs/cpl-ffffffffffffffff/download/0?token=gggggggggggggggggggggggg"
+   },
+   {
+    "bytes": 565,
+    "sha256": "b92ebff96d68e4d25ca105016970dba2d763ea925453885fd6958273fafe871f",
+    "source": {
+     "contentEngine": "sourced_video",
+     "contentNiche": "POV - Dirtbike",
+     "cutWindow": {
+      "durationMs": 8500,
+      "libraryEndMs": 157500,
+      "libraryStartMs": 149000,
+      "originalEndMs": 277500,
+      "originalStartMs": 269000
+     },
+     "master": {
+      "bytes": 414027449,
+      "durationMs": 180000,
+      "filename": "fixture_master.mp4",
+      "mimeType": "video/mp4",
+      "provenance": {
+       "acquiredAt": "2026-07-29T17:37:41Z",
+       "authority": "test fixture: operator-reviewed original footage (non-retired)",
+       "sourceUrl": "https://www.youtube.com/watch?v=vt5im2TRAKw"
+      },
+      "sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "sourceId": "youtube-fixture-120-300",
+      "sourceOffsetMs": 120000,
+      "storageKey": "source-dna/pov-dirt-bike/tt-fixture-dirt-bike/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee.mp4"
+     },
+     "masterPagesHash": "sha256:06d7988c4495fbfbf866eff078c434d686fd85bbb30854fadab6fef7440f8530",
+     "pageId": "tt-fixture-dirt-bike",
+     "recipeId": "pov-dirt-bike:master",
+     "sourceLibraryId": "pov-dirt-bike-fixture-v1",
+     "sourceLibraryVersion": "sha256:db1247b9ee3366fd5488970947082cea84ba9474ad4d627203d3ba6f3901c746",
+     "vaultUrl": "https://shipstream.test/vault/chase.miles.4l"
+    },
+    "sourceTreatment": {
+     "generationJobId": "cpl-ffffffffffffffff",
+     "recipeSpecHash": "sha256:5be10a893d55d9dcccf70b06083969fcc4f98cc8c5219959b1733c8cdd5d20bb",
+     "schema": "content-lab.source-treatment.v1",
+     "sourceRecipeTreatment": {
+      "captionStyle": {},
+      "clipCrop": {
+       "focusX": 0.5,
+       "focusY": 0.5,
+       "zoom": 1.0
+      },
+      "clipSpeed": 1.0,
+      "filters": {},
+      "stylePreset": null
+     },
+     "sourceSha256": "b92ebff96d68e4d25ca105016970dba2d763ea925453885fd6958273fafe871f",
+     "visualTreatment": {
+      "clipCrop": {
+       "focusX": 0.5,
+       "focusY": 0.5,
+       "zoom": 1.0
+      },
+      "clipSpeed": 1.0,
+      "filters": {
+       "brightness": 1.0,
+       "contrast": 1.0,
+       "fade": 0.0,
+       "grain": 0.0,
+       "saturation": 1.0,
+       "vignette": 0.0,
+       "warmth": 0.0
+      }
+     }
+    },
+    "thumbnail": {
+     "bytes": 14,
+     "sha256": "a15e98193da4cce55486e251fb883417f02b0597cae7456f2a59b857a801d81b",
+     "type": "image/jpeg",
+     "url": "http://testserver/api/control-plane/v1/jobs/cpl-ffffffffffffffff/thumbnail/1?token=gggggggggggggggggggggggg"
+    },
+    "type": "video",
+    "url": "http://testserver/api/control-plane/v1/jobs/cpl-ffffffffffffffff/download/1?token=gggggggggggggggggggggggg"
+   }
+  ],
+  "jobId": "cpl-ffffffffffffffff",
+  "schema": "content-lab.response.v1"
+ },
+ "capabilities": {
+  "capabilities": [
+   {
+    "engine": "sourced_video",
+    "maxQuantity": 10,
+    "recipeId": "pov-dirt-bike:master",
+    "recipeVersion": "dossier-feedfacefeedface",
+    "sourceIdentities": [
+     "https://www.youtube.com/watch?v=vt5im2TRAKw"
+    ]
+   }
+  ],
+  "schema": "content-lab.response.v1"
+ },
+ "completedJob": {
+  "artifactRoot": "<TMP>/generated/tt-fixture-dirt-bike/dossier-feedfacefeedface/cpl-ffffffffffffffff",
+  "assetType": "video/mp4",
+  "clips": [
+   {
+    "bytes": 494,
+    "clipCrop": {
+     "focusX": 0.5,
+     "focusY": 0.5,
+     "zoom": 1.0
+    },
+    "clipSpeed": 1.0,
+    "clipTransforms": {
+     "loop_swap": false,
+     "mirror": false,
+     "motion": null,
+     "reverse": false
+    },
+    "name": "source-0000.mp4",
+    "path": "treated/source-0000.mp4",
+    "sha256": "57ec932ddca20d57134f400e41f7843c9e9a6aba0fe2c8e281c7d2622aa49672",
+    "source": {
+     "contentEngine": "sourced_video",
+     "contentNiche": "POV - Dirtbike",
+     "cutWindow": {
+      "durationMs": 6000,
+      "libraryEndMs": 83000,
+      "libraryStartMs": 77000,
+      "originalEndMs": 203000,
+      "originalStartMs": 197000
+     },
+     "master": {
+      "bytes": 414027449,
+      "durationMs": 180000,
+      "filename": "fixture_master.mp4",
+      "mimeType": "video/mp4",
+      "provenance": {
+       "acquiredAt": "2026-07-29T17:37:41Z",
+       "authority": "test fixture: operator-reviewed original footage (non-retired)",
+       "sourceUrl": "https://www.youtube.com/watch?v=vt5im2TRAKw"
+      },
+      "sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "sourceId": "youtube-fixture-120-300",
+      "sourceOffsetMs": 120000,
+      "storageKey": "source-dna/pov-dirt-bike/tt-fixture-dirt-bike/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee.mp4"
+     },
+     "masterPagesHash": "sha256:06d7988c4495fbfbf866eff078c434d686fd85bbb30854fadab6fef7440f8530",
+     "pageId": "tt-fixture-dirt-bike",
+     "recipeId": "pov-dirt-bike:master",
+     "sourceLibraryId": "pov-dirt-bike-fixture-v1",
+     "sourceLibraryVersion": "sha256:db1247b9ee3366fd5488970947082cea84ba9474ad4d627203d3ba6f3901c746",
+     "vaultUrl": "https://shipstream.test/vault/chase.miles.4l"
+    },
+    "sourceTreatment": {
+     "generationJobId": "cpl-ffffffffffffffff",
+     "recipeSpecHash": "sha256:5be10a893d55d9dcccf70b06083969fcc4f98cc8c5219959b1733c8cdd5d20bb",
+     "schema": "content-lab.source-treatment.v1",
+     "sourceRecipeTreatment": {
+      "captionStyle": {},
+      "clipCrop": {
+       "focusX": 0.5,
+       "focusY": 0.5,
+       "zoom": 1.0
+      },
+      "clipSpeed": 1.0,
+      "filters": {},
+      "stylePreset": null
+     },
+     "sourceSha256": "57ec932ddca20d57134f400e41f7843c9e9a6aba0fe2c8e281c7d2622aa49672",
+     "visualTreatment": {
+      "clipCrop": {
+       "focusX": 0.5,
+       "focusY": 0.5,
+       "zoom": 1.0
+      },
+      "clipSpeed": 1.0,
+      "filters": {
+       "brightness": 1.0,
+       "contrast": 1.0,
+       "fade": 0.0,
+       "grain": 0.0,
+       "saturation": 1.0,
+       "vignette": 0.0,
+       "warmth": 0.0
+      }
+     }
+    },
+    "thumbnail": {
+     "bytes": 14,
+     "name": "0000.jpg",
+     "path": "thumbnails/0000.jpg",
+     "sha256": "a15e98193da4cce55486e251fb883417f02b0597cae7456f2a59b857a801d81b"
+    }
+   },
+   {
+    "bytes": 565,
+    "clipCrop": {
+     "focusX": 0.5,
+     "focusY": 0.5,
+     "zoom": 1.0
+    },
+    "clipSpeed": 1.0,
+    "clipTransforms": {
+     "loop_swap": false,
+     "mirror": false,
+     "motion": null,
+     "reverse": true
+    },
+    "name": "source-0001.mp4",
+    "path": "treated/source-0001.mp4",
+    "sha256": "b92ebff96d68e4d25ca105016970dba2d763ea925453885fd6958273fafe871f",
+    "source": {
+     "contentEngine": "sourced_video",
+     "contentNiche": "POV - Dirtbike",
+     "cutWindow": {
+      "durationMs": 8500,
+      "libraryEndMs": 157500,
+      "libraryStartMs": 149000,
+      "originalEndMs": 277500,
+      "originalStartMs": 269000
+     },
+     "master": {
+      "bytes": 414027449,
+      "durationMs": 180000,
+      "filename": "fixture_master.mp4",
+      "mimeType": "video/mp4",
+      "provenance": {
+       "acquiredAt": "2026-07-29T17:37:41Z",
+       "authority": "test fixture: operator-reviewed original footage (non-retired)",
+       "sourceUrl": "https://www.youtube.com/watch?v=vt5im2TRAKw"
+      },
+      "sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "sourceId": "youtube-fixture-120-300",
+      "sourceOffsetMs": 120000,
+      "storageKey": "source-dna/pov-dirt-bike/tt-fixture-dirt-bike/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee.mp4"
+     },
+     "masterPagesHash": "sha256:06d7988c4495fbfbf866eff078c434d686fd85bbb30854fadab6fef7440f8530",
+     "pageId": "tt-fixture-dirt-bike",
+     "recipeId": "pov-dirt-bike:master",
+     "sourceLibraryId": "pov-dirt-bike-fixture-v1",
+     "sourceLibraryVersion": "sha256:db1247b9ee3366fd5488970947082cea84ba9474ad4d627203d3ba6f3901c746",
+     "vaultUrl": "https://shipstream.test/vault/chase.miles.4l"
+    },
+    "sourceTreatment": {
+     "generationJobId": "cpl-ffffffffffffffff",
+     "recipeSpecHash": "sha256:5be10a893d55d9dcccf70b06083969fcc4f98cc8c5219959b1733c8cdd5d20bb",
+     "schema": "content-lab.source-treatment.v1",
+     "sourceRecipeTreatment": {
+      "captionStyle": {},
+      "clipCrop": {
+       "focusX": 0.5,
+       "focusY": 0.5,
+       "zoom": 1.0
+      },
+      "clipSpeed": 1.0,
+      "filters": {},
+      "stylePreset": null
+     },
+     "sourceSha256": "b92ebff96d68e4d25ca105016970dba2d763ea925453885fd6958273fafe871f",
+     "visualTreatment": {
+      "clipCrop": {
+       "focusX": 0.5,
+       "focusY": 0.5,
+       "zoom": 1.0
+      },
+      "clipSpeed": 1.0,
+      "filters": {
+       "brightness": 1.0,
+       "contrast": 1.0,
+       "fade": 0.0,
+       "grain": 0.0,
+       "saturation": 1.0,
+       "vignette": 0.0,
+       "warmth": 0.0
+      }
+     }
+    },
+    "thumbnail": {
+     "bytes": 14,
+     "name": "0001.jpg",
+     "path": "thumbnails/0001.jpg",
+     "sha256": "a15e98193da4cce55486e251fb883417f02b0597cae7456f2a59b857a801d81b"
+    }
+   }
+  ],
+  "constraints": {},
+  "cutPlanSeed": "0ea124c074bc06be",
+  "dossierRevision": "rev-source-dna",
+  "engine": "sourced_video",
+  "engineProfileHash": "sha256:8a9a7b26af2ed22797b7364ed8704642c75108d2ed8cdf670d24f9fde150dbbb",
+  "engineRegistryHash": "4c8de21caa2e3fefbfc6b2ba659a3e029321e576ef0291f9213497043a4f31ed",
+  "executorVersion": "sha256:2d0dd20fad4302f799272e7d5e1ba7de1ecb8b9a85646f68cf9720ac14569171",
+  "formatContractVersion": "sha256:f04e1ffa16ae787111ebb0a102397a196e25f92ddf9ddbb77048b18dee21fbcf",
+  "idempotencyKey": "scrambler-off-golden",
+  "jobId": "cpl-ffffffffffffffff",
+  "jobRequestHash": "sha256:54f00ed3bcfbe86f4088ea8a0aebd19a3952b24063b226e228a6258ca1835315",
+  "lane": "content-bucket-control-plane",
+  "masterPages": {
+   "accountType": "TRUCK",
+   "archived": false,
+   "automationMode": "Automation",
+   "contentEngine": "sourced_video",
+   "contentNiche": "POV - Dirtbike",
+   "group": "INTERNAL",
+   "groupLabel": "Internal",
+   "handle": "chase.miles.4l",
+   "notionPageId": "notion-tt-fixture-dirt-bike",
+   "pageId": "tt-fixture-dirt-bike",
+   "pageType": "TikTok",
+   "pipeline": "Content Lab",
+   "posterName": "PIXEL-1",
+   "project": null,
+   "schema": "master-pages.page-intent.v1",
+   "soundsReference": null,
+   "source": "notion",
+   "status": "Active",
+   "tiktokUrl": "https://www.tiktok.com/@chase.miles.4l",
+   "vaultUrl": "https://shipstream.test/vault/chase.miles.4l"
+  },
+  "masterPagesHash": "sha256:06d7988c4495fbfbf866eff078c434d686fd85bbb30854fadab6fef7440f8530",
+  "materialSource": "source_library",
+  "pageId": "tt-fixture-dirt-bike",
+  "policyHash": "sha256:policy",
+  "progress": 100,
+  "quantityRequested": 2,
+  "recipeId": "pov-dirt-bike:master",
+  "recipePublicationPageId": "tt-fixture-dirt-bike",
+  "recipeSpecHash": "sha256:5be10a893d55d9dcccf70b06083969fcc4f98cc8c5219959b1733c8cdd5d20bb",
+  "recipeVersion": "dossier-feedfacefeedface",
+  "sourceCuts": [
+   {
+    "durationMs": 6000,
+    "libraryStartMs": 77000,
+    "masterSha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    "slotId": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee:77000:6000",
+    "startMs": 77000
+   },
+   {
+    "durationMs": 8500,
+    "libraryStartMs": 149000,
+    "masterSha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    "slotId": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee:149000:8500",
+    "startMs": 149000
+   }
+  ],
+  "sourceIsolation": {
+   "partitionKey": "page:tt-fixture-dirt-bike"
+  },
+  "sourceKind": "dossier_source_dna",
+  "sourceLibraryHash": "db1247b9ee3366fd5488970947082cea84ba9474ad4d627203d3ba6f3901c746",
+  "sourceLibraryId": "pov-dirt-bike-fixture-v1",
+  "status": "completed",
+  "token": "gggggggggggggggggggggggg"
+ },
+ "completedResponse": {
+  "jobId": "cpl-ffffffffffffffff",
+  "progress": 100,
+  "schema": "content-lab.response.v1",
+  "status": "completed"
+ },
+ "job": {
+  "artifactRoot": "<TMP>/generated/tt-fixture-dirt-bike/dossier-feedfacefeedface/cpl-ffffffffffffffff",
+  "assetType": "video/mp4",
+  "clips": [],
+  "constraints": {},
+  "cutPlanSeed": "0ea124c074bc06be",
+  "dossierRevision": "rev-source-dna",
+  "engine": "sourced_video",
+  "engineProfileHash": "sha256:8a9a7b26af2ed22797b7364ed8704642c75108d2ed8cdf670d24f9fde150dbbb",
+  "engineRegistryHash": "4c8de21caa2e3fefbfc6b2ba659a3e029321e576ef0291f9213497043a4f31ed",
+  "executorVersion": "sha256:2d0dd20fad4302f799272e7d5e1ba7de1ecb8b9a85646f68cf9720ac14569171",
+  "formatContractVersion": "sha256:f04e1ffa16ae787111ebb0a102397a196e25f92ddf9ddbb77048b18dee21fbcf",
+  "idempotencyKey": "scrambler-off-golden",
+  "jobId": "cpl-ffffffffffffffff",
+  "jobRequestHash": "sha256:54f00ed3bcfbe86f4088ea8a0aebd19a3952b24063b226e228a6258ca1835315",
+  "lane": "content-bucket-control-plane",
+  "masterPages": {
+   "accountType": "TRUCK",
+   "archived": false,
+   "automationMode": "Automation",
+   "contentEngine": "sourced_video",
+   "contentNiche": "POV - Dirtbike",
+   "group": "INTERNAL",
+   "groupLabel": "Internal",
+   "handle": "chase.miles.4l",
+   "notionPageId": "notion-tt-fixture-dirt-bike",
+   "pageId": "tt-fixture-dirt-bike",
+   "pageType": "TikTok",
+   "pipeline": "Content Lab",
+   "posterName": "PIXEL-1",
+   "project": null,
+   "schema": "master-pages.page-intent.v1",
+   "soundsReference": null,
+   "source": "notion",
+   "status": "Active",
+   "tiktokUrl": "https://www.tiktok.com/@chase.miles.4l",
+   "vaultUrl": "https://shipstream.test/vault/chase.miles.4l"
+  },
+  "masterPagesHash": "sha256:06d7988c4495fbfbf866eff078c434d686fd85bbb30854fadab6fef7440f8530",
+  "materialSource": "source_library",
+  "pageId": "tt-fixture-dirt-bike",
+  "policyHash": "sha256:policy",
+  "progress": 0,
+  "quantityRequested": 2,
+  "recipeId": "pov-dirt-bike:master",
+  "recipePublicationPageId": "tt-fixture-dirt-bike",
+  "recipeSpecHash": "sha256:5be10a893d55d9dcccf70b06083969fcc4f98cc8c5219959b1733c8cdd5d20bb",
+  "recipeVersion": "dossier-feedfacefeedface",
+  "sourceCuts": [
+   {
+    "durationMs": 6000,
+    "libraryStartMs": 77000,
+    "masterSha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    "slotId": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee:77000:6000",
+    "startMs": 77000
+   },
+   {
+    "durationMs": 8500,
+    "libraryStartMs": 149000,
+    "masterSha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    "slotId": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee:149000:8500",
+    "startMs": 149000
+   }
+  ],
+  "sourceIsolation": {
+   "partitionKey": "page:tt-fixture-dirt-bike"
+  },
+  "sourceKind": "dossier_source_dna",
+  "sourceLibraryHash": "db1247b9ee3366fd5488970947082cea84ba9474ad4d627203d3ba6f3901c746",
+  "sourceLibraryId": "pov-dirt-bike-fixture-v1",
+  "status": "queued",
+  "token": "gggggggggggggggggggggggg"
+ },
+ "response": {
+  "jobId": "cpl-ffffffffffffffff",
+  "schema": "content-lab.response.v1",
+  "status": "queued"
+ }
+}

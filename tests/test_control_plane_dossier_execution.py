@@ -17,6 +17,13 @@ from services.content_engine_registry import REGISTRY_PATH
 from tests.master_pages_fixtures import bind_current_intent, master_pages
 
 
+@pytest.fixture(autouse=True)
+def _advertise_zero_reasons(monkeypatch):
+    """These tests check the zero-plan reason fields, which the Lab sends
+    only when CONTENT_LAB_ADVERTISE_ZERO_REASONS is on."""
+    monkeypatch.setenv("CONTENT_LAB_ADVERTISE_ZERO_REASONS", "1")
+
+
 TOKEN = "test-control-plane-token"
 PAGE_ID = "tt-tucker-reeves"
 HEADERS = {
@@ -310,6 +317,7 @@ def test_capability_reaches_zero_when_every_active_prompt_is_reserved(lab, statu
         "engine": "ai_video",
         "recipeVersion": "dossier-1234567890abcdef",
         "maxQuantity": 0,
+        "zeroReason": "prompt_inventory_exhausted",
     }]
 
     response = client.post(
@@ -319,7 +327,92 @@ def test_capability_reaches_zero_when_every_active_prompt_is_reserved(lab, statu
     )
     assert response.status_code == 409
     assert response.json()["detail"] == "prompt_inventory_exhausted"
+    assert response.headers.get("X-RT-Zero-Reason") == "prompt_inventory_exhausted"
     assert started == []
+
+
+@pytest.mark.parametrize("candidate_state, expected_quantity", [
+    ("eligible", 5),
+    ("stale_profile", 0),
+    ("active_recovery", 0),
+    ("archived_recovery", 0),
+])
+def test_capability_counts_only_unreserved_current_truck_master_when_prompts_exhausted(
+    lab, monkeypatch, candidate_state, expected_quantity,
+):
+    client, tmp_path, _ = lab
+    publication = recipes.load_registered_recipe(
+        PAGE_ID, "truck-scenic:master", "ai_video", "dossier-1234567890abcdef",
+    )
+    recipe = cp.resolve_generation_recipe(publication)
+    assert recipe is not None
+    assert recipe.engine == "hailuo"  # Provider engine, not job content engine.
+    every_prompt = cp.plan_prompt_combinations(
+        recipe, "reserve-the-whole-effective-space",
+        cp.prompt_combination_space(recipe), set(),
+    )
+    assert len(every_prompt) == cp.prompt_combination_space(recipe)
+
+    root = tmp_path / "paid-master"
+    root.mkdir()
+    master = root / "original.mp4"
+    master.write_bytes(b"preserved-landscape-provider-master")
+    master_sha = hashlib.sha256(master.read_bytes()).hexdigest()
+    intent, revision = master_pages(PAGE_ID, handle="tucker.reeves")
+    authority = current_generation_authority()
+    if candidate_state == "stale_profile":
+        authority["engineProfileHash"] = "sha256:" + "0" * 64
+    producer_id = "cpl-1111111111111111"
+    producer = {
+        **authority,
+        "jobId": producer_id, "pageId": PAGE_ID, "sourceKind": "generated",
+        "status": "completed", "recipeSpecHash": publication["recipeSpecHash"],
+        "artifactRoot": str(root), "createdAt": "2026-08-30T00:00:00+00:00",
+        "clips": [{
+            "path": master.name, "sha256": master_sha, "bytes": master.stat().st_size,
+            "sourceTreatment": source_treatment_for(producer_id, master_sha),
+            "source": {
+                "pageId": PAGE_ID, "recipeId": recipe.recipe_id,
+                "contentNiche": intent["contentNiche"],
+                "contentEngine": intent["contentEngine"],
+                "masterPagesHash": revision,
+            },
+        }],
+    }
+    store = cp._load_jobs()
+    store["jobs"][producer_id] = producer
+    store["jobs"]["cpl-2222222222222222"] = {
+        **current_generation_authority(),
+        "jobId": "cpl-2222222222222222", "pageId": PAGE_ID,
+        "sourceKind": "generated", "status": "running",
+        "family": recipe.family_name, "promptPlan": every_prompt, "clips": [],
+    }
+    if candidate_state == "active_recovery":
+        store["jobs"]["cpl-3333333333333333"] = {
+            "jobId": "cpl-3333333333333333", "pageId": PAGE_ID,
+            "sourceKind": "truck_master_recovery", "status": "running",
+            "recoveryMasters": [{"sha256": master_sha}],
+        }
+    if candidate_state == "archived_recovery":
+        store[cp.compaction.ARCHIVE_INDEX_KEY] = {
+            "truckRecoveryMasters": [master_sha],
+        }
+    cp.atomic_save(cp._jobs_path(), store)
+    # The file is real; video-probe mechanics are covered separately.
+    monkeypatch.setattr(cp, "_is_exact_16x9_video", lambda path: path == master)
+
+    response = client.get(
+        "/api/control-plane/v1/capabilities", headers={"X-RT-Page-Id": PAGE_ID, "Authorization": f"Bearer {TOKEN}"},
+    )
+    assert response.status_code == 200
+    expected = {
+        "recipeId": recipe.recipe_id, "engine": "ai_video",
+        "recipeVersion": publication["recipeVersion"],
+        "maxQuantity": expected_quantity,
+    }
+    if expected_quantity == 0:
+        expected["zeroReason"] = "prompt_inventory_exhausted"
+    assert response.json()["capabilities"] == [expected]
 
 
 
@@ -1237,6 +1330,8 @@ async def test_truck_recovery_cancel_is_terminal_and_preserves_candidate_root(la
     publication = recipe_publication()
     spec = json.loads(publication["recipeSpecCanonical"])
     store["jobs"][job_id] = {"jobId": job_id, "pageId": PAGE_ID, "status": "queued",
+        "sourceKind": "truck_master_recovery", "truckRecoveryClaimVersion": 1,
+        "truckRecoveryAttemptId": "test-attempt", "runtimeId": cp._GENERATION_RUNTIME_ID,
         "recipeId": publication["recipeId"], "engine": publication["engine"],
         "recipeVersion": publication["recipeVersion"], "recipeSpecHash": publication["recipeSpecHash"],
         "masterPages": spec["masterPages"], "masterPagesHash": spec["masterPagesHash"],
@@ -1626,3 +1721,102 @@ async def test_generation_cuts_fill_when_a_candidate_size_is_unprovable(lab, mon
                             "page_frame": "16:9", "frame_fit": "fill"}] * 5
     assert caplog.text.count("its display size is unavailable (timeout)") == 5
     assert all(clip["frameCut"] == {"frame": "16:9", "frameFit": "fill"} for clip in stored["clips"])
+
+
+def test_numeric_policy_hash_create_and_lost_ack_lookup_agree(lab):
+    client, _, started = lab
+    body = job_body(quantity=1, policyHash=123)
+    created = client.post(
+        "/api/control-plane/v1/jobs", json=body, headers=HEADERS,
+    )
+    assert created.status_code == 200
+    job_id = created.json()["jobId"]
+    assert cp._load_jobs()["jobs"][job_id]["policyHash"] == "123"
+    before_lookup = cp._jobs_path().read_bytes()
+
+    recovered = client.post(
+        "/api/control-plane/v1/job-receipts/by-idempotency-key",
+        json=body,
+        headers=HEADERS,
+    )
+
+    assert recovered.status_code == 200
+    assert recovered.json() == {
+        "schema": cp.RESPONSE_SCHEMA,
+        "jobId": job_id,
+        "status": "queued",
+    }
+    assert cp._jobs_path().read_bytes() == before_lookup
+    assert started == [job_id]
+
+
+def test_numeric_page_id_create_and_lost_ack_lookup_agree(lab, monkeypatch):
+    client, _, started = lab
+    intent, revision = master_pages("123", handle="tucker.reeves")
+    bind_current_intent(monkeypatch, cp, intent, revision)
+    headers = {**HEADERS, "X-RT-Page-Id": "123", "Idempotency-Key": "123:policy:source"}
+    publication = recipe_publication()
+    spec = json.loads(publication["recipeSpecCanonical"])
+    spec.update(masterPages=intent, masterPagesHash=revision)
+    canonical = json.dumps(spec, sort_keys=True, separators=(",", ":"))
+    publication.update(
+        pageId="123", recipeSpecCanonical=canonical,
+        recipeSpecHash="sha256:" + hashlib.sha256(canonical.encode()).hexdigest(),
+    )
+    registered = client.post(
+        "/api/control-plane/v1/recipes", json=publication, headers=headers,
+    )
+    assert registered.status_code == 200
+    body = job_body(
+        quantity=1, pageId=123, masterPages=intent, masterPagesHash=revision,
+        sourceIsolation={"partitionKey": "page:123"},
+    )
+    created = client.post("/api/control-plane/v1/jobs", json=body, headers=headers)
+    assert created.status_code == 200
+    job_id = created.json()["jobId"]
+    assert cp._load_jobs()["jobs"][job_id]["pageId"] == "123"
+    before_lookup = cp._jobs_path().read_bytes()
+
+    recovered = client.post(
+        "/api/control-plane/v1/job-receipts/by-idempotency-key", json=body, headers=headers,
+    )
+
+    assert recovered.status_code == 200
+    assert recovered.json() == {"schema": cp.RESPONSE_SCHEMA, "jobId": job_id, "status": "queued"}
+    assert cp._jobs_path().read_bytes() == before_lookup
+    assert started == [job_id]
+
+
+@pytest.mark.parametrize("field", ["engine", "lockedRecipeId", "recipeVersion", "policyHash"])
+def test_trimmed_job_identity_create_and_lost_ack_lookup_agree(lab, field):
+    client, _, started = lab
+    body = job_body(quantity=1)
+    body[field] = f" {body[field]} "
+    created = client.post("/api/control-plane/v1/jobs", json=body, headers=HEADERS)
+    assert created.status_code == 200
+    before_lookup = cp._jobs_path().read_bytes()
+
+    recovered = client.post(
+        "/api/control-plane/v1/job-receipts/by-idempotency-key", json=body, headers=HEADERS,
+    )
+
+    assert recovered.status_code == 200
+    assert recovered.json() == created.json()
+    assert cp._jobs_path().read_bytes() == before_lookup
+    assert started == [created.json()["jobId"]]
+
+
+@pytest.mark.parametrize("overrides", [
+    {"pageId": f" {PAGE_ID} "},
+    {"lane": 123},
+    {"lane": f" {recipes.LANE} "},
+    {"policyHash": False},
+])
+def test_create_and_lookup_preserve_invalid_identity_refusals(lab, overrides):
+    client, _, started = lab
+    body = job_body(quantity=1, **overrides)
+    for route in ("jobs", "job-receipts/by-idempotency-key"):
+        response = client.post(f"/api/control-plane/v1/{route}", json=body, headers=HEADERS)
+        assert response.status_code == 400
+    assert not cp._jobs_path().exists()
+    assert started == []

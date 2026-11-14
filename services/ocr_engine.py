@@ -16,6 +16,8 @@ from __future__ import annotations
 import hashlib
 import os
 import threading
+import time
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as _FutureTimeout
 from pathlib import Path
 
 _ALLOWED = {"tesseract", "ppocr"}
@@ -135,14 +137,13 @@ def _alnum_count(text: str) -> int:
     return sum(ch.isalnum() for ch in text)
 
 
-def recognize(frame: bytes, width: int, height: int) -> str:
-    """Return positive-evidence text for one decoded RGB frame, or "".
+# Single bounded worker for PP-OCR inference. max_workers=1 means a wedged call
+# serializes (and therefore times out) any later frame instead of queueing work
+# behind the scanner gate without limit.
+_INFERENCE_POOL = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ppocr-inference")
 
-    Mirrors the tesseract word rule exactly: a region is positive evidence when
-    its confidence >= OCR_WORD_CONFIDENCE and its string has >= OCR_MIN_ALNUM
-    alphanumerics. Positive regions are joined into one space-separated string
-    capped at 500 chars (same shape as ``_recognized_words``).
-    """
+
+def _recognize_inner(frame: bytes, width: int, height: int) -> str:
     import numpy as np
     from PIL import Image
 
@@ -156,3 +157,32 @@ def recognize(frame: bytes, width: int, height: int) -> str:
             if float(confidence) * 100 >= OCR_WORD_CONFIDENCE and _alnum_count(text) >= OCR_MIN_ALNUM:
                 words.append(text)
     return " ".join(words)[:500]
+
+
+def recognize(frame: bytes, width: int, height: int, *, deadline: float | None = None) -> str:
+    """Return positive-evidence text for one decoded RGB frame, or "".
+
+    Mirrors the tesseract word rule exactly: a region is positive evidence when
+    its confidence >= OCR_WORD_CONFIDENCE and its string has >= OCR_MIN_ALNUM
+    alphanumerics. Positive regions are joined into one space-separated string
+    capped at 500 chars (same shape as ``_recognized_words``).
+
+    ``deadline`` is a ``time.monotonic()`` timestamp. When supplied, the whole
+    engine call — the one-time model load/burn-in plus the per-frame inference —
+    runs inside a bounded worker and is abandoned if it exceeds the remaining
+    budget, so a hung PP-OCR inference fails closed and frees the scanner gate
+    instead of holding it past the per-frame/whole-scan deadline.
+    """
+    remaining = None if deadline is None else deadline - time.monotonic()
+    if remaining is not None and remaining <= 0:
+        raise RuntimeError("scan_timeout")
+    if remaining is None:
+        return _recognize_inner(frame, width, height)
+    future = _INFERENCE_POOL.submit(_recognize_inner, frame, width, height)
+    try:
+        return future.result(timeout=remaining)
+    except _FutureTimeout:
+        # The worker may keep running a wedged native call; fail closed now and
+        # let the scanner gate be released regardless.
+        future.cancel()
+        raise RuntimeError("scan_timeout") from None

@@ -1,11 +1,13 @@
 """Real Lab admission/runner path with captured provider and renderer boundaries."""
 import hashlib
 import json
+import subprocess
 from pathlib import Path
 import pytest
 import tests.test_control_plane_slideshow_execution as base
 import services.control_plane_slideshows as ss
 import services.control_plane_image_video as iv
+import services.control_plane_plan_reasons as reasons
 import routers.control_plane as cp
 
 @pytest.fixture(params=[
@@ -14,7 +16,16 @@ import routers.control_plane as cp
 ])
 def image_lab(request,monkeypatch,tmp_path):
     page,handle,format_slug,engine,niche,notion=request.param;photo=iv.image_video_plan(page)
-    library=ss.SyzygyLibrary(photo['libraryId'],photo['lane'],photo['subject'],tuple(ss.SyzygyObject(x['key'],x['bytes'],'https://r2.example/'+x['key'])for x in photo['media']),'c'*64)
+    # The live libraries carry the approved pinned objects plus the page's own
+    # pexels orphans (SHA-256 embedded in the filename). Those orphans are what
+    # the variants draw from, so the fixture mirrors the real library shape.
+    base_objects = [ss.SyzygyObject(x['key'],x['bytes'],'https://r2.example/'+x['key']) for x in photo['media']]
+    extras = []
+    for index in range(3):
+        sha = hashlib.sha256(f"{page}-extra-{index}".encode()).hexdigest()
+        key = f"{photo['lane']}/{photo['subject']}/photos/pexels_extra_{index:02d}_{sha}.jpg"
+        extras.append(ss.SyzygyObject(key, 10_000 + index, 'https://r2.example/'+key))
+    library=ss.SyzygyLibrary(photo['libraryId'],photo['lane'],photo['subject'],tuple(sorted(base_objects + extras, key=lambda o: o.key)),'c'*64)
     for key,value in {'PAGE_ID':page,'HANDLE':handle,'SUBJECT':photo['subject'],'LANE':photo['lane'],'FORMAT':format_slug,'ENGINE':engine,'NICHE':niche,'LIBRARY_ID':photo['libraryId'],'RECIPE_ID':format_slug+':master'}.items():monkeypatch.setattr(base,key,value)
     # These are the actual observed Notion tuples, not a slideshow-normalized Twin.
     original_master_pages = base.master_pages
@@ -35,15 +46,50 @@ def image_lab(request,monkeypatch,tmp_path):
     client,tmp_path,started,library,payload=base.lab.__wrapped__(monkeypatch,tmp_path)
     return client,library,payload,photo
 
+
+def _library_pins(photo, library):
+    """key -> (bytes, sha256) for every library object.
+
+    The pinned photo media carry their executor sha256; the extra orphans carry
+    it embedded in the filename, exactly as the variant generator resolves them.
+    """
+    pins = {x['key']: (x['bytes'], x['sha256']) for x in photo['media']}
+    for obj in library.objects:
+        if obj.key in pins:
+            continue
+        sha = obj.key.rsplit('/', 1)[-1].rsplit('.', 1)[0].split('_')[-1]
+        pins[obj.key] = (obj.bytes, sha)
+    return pins
+
+
+def test_image_video_short_plan_explainer_names_plan_available_not_library_mismatch(image_lab):
+    client, library, payload, photo = image_lab
+    if photo["pageId"] != "acct:pen-pal3":
+        pytest.skip("pen.pal3 is the multi-variant page this partial-plan probe needs")
+    recipe = ss.resolve_slideshow_recipe(payload, require_runtime=False)
+    assert recipe is not None
+    variants = iv.image_video_variant_plans(photo["pageId"], library)
+    assert len(variants) > 1
+    reserved = {plan["signature"] for plan in variants[:-1]}
+    # 1 variant of N left, asking 3: the planner returns the one remaining plan
+    # (partial, not empty) and the explainer must name the caller's bug, never
+    # "re-point the recipe".
+    plans = ss.plan_slideshows(recipe, library, 3, reserved, "run-a")
+    assert len(plans) == 1
+    assert reasons.explain_empty_slideshow_plan(recipe, library, 3, reserved) \
+        == reasons.PLAN_AVAILABLE
+
+
 @pytest.mark.asyncio
-async def test_managed_photo_admission_wire_grade_provenance_and_refill(image_lab,monkeypatch):
+async def test_managed_photo_admission_wire_grade_provenance_and_variants(image_lab,monkeypatch):
     client,library,payload,photo=image_lab
     response=client.post('/api/control-plane/v1/jobs',json=base.job_body(1,payload),headers=base.headers('image-run-1'))
     assert response.status_code==200,response.json();job_id=response.json()['jobId'];captured=[];grades=[]
     base._fake_syzygy_boundary(monkeypatch,library)
-    async def observe(_lib,keys):return [{'objectKey':x['key'],'bytes':x['bytes'],'sha256':x['sha256'],'etag':'"pinned"'} for x in photo['media'] if x['key'] in keys]
+    pins=_library_pins(photo,library)
+    async def observe(_lib,keys):return [{'objectKey':k,'bytes':pins[k][0],'sha256':pins[k][1],'etag':'"pinned"'} for k in keys]
     async def request(method,endpoint,**kwargs):captured.append((method,endpoint,kwargs));return {'job_id':'real-boundary-fixture','quality':'draft'}
-    async def grade(src,dst,correction,**kwargs):grades.append(correction);Path(dst).write_bytes(json.dumps(captured[-1][2]['body']['spec'],sort_keys=True).encode())
+    async def grade(src,dst,correction,**kwargs):grades.append(correction);Path(dst).write_bytes(b'fixture-managed-photo-output')
     monkeypatch.setattr(cp,'observe_library_media',observe);monkeypatch.setattr(cp,'submit_syzygy_render',ss.submit_syzygy_render);monkeypatch.setattr(ss,'_request_json',request);monkeypatch.setattr(cp,'run_color_correct',grade)
     await cp._run_syzygy_slideshow(job_id);job=cp._load_jobs()['jobs'][job_id];assert job['status']=='completed',job.get('error')
     assert len(captured)==1 and len(grades)==1
@@ -54,22 +100,69 @@ async def test_managed_photo_admission_wire_grade_provenance_and_refill(image_la
     assert clip['source']['contentEngine']==base.ENGINE
     assert clip['sourceTreatment']['visualTreatment']['filters']['brightness']==.85
     assert clip['sourceTreatment']['sourceSha256']==clip['sha256']
+    # Reserving the approved plan no longer exhausts the page: the next job
+    # draws a deterministic variant from the page's own library.
     again=client.post('/api/control-plane/v1/jobs',json=base.job_body(1,payload),headers=base.headers('image-run-2'))
-    assert again.status_code==200, again.json()
-    second_id = again.json()['jobId']
-    second = cp._load_jobs()['jobs'][second_id]['slideshowPlan'][0]['photoPlan']
-    assert second['signature'] != photo['signature']
-    assert iv.build_image_video_spec(second) != spec
-    assert [x['key'] for x in second['media']] == [x['key'] for x in photo['media']]
-    await cp._run_syzygy_slideshow(second_id)
-    assert cp._load_jobs()['jobs'][second_id]['status'] == 'completed'
-    assert len(captured) == 2
-    assert captured[0][2]['idempotency_key'] != captured[1][2]['idempotency_key']
-    assert captured[1][2]['body']['spec'] == iv.build_image_video_spec(second)
-    replay = client.post('/api/control-plane/v1/jobs',json=base.job_body(1,payload),headers=base.headers('image-run-2'))
-    assert replay.status_code == 200 and replay.json()['jobId'] == second_id
-    cap = client.get('/api/control-plane/v1/capabilities',headers=base.headers('after-completed'))
-    assert next(x for x in cap.json()['capabilities'] if x['recipeId']==base.RECIPE_ID)['maxQuantity'] == 1
+    assert again.status_code==200,again.json()
+    next_job=cp._load_jobs()['jobs'][again.json()['jobId']]
+    variant=next_job['slideshowPlan'][0]
+    assert variant['signature']!=photo['signature']
+    assert variant['photoPlan'].get('variantIndex')==1
+    assert variant['photoPlan']['signature']==variant['signature']
+    assert set(variant['mediaKeys']) <= {o.key for o in library.objects}
+
+
+@pytest.mark.asyncio
+async def test_variant_job_renders_its_own_photo_hold(image_lab,monkeypatch):
+    client,library,payload,photo=image_lab
+    # Admit and complete the approved plan first, then admit the next variant.
+    first=client.post('/api/control-plane/v1/jobs',json=base.job_body(1,payload),headers=base.headers('image-variant-1'))
+    assert first.status_code==200,first.json()
+    cp._update_job(first.json()['jobId'],status='completed')
+    second=client.post('/api/control-plane/v1/jobs',json=base.job_body(1,payload),headers=base.headers('image-variant-2'))
+    assert second.status_code==200,second.json()
+    job_id=second.json()['jobId'];captured=[];grades=[]
+    base._fake_syzygy_boundary(monkeypatch,library)
+    pins=_library_pins(photo,library)
+    async def observe(_lib,keys):return [{'objectKey':k,'bytes':pins[k][0],'sha256':pins[k][1],'etag':'"pinned"'} for k in keys]
+    async def request(method,endpoint,**kwargs):captured.append((method,endpoint,kwargs));return {'job_id':'real-boundary-fixture','quality':'draft'}
+    async def grade(src,dst,correction,**kwargs):grades.append(correction);Path(dst).write_bytes(b'fixture-managed-photo-output')
+    monkeypatch.setattr(cp,'observe_library_media',observe);monkeypatch.setattr(cp,'submit_syzygy_render',ss.submit_syzygy_render);monkeypatch.setattr(ss,'_request_json',request);monkeypatch.setattr(cp,'run_color_correct',grade)
+    await cp._run_syzygy_slideshow(job_id);job=cp._load_jobs()['jobs'][job_id];assert job['status']=='completed',job.get('error')
+    assert len(captured)==1 and len(grades)==1
+    plan=job['slideshowPlan'][0]
+    assert plan['photoPlan'].get('variantIndex')==1
+    clip=job['clips'][0];assert clip['source']['photoPlan']==plan['photoPlan']
+    assert clip['source']['planSignature']==plan['signature']
+    spec=captured[0][2]['body']['spec'];assert spec==iv.build_image_video_spec(plan['photoPlan'])
+    # The rendered media are the variant's own keys, not the approved plan's.
+    assert [m['library'] for m in spec['media']] == [m['key'] for m in plan['photoPlan']['media']]
+
+
+@pytest.mark.asyncio
+async def test_tampered_variant_resigned_is_refused_before_media_work(image_lab,monkeypatch):
+    client,library,payload,photo=image_lab
+    first=client.post('/api/control-plane/v1/jobs',json=base.job_body(1,payload),headers=base.headers('image-tamper-1'))
+    assert first.status_code==200,first.json()
+    cp._update_job(first.json()['jobId'],status='completed')
+    second=client.post('/api/control-plane/v1/jobs',json=base.job_body(1,payload),headers=base.headers('image-tamper-2'))
+    assert second.status_code==200,second.json()
+    job_id=second.json()['jobId'];job=cp._load_jobs()['jobs'][job_id]
+    plan=job['slideshowPlan'][0]
+    # Shift one media key (still well-formed), then re-sign inside and outside.
+    plan['photoPlan']['media'][0]['key'] = (
+        plan['photoPlan']['media'][0]['key'].replace('pexels_', 'pexelsX_')
+    )
+    plan['photoPlan']['signature']=iv.image_video_plan_signature(plan['photoPlan'])
+    plan['signature']=plan['photoPlan']['signature']
+    plan['mediaKeys']=[m['key'] for m in plan['photoPlan']['media']]
+    plan['media']=[{'objectKey':m['key'],'bytes':m['bytes']} for m in plan['photoPlan']['media']]
+    cp._update_job(job_id,slideshowPlan=[plan])
+    called=[]
+    async def forbidden(*args,**kwargs):called.append(True);raise AssertionError('media work forbidden')
+    monkeypatch.setattr(cp,'observe_library_media',forbidden);monkeypatch.setattr(cp,'submit_syzygy_render',forbidden)
+    await cp._run_syzygy_slideshow(job_id);job=cp._load_jobs()['jobs'][job_id]
+    assert job['status']=='failed' and job['error']=='slideshow_plan_invalid';assert called==[]
 
 @pytest.mark.asyncio
 async def test_wrong_pinned_source_refuses_before_provider(image_lab,monkeypatch):
@@ -80,9 +173,12 @@ async def test_wrong_pinned_source_refuses_before_provider(image_lab,monkeypatch
     await cp._run_syzygy_slideshow(response.json()['jobId']);job=cp._load_jobs()['jobs'][response.json()['jobId']]
     assert job['status']=='failed' and job['error']=='slideshow_source_sha_mismatch';assert called==[]
 
-def test_recipe_requires_exact_once_grade(image_lab):
+def test_recipe_accepts_any_in_range_brightness(image_lab):
     _,_,payload,_=image_lab;assert ss.resolve_slideshow_recipe(payload)is not None
-    spec=json.loads(payload['recipeSpecCanonical']);spec['renderTreatment']['filters']['brightness']=1.;canonical=json.dumps(spec,sort_keys=True,separators=(',',':'));payload.update(recipeSpecCanonical=canonical,recipeSpecHash='sha256:'+hashlib.sha256(canonical.encode()).hexdigest());assert ss.resolve_slideshow_recipe(payload)is None
+    # The closed grade is no longer the only legal brightness: any value the
+    # visual normalizer accepts (0..3) is admitted once speed/crop stay neutral.
+    spec=json.loads(payload['recipeSpecCanonical']);spec['renderTreatment']['filters']['brightness']=1.;canonical=json.dumps(spec,sort_keys=True,separators=(',',':'));payload.update(recipeSpecCanonical=canonical,recipeSpecHash='sha256:'+hashlib.sha256(canonical.encode()).hexdigest());assert ss.resolve_slideshow_recipe(payload)is not None
+    spec=json.loads(payload['recipeSpecCanonical']);spec['renderTreatment']['filters']['brightness']=3.5;canonical=json.dumps(spec,sort_keys=True,separators=(',',':'));payload.update(recipeSpecCanonical=canonical,recipeSpecHash='sha256:'+hashlib.sha256(canonical.encode()).hexdigest());assert ss.resolve_slideshow_recipe(payload)is None
 
 
 @pytest.mark.asyncio
@@ -111,68 +207,81 @@ def test_catalog_advertises_actual_page_photo_count(image_lab):
     assert bindings["slideshow-treatment"]["templates"]==[{"slug":"page-photo-hold","mediaCount":count}]
 
 
-def test_many_fresh_treatments_keep_tiny_catalog_available(image_lab):
-    _, library, payload, original = image_lab
-    recipe = ss.resolve_slideshow_recipe(payload)
-    reserved = {original['signature']}
-    for index in range(200):
-        plans = ss.plan_slideshows(recipe, library, 1, reserved, f'fresh-{index}')
-        assert len(plans) == 1
-        photo = plans[0]['photoPlan']
-        assert photo['signature'] not in reserved
-        assert iv.image_video_plan_signature(photo) == photo['signature']
-        assert iv.build_image_video_spec(photo) != iv.build_image_video_spec(original)
-        reserved.add(photo['signature'])
-    assert len(reserved) == 201
+@pytest.mark.asyncio
+async def test_artifacts_response_serializes_legacy_stored_variant_index(image_lab,monkeypatch):
+    """A job already rendered with the legacy ``variant`` key re-serializes it as
+    ``variantIndex`` on the artifacts contract (never emitting ``variant``), so
+    the Worker validates the two in-flight pre-rename jobs without a re-render.
+    """
+    import copy
+
+    client,library,payload,photo=image_lab
+    first=client.post('/api/control-plane/v1/jobs',json=base.job_body(1,payload),headers=base.headers('image-legacy-1'))
+    assert first.status_code==200,first.json()
+    cp._update_job(first.json()['jobId'],status='completed')
+    second=client.post('/api/control-plane/v1/jobs',json=base.job_body(1,payload),headers=base.headers('image-legacy-2'))
+    assert second.status_code==200,second.json()
+    job_id=second.json()['jobId']
+    base._fake_syzygy_boundary(monkeypatch,library)
+    pins=_library_pins(photo,library)
+    async def observe(_lib,keys):return [{'objectKey':k,'bytes':pins[k][0],'sha256':pins[k][1],'etag':'"pinned"'} for k in keys]
+    async def request(method,endpoint,**kwargs):return {'job_id':'real-boundary-fixture','quality':'draft'}
+    async def grade(src,dst,correction,**kwargs):Path(dst).write_bytes(b'fixture-managed-photo-output')
+    monkeypatch.setattr(cp,'observe_library_media',observe);monkeypatch.setattr(cp,'submit_syzygy_render',ss.submit_syzygy_render);monkeypatch.setattr(ss,'_request_json',request);monkeypatch.setattr(cp,'run_color_correct',grade)
+    await cp._run_syzygy_slideshow(job_id)
+    job=cp._load_jobs()['jobs'][job_id];assert job['status']=='completed',job.get('error')
+    stored=copy.deepcopy(job['clips'])
+    plan=stored[0]['source']['photoPlan']
+    assert plan.get('variantIndex')==1
+    # Rewrite the persisted record back to the pre-rename shape only; the
+    # content signature is unchanged, exactly as the in-flight jobs stored it.
+    plan['variant']=plan.pop('variantIndex')
+    cp._update_job(job_id,clips=stored)
+    response=client.get(f'/api/control-plane/v1/jobs/{job_id}/artifacts',headers=base.headers('image-legacy-get'))
+    assert response.status_code==200,response.json()
+    wire=response.json()['artifacts'][0]['source']
+    assert 'variant' not in wire['photoPlan']
+    assert wire['photoPlan'].get('variantIndex')==1
+    # The Worker's real managedPhotoPlanValid must accept the translated source.
+    contract_dir=Path(__file__).resolve().parent/'worker_contract'
+    tmp=contract_dir/'legacy-artifact-source.json'
+    tmp.write_text(json.dumps([wire]),encoding='utf-8')
+    try:
+        result=subprocess.run(
+            ['node',str(contract_dir/'run_contract.mjs'),str(tmp)],
+            capture_output=True,text=True,cwd=str(Path(__file__).resolve().parent.parent),
+        )
+    finally:
+        tmp.unlink()
+    assert result.returncode==0,result.stdout+result.stderr
+    assert result.stdout.strip()=='OK: 1/1 sources valid'
 
 
-def test_original_equivalent_variant_does_not_duplicate_batch(image_lab, monkeypatch):
-    _, library, payload, original = image_lab
-    if original['pageId'] != 'acct:pen-pal3':
-        return
-    recipe = ss.resolve_slideshow_recipe(payload)
-    class ForcedHash:
-        def hexdigest(self):
-            return f'{74450:016x}' + '0' * 48
-    # Only the planner's run seed is forced; signatures remain real hashes.
-    real_hash = ss.hashlib.sha256
-    def forced(value):
-        return ForcedHash() if value == b'collision-seed' else real_hash(value)
-    monkeypatch.setattr(ss.hashlib, 'sha256', forced)
-    plans = ss.plan_slideshows(recipe, library, 2, set(), 'collision-seed')
-    assert len(plans) == 2
-    assert len({plan['signature'] for plan in plans}) == 2
-
-
-def test_variant_validation_retains_source_authority():
-    from copy import deepcopy
-    for page in ['acct:pen-pal3','acct:twin47996']:
-        assert iv.image_video_plan(page, True) is None
-        assert iv.image_video_plan(page, iv.PHOTO_TREATMENT_COUNT+1) is None
-        variant = iv.image_video_plan(page, 15)
-        for field, value in [('duration',99),('sha256','0'*64),('focalX',.99)]:
-            forged = deepcopy(variant)
-            forged['media'][0][field] = value
-            forged['signature'] = iv.image_video_plan_signature(forged)
-            with pytest.raises(iv.ImageVideoError):
-                iv.build_image_video_spec(forged)
+def _capacity(client, key):
+    cap = client.get('/api/control-plane/v1/capabilities', headers=base.headers(key))
+    assert cap.status_code == 200, cap.json()
+    return next(x for x in cap.json()['capabilities'] if x['recipeId'] == base.RECIPE_ID)
 
 
 @pytest.mark.asyncio
 async def test_two_failed_photo_jobs_pause_then_success_or_cooldown_reopens(image_lab, monkeypatch, caplog):
     from datetime import datetime, timedelta, timezone
     client, library, payload, photo = image_lab
+    monkeypatch.setenv(cp.ADVERTISE_ZERO_REASONS_ENV, "1")
+    pins = _library_pins(photo, library)
     async def bad_source(_lib, keys):
-        return [{'objectKey': x['key'], 'bytes': x['bytes'], 'sha256': '0'*64, 'etag': None}
-                for x in photo['media'] if x['key'] in keys]
+        return [{'objectKey': k, 'bytes': pins[k][0], 'sha256': '0'*64, 'etag': None} for k in keys]
+    async def forbidden(*args, **kwargs):
+        raise AssertionError('provider must remain untouched')
     monkeypatch.setattr(cp, 'observe_library_media', bad_source)
-    ids = []
+    monkeypatch.setattr(cp, 'submit_syzygy_render', forbidden)
     def create(key):
         return client.post('/api/control-plane/v1/jobs', json=base.job_body(1, payload),
                            headers=base.headers(key))
     admitted = create('already-admitted-before-pause')
-    assert admitted.status_code == 200
+    assert admitted.status_code == 200, admitted.json()
     admitted_id = admitted.json()['jobId']
+    ids = []
     for index in range(2):
         response = create(f'photo-failure-{index}')
         assert response.status_code == 200, response.json()
@@ -180,21 +289,22 @@ async def test_two_failed_photo_jobs_pause_then_success_or_cooldown_reopens(imag
         await cp._run_syzygy_slideshow(ids[-1])
         assert cp._load_jobs()['jobs'][ids[-1]]['status'] == 'failed'
         if index == 0:
-            cap = client.get('/api/control-plane/v1/capabilities', headers=base.headers('cap-one'))
-            assert next(x for x in cap.json()['capabilities'] if x['recipeId'] == base.RECIPE_ID)['maxQuantity'] == 1
+            assert _capacity(client, 'cap-one')['maxQuantity'] >= 1
     before = cp._load_jobs()
     refused = create('third-photo-failure')
     assert refused.status_code == 409 and refused.json()['detail'] == 'photo_jobs_cooldown'
+    assert refused.headers['X-RT-Zero-Reason'] == reasons.PHOTO_JOBS_COOLDOWN
     assert cp._load_jobs() == before
     assert 'photo_jobs_paused page=' + photo['pageId'] in caplog.text
-    cap = client.get('/api/control-plane/v1/capabilities', headers=base.headers('cap-paused'))
-    assert next(x for x in cap.json()['capabilities'] if x['recipeId'] == base.RECIPE_ID)['maxQuantity'] == 0
+    paused = _capacity(client, 'cap-paused')
+    assert paused['maxQuantity'] == 0 and paused['zeroReason'] == reasons.PHOTO_JOBS_COOLDOWN
+    # Idempotency replays still return the original job during a pause.
     replay = create('photo-failure-1')
     assert replay.status_code == 200 and replay.json()['jobId'] == ids[-1]
     # A success from an already admitted job automatically clears the pause.
     cp._update_job(admitted_id, status='completed', completedAt=datetime.now(timezone.utc).isoformat())
-    assert create('after-success').status_code == 200
-    # Restore the terminal failure and advance the wall clock beyond cooldown.
+    assert _capacity(client, 'cap-cleared')['maxQuantity'] >= 1
+    # Turn that success into a later failure and advance past the cooldown.
     cp._update_job(admitted_id, status='failed', completedAt=datetime.now(timezone.utc).isoformat())
     assert create('still-paused').status_code == 409
     future = datetime.now(timezone.utc) + timedelta(seconds=cp.PHOTO_FAILURE_COOLDOWN_SECONDS)
@@ -203,14 +313,15 @@ async def test_two_failed_photo_jobs_pause_then_success_or_cooldown_reopens(imag
         def now(cls, tz=None):
             return future.astimezone(tz)
     monkeypatch.setattr(cp, 'datetime', Clock)
-    cap = client.get('/api/control-plane/v1/capabilities', headers=base.headers('cap-expired'))
-    assert next(x for x in cap.json()['capabilities'] if x['recipeId'] == base.RECIPE_ID)['maxQuantity'] == 1
-    assert create('after-cooldown').status_code == 200
+    assert _capacity(client, 'cap-expired')['maxQuantity'] >= 1
+    after = create('after-cooldown')
+    assert after.status_code == 200, after.json()
 
 
 def test_photo_pause_is_page_scoped_terminal_and_photo_only(image_lab):
-    from datetime import datetime, timedelta, timezone
     from copy import deepcopy
+    from datetime import datetime, timedelta, timezone
+    from types import SimpleNamespace
     _, _, payload, photo = image_lab
     recipe = ss.resolve_slideshow_recipe(payload)
     now = datetime.now(timezone.utc)
@@ -218,17 +329,28 @@ def test_photo_pause_is_page_scoped_terminal_and_photo_only(image_lab):
         return dict(pageId=photo['pageId'], sourceKind='syzygy_slideshow',
                     status=status, completedAt=(now-timedelta(seconds=age)).isoformat(),
                     slideshowPlan=[{'photoPlan': photo}], **overrides)
-    failed = row('failed', 2)
-    store = {'jobs': {'a': failed, 'b': row('failed', 1)}}
+    store = {'jobs': {'a': row('failed', 2), 'b': row('failed', 1)}}
     assert cp._photo_jobs_paused(store, recipe, photo['pageId'])
     for field, value in [('pageId', 'acct:foreign'), ('sourceKind', 'other'),
                          ('slideshowPlan', []), ('slideshowPlan', None),
-                         ('slideshowPlan', [{'mediaKeys': ['lyric.jpg']}]), ('status', 'cancelled')]:
+                         ('slideshowPlan', [{'mediaKeys': ['lyric.jpg']}]), ('status', 'cancelled'),
+                         ('status', 'running')]:
         altered = deepcopy(store)
         altered['jobs']['a'][field] = value
         assert not cp._photo_jobs_paused(altered, recipe, photo['pageId'])
+    # Old failures outside the cooldown window do not pause.
+    stale = {'jobs': {'a': row('failed', cp.PHOTO_FAILURE_COOLDOWN_SECONDS + 5),
+                      'b': row('failed', cp.PHOTO_FAILURE_COOLDOWN_SECONDS + 1)}}
+    assert not cp._photo_jobs_paused(stale, recipe, photo['pageId'])
     # Insertion order is not terminal order; the latest success clears failures.
     store['jobs'] = {'success': row('completed', 0), **store['jobs']}
     assert not cp._photo_jobs_paused(store, recipe, photo['pageId'])
-    from types import SimpleNamespace
+    # A success older than both failures does not.
+    store['jobs']['success'] = row('completed', 10)
+    assert cp._photo_jobs_paused(store, recipe, photo['pageId'])
     assert not cp._photo_jobs_paused(store, SimpleNamespace(format_slug='lyric-video'), photo['pageId'])
+
+
+def test_photo_jobs_cooldown_reason_is_registered():
+    family, terminal, remedy = reasons.reason_for(reasons.PHOTO_JOBS_COOLDOWN)
+    assert family == 'slideshow' and terminal is False and '30 minutes' in remedy

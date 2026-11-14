@@ -24,12 +24,36 @@ _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 # receipts that reference the canonical set keep byte-identical names/digests.
 _TIMING_ID = "burnt-heavy-foot-chorus-v1"
 _TIMING_PATH = _TIMING_DIR / "burnt-heavy-foot-chorus.v1.json"
-_TIMING_SHA256 = "134be148cc3c522fa8ff48e7bcdd8aebc5ff0c6f1a8073ee5b4010558c3f3e9f"
+_TIMING_SHA256 = "3e8008ed9996e93971086497aaf7060ad587bbe0f4bba45d1b91fa6cf6c4a9b0"
 
-# Loaded catalog cache, keyed by the resolved timing directory so a test that
-# swaps ``_TIMING_DIR`` observes a fresh load without an explicit reset.
+# Per-page bounds, not per-page values. A lyric page's actual duration and
+# phrase count are its own data (the timing manifest); these only bound what a
+# manifest may claim so a new page is a data edit, not a code edit.
+# MAX_TIMING_PHRASES is sized to the unchanged v1 durable-worker disk
+# reservation (services/post_render_jobs.PEAK_RENDER_WORKSPACE_BYTES): a timed
+# render writes one phrase PNG + one receipt JSON per phrase plus two cue frames
+# per edge phrase, so raising this cap without raising that reservation would let
+# peak disk/CPU grow past what the scheduler reserves. The inequality is pinned
+# by tests/test_post_render_timed_jobs.py::test_timed_workspace_fits_unchanged_static_worker_reservation.
+MIN_TIMING_DURATION_MS = 1
+MAX_TIMING_DURATION_MS = 60_000
+MIN_TIMING_PHRASES = 1
+MAX_TIMING_PHRASES = 7
+
+# Shipped timing files are immutable relative to code: every filename recorded
+# here must load with exactly these bytes. A file not listed here is a data-only
+# addition and keeps its self-derived sha256 (its authority is the bytes on
+# disk); a listed file that has been edited without its pin fails loudly.
+_TIMING_MANIFEST = {
+    "burnt-heavy-foot-chorus.v1.json": _TIMING_SHA256,
+}
+
+# Loaded catalog cache, keyed by the resolved timing directory plus a content
+# fingerprint (file mtimes+sizes) so a runtime data edit is observed without a
+# process restart. A test that swaps ``_TIMING_DIR`` observes a fresh load.
 _catalog: dict[str, Any] | None = None
 _catalog_dir: str | None = None
+_catalog_fp: tuple[tuple[str, int, int], ...] | None = None
 
 
 class LyricTimingError(ValueError):
@@ -40,9 +64,25 @@ class LyricTimingError(ValueError):
 
 def _reset_catalog() -> None:
     """Clear the loaded catalog (test hook)."""
-    global _catalog, _catalog_dir
+    global _catalog, _catalog_dir, _catalog_fp
     _catalog = None
     _catalog_dir = None
+    _catalog_fp = None
+
+
+def _catalog_fingerprint() -> tuple[tuple[str, int, int], ...]:
+    """Return a content key over the timing directory (filename, mtime, size)."""
+    entries: list[tuple[str, int, int]] = []
+    try:
+        for path in _TIMING_DIR.glob("*.v1.json"):
+            try:
+                stat = path.stat()
+            except OSError:
+                continue
+            entries.append((path.name, stat.st_mtime_ns, stat.st_size))
+    except OSError:
+        return ()
+    return tuple(sorted(entries))
 
 
 def _load_file(path: Path) -> dict[str, Any]:
@@ -50,6 +90,10 @@ def _load_file(path: Path) -> dict[str, Any]:
         raw = path.read_bytes()
     except OSError as exc:
         raise LyricTimingError("lyric_timing_unavailable", "timing manifest is unavailable") from exc
+    digest = hashlib.sha256(raw).hexdigest()
+    pin = _TIMING_MANIFEST.get(path.name)
+    if pin is not None and digest != pin:
+        raise LyricTimingError("lyric_timing_hash_mismatch", "timing selection revision is stale or invalid")
     try:
         value = json.loads(raw)
     except (ValueError, UnicodeDecodeError) as exc:
@@ -59,7 +103,7 @@ def _load_file(path: Path) -> dict[str, Any]:
         or set(value) != _FIELDS
         or value.get("schema") != _SCHEMA
         or type(value.get("durationMs")) is not int
-        or value["durationMs"] != 20_000
+        or not MIN_TIMING_DURATION_MS <= value["durationMs"] <= MAX_TIMING_DURATION_MS
     ):
         raise LyricTimingError("lyric_timing_invalid", "timing identity or shape is invalid")
     for key in (
@@ -72,7 +116,8 @@ def _load_file(path: Path) -> dict[str, Any]:
     for key in ("referenceAudioSha256", "sourceProgramSha256"):
         if not isinstance(value.get(key), str) or not _SHA256.fullmatch(value[key]):
             raise LyricTimingError("lyric_timing_invalid", "timing identity or shape is invalid")
-    if not isinstance(value.get("phrases"), list) or len(value["phrases"]) != 7:
+    if (not isinstance(value.get("phrases"), list)
+            or not MIN_TIMING_PHRASES <= len(value["phrases"]) <= MAX_TIMING_PHRASES):
         raise LyricTimingError("lyric_timing_invalid", "timing identity or shape is invalid")
     previous_end = None
     for phrase in value["phrases"]:
@@ -89,13 +134,14 @@ def _load_file(path: Path) -> dict[str, Any]:
     if previous_end != value["durationMs"] or value["canonicalCaption"] != canonical or len(canonical) > 4_000:
         raise LyricTimingError("lyric_timing_invalid", "timing caption or final boundary is invalid")
     # Retain the exact registered UTF-8 bytes; reserialization changes authority.
-    return {**value, "sha256": hashlib.sha256(raw).hexdigest(), "manifestJson": raw.decode("utf-8")}
+    return {**value, "sha256": digest, "manifestJson": raw.decode("utf-8")}
 
 
 def _load_catalog() -> dict[str, Any]:
-    global _catalog, _catalog_dir
+    global _catalog, _catalog_dir, _catalog_fp
     resolved = str(_TIMING_DIR.resolve())
-    if _catalog is not None and _catalog_dir == resolved:
+    fingerprint = _catalog_fingerprint()
+    if _catalog is not None and _catalog_dir == resolved and _catalog_fp == fingerprint:
         return _catalog
     by_id: dict[str, dict[str, Any]] = {}
     by_page_id: dict[str, dict[str, Any]] = {}
@@ -117,6 +163,7 @@ def _load_catalog() -> dict[str, Any]:
         by_page.setdefault((page_id, value["account"]), []).append(value)
     _catalog = {"by_id": by_id, "by_page_id": by_page_id, "by_page": by_page}
     _catalog_dir = resolved
+    _catalog_fp = fingerprint
     return _catalog
 
 

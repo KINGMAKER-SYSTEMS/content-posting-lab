@@ -170,7 +170,7 @@ def capabilities_scaffold(monkeypatch):
         recipe_spec={"renderTreatment": {}},
         planned_provider_calls=lambda quantity: min(quantity, 10),
     )
-    monkeypatch.setattr(cp, "resolve_generation_recipe", lambda publication: stub_recipe)
+    monkeypatch.setattr(cp, "resolve_generation_recipe_with_reason", lambda publication: (stub_recipe, None))
     # The store-scan (_generated_unavailable_prompts, _truck_master_candidates)
     # runs for real, at full 5k-job scale, under this fixture; only the
     # combinatorics after the scan (irrelevant to what this file measures)
