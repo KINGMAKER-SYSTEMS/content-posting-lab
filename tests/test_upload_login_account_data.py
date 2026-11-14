@@ -26,6 +26,7 @@ def test_login_preserves_account_as_data_without_execution(monkeypatch, account)
         return SimpleNamespace(pid=4242)
 
     monkeypatch.setattr(upload.asyncio, "create_subprocess_exec", fake_exec)
+    monkeypatch.setattr(upload, "require_upload_runtime", lambda: None)
     response = asyncio.run(upload.trigger_login(account))
     command, = commands
     assert command[:2] == (sys.executable, "-c")
