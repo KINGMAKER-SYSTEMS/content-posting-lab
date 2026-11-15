@@ -1395,3 +1395,74 @@ def test_dual_render_fallback_failure_removes_clean_artifact(actual_source, tmp_
         render.render_post(actual_source, tmp_path / "dual", request(
             render.sha256(actual_source.read_bytes()), caption_delivery="in_app"), clock_ms=lambda: NOW)
     assert not (tmp_path / "dual").exists()
+
+
+# F-LAB-INAPP-CLEAN-ONLY-1115: an in-app slot posts the CLEAN final (the phone types the
+# caption). A refusal that describes the burned caption itself, raised only while rendering the
+# burned fallback, keeps the clean final and publishes it without a burned_fallback; every other
+# failure is unchanged.
+CLEAN_ONLY_REFUSALS = (
+    ("CAPTION_GLYPH_MISSING", "caption"),
+    ("CAPTION_OUT_OF_FRAME", "caption"),
+    ("CAPTION_LOW_CONTRAST", "post"),
+    ("CAPTION_NO_TEXT", "caption"),
+)
+
+
+def _fallback_error(code, kind):
+    from services.caption_render import CaptionRenderError
+    return CaptionRenderError(code, f"{code} in fallback") if kind == "caption" else render.PostRenderError(code, f"{code} in fallback")
+
+
+def _fail_only(monkeypatch, *, burned, error):
+    original = render._render_post_single
+    def wrapped(*args, **kwargs):
+        if bool(kwargs.get("burned_fallback")) is burned:
+            Path(args[1]).mkdir(parents=True, exist_ok=True)
+            (Path(args[1]) / "partial.mp4").write_bytes(b"partial")   # a half-written attempt is cleaned up
+            raise error
+        return original(*args, **kwargs)
+    monkeypatch.setattr(render, "_render_post_single", wrapped)
+
+
+@pytest.mark.parametrize("code,kind", CLEAN_ONLY_REFUSALS)
+def test_in_app_fallback_caption_refusal_publishes_the_clean_final_alone(actual_source, tmp_path, monkeypatch, code, kind):
+    _fail_only(monkeypatch, burned=True, error=_fallback_error(code, kind))
+    output = tmp_path / "dual"
+    result = render.render_post(actual_source, output, request(
+        render.sha256(actual_source.read_bytes()), caption_delivery="in_app"), clock_ms=lambda: NOW)
+    receipt = json.loads(result.receipt_json)
+    assert receipt["caption_delivery"] == "in_app"
+    assert "burned_fallback" not in receipt
+    assert result.receipt_path.read_bytes() == result.receipt_json
+    assert result.final_path.exists() and result.qa_frame_path.exists()
+    assert not (output / "burned").exists()
+    marker = json.loads((output / render.BURNED_REFUSED_MARKER).read_text())
+    assert marker == {"schema": render.BURNED_REFUSED_SCHEMA, "code": code}
+
+
+@pytest.mark.parametrize("code", ["CAPTION_NOT_DRAWN", "CAPTION_FONT_UNAVAILABLE", "process_timeout"])
+def test_in_app_fallback_other_errors_still_fail_the_whole_attempt(actual_source, tmp_path, monkeypatch, code):
+    _fail_only(monkeypatch, burned=True, error=render.PostRenderError(code, "other fallback failure"))
+    with pytest.raises(render.PostRenderError, match="other fallback failure"):
+        render.render_post(actual_source, tmp_path / "dual", request(
+            render.sha256(actual_source.read_bytes()), caption_delivery="in_app"), clock_ms=lambda: NOW)
+    assert not (tmp_path / "dual").exists()
+
+
+@pytest.mark.parametrize("code,kind", CLEAN_ONLY_REFUSALS)
+def test_in_app_clean_final_failure_still_fails(actual_source, tmp_path, monkeypatch, code, kind):
+    _fail_only(monkeypatch, burned=False, error=_fallback_error(code, kind))
+    with pytest.raises((render.PostRenderError, ValueError)):
+        render.render_post(actual_source, tmp_path / "dual", request(
+            render.sha256(actual_source.read_bytes()), caption_delivery="in_app"), clock_ms=lambda: NOW)
+    assert not (tmp_path / "dual" / render.BURNED_REFUSED_MARKER).exists()
+
+
+@pytest.mark.parametrize("code,kind", CLEAN_ONLY_REFUSALS)
+def test_burned_slot_caption_refusal_is_unchanged(actual_source, tmp_path, monkeypatch, code, kind):
+    _fail_only(monkeypatch, burned=False, error=_fallback_error(code, kind))
+    with pytest.raises((render.PostRenderError, ValueError), match="in fallback"):
+        render.render_post(actual_source, tmp_path / "burned-slot", request(
+            render.sha256(actual_source.read_bytes())), clock_ms=lambda: NOW)
+    assert not (tmp_path / "burned-slot" / render.BURNED_REFUSED_MARKER).exists()

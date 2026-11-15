@@ -1253,3 +1253,114 @@ def test_dual_render_syncs_burned_media_and_directory(tmp_path, monkeypatch):
     fallback = instance.artifact(queued["id"], "burned_final")
     assert {fallback.stat().st_ino, fallback.parent.stat().st_ino,
             (fallback.parent / "qa.jpg").stat().st_ino} <= synced
+
+
+# F-LAB-INAPP-CLEAN-ONLY-1115: the job layer accepts an in-app clean final without a pair ONLY when
+# the renderer recorded that the burned fallback was refused for one of the caption-content reasons.
+def _fake_clean_only_render(code, *, burned_dir=False, marker_text=None):
+    def renderer(source, output, request, *, clock_ms):
+        _write_fake_render(output, request, clock_ms=clock_ms, final=b"clean")
+        receipt = json.loads((output / "receipt.json").read_text())
+        receipt["caption_delivery"] = "in_app"
+        (output / "receipt.json").write_text(json.dumps(receipt))
+        if burned_dir:
+            (output / "burned").mkdir()
+        (output / "burned-refused.json").write_text(
+            marker_text if marker_text is not None
+            else json.dumps({"schema": "post-render.burned-refused.v1", "code": code}))
+    return renderer
+
+
+@pytest.mark.parametrize("code", ["CAPTION_GLYPH_MISSING", "CAPTION_OUT_OF_FRAME", "CAPTION_LOW_CONTRAST", "CAPTION_NO_TEXT"])
+def test_in_app_clean_only_with_a_caption_refusal_marker_succeeds(tmp_path, code):
+    instance = service(tmp_path, renderer=_fake_clean_only_render(code))
+    queued = instance.enqueue(submission(caption_delivery="in_app"), f"clean-only-{code}")
+    instance.run_one()
+    status = instance.status(queued["id"])
+    assert status["state"] == "succeeded", status
+    assert set(status["artifacts"]) == {"final", "qa", "receipt"}
+    receipt = json.loads(instance.artifact(queued["id"], "receipt").read_bytes())
+    assert receipt["caption_delivery"] == "in_app" and "burned_fallback" not in receipt
+    assert instance.artifact(queued["id"], "final").read_bytes() == b"clean"
+
+
+@pytest.mark.parametrize("variant", [
+    {"code": "process_timeout"},
+    {"code": "CAPTION_NOT_DRAWN"},
+    {"code": "CAPTION_GLYPH_MISSING", "burned_dir": True},
+    {"code": "CAPTION_GLYPH_MISSING", "marker_text": "{not json"},
+    {"code": "CAPTION_GLYPH_MISSING", "marker_text": json.dumps({"schema": "other", "code": "CAPTION_GLYPH_MISSING"})},
+    {"code": "CAPTION_GLYPH_MISSING", "marker_text": json.dumps({"schema": "post-render.burned-refused.v1",
+                                                                 "code": "CAPTION_GLYPH_MISSING", "extra": 1})},
+])
+def test_in_app_clean_only_without_a_valid_caption_refusal_marker_does_not_succeed(tmp_path, variant):
+    code = variant.pop("code")
+    instance = service(tmp_path, renderer=_fake_clean_only_render(code, **variant))
+    queued = instance.enqueue(submission(caption_delivery="in_app"), "clean-only-bad")
+    instance.run_one()
+    assert instance.status(queued["id"])["state"] != "succeeded"
+
+
+def test_burned_slot_with_a_refusal_marker_is_refused(tmp_path):
+    # Codex de051102 (3): a refusal marker only ever belongs to an in-app clean-only output;
+    # on a burned slot it is refused, never ignored.
+    def renderer(source, output, request, *, clock_ms):
+        fake_render(source, output, request, clock_ms=clock_ms)
+        (output / "burned-refused.json").write_text(json.dumps(
+            {"schema": "post-render.burned-refused.v1", "code": "CAPTION_GLYPH_MISSING"}))
+    instance = service(tmp_path, renderer=renderer)
+    queued = instance.enqueue(submission(), "burned-with-marker")
+    instance.run_one()
+    assert instance.status(queued["id"])["state"] != "succeeded"
+
+
+def test_burned_slot_without_a_marker_is_unchanged(tmp_path):
+    instance = service(tmp_path)
+    queued = instance.enqueue(submission(), "burned-plain")
+    instance.run_one()
+    status = instance.status(queued["id"])
+    assert status["state"] == "succeeded"
+    assert set(status["artifacts"]) == {"final", "qa", "receipt"}
+
+
+def test_refusal_marker_with_duplicate_keys_is_refused(tmp_path):
+    # Codex de051102 (1): json.loads keeps the LAST duplicate, so a hidden first value must not pass.
+    dup = '{"schema":"post-render.burned-refused.v1","code":"process_timeout","code":"CAPTION_GLYPH_MISSING"}'
+    instance = service(tmp_path, renderer=_fake_clean_only_render("CAPTION_GLYPH_MISSING", marker_text=dup))
+    queued = instance.enqueue(submission(caption_delivery="in_app"), "clean-only-dup")
+    instance.run_one()
+    assert instance.status(queued["id"])["state"] != "succeeded"
+
+
+@pytest.mark.parametrize("size,ok", [(1023, True), (1024, False)])
+def test_refusal_marker_size_boundary_is_under_one_kib(tmp_path, size, ok):
+    # Codex de051102 (2): the contract is < 1 KiB: 1023 bytes accepted, 1024 refused.
+    body = json.dumps({"schema": "post-render.burned-refused.v1", "code": "CAPTION_GLYPH_MISSING"})
+    text = body + " " * (size - len(body))
+    assert len(text.encode()) == size
+    instance = service(tmp_path, renderer=_fake_clean_only_render("CAPTION_GLYPH_MISSING", marker_text=text))
+    queued = instance.enqueue(submission(caption_delivery="in_app"), f"clean-only-size-{size}")
+    instance.run_one()
+    assert (instance.status(queued["id"])["state"] == "succeeded") is ok
+
+
+@pytest.mark.parametrize("tamper", [
+    lambda a: a.update(burned_fallback_refused={"code": "process_timeout"}),
+    lambda a: a.update(burned_fallback_refused={"code": "CAPTION_GLYPH_MISSING", "extra": 1}),
+    lambda a: a.update(burned_fallback_refused="CAPTION_GLYPH_MISSING"),
+    lambda a: a["receipt"].update(burned_fallback={"final_sha256": "0" * 64}),
+])
+def test_validator_rechecks_the_clean_only_authority_itself(tmp_path, monkeypatch, tamper):
+    # Defence in depth: even if the collector were bypassed, the authority validator refuses any
+    # clean-only authority that is not exactly {code in the four caption-content refusals}.
+    original = jobs.PostRenderJobs._validate_output_authority
+    def tampered(self, row, authority):
+        if isinstance(authority, dict) and "burned_fallback_refused" in authority and row["state"] != "succeeded":
+            authority = json.loads(json.dumps(authority))
+            tamper(authority)
+        return original(self, row, authority)
+    monkeypatch.setattr(jobs.PostRenderJobs, "_validate_output_authority", tampered)
+    instance = service(tmp_path, renderer=_fake_clean_only_render("CAPTION_GLYPH_MISSING"))
+    queued = instance.enqueue(submission(caption_delivery="in_app"), "clean-only-tampered")
+    instance.run_one()
+    assert instance.status(queued["id"])["state"] != "succeeded"

@@ -27,7 +27,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from pydantic_core import PydanticCustomError
 
 from burn_quality_gate import overlay_geometry_reasons
-from services.caption_render import CaptionRenderRequest, CaptionStyle, render_caption_with_background
+from services.caption_render import CaptionRenderError, CaptionRenderRequest, CaptionStyle, render_caption_with_background
 from services.ffmpeg import delivery_encode_args
 from services.page_frame import frame_band_height, frame_band_rows, frame_fit, letterbox_filter
 from services.pool_supplied_pages import is_pool_supplied
@@ -241,6 +241,14 @@ SLOT_TREATMENT_FIELDS = frozenset({"stylePreset", "filters", "captionStyle", "cl
 # drawn) so TikTok's own text can sit on the video in the app.
 SLOT_TREATMENT_OPTIONAL_FIELDS = frozenset({"frame", "frameFit", "captionDelivery"})
 CAPTION_DELIVERY_IN_APP = "in_app"
+# An in-app slot posts the CLEAN final (the phone types the caption). These refusals describe the
+# burned caption itself; raised while rendering the burned fallback they say nothing about the clean
+# final, so render_post keeps the clean final and publishes it with no burned_fallback, recording the
+# refusal in BURNED_REFUSED_MARKER beside it. Every other fallback failure still fails the attempt.
+IN_APP_FALLBACK_CLEAN_ONLY_CODES = frozenset({
+    "CAPTION_GLYPH_MISSING", "CAPTION_OUT_OF_FRAME", "CAPTION_LOW_CONTRAST", "CAPTION_NO_TEXT"})
+BURNED_REFUSED_MARKER = "burned-refused.json"
+BURNED_REFUSED_SCHEMA = "post-render.burned-refused.v1"
 
 
 def _slot_treatment(request: PostRenderRequest) -> dict:
@@ -899,7 +907,10 @@ def render_post(source_path: Path, output_directory: Path, request: PostRenderRe
 
     Both variants use the identical source, caption and requested treatment.
     A failed fallback invalidates the entire attempt; the durable job retry
-    handles transient errors before either asset can become ready.
+    handles transient errors before either asset can become ready. The one
+    exception: a fallback refused for its burned caption alone
+    (IN_APP_FALLBACK_CLEAN_ONLY_CODES) keeps the validated clean final, publishes
+    it with no burned_fallback, and records the refusal in BURNED_REFUSED_MARKER.
     """
     result = _render_post_single(source_path, output_directory, request,
                                  font_dir=font_dir, tools=tools, clock_ms=clock_ms,
@@ -907,10 +918,18 @@ def render_post(source_path: Path, output_directory: Path, request: PostRenderRe
     if _caption_delivery(request) != CAPTION_DELIVERY_IN_APP:
         return result
     try:
-        fallback = _render_post_single(source_path, Path(output_directory) / "burned", request,
-                                      font_dir=font_dir, tools=tools, clock_ms=clock_ms,
-                                      burned_fallback=True,
-                                      allow_pool_supplied_without_provenance=allow_pool_supplied_without_provenance)
+        try:
+            fallback = _render_post_single(source_path, Path(output_directory) / "burned", request,
+                                          font_dir=font_dir, tools=tools, clock_ms=clock_ms,
+                                          burned_fallback=True,
+                                          allow_pool_supplied_without_provenance=allow_pool_supplied_without_provenance)
+        except (CaptionRenderError, PostRenderError) as error:
+            if error.code not in IN_APP_FALLBACK_CLEAN_ONLY_CODES:
+                raise
+            shutil.rmtree(Path(output_directory) / "burned", ignore_errors=True)
+            (Path(output_directory) / BURNED_REFUSED_MARKER).write_text(json.dumps(
+                {"schema": BURNED_REFUSED_SCHEMA, "code": error.code}, sort_keys=True, separators=(",", ":")))
+            return result
         receipt = json.loads(result.receipt_json)
         burned_receipt = json.loads(fallback.receipt_json)
         receipt["burned_fallback"] = {key: burned_receipt[key] for key in (

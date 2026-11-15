@@ -28,6 +28,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from services.post_render import (
     Hash, Identity, MAX_SOURCE_BYTES, MAX_FINAL_BYTES, MAX_OVERLAY_BYTES, MAX_QA_BYTES,
     PostRenderError, PostRenderRequest, RenderedPost, render_post, sha256, source_visual_matches, _caption_delivery,
+    BURNED_REFUSED_MARKER, BURNED_REFUSED_SCHEMA, IN_APP_FALLBACK_CLEAN_ONLY_CODES,
     _unique_object, _reject_nonfinite, source_duration_repair_enabled,
 )
 
@@ -43,6 +44,34 @@ def render_prepared_post(source, output, request, **kwargs):
     if isinstance(request, TimedPostRenderRequest):
         return render_timed_post(source, output, request, **kwargs)
     return render_post(source, output, request, **kwargs)
+
+
+def _no_duplicate_keys(pairs):
+    keys = [key for key, _ in pairs]
+    if len(keys) != len(set(keys)):
+        raise ValueError("duplicate key")
+    return dict(pairs)
+
+
+def _burned_refused_code(output: Path) -> str | None:
+    """The caption-content refusal render_post recorded for an in-app clean-only output, or None
+    when no marker exists. A marker beside a burned attempt, malformed (including duplicate keys),
+    1 KiB or larger, or naming any other code is refused (burned_fallback_invalid): only the exact
+    clean-only shape is accepted."""
+    marker = output / BURNED_REFUSED_MARKER
+    if not marker.exists():
+        return None
+    try:
+        raw = marker.read_bytes()
+        if len(raw) >= 1024 or (output / "burned").exists():
+            raise ValueError("marker beside a burned attempt or not under 1 KiB")
+        doc = json.loads(raw, object_pairs_hook=_no_duplicate_keys)
+        if (not isinstance(doc, dict) or set(doc) != {"schema", "code"} or doc["schema"] != BURNED_REFUSED_SCHEMA
+                or doc["code"] not in IN_APP_FALLBACK_CLEAN_ONLY_CODES):
+            raise ValueError("marker shape")
+        return doc["code"]
+    except (OSError, ValueError, TypeError, RecursionError) as error:
+        raise RenderJobError("burned_fallback_invalid") from error
 
 log = logging.getLogger("content_lab.post_render_jobs")
 
@@ -1104,7 +1133,14 @@ class PostRenderJobs:
                 or type(receipt.get("duration_ms")) not in (int, float)
                 or receipt["duration_ms"] <= 0):
             raise RenderJobError("decode_evidence_missing")
-        if _caption_delivery(request) == "in_app" and not self._legacy_clean_output(row, authority):
+        refused = authority.get("burned_fallback_refused")
+        if refused is not None and _caption_delivery(request) == "in_app" and not self._legacy_clean_output(row, authority):
+            if (not isinstance(refused, dict) or set(refused) != {"code"}
+                    or refused.get("code") not in IN_APP_FALLBACK_CLEAN_ONLY_CODES
+                    or receipt.get("caption_delivery") != "in_app"
+                    or "burned_fallback" in receipt or "burned_fallback" in authority):
+                raise RenderJobError("burned_fallback_invalid")
+        elif _caption_delivery(request) == "in_app" and not self._legacy_clean_output(row, authority):
             fallback = receipt.get("burned_fallback")
             burned = authority.get("burned_fallback")
             if (receipt.get("caption_delivery") != "in_app" or not isinstance(fallback, dict)
@@ -1132,7 +1168,8 @@ class PostRenderJobs:
                     or (probe.get("width"), probe.get("height"), probe.get("video_codec"), probe.get("pixel_format"))
                        != (1080, 1920, "h264", "yuv420p")):
                 raise RenderJobError("burned_fallback_decode_missing")
-        elif _caption_delivery(request) != "in_app" and ("burned_fallback" in receipt or "caption_delivery" in receipt):
+        elif _caption_delivery(request) != "in_app" and ("burned_fallback" in receipt or "caption_delivery" in receipt
+                                                         or "burned_fallback_refused" in authority):
             raise RenderJobError("burned_fallback_invalid")
         receipt_sha = authority.get("receipt_sha256")
         if (not isinstance(receipt_sha, str) or not re.fullmatch(r"[0-9a-f]{64}", receipt_sha)
@@ -1198,7 +1235,13 @@ class PostRenderJobs:
         }
         if _caption_delivery(request) == "in_app":
             authority["receipt_bytes_b64"] = base64.b64encode(receipt_bytes).decode("ascii")
-        if _caption_delivery(request) == "in_app" and not self._legacy_clean_output(row, authority):
+        if _caption_delivery(request) != "in_app" and (output / BURNED_REFUSED_MARKER).exists():
+            raise RenderJobError("burned_fallback_invalid")  # a refusal marker only belongs to an in-app clean-only output
+        refused = (_burned_refused_code(output) if _caption_delivery(request) == "in_app"
+                   and not self._legacy_clean_output(row, authority) else None)
+        if refused is not None:
+            authority["burned_fallback_refused"] = {"code": refused}
+        elif _caption_delivery(request) == "in_app" and not self._legacy_clean_output(row, authority):
             try:
                 burned_sha, burned_length = _file_hash(output / "burned/final.mp4", MAX_FINAL_BYTES)
                 burned_qa, _ = _file_hash(output / "burned/qa.jpg", MAX_QA_BYTES)
