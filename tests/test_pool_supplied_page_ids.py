@@ -26,10 +26,11 @@ from services.pool_supplied_pages import (
 )
 
 # The exact committed pool-fed set: 12 original pages + 3 replacement Warner
-# pages + Goldford sunsetsoul46 + Christmas tis-the-szn7 (11-03). Keep this
-# literal set in lockstep with recipes/pool-supplied-pages.v1.json.
+# pages + Goldford sunsetsoul46 + Christmas tis-the-szn7 + Culture Core.
+# Keep this literal set in lockstep with recipes/pool-supplied-pages.v1.json.
 POOL_FED_PAGE_IDS = frozenset({
     "acct:chemically-lit",
+    "acct:culture-core-1",
     "acct:living-our-lives6",
     "acct:fly-baby76",
     "acct:cody-szn6",
