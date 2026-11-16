@@ -23,6 +23,7 @@ from pathlib import Path
 import pytest
 
 from services.dossier_ingredients import build_dossier_ingredient_catalog
+from services.master_pages_contract import intent_hash
 from services.pool_supplied_pages import load_pool_supplied_page_ids
 from tests.master_pages_fixtures import master_pages
 
@@ -41,6 +42,7 @@ UNLISTED_PAGE = "acct:unlisted-truck"
 # Include actual niche/engine pairs across the pool-fed format families. The
 # remaining pages use the lyric family to exercise its timing guard.
 _NICHE_BY_PAGE = {
+    "acct:culture-core-1": ("slideshow", "sourced_slideshow"),
     "acct:chemically-lit": ("lyric-edits", "lyrics_slideshows"),
     "acct:wildflower993": ("ugc-slideshow", "sourced_slideshow"),
     "acct:living-our-lives6": ("Coffee", "sourced_slideshow"),
@@ -54,12 +56,17 @@ def _intent(page_id: str):
     content_niche, content_engine = _NICHE_BY_PAGE.get(
         page_id, ("lyric-edits", "lyrics_slideshows"),
     )
-    return master_pages(
+    is_culture = page_id == "acct:culture-core-1"
+    intent, revision = master_pages(
         page_id,
-        handle="pool.test",
+        handle="culture.core.1" if is_culture else "pool.test",
         content_niche=content_niche,
         content_engine=content_engine,
     )
+    if is_culture:
+        intent["notionPageId"] = "3a41465b-b829-8018-81f6-f2e081537783"
+        revision = intent_hash(intent)
+    return intent, revision
 
 
 def _node_available() -> bool:
@@ -80,11 +87,13 @@ def test_vendored_worker_validator_matches_live_sha():
 
 def test_worker_accepts_catalog_for_every_listed_and_one_unlisted_page(tmp_path):
     _require_node_or_skip()
-    # 12 original pages + 3 replacement Warner pages + Goldford sunsetsoul46 + Christmas tis.the.szn7 (11-03).
-    assert len(LISTED_PAGES) == 17, LISTED_PAGES
+    # The exact roster guard separately checks membership, including Culture Core.
+    assert len(LISTED_PAGES) == 18, LISTED_PAGES
     for page_id in [*LISTED_PAGES, UNLISTED_PAGE]:
         intent, revision = _intent(page_id)
         catalog = build_dossier_ingredient_catalog(page_id, intent, revision)
+        if page_id == "acct:culture-core-1":
+            assert "ugc-slideshow" in catalog["currentFormatCandidates"]
         path = tmp_path / f"{page_id.replace(':', '_')}.json"
         path.write_text(
             json.dumps(catalog, sort_keys=True, separators=(",", ":"), ensure_ascii=False),
