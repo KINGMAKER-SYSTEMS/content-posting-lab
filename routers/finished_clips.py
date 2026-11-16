@@ -25,6 +25,10 @@ MAX_BYTES = 32 * 1024 * 1024
 # Exact bodies from custody 002125ae. Burnt custody records date/ordinal, not clock time.
 BOOKED = {
     'acct:culture-core-1': {
+        '34d449d33eba2aa42dd85f03973927eec7fb21c24e498ba6bc2cb928217e7429',
+        '1be6ec6be64302cc085ebb9c3138c7c58b1b1804c662bb40f00a28555840ed83',
+        '3fdefd5a8bab937f8f41138035455d416b99255147dcc3312979febf50069217',
+        '600ccf3f8c951f48830842b7563d09da647630e2e3a7609ca2e1260675eba218',
         'd96e589271004c0ff6e15c1cb7725931cb93c661533a132b3fca598ef8b89bc6',
         '9733ca618dcc2cfdd2ae4c71d56f5a19e7b923adb21fc943b81fec16c84d6685',
         'a26822f74dd78d255935095df2cedfd2967fa77914d0cf21e8154c2a380bf746',
@@ -42,6 +46,7 @@ BOOKED = {
             '4b26d5f20f3d79b89a8a1cb2b916acf663fa8c6c535affafc894712e2827e91e',
             '352bac94a5d3cb4c5d31ddfa538988b69343c6f33a4ec8ba6af86d71489b9d33',
             '4d6289f5a4c27f8b6c8c544545f44a7bf322b3bafe984da6625b76a661018ddf',
+            'eb0539ff7cb0e2c47945fa737055fc8c183200b8c5de769751bb71aeed107d92',
     },
 }
 
