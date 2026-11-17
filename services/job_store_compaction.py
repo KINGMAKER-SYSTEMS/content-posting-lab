@@ -117,6 +117,27 @@ def archive_path_for(store_path: Path, when: datetime) -> Path:
     return store_path.with_name(f"{store_path.name}.archive-{when:%Y%m}.jsonl")
 
 
+def read_archive_index(store: Any) -> dict[str, Any]:
+    """The one reader of a store's archive index (tests/test_archive_index_single_reader.py
+    fails if any other code reads the key). A missing key means nothing has been
+    archived yet: {}. A dict is the index. Anything else, null included, is
+    unreadable and raises, exactly as compact_job_store refuses the same store:
+    unknown archive history is never read as "nothing used"."""
+    if ARCHIVE_INDEX_KEY not in store:
+        return {}
+    index = store[ARCHIVE_INDEX_KEY]
+    if not isinstance(index, dict):
+        raise ArchiveIndexUnreadable(f"not_a_dict type={type(index).__name__}")
+    return index
+
+
+def carry_archive_index(store: Any) -> dict[str, Any]:
+    """{ARCHIVE_INDEX_KEY: raw value} for a narrowed view of ``store``, or {}
+    when the key is missing. The value is passed on untouched so the view's
+    reader (read_archive_index) refuses exactly what the full store's would."""
+    return {ARCHIVE_INDEX_KEY: store[ARCHIVE_INDEX_KEY]} if ARCHIVE_INDEX_KEY in store else {}
+
+
 def empty_index() -> dict[str, Any]:
     return {
         "version": ARCHIVE_INDEX_VERSION,
@@ -521,14 +542,10 @@ def compact_job_store(
 
     jobs = dict(store.get("jobs", {}))
     by_idem = dict(store.get("byIdempotency", {}))
+    current_index = read_archive_index(store)
     if ARCHIVE_INDEX_KEY not in store:
         index = empty_index()
     else:
-        current_index = store[ARCHIVE_INDEX_KEY]
-        if not isinstance(current_index, dict):
-            raise ArchiveIndexUnreadable(
-                f"not_a_dict type={type(current_index).__name__}",
-            )
         if current_index.get("version") != ARCHIVE_INDEX_VERSION:
             # A future version is a migration, never an empty-index reset.
             raise ArchiveIndexUnreadable(

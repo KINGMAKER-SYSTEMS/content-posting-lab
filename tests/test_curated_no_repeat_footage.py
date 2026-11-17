@@ -128,17 +128,40 @@ def test_unreadable_burnt_history_fails_closed_with_a_typed_reason(entry):
     {"jobs": {}, "archiveIndex": ""},
     {"jobs": {}, "archiveIndex": 0},
     {"jobs": {}, "archiveIndex": False},
+    # A present null is unreadable too, as compact_job_store treats it.
+    {"jobs": {}, "archiveIndex": None},
 ])
 def test_malformed_archive_index_fails_closed(store):
     recipe, _ = burnt_recipe_and_library()
     assert cp._curated_used_windows(store, recipe, BURNT) is slides.UNREADABLE_CURATED_HISTORY
 
 
+def _caps_snapshot(index_value):
+    data = {"jobs": {}, "byIdempotency": {}, "served": {}}
+    if index_value is not Ellipsis:
+        data["archiveIndex"] = index_value
+    return cp._JobsSnapshot((0, 0, 0, 0), 1, data, {}, {})
+
+
+# Reviewer regression (DS, PR #389 v3): the capabilities view used to clean a
+# present falsy index into {} before the Burnt guard could see it.
+@pytest.mark.parametrize("value", [[], "", 0, False, None])
+def test_malformed_index_refuses_on_caps_path(value):
+    recipe, library = burnt_recipe_and_library()
+    page_jobs_view = cp._capabilities_job_views(_caps_snapshot(value), BURNT)[0]
+    used = cp._curated_used_windows(page_jobs_view, recipe, BURNT)
+    assert used is slides.UNREADABLE_CURATED_HISTORY
+    assert slides.plan_slideshows(recipe, library, 1, set(), "caps", used_windows=used) == []
+    assert explain_empty_slideshow_plan(recipe, library, 1, set(), used_windows=used) == CURATED_HISTORY_UNREADABLE
+
+
 def test_absent_archive_index_means_nothing_archived():
     recipe, _ = burnt_recipe_and_library()
     assert cp._curated_used_windows({"jobs": {}}, recipe, BURNT) == {}
-    assert cp._curated_used_windows({"jobs": {}, "archiveIndex": None}, recipe, BURNT) == {}
     assert cp._curated_used_windows({"jobs": {}, "archiveIndex": {}}, recipe, BURNT) == {}
+    page_jobs_view = cp._capabilities_job_views(_caps_snapshot(...), BURNT)[0]
+    assert "archiveIndex" not in page_jobs_view
+    assert cp._curated_used_windows(page_jobs_view, recipe, BURNT) == {}
 
 
 def test_unreadable_active_plan_fails_closed():

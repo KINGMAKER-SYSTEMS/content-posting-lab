@@ -436,6 +436,15 @@
   The zero-plan explanation uses the same eligible photo set as planning:
   fewer eligible photos than the template requires reports a library shortage;
   enough eligible photos held by reservations reports generic exhaustion.
+- The job store's archive index has one reader,
+  `job_store_compaction.read_archive_index`: a missing key means nothing is
+  archived yet, a dict is the index, and anything else (null included) raises
+  `ArchiveIndexUnreadable`, exactly as compaction refuses the same store.
+  Capability views pass the raw value on untouched
+  (`carry_archive_index`). An unreadable index answers capabilities, job
+  creation and photo reservation with 503; the Burnt curated guard reports
+  `curated_history_unreadable`. `tests/test_archive_index_single_reader.py`
+  fails if any other code reads the key directly.
 - Job-store compaction treats an absent `clips` field as an empty list. A
   completed job with a present non-list `clips` container retains its job and
   idempotency mapping, records the named refusal, and advances the scan cursor

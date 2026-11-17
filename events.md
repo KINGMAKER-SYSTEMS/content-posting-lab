@@ -1775,3 +1775,10 @@ only, string or empty clip keys, NaN/infinite/reversed windows, malformed
 archive index) now fails closed with the new typed zero reason
 `curated_history_unreadable` instead of counting as no usage. Each case is
 tested and red-proved on the previous head.
+Second follow-up: the archive index now has one reader for the whole Lab
+(`read_archive_index`). Only a missing key means "nothing archived"; a present
+null, list, string, number or bool is unreadable everywhere, matching
+compaction. Before this, eleven readers cleaned a bad value into an empty
+index, so the capability poll could still advertise Burnt supply. Now
+capabilities, job creation and photo reservation answer 503 and every
+reservation helper refuses. A guard test fails on any new direct read.
