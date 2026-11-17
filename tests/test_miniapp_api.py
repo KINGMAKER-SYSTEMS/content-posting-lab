@@ -34,7 +34,9 @@ def isolate_service_files(monkeypatch, tmp_path):
         content_requests, "REQUESTS_PATH", tmp_path / "content_requests.json"
     )
     monkeypatch.setenv("MINIAPP_DEV_AUTH", "1")
-    monkeypatch.delenv("MINIAPP_AGENT_KEY", raising=False)
+    # The agent routes fail closed without MINIAPP_AGENT_KEY (503), so the suite
+    # configures a dummy one and the agent calls below send it.
+    monkeypatch.setenv("MINIAPP_AGENT_KEY", AGENT_KEY)
     monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
     yield
 
@@ -243,7 +245,8 @@ def test_agent_key_enforced_when_set(sync_client, monkeypatch):
     assert ok.status_code == 200
 
 
-def test_agent_routes_fail_closed_when_key_is_unset(sync_client):
+def test_agent_routes_fail_closed_when_key_is_unset(sync_client, monkeypatch):
+    monkeypatch.delenv("MINIAPP_AGENT_KEY", raising=False)
     _seed_poster_with_page()
     created = sync_client.post(
         "/api/miniapp/requests",
@@ -696,3 +699,13 @@ def test_resolve_concurrent_dev_bypass_consistent():
     with concurrent.futures.ThreadPoolExecutor(max_workers=8) as ex:
         results = list(ex.map(lambda _: call(), range(40)))
     assert set(results) == {"Race"}
+
+
+def test_agent_routes_fail_closed_when_key_unset(sync_client, monkeypatch):
+    """ds_labsec F4 / lead decision 6: no MINIAPP_AGENT_KEY means 503, never open."""
+    monkeypatch.delenv("MINIAPP_AGENT_KEY", raising=False)
+    for headers in ({}, {"X-Agent-Key": "anything"}):
+        assert sync_client.get("/api/miniapp/agent/requests", headers=headers).status_code == 503
+        assert sync_client.patch(
+            "/api/miniapp/agent/requests/any", headers=headers, json={"status": "fulfilled"}
+        ).status_code == 503

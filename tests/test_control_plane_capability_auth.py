@@ -1,9 +1,14 @@
 """Capability reads require the worker credential before page intent is loaded."""
 
+import pytest
+
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 import routers.control_plane as cp
+
+
+pytestmark = pytest.mark.real_route_auth
 
 
 PAGE_ID = "tt-tucker-reeves"

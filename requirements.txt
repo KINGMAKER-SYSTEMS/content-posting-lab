@@ -2,6 +2,7 @@ fastapi
 uvicorn[standard]
 python-dotenv
 httpx
+PyJWT[crypto]>=2.15
 python-multipart
 playwright
 playwright-stealth

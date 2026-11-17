@@ -30,6 +30,7 @@ import services.openshot_bridge as openshot_bridge
 import services.editor_render as editor_render
 import services.editor_timeline as editor_timeline
 from services.fsutil import safe_unlink
+from services.route_auth import side_effect_get
 from services.json_store import atomic_save
 from fastapi.responses import StreamingResponse
 
@@ -1527,6 +1528,7 @@ async def editor_timeline_import_abn(project_id: str, body: dict = Body(...)):
 
 
 @router.get("/editor-timelines/{project_id}")
+@side_effect_get
 async def editor_timeline_load(project_id: str):
     return await _load_or_import_real_editor_project(project_id)
 
@@ -1603,6 +1605,7 @@ async def editor_timeline_revert_last_command(project_id: str, body: dict = Body
 
 
 @router.get("/editor-timelines/{project_id}/openshot")
+@side_effect_get
 async def editor_timeline_openshot_export(project_id: str):
     project = await _load_or_import_real_editor_project(project_id)
     capabilities = editor_render.detect_render_backends()

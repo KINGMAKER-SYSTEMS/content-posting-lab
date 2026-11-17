@@ -34,6 +34,33 @@ export function staticUrl(path: string): string {
   return BASE ? `${BASE}${path}` : path;
 }
 
+/** Preserve browser-managed streaming on one origin and stream split-origin
+ * responses to disk after a user-activated save picker. Never buffer ZIPs in RAM.
+ */
+export async function downloadApiFile(path: string, filename: string): Promise<void> {
+  const url = new URL(apiUrl(path), window.location.href);
+  if (url.origin === window.location.origin) {
+    const anchor = document.createElement('a');
+    anchor.href = url.href;
+    anchor.download = filename;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    return;
+  }
+
+  const picker = (window as Window & {
+    showSaveFilePicker?: (options: { suggestedName: string }) => Promise<FileSystemFileHandle>;
+  }).showSaveFilePicker;
+  if (!picker) throw new Error('This browser cannot stream cross-origin downloads to disk');
+  // Open the picker before the first await so the click's user activation survives.
+  const handle = await picker.call(window, { suggestedName: filename });
+  const response = await fetch(url.href, { credentials: 'include' });
+  if (!response.ok) throw new Error(`Download failed (${response.status})`);
+  if (!response.body) throw new Error('Download response has no stream');
+  await response.body.pipeTo(await handle.createWritable());
+}
+
 /**
  * Add the API key header (when one is configured) to a RequestInit, for
  * callers that use fetch() directly instead of fetchApi.
