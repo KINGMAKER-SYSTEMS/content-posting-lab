@@ -1770,3 +1770,8 @@ keeps plans in one job apart. Culture Core is unchanged. Signatures, plan
 shapes and the Worker contract are unchanged; the zero reason reuses
 `curated_variants_exhausted`. Focused test red-proved against signature-only
 filtering. No deployment.
+Review follow-up: reserved history with no readable clip seconds (signature
+only, string or empty clip keys, NaN/infinite/reversed windows, malformed
+archive index) now fails closed with the new typed zero reason
+`curated_history_unreadable` instead of counting as no usage. Each case is
+tested and red-proved on the previous head.

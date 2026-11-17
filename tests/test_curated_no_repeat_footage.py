@@ -2,8 +2,16 @@
 import hashlib
 import math
 
+import pytest
+
+from routers import control_plane as cp
 from services import control_plane_slideshows as slides
-from services.control_plane_plan_reasons import CURATED_VARIANTS_EXHAUSTED, explain_empty_slideshow_plan
+from services.control_plane_plan_reasons import (
+    CURATED_HISTORY_UNREADABLE,
+    CURATED_VARIANTS_EXHAUSTED,
+    explain_empty_slideshow_plan,
+    reason_for,
+)
 
 BURNT = "acct:burnt-mill-rd"
 
@@ -52,3 +60,76 @@ def test_used_footage_and_same_job_repeats_are_never_offered():
     every_clip = {obj.key: [(0.0, math.inf)] for obj in library.objects}
     assert slides.plan_slideshows(recipe, library, 1, set(), "job-c", used_windows=every_clip) == []
     assert explain_empty_slideshow_plan(recipe, library, 1, set(), used_windows=every_clip) == CURATED_VARIANTS_EXHAUSTED
+
+
+def _store(recipe, active=None, archived=None):
+    store = {"jobs": {}}
+    if active is not None:
+        store["jobs"]["job-1"] = {
+            "sourceKind": "syzygy_slideshow", "pageId": BURNT, "sourceLibraryId": recipe.library_id,
+            "status": "queued", "slideshowPlan": [active],
+        }
+    if archived is not None:
+        store["archiveIndex"] = {"slideshow": archived}
+    return store
+
+
+def _archived(recipe, **fields):
+    return {"pageId": BURNT, "sourceLibraryId": recipe.library_id, "signature": "a" * 64, **fields}
+
+
+def test_readable_history_counts_exact_windows_or_whole_clips():
+    recipe, library = burnt_recipe_and_library()
+    first = slides.curated_plans_for_recipe(recipe, library)[0]
+    used = cp._curated_used_windows(_store(recipe, active=first), recipe, BURNT)
+    assert used == spans([first])
+    key = first["windows"][0]["key"]
+    used = cp._curated_used_windows(_store(recipe, archived=[_archived(recipe, mediaKeys=[key])]), recipe, BURNT)
+    assert used == {key: [(0.0, math.inf)]}
+    # Other pages keep signature-only reservation, even with broken history.
+    broken = _store(recipe, archived=[_archived(recipe, pageId="acct:culture-core")])
+    assert cp._curated_used_windows(broken, recipe, "acct:culture-core") is None
+
+
+def _window(**change):
+    return [{"key": "slideshow-webweaving/burnt-mill-rd/clips/a.mp4", "sourceStart": 1.0, "sourceEnd": 2.0, **change}]
+
+
+@pytest.mark.parametrize("entry", [
+    {},                                    # only a signature: footage unknown
+    {"mediaKeys": "bmr-v-0001.mp4"},       # string, not a list of keys
+    {"mediaKeys": []},
+    {"mediaKeys": 7},
+    {"mediaKeys": ["ok", 3]},
+    {"mediaKeys": ["ok", ""]},
+    {"windows": _window(sourceStart=float("nan"))},
+    {"windows": _window(sourceEnd=float("inf"))},
+    {"windows": _window(sourceStart=3.0)},  # end before start
+    {"windows": _window(sourceStart=-1.0)},
+    {"windows": _window(sourceStart=True)},
+    {"windows": _window(key="")},
+    {"windows": "1-2"},
+])
+def test_unreadable_burnt_history_fails_closed_with_a_typed_reason(entry):
+    recipe, library = burnt_recipe_and_library()
+    used = cp._curated_used_windows(_store(recipe, archived=[_archived(recipe, **entry)]), recipe, BURNT)
+    assert used is slides.UNREADABLE_CURATED_HISTORY
+    assert slides.plan_slideshows(recipe, library, 1, set(), "job-x", used_windows=used) == []
+    assert explain_empty_slideshow_plan(recipe, library, 1, set(), used_windows=used) == CURATED_HISTORY_UNREADABLE
+    assert reason_for(CURATED_HISTORY_UNREADABLE)[1] is False
+
+
+@pytest.mark.parametrize("store", [
+    {"jobs": {}, "archiveIndex": {"slideshow": "not-a-list"}},
+    {"jobs": {}, "archiveIndex": {"slideshow": ["not-a-dict"]}},
+    {"jobs": {}, "archiveIndex": ["not-a-dict"]},
+])
+def test_malformed_archive_index_fails_closed(store):
+    recipe, _ = burnt_recipe_and_library()
+    assert cp._curated_used_windows(store, recipe, BURNT) is slides.UNREADABLE_CURATED_HISTORY
+
+
+def test_unreadable_active_plan_fails_closed():
+    recipe, _ = burnt_recipe_and_library()
+    store = _store(recipe, active={"signature": "b" * 64})
+    assert cp._curated_used_windows(store, recipe, BURNT) is slides.UNREADABLE_CURATED_HISTORY

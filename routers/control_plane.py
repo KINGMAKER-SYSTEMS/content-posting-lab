@@ -141,6 +141,8 @@ from services.control_plane_plan_reasons import (
 )
 from services.control_plane_slideshows import (
     CURATED_FRESH_FOOTAGE_PAGES,
+    UNREADABLE_CURATED_HISTORY,
+    curated_history_spans,
     SyzygyError,
     UGC_FORMAT_SLUG,
     CLEAN_VIDEO_FORMATS,
@@ -2323,50 +2325,54 @@ def _photo_reservation_receipt(record: Any) -> dict[str, Any]:
 
 def _curated_used_windows(
     store: dict[str, Any], recipe: Any, page_id: str,
-) -> dict[str, list[tuple[float, float]]] | None:
+) -> dict[str, list[tuple[float, float]]] | object | None:
     """Clip seconds already used by this page's reserved slideshow plans.
 
     None for pages outside CURATED_FRESH_FOOTAGE_PAGES (signature-only, as before).
     A curated plan keeps its exact windows. A plan known only by its media keys
-    (archived or generic) marks each whole clip as used.
+    (archived or generic) marks each whole clip as used. Reserved history that
+    cannot be read that way fails closed: UNREADABLE_CURATED_HISTORY, so the
+    page is offered nothing (curated_history_unreadable) instead of a cut that
+    may repeat footage.
     """
     if page_id not in CURATED_FRESH_FOOTAGE_PAGES:
         return None
     used: dict[str, list[tuple[float, float]]] = {}
 
-    def remember(plan: Any) -> None:
-        if not isinstance(plan, dict):
-            return
-        windows = plan.get("windows")
-        if isinstance(windows, list) and windows and all(
-            isinstance(w, dict) and isinstance(w.get("key"), str)
-            and all(isinstance(w.get(f), (int, float)) and not isinstance(w.get(f), bool)
-                    for f in ("sourceStart", "sourceEnd"))
-            for w in windows
-        ):
-            for w in windows:
-                used.setdefault(w["key"], []).append((float(w["sourceStart"]), float(w["sourceEnd"])))
-            return
-        for key in plan.get("mediaKeys") or ():
-            if isinstance(key, str) and key:
-                used.setdefault(key, []).append((0.0, math.inf))
+    def remember(plan: Any) -> bool:
+        spans = curated_history_spans(plan)
+        if spans is None:
+            return False
+        for key, start, end in spans:
+            used.setdefault(key, []).append((start, end))
+        return True
 
-    for job in store.get("jobs", {}).values():
+    try:
+        for job in store.get("jobs", {}).values():
+            if (
+                isinstance(job, dict)
+                and job.get("sourceKind") == "syzygy_slideshow"
+                and job.get("pageId") == page_id
+                and job.get("sourceLibraryId") == recipe.library_id
+            ):
+                for plan in compaction.slideshow_reserved_plans(job):
+                    if not remember(plan):
+                        return UNREADABLE_CURATED_HISTORY
+        archived = (store.get(compaction.ARCHIVE_INDEX_KEY) or {}).get("slideshow", [])
+    except (AttributeError, TypeError, ValueError):
+        return UNREADABLE_CURATED_HISTORY
+    if not isinstance(archived, list):
+        return UNREADABLE_CURATED_HISTORY
+    for entry in archived:
+        if not isinstance(entry, dict):
+            # Its page cannot be told, so it may be this page's footage.
+            return UNREADABLE_CURATED_HISTORY
         if (
-            isinstance(job, dict)
-            and job.get("sourceKind") == "syzygy_slideshow"
-            and job.get("pageId") == page_id
-            and job.get("sourceLibraryId") == recipe.library_id
-        ):
-            for plan in compaction.slideshow_reserved_plans(job):
-                remember(plan)
-    for entry in (store.get(compaction.ARCHIVE_INDEX_KEY, {}) or {}).get("slideshow", []):
-        if (
-            isinstance(entry, dict)
-            and entry.get("pageId") == page_id
+            entry.get("pageId") == page_id
             and entry.get("sourceLibraryId") == recipe.library_id
+            and not remember(entry)
         ):
-            remember(entry)
+            return UNREADABLE_CURATED_HISTORY
     return used
 
 

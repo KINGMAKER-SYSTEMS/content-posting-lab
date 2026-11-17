@@ -1029,6 +1029,39 @@ def curated_plans_for_recipe(
 # design, so it keeps signature-only reservation.
 CURATED_FRESH_FOOTAGE_PAGES = frozenset({"acct:burnt-mill-rd"})
 
+# Stands in for used_windows when a fresh-footage page's reserved history cannot
+# be read as clip seconds. Unknown usage is never treated as no usage: nothing
+# is offered until the reservation is reconciled.
+UNREADABLE_CURATED_HISTORY = object()
+
+
+def _finite_seconds(value: Any) -> bool:
+    return (isinstance(value, (int, float)) and not isinstance(value, bool)
+            and math.isfinite(value) and value >= 0)
+
+
+def curated_history_spans(plan: Any) -> list[tuple[str, float, float]] | None:
+    """The clip seconds one reserved plan used, or None when they cannot be read.
+
+    Exact windows when every window names a clip with finite, ordered seconds;
+    otherwise whole clips from a non-empty list of clip keys. Anything else is
+    unreadable, and the caller must refuse supply rather than assume no usage.
+    """
+    if not isinstance(plan, dict):
+        return None
+    windows = plan.get("windows")
+    if isinstance(windows, list) and windows and all(
+        isinstance(w, dict) and isinstance(w.get("key"), str) and w["key"]
+        and _finite_seconds(w.get("sourceStart")) and _finite_seconds(w.get("sourceEnd"))
+        and w["sourceStart"] < w["sourceEnd"]
+        for w in windows
+    ):
+        return [(w["key"], float(w["sourceStart"]), float(w["sourceEnd"])) for w in windows]
+    keys = plan.get("mediaKeys")
+    if isinstance(keys, list) and keys and all(isinstance(k, str) and k for k in keys):
+        return [(key, 0.0, math.inf) for key in keys]
+    return None
+
 
 def curated_plan_repeats_footage(
     plan: dict[str, Any], used_windows: dict[str, list[tuple[float, float]]],
@@ -1048,11 +1081,13 @@ def curated_plan_repeats_footage(
 
 def _curated_fresh_plans(
     plans: list[dict[str, Any]], unavailable_signatures: set[str],
-    used_windows: dict[str, list[tuple[float, float]]] | None,
+    used_windows: dict[str, list[tuple[float, float]]] | object | None,
 ) -> list[dict[str, Any]]:
     """Unreserved variants; with used_windows, also none repeating used footage or each other."""
     if used_windows is None:
         return [plan for plan in plans if plan["signature"] not in unavailable_signatures]
+    if used_windows is UNREADABLE_CURATED_HISTORY:
+        return []
     used = {key: list(spans) for key, spans in (used_windows or {}).items()}
     fresh = []
     for plan in plans:
@@ -1148,7 +1183,7 @@ def plan_slideshows(
     run_id: str,
     reserved_media_keys: set[str] | None = None,
     opaque_reserved_media: bool = False,
-    used_windows: dict[str, list[tuple[float, float]]] | None = None,
+    used_windows: dict[str, list[tuple[float, float]]] | object | None = None,
 ) -> list[dict[str, Any]]:
     if (
         library.library_id != recipe.library_id

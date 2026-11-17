@@ -429,6 +429,10 @@
   signature-only reservation. Reserved curated plans
   give exact windows; a plan known only by media keys marks whole clips used.
   When nothing fresh is left the zero reason stays `curated_variants_exhausted`.
+  History that cannot be read that way (no finite, ordered windows and no
+  non-empty list of clip keys, or a malformed archive index) fails closed:
+  nothing is offered and the zero reason is `curated_history_unreadable`.
+  Unknown usage is never counted as unused footage.
   The zero-plan explanation uses the same eligible photo set as planning:
   fewer eligible photos than the template requires reports a library shortage;
   enough eligible photos held by reservations reports generic exhaustion.
