@@ -1758,3 +1758,15 @@ own admission acknowledgement before automatic retirement; another caption's
 shared clean object is insufficient proof. Focused jobs tests cover real render
 pairs, concurrent duplicate claims, restart, retirement and cross-mode repeats;
 local-history reservation costs are recorded in docs/post-render-setup.md.
+
+### 2026-11-17 — Curated variants never repeat used footage
+
+worktree: fix/burnt-no-repeat-footage. Burnt's curated re-chops rotate the same
+pinned clips, so a new signature could re-show seconds of a clip already
+posted; originality review then refused the paid render (four Burnt bodies on
+11-16/17). For Burnt only (`CURATED_FRESH_FOOTAGE_PAGES`), planning now drops a
+variant whose window overlaps footage used by the page's reserved plans, and
+keeps plans in one job apart. Culture Core is unchanged. Signatures, plan
+shapes and the Worker contract are unchanged; the zero reason reuses
+`curated_variants_exhausted`. Focused test red-proved against signature-only
+filtering. No deployment.

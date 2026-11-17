@@ -422,6 +422,13 @@
   changed sorted offsets or a new signature alone.
 - Generic `ugc-slideshow` plans count only photo objects toward their template
   and refill chunks. Curated UGC video plans still select their pinned clips.
+- For pages in `CURATED_FRESH_FOOTAGE_PAGES` (Burnt Mill Road), curated UGC
+  variants also drop any plan whose window shows seconds of a clip that an
+  active or archived reservation for the same page and library already used,
+  and plans in one job never overlap each other. Other curated pages keep
+  signature-only reservation. Reserved curated plans
+  give exact windows; a plan known only by media keys marks whole clips used.
+  When nothing fresh is left the zero reason stays `curated_variants_exhausted`.
   The zero-plan explanation uses the same eligible photo set as planning:
   fewer eligible photos than the template requires reports a library shortage;
   enough eligible photos held by reservations reports generic exhaustion.

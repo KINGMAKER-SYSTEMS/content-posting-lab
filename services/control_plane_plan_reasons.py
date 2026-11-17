@@ -183,6 +183,7 @@ def explain_empty_slideshow_plan(
     unavailable_signatures: set[str],
     reserved_media_keys: set[str] | None = None,
     opaque_reserved_media: bool = False,
+    used_windows: dict[str, list[tuple[float, float]]] | None = None,
 ) -> str:
     """Name why plan_slideshows returned nothing for a slideshow recipe.
 
@@ -204,6 +205,7 @@ def explain_empty_slideshow_plan(
         CLEAN_VIDEO_FORMATS,
         _generic_clean_video_chunk,
         _generic_clean_video_objects,
+        _curated_fresh_plans,
         _permutation_plan_candidates,
         curated_plans_for_recipe,
         requires_curated_video_plan,
@@ -232,7 +234,7 @@ def explain_empty_slideshow_plan(
         if has_curated_plan and not variants:
             return CURATED_LIBRARY_NOT_READY
         if variants:
-            if all(plan["signature"] in unavailable_signatures for plan in variants):
+            if not _curated_fresh_plans(variants, unavailable_signatures, used_windows):
                 return CURATED_VARIANTS_EXHAUSTED
             return PLAN_AVAILABLE
         template = recipe.templates[0]

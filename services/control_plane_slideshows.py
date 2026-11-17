@@ -1024,6 +1024,46 @@ def curated_plans_for_recipe(
     ]
 
 
+# Curated pages whose variants must never re-show footage a reserved plan
+# already used. Culture Core's short fast-cut plan re-uses its own clips by
+# design, so it keeps signature-only reservation.
+CURATED_FRESH_FOOTAGE_PAGES = frozenset({"acct:burnt-mill-rd"})
+
+
+def curated_plan_repeats_footage(
+    plan: dict[str, Any], used_windows: dict[str, list[tuple[float, float]]],
+) -> bool:
+    """True when any window re-shows a moment an earlier reserved plan already used.
+
+    A curated variant re-chops the same pinned clips, so two different
+    signatures can still show the same seconds of the same clip. Those repeats
+    are refused by originality review after the paid render, so drop them here.
+    """
+    for window in plan["windows"]:
+        for start, end in used_windows.get(window["key"], ()):
+            if min(end, window["sourceEnd"]) > max(start, window["sourceStart"]):
+                return True
+    return False
+
+
+def _curated_fresh_plans(
+    plans: list[dict[str, Any]], unavailable_signatures: set[str],
+    used_windows: dict[str, list[tuple[float, float]]] | None,
+) -> list[dict[str, Any]]:
+    """Unreserved variants; with used_windows, also none repeating used footage or each other."""
+    if used_windows is None:
+        return [plan for plan in plans if plan["signature"] not in unavailable_signatures]
+    used = {key: list(spans) for key, spans in (used_windows or {}).items()}
+    fresh = []
+    for plan in plans:
+        if plan["signature"] in unavailable_signatures or curated_plan_repeats_footage(plan, used):
+            continue
+        fresh.append(plan)
+        for window in plan["windows"]:
+            used.setdefault(window["key"], []).append((window["sourceStart"], window["sourceEnd"]))
+    return fresh
+
+
 def _generic_clean_video_chunk(
     template: SyzygyTemplate, objects_in_order: list[SyzygyObject], chunk: int,
 ) -> dict[str, Any] | None:
@@ -1108,6 +1148,7 @@ def plan_slideshows(
     run_id: str,
     reserved_media_keys: set[str] | None = None,
     opaque_reserved_media: bool = False,
+    used_windows: dict[str, list[tuple[float, float]]] | None = None,
 ) -> list[dict[str, Any]]:
     if (
         library.library_id != recipe.library_id
@@ -1144,12 +1185,10 @@ def plan_slideshows(
         if has_curated_plan and not variants:
             return []
         if variants:
-            # Each variant is reserved once through its own signature.
+            # Each variant is reserved once through its own signature, and a
+            # variant that re-shows used footage is never offered.
             # Extras in the library are ignored.
-            return [
-                plan for plan in variants
-                if plan["signature"] not in unavailable_signatures
-            ][:count]
+            return _curated_fresh_plans(variants, unavailable_signatures, used_windows)[:count]
         template = recipe.templates[0]
         # Signature-only legacy archives cannot reveal which media was posted.
         # Fail closed until an operator reconciles those reservations.

@@ -140,6 +140,7 @@ from services.control_plane_plan_reasons import (
     explain_empty_slideshow_plan,
 )
 from services.control_plane_slideshows import (
+    CURATED_FRESH_FOOTAGE_PAGES,
     SyzygyError,
     UGC_FORMAT_SLUG,
     CLEAN_VIDEO_FORMATS,
@@ -951,12 +952,14 @@ def capabilities(
             reserved_keys, opaque_media = _generic_clean_video_reserved_media(
                 page_jobs_view, slideshow_recipe, page_id,
             )
+            used_windows = _curated_used_windows(page_jobs_view, slideshow_recipe, page_id)
             max_quantity = len(plan_slideshows(
                 slideshow_recipe, library, slideshow_recipe.max_quantity,
                 unavailable,
                 f"capability:{page_id}:{slideshow_recipe.executor_version}",
                 reserved_media_keys=reserved_keys,
                 opaque_reserved_media=opaque_media,
+                used_windows=used_windows,
             ))
             if _photo_jobs_paused(page_jobs_view, slideshow_recipe, page_id):
                 max_quantity = 0
@@ -1000,6 +1003,7 @@ def capabilities(
             elif slideshow_recipe is not None:
                 zero_reason = explain_empty_slideshow_plan(
                     slideshow_recipe, library, slideshow_recipe.max_quantity, unavailable,
+                    used_windows=used_windows,
                 )
             elif source_recipe is not None:
                 zero_reason = explain_empty_source_plan(source_recipe, unavailable_slots, None)
@@ -2315,6 +2319,55 @@ def _photo_reservation_receipt(record: Any) -> dict[str, Any]:
     except (KeyError, TypeError, ValueError) as error:
         raise HTTPException(status_code=503, detail="photo reservation history unavailable") from error
     return receipt
+
+
+def _curated_used_windows(
+    store: dict[str, Any], recipe: Any, page_id: str,
+) -> dict[str, list[tuple[float, float]]] | None:
+    """Clip seconds already used by this page's reserved slideshow plans.
+
+    None for pages outside CURATED_FRESH_FOOTAGE_PAGES (signature-only, as before).
+    A curated plan keeps its exact windows. A plan known only by its media keys
+    (archived or generic) marks each whole clip as used.
+    """
+    if page_id not in CURATED_FRESH_FOOTAGE_PAGES:
+        return None
+    used: dict[str, list[tuple[float, float]]] = {}
+
+    def remember(plan: Any) -> None:
+        if not isinstance(plan, dict):
+            return
+        windows = plan.get("windows")
+        if isinstance(windows, list) and windows and all(
+            isinstance(w, dict) and isinstance(w.get("key"), str)
+            and all(isinstance(w.get(f), (int, float)) and not isinstance(w.get(f), bool)
+                    for f in ("sourceStart", "sourceEnd"))
+            for w in windows
+        ):
+            for w in windows:
+                used.setdefault(w["key"], []).append((float(w["sourceStart"]), float(w["sourceEnd"])))
+            return
+        for key in plan.get("mediaKeys") or ():
+            if isinstance(key, str) and key:
+                used.setdefault(key, []).append((0.0, math.inf))
+
+    for job in store.get("jobs", {}).values():
+        if (
+            isinstance(job, dict)
+            and job.get("sourceKind") == "syzygy_slideshow"
+            and job.get("pageId") == page_id
+            and job.get("sourceLibraryId") == recipe.library_id
+        ):
+            for plan in compaction.slideshow_reserved_plans(job):
+                remember(plan)
+    for entry in (store.get(compaction.ARCHIVE_INDEX_KEY, {}) or {}).get("slideshow", []):
+        if (
+            isinstance(entry, dict)
+            and entry.get("pageId") == page_id
+            and entry.get("sourceLibraryId") == recipe.library_id
+        ):
+            remember(entry)
+    return used
 
 
 def _generic_clean_video_reserved_media(
@@ -6478,11 +6531,13 @@ async def _create_job_impl(
             reserved_keys, opaque_media = _generic_clean_video_reserved_media(
                 store, slideshow_recipe, page_id,
             )
+            used_windows = _curated_used_windows(store, slideshow_recipe, page_id)
             plans = plan_slideshows(
                 slideshow_recipe, slideshow_library, quantity,
                 unavailable_signatures, job_id,
                 reserved_media_keys=reserved_keys,
                 opaque_reserved_media=opaque_media,
+                used_windows=used_windows,
             )
             if len(plans) != quantity:
                 # Only an empty plan is explained (the explainer's contract).
@@ -6494,6 +6549,7 @@ async def _create_job_impl(
                         unavailable_signatures,
                         reserved_media_keys=reserved_keys,
                         opaque_reserved_media=opaque_media,
+                        used_windows=used_windows,
                     )
                     if not plans
                     else INSUFFICIENT_INVENTORY
