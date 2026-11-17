@@ -1024,6 +1024,81 @@ def curated_plans_for_recipe(
     ]
 
 
+# Curated pages whose variants must never re-show footage a reserved plan
+# already used. Culture Core's short fast-cut plan re-uses its own clips by
+# design, so it keeps signature-only reservation.
+CURATED_FRESH_FOOTAGE_PAGES = frozenset({"acct:burnt-mill-rd"})
+
+# Stands in for used_windows when a fresh-footage page's reserved history cannot
+# be read as clip seconds. Unknown usage is never treated as no usage: nothing
+# is offered until the reservation is reconciled.
+UNREADABLE_CURATED_HISTORY = object()
+
+
+def _finite_seconds(value: Any) -> bool:
+    return (isinstance(value, (int, float)) and not isinstance(value, bool)
+            and math.isfinite(value) and value >= 0)
+
+
+def curated_history_spans(plan: Any) -> list[tuple[str, float, float]] | None:
+    """The clip seconds one reserved plan used, or None when they cannot be read.
+
+    Exact windows when every window names a clip with finite, ordered seconds;
+    otherwise whole clips from a non-empty list of clip keys. Anything else is
+    unreadable, and the caller must refuse supply rather than assume no usage.
+    """
+    if not isinstance(plan, dict):
+        return None
+    windows = plan.get("windows")
+    if isinstance(windows, list) and windows and all(
+        isinstance(w, dict) and isinstance(w.get("key"), str) and w["key"]
+        and _finite_seconds(w.get("sourceStart")) and _finite_seconds(w.get("sourceEnd"))
+        and w["sourceStart"] < w["sourceEnd"]
+        for w in windows
+    ):
+        return [(w["key"], float(w["sourceStart"]), float(w["sourceEnd"])) for w in windows]
+    keys = plan.get("mediaKeys")
+    if isinstance(keys, list) and keys and all(isinstance(k, str) and k for k in keys):
+        return [(key, 0.0, math.inf) for key in keys]
+    return None
+
+
+def curated_plan_repeats_footage(
+    plan: dict[str, Any], used_windows: dict[str, list[tuple[float, float]]],
+) -> bool:
+    """True when any window re-shows a moment an earlier reserved plan already used.
+
+    A curated variant re-chops the same pinned clips, so two different
+    signatures can still show the same seconds of the same clip. Those repeats
+    are refused by originality review after the paid render, so drop them here.
+    """
+    for window in plan["windows"]:
+        for start, end in used_windows.get(window["key"], ()):
+            if min(end, window["sourceEnd"]) > max(start, window["sourceStart"]):
+                return True
+    return False
+
+
+def _curated_fresh_plans(
+    plans: list[dict[str, Any]], unavailable_signatures: set[str],
+    used_windows: dict[str, list[tuple[float, float]]] | object | None,
+) -> list[dict[str, Any]]:
+    """Unreserved variants; with used_windows, also none repeating used footage or each other."""
+    if used_windows is None:
+        return [plan for plan in plans if plan["signature"] not in unavailable_signatures]
+    if used_windows is UNREADABLE_CURATED_HISTORY:
+        return []
+    used = {key: list(spans) for key, spans in (used_windows or {}).items()}
+    fresh = []
+    for plan in plans:
+        if plan["signature"] in unavailable_signatures or curated_plan_repeats_footage(plan, used):
+            continue
+        fresh.append(plan)
+        for window in plan["windows"]:
+            used.setdefault(window["key"], []).append((window["sourceStart"], window["sourceEnd"]))
+    return fresh
+
+
 def _generic_clean_video_chunk(
     template: SyzygyTemplate, objects_in_order: list[SyzygyObject], chunk: int,
 ) -> dict[str, Any] | None:
@@ -1108,6 +1183,7 @@ def plan_slideshows(
     run_id: str,
     reserved_media_keys: set[str] | None = None,
     opaque_reserved_media: bool = False,
+    used_windows: dict[str, list[tuple[float, float]]] | object | None = None,
 ) -> list[dict[str, Any]]:
     if (
         library.library_id != recipe.library_id
@@ -1144,12 +1220,10 @@ def plan_slideshows(
         if has_curated_plan and not variants:
             return []
         if variants:
-            # Each variant is reserved once through its own signature.
+            # Each variant is reserved once through its own signature, and a
+            # variant that re-shows used footage is never offered.
             # Extras in the library are ignored.
-            return [
-                plan for plan in variants
-                if plan["signature"] not in unavailable_signatures
-            ][:count]
+            return _curated_fresh_plans(variants, unavailable_signatures, used_windows)[:count]
         template = recipe.templates[0]
         # Signature-only legacy archives cannot reveal which media was posted.
         # Fail closed until an operator reconciles those reservations.

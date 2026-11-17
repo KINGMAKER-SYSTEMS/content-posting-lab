@@ -140,6 +140,9 @@ from services.control_plane_plan_reasons import (
     explain_empty_slideshow_plan,
 )
 from services.control_plane_slideshows import (
+    CURATED_FRESH_FOOTAGE_PAGES,
+    UNREADABLE_CURATED_HISTORY,
+    curated_history_spans,
     SyzygyError,
     UGC_FORMAT_SLUG,
     CLEAN_VIDEO_FORMATS,
@@ -640,16 +643,18 @@ def _generation_related_jobs_view(
             **page_jobs_view["jobs"],
             **jobs_snapshot.by_source_kind.get("truck_master_recovery", {}),
         },
-        compaction.ARCHIVE_INDEX_KEY: _snapshot_archive_index(jobs_snapshot),
+        **_snapshot_archive_index(jobs_snapshot),
     }
 
 
 def _snapshot_archive_index(jobs_snapshot: "_JobsSnapshot") -> dict[str, Any]:
-    """The compacted store's archiveIndex (empty before any compaction).
-    Every view capabilities() hands a reservation helper must carry it:
-    those helpers read the archived no-repeat facts from the dict they are
-    given, so a view without it would silently forget every archived job."""
-    return jobs_snapshot.data.get(compaction.ARCHIVE_INDEX_KEY, {}) or {}
+    """The compacted store's archiveIndex entry, passed on untouched (or no
+    entry before any compaction). Every view capabilities() hands a
+    reservation helper must carry it: those helpers read the archived
+    no-repeat facts from the dict they are given, so a view without it would
+    silently forget every archived job, and a view that cleaned a malformed
+    index into {} would read unknown history as unused."""
+    return compaction.carry_archive_index(jobs_snapshot.data)
 
 
 def _capabilities_job_views(
@@ -661,14 +666,14 @@ def _capabilities_job_views(
     archive_index = _snapshot_archive_index(jobs_snapshot)
     page_jobs = {
         "jobs": jobs_snapshot.by_page.get(page_id, {}),
-        compaction.ARCHIVE_INDEX_KEY: archive_index,
+        **archive_index,
     }
     if _PHOTO_RESERVATIONS_KEY in jobs_snapshot.data:
         page_jobs[_PHOTO_RESERVATIONS_KEY] = jobs_snapshot.data[_PHOTO_RESERVATIONS_KEY]
     return (
         page_jobs,
         {"jobs": jobs_snapshot.by_source_kind.get("dossier_source_dna", {}),
-         compaction.ARCHIVE_INDEX_KEY: archive_index},
+         **archive_index},
     )
 
 
@@ -807,7 +812,14 @@ def capabilities(
     # truck_master_recovery reservation set) genuinely needs every page's
     # jobs of that one kind, so that bucket alone stays store-wide.
     page_jobs_view, dossier_source_dna_view = _capabilities_job_views(jobs_snapshot, page_id)
-    archive_index = page_jobs_view[compaction.ARCHIVE_INDEX_KEY]
+    try:
+        archive_index = compaction.read_archive_index(page_jobs_view)
+    except compaction.ArchiveIndexUnreadable as error:
+        # Fail closed like a torn snapshot: unknown archive history must
+        # never advertise maxQuantity for any page.
+        raise HTTPException(
+            status_code=503, detail="job store temporarily unavailable",
+        ) from error
     generation_related_jobs_view: dict[str, Any] | None = None
     completed_import_identities = sorted({
         identity
@@ -951,12 +963,14 @@ def capabilities(
             reserved_keys, opaque_media = _generic_clean_video_reserved_media(
                 page_jobs_view, slideshow_recipe, page_id,
             )
+            used_windows = _curated_used_windows(page_jobs_view, slideshow_recipe, page_id)
             max_quantity = len(plan_slideshows(
                 slideshow_recipe, library, slideshow_recipe.max_quantity,
                 unavailable,
                 f"capability:{page_id}:{slideshow_recipe.executor_version}",
                 reserved_media_keys=reserved_keys,
                 opaque_reserved_media=opaque_media,
+                used_windows=used_windows,
             ))
             if _photo_jobs_paused(page_jobs_view, slideshow_recipe, page_id):
                 max_quantity = 0
@@ -1000,6 +1014,7 @@ def capabilities(
             elif slideshow_recipe is not None:
                 zero_reason = explain_empty_slideshow_plan(
                     slideshow_recipe, library, slideshow_recipe.max_quantity, unavailable,
+                    used_windows=used_windows,
                 )
             elif source_recipe is not None:
                 zero_reason = explain_empty_source_plan(source_recipe, unavailable_slots, None)
@@ -2178,7 +2193,7 @@ def _source_dna_cut_ledger(
     # Archived completed source cuts keep their permanent reservations. The
     # exact time frame is reserved forever; the library slot id stays reserved
     # only across the same recipe revision (mirroring the live rule).
-    for cut in (store.get(compaction.ARCHIVE_INDEX_KEY, {}) or {}).get("sourceDnaCuts", []):
+    for cut in compaction.read_archive_index(store).get("sourceDnaCuts", []):
         if not isinstance(cut, dict):
             continue
         same_library_slot = (
@@ -2266,7 +2281,7 @@ def _slideshow_unavailable_signatures(
             if isinstance(signature, str) and re.fullmatch(r"[0-9a-f]{64}", signature):
                 signatures.add(signature)
     # Archived slideshow plans keep their permanent reservations.
-    for entry in (store.get(compaction.ARCHIVE_INDEX_KEY, {}) or {}).get("slideshow", []):
+    for entry in compaction.read_archive_index(store).get("slideshow", []):
         if photo_recipe and (
             not isinstance(entry, dict)
             or not isinstance(entry.get("pageId"), str) or not entry["pageId"]
@@ -2317,6 +2332,61 @@ def _photo_reservation_receipt(record: Any) -> dict[str, Any]:
     return receipt
 
 
+def _curated_used_windows(
+    store: dict[str, Any], recipe: Any, page_id: str,
+) -> dict[str, list[tuple[float, float]]] | object | None:
+    """Clip seconds already used by this page's reserved slideshow plans.
+
+    None for pages outside CURATED_FRESH_FOOTAGE_PAGES (signature-only, as before).
+    A curated plan keeps its exact windows. A plan known only by its media keys
+    (archived or generic) marks each whole clip as used. Reserved history that
+    cannot be read that way fails closed: UNREADABLE_CURATED_HISTORY, so the
+    page is offered nothing (curated_history_unreadable) instead of a cut that
+    may repeat footage.
+    """
+    if page_id not in CURATED_FRESH_FOOTAGE_PAGES:
+        return None
+    used: dict[str, list[tuple[float, float]]] = {}
+
+    def remember(plan: Any) -> bool:
+        spans = curated_history_spans(plan)
+        if spans is None:
+            return False
+        for key, start, end in spans:
+            used.setdefault(key, []).append((start, end))
+        return True
+
+    try:
+        for job in store.get("jobs", {}).values():
+            if (
+                isinstance(job, dict)
+                and job.get("sourceKind") == "syzygy_slideshow"
+                and job.get("pageId") == page_id
+                and job.get("sourceLibraryId") == recipe.library_id
+            ):
+                for plan in compaction.slideshow_reserved_plans(job):
+                    if not remember(plan):
+                        return UNREADABLE_CURATED_HISTORY
+        # A missing index means nothing archived yet; anything present that
+        # is not a dict (null included) is unreadable.
+        archived = compaction.read_archive_index(store).get("slideshow", [])
+    except (compaction.ArchiveIndexUnreadable, AttributeError, TypeError, ValueError):
+        return UNREADABLE_CURATED_HISTORY
+    if not isinstance(archived, list):
+        return UNREADABLE_CURATED_HISTORY
+    for entry in archived:
+        if not isinstance(entry, dict):
+            # Its page cannot be told, so it may be this page's footage.
+            return UNREADABLE_CURATED_HISTORY
+        if (
+            entry.get("pageId") == page_id
+            and entry.get("sourceLibraryId") == recipe.library_id
+            and not remember(entry)
+        ):
+            return UNREADABLE_CURATED_HISTORY
+    return used
+
+
 def _generic_clean_video_reserved_media(
     store: dict[str, Any], recipe: Any, page_id: str,
 ) -> tuple[set[str], bool]:
@@ -2354,7 +2424,7 @@ def _generic_clean_video_reserved_media(
             for plan in compaction.slideshow_reserved_plans(job):
                 if isinstance(plan, dict):
                     remember(plan)
-    for entry in (store.get(compaction.ARCHIVE_INDEX_KEY, {}) or {}).get("slideshow", []):
+    for entry in compaction.read_archive_index(store).get("slideshow", []):
         if (
             isinstance(entry, dict)
             and entry.get("pageId") == page_id
@@ -2470,7 +2540,7 @@ def _truck_master_candidates(
     """
     reserved: set[str] = set()
     jobs = store.get("jobs", {})
-    archive_index = store.get(compaction.ARCHIVE_INDEX_KEY, {}) or {}
+    archive_index = compaction.read_archive_index(store)
     for job in jobs.values():
         if (
             not isinstance(job, dict)
@@ -2947,7 +3017,7 @@ def _claim_unique_generated_clip(
         if not isinstance(job, dict) or job.get("status") not in GENERATION_ACTIVE_STATUSES:
             raise RuntimeError("generated_job_not_active")
         page_id = job.get("pageId")
-        archive_index = store.get(compaction.ARCHIVE_INDEX_KEY, {}) or {}
+        archive_index = compaction.read_archive_index(store)
         if digest in (archive_index.get("usedClipSha256") or {}).get(page_id, []):
             # Delivered bytes never expire: an archived completed job still
             # reserves its exact sha256 against replay as a new delivery.
@@ -3002,7 +3072,7 @@ def _claim_unique_slideshow_clip(
                      or job.get("slideshowAttemptId") != expected_attempt or job.get("runtimeId") != expected_runtime))):
             raise RuntimeError("slideshow_job_not_active")
         page_id = job.get("pageId")
-        archive_index = store.get(compaction.ARCHIVE_INDEX_KEY, {}) or {}
+        archive_index = compaction.read_archive_index(store)
         if digest in (archive_index.get("usedClipSha256") or {}).get(page_id, []):
             raise RuntimeError("duplicate_slideshow_artifact")
         for entry in archive_index.get("slideshow", []):
@@ -4297,7 +4367,7 @@ def _legacy_source_cut_freshness_refusal(job_id, recipe, master, start_ms, durat
             and prior.get("status") in SOURCE_DNA_UNAVAILABLE_STATUSES
             for cut in prior.get("sourceCuts", []) if isinstance(cut, dict)
         ]
-        prior_cuts.extend((other_store.get(compaction.ARCHIVE_INDEX_KEY, {}) or {}).get("sourceDnaCuts", []))
+        prior_cuts.extend(compaction.read_archive_index(other_store).get("sourceDnaCuts", []))
         for cut in prior_cuts:
             if not isinstance(cut, dict) or cut.get("masterSha256") != master.sha256:
                 continue
@@ -6030,6 +6100,13 @@ async def _create_job_impl(
         replay = _replay_existing_job(store, idempotency_key, job_request_hash)
         if replay is not None:
             return replay
+        try:
+            compaction.read_archive_index(store)
+        except compaction.ArchiveIndexUnreadable as error:
+            # Unknown archive history: no new job may plan around it.
+            raise HTTPException(
+                status_code=503, detail="job store temporarily unavailable",
+            ) from error
 
         job_id = JOB_ID_PREFIX + _secrets.token_hex(8)
         common = {
@@ -6478,11 +6555,13 @@ async def _create_job_impl(
             reserved_keys, opaque_media = _generic_clean_video_reserved_media(
                 store, slideshow_recipe, page_id,
             )
+            used_windows = _curated_used_windows(store, slideshow_recipe, page_id)
             plans = plan_slideshows(
                 slideshow_recipe, slideshow_library, quantity,
                 unavailable_signatures, job_id,
                 reserved_media_keys=reserved_keys,
                 opaque_reserved_media=opaque_media,
+                used_windows=used_windows,
             )
             if len(plans) != quantity:
                 # Only an empty plan is explained (the explainer's contract).
@@ -6494,6 +6573,7 @@ async def _create_job_impl(
                         unavailable_signatures,
                         reserved_media_keys=reserved_keys,
                         opaque_reserved_media=opaque_media,
+                        used_windows=used_windows,
                     )
                     if not plans
                     else INSUFFICIENT_INVENTORY
@@ -6741,10 +6821,13 @@ def reserve_photo_plan(
         replay = _replay_photo_reservation(reservations, key, request_hash)
         if replay is not None:
             return replay
-        archive = store.get(compaction.ARCHIVE_INDEX_KEY)
+        try:
+            archive = compaction.read_archive_index(store)
+        except compaction.ArchiveIndexUnreadable as error:
+            raise HTTPException(status_code=503, detail="photo reservation history unavailable") from error
         if (
             compaction.ARCHIVE_INDEX_KEY in store and (
-                not isinstance(archive, dict) or archive.get("version") != compaction.ARCHIVE_INDEX_VERSION
+                archive.get("version") != compaction.ARCHIVE_INDEX_VERSION
                 or not isinstance(archive.get("slideshow"), list)
             )
             or compaction.ARCHIVE_INDEX_KEY not in store

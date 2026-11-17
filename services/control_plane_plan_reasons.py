@@ -33,6 +33,9 @@ SLIDESHOW_PERMUTATIONS_EXHAUSTED = "slideshow_permutations_exhausted"
 GENERIC_MEDIA_EXHAUSTED = "generic_media_exhausted"
 CURATED_LIBRARY_NOT_READY = "curated_library_not_ready"
 CURATED_VARIANTS_EXHAUSTED = "curated_variants_exhausted"
+# A fresh-footage curated page whose reserved history cannot be read as clip
+# seconds: unknown usage is refused, never counted as unused footage.
+CURATED_HISTORY_UNREADABLE = "curated_history_unreadable"
 PHOTO_PLAN_UNAVAILABLE = "photo_plan_unavailable"
 PHOTO_VARIANTS_EXHAUSTED = "photo_variants_exhausted"
 PROMPT_INVENTORY_EXHAUSTED = "prompt_inventory_exhausted"
@@ -99,6 +102,10 @@ REASONS: dict[str, tuple[str, bool, str]] = {
     CURATED_VARIANTS_EXHAUSTED: (
         "slideshow", True,
         "The approved montage and every re-chop variant are reserved; a curated page is terminal by design.",
+    ),
+    CURATED_HISTORY_UNREADABLE: (
+        "slideshow", False,
+        "A reserved plan for this page has no readable clip windows or clip keys; reconcile that reservation so the used footage is known.",
     ),
     PHOTO_PLAN_UNAVAILABLE: (
         "slideshow", True,
@@ -183,6 +190,7 @@ def explain_empty_slideshow_plan(
     unavailable_signatures: set[str],
     reserved_media_keys: set[str] | None = None,
     opaque_reserved_media: bool = False,
+    used_windows: dict[str, list[tuple[float, float]]] | object | None = None,
 ) -> str:
     """Name why plan_slideshows returned nothing for a slideshow recipe.
 
@@ -204,6 +212,8 @@ def explain_empty_slideshow_plan(
         CLEAN_VIDEO_FORMATS,
         _generic_clean_video_chunk,
         _generic_clean_video_objects,
+        UNREADABLE_CURATED_HISTORY,
+        _curated_fresh_plans,
         _permutation_plan_candidates,
         curated_plans_for_recipe,
         requires_curated_video_plan,
@@ -232,7 +242,9 @@ def explain_empty_slideshow_plan(
         if has_curated_plan and not variants:
             return CURATED_LIBRARY_NOT_READY
         if variants:
-            if all(plan["signature"] in unavailable_signatures for plan in variants):
+            if used_windows is UNREADABLE_CURATED_HISTORY:
+                return CURATED_HISTORY_UNREADABLE
+            if not _curated_fresh_plans(variants, unavailable_signatures, used_windows):
                 return CURATED_VARIANTS_EXHAUSTED
             return PLAN_AVAILABLE
         template = recipe.templates[0]

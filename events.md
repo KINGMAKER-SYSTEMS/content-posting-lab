@@ -1758,3 +1758,27 @@ own admission acknowledgement before automatic retirement; another caption's
 shared clean object is insufficient proof. Focused jobs tests cover real render
 pairs, concurrent duplicate claims, restart, retirement and cross-mode repeats;
 local-history reservation costs are recorded in docs/post-render-setup.md.
+
+### 2026-11-17 — Curated variants never repeat used footage
+
+worktree: fix/burnt-no-repeat-footage. Burnt's curated re-chops rotate the same
+pinned clips, so a new signature could re-show seconds of a clip already
+posted; originality review then refused the paid render (four Burnt bodies on
+11-16/17). For Burnt only (`CURATED_FRESH_FOOTAGE_PAGES`), planning now drops a
+variant whose window overlaps footage used by the page's reserved plans, and
+keeps plans in one job apart. Culture Core is unchanged. Signatures, plan
+shapes and the Worker contract are unchanged; the zero reason reuses
+`curated_variants_exhausted`. Focused test red-proved against signature-only
+filtering. No deployment.
+Review follow-up: reserved history with no readable clip seconds (signature
+only, string or empty clip keys, NaN/infinite/reversed windows, malformed
+archive index) now fails closed with the new typed zero reason
+`curated_history_unreadable` instead of counting as no usage. Each case is
+tested and red-proved on the previous head.
+Second follow-up: the archive index now has one reader for the whole Lab
+(`read_archive_index`). Only a missing key means "nothing archived"; a present
+null, list, string, number or bool is unreadable everywhere, matching
+compaction. Before this, eleven readers cleaned a bad value into an empty
+index, so the capability poll could still advertise Burnt supply. Now
+capabilities, job creation and photo reservation answer 503 and every
+reservation helper refuses. A guard test fails on any new direct read.

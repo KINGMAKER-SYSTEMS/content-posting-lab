@@ -422,9 +422,29 @@
   changed sorted offsets or a new signature alone.
 - Generic `ugc-slideshow` plans count only photo objects toward their template
   and refill chunks. Curated UGC video plans still select their pinned clips.
+- For pages in `CURATED_FRESH_FOOTAGE_PAGES` (Burnt Mill Road), curated UGC
+  variants also drop any plan whose window shows seconds of a clip that an
+  active or archived reservation for the same page and library already used,
+  and plans in one job never overlap each other. Other curated pages keep
+  signature-only reservation. Reserved curated plans
+  give exact windows; a plan known only by media keys marks whole clips used.
+  When nothing fresh is left the zero reason stays `curated_variants_exhausted`.
+  History that cannot be read that way (no finite, ordered windows and no
+  non-empty list of clip keys, or a malformed archive index) fails closed:
+  nothing is offered and the zero reason is `curated_history_unreadable`.
+  Unknown usage is never counted as unused footage.
   The zero-plan explanation uses the same eligible photo set as planning:
   fewer eligible photos than the template requires reports a library shortage;
   enough eligible photos held by reservations reports generic exhaustion.
+- The job store's archive index has one reader,
+  `job_store_compaction.read_archive_index`: a missing key means nothing is
+  archived yet, a dict is the index, and anything else (null included) raises
+  `ArchiveIndexUnreadable`, exactly as compaction refuses the same store.
+  Capability views pass the raw value on untouched
+  (`carry_archive_index`). An unreadable index answers capabilities, job
+  creation and photo reservation with 503; the Burnt curated guard reports
+  `curated_history_unreadable`. `tests/test_archive_index_single_reader.py`
+  fails if any other code reads the key directly.
 - Job-store compaction treats an absent `clips` field as an empty list. A
   completed job with a present non-list `clips` container retains its job and
   idempotency mapping, records the named refusal, and advances the scan cursor
