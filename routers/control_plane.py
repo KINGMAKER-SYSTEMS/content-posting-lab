@@ -2358,7 +2358,11 @@ def _curated_used_windows(
                 for plan in compaction.slideshow_reserved_plans(job):
                     if not remember(plan):
                         return UNREADABLE_CURATED_HISTORY
-        archived = (store.get(compaction.ARCHIVE_INDEX_KEY) or {}).get("slideshow", [])
+        index = store.get(compaction.ARCHIVE_INDEX_KEY)
+        # Absent means nothing archived yet; present but not a dict is unreadable.
+        if index is not None and not isinstance(index, dict):
+            return UNREADABLE_CURATED_HISTORY
+        archived = (index or {}).get("slideshow", [])
     except (AttributeError, TypeError, ValueError):
         return UNREADABLE_CURATED_HISTORY
     if not isinstance(archived, list):

@@ -123,10 +123,22 @@ def test_unreadable_burnt_history_fails_closed_with_a_typed_reason(entry):
     {"jobs": {}, "archiveIndex": {"slideshow": "not-a-list"}},
     {"jobs": {}, "archiveIndex": {"slideshow": ["not-a-dict"]}},
     {"jobs": {}, "archiveIndex": ["not-a-dict"]},
+    # Present but falsy and not a dict: never read as "nothing archived".
+    {"jobs": {}, "archiveIndex": []},
+    {"jobs": {}, "archiveIndex": ""},
+    {"jobs": {}, "archiveIndex": 0},
+    {"jobs": {}, "archiveIndex": False},
 ])
 def test_malformed_archive_index_fails_closed(store):
     recipe, _ = burnt_recipe_and_library()
     assert cp._curated_used_windows(store, recipe, BURNT) is slides.UNREADABLE_CURATED_HISTORY
+
+
+def test_absent_archive_index_means_nothing_archived():
+    recipe, _ = burnt_recipe_and_library()
+    assert cp._curated_used_windows({"jobs": {}}, recipe, BURNT) == {}
+    assert cp._curated_used_windows({"jobs": {}, "archiveIndex": None}, recipe, BURNT) == {}
+    assert cp._curated_used_windows({"jobs": {}, "archiveIndex": {}}, recipe, BURNT) == {}
 
 
 def test_unreadable_active_plan_fails_closed():
