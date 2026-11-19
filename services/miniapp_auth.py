@@ -19,6 +19,7 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import time
 from urllib.parse import parse_qsl
 
@@ -63,6 +64,8 @@ def parse_init_data(init_data: str, *, bot_token: str | None = None) -> dict:
     provided_hash = pairs.pop("hash", None)
     if not provided_hash:
         raise AuthError("initData missing hash")
+    if re.fullmatch(r"[0-9a-fA-F]{64}", provided_hash) is None:
+        raise AuthError("initData signature mismatch", 403)
 
     data_check_string = "\n".join(
         f"{k}={pairs[k]}" for k in sorted(pairs.keys())
@@ -80,8 +83,13 @@ def parse_init_data(init_data: str, *, bot_token: str | None = None) -> dict:
         try:
             auth_date = int(pairs.get("auth_date", "0"))
         except ValueError:
-            auth_date = 0
-        if auth_date and (time.time() - auth_date) > max_age:
+            raise AuthError("initData invalid auth_date", 403)
+        if auth_date <= 0:
+            raise AuthError("initData invalid auth_date", 403)
+        age = time.time() - auth_date
+        if age < -30:
+            raise AuthError("initData auth_date is in the future", 403)
+        if age > max_age:
             raise AuthError("initData expired", 403)
 
     out = dict(pairs)
@@ -110,9 +118,15 @@ def resolve_poster_from_request(
         return poster
 
     parsed = parse_init_data(init_data or "")
-    user = parsed.get("user") or {}
+    user = parsed.get("user")
+    if not isinstance(user, dict):
+        raise AuthError("initData has no user object")
     user_id = user.get("id")
     username = user.get("username")
+    if user_id is not None and (type(user_id) is not int or user_id <= 0):
+        raise AuthError("initData has no valid user id")
+    if username is not None and not isinstance(username, str):
+        raise AuthError("initData has no valid username")
     if user_id is None and not username:
         raise AuthError("initData has no user")
 

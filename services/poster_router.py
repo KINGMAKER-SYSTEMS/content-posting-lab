@@ -35,15 +35,21 @@ def resolve_poster_for_page(page: dict[str, Any]) -> dict[str, Any] | None:
         return None
 
     posters = list_posters()
-    for p in posters:
-        if _normalize(p.get("name", "")) == target_norm:
-            return p
+    exact = [p for p in posters if _normalize(p.get("name", "")) == target_norm]
+    if exact:
+        return exact[0] if len(exact) == 1 else None
 
     # Fuzzy: accept "Jake Balik" matching "Jake B." etc — first-name + initial
-    target_first = target.split()[0].lower() if target.split() else ""
+    target_tokens = re.findall(r"[a-z0-9]+", target.lower())
+    candidates = []
     for p in posters:
-        pname = p.get("name", "")
-        if pname.lower().startswith(target_first) and target_first:
-            return p
-
-    return None
+        tokens = re.findall(r"[a-z0-9]+", p.get("name", "").lower())
+        if not tokens or tokens[0] != target_tokens[0]:
+            continue
+        if len(target_tokens) > 1 and len(tokens) != len(target_tokens):
+            continue
+        if all(a == b or (len(a) == 1 and b.startswith(a)) or
+               (len(b) == 1 and a.startswith(b))
+               for a, b in zip(target_tokens[1:], tokens[1:])):
+            candidates.append(p)
+    return candidates[0] if len(candidates) == 1 else None

@@ -322,17 +322,14 @@ def test_parse_init_data_no_bot_token_503():
     assert ei.value.status_code == 503
 
 
-def test_parse_init_data_no_auth_date_skips_expiry(monkeypatch):
-    # Documented behavior: the expiry check only fires when auth_date is present
-    # and non-zero. Validly signed initData with NO auth_date is accepted even
-    # with a max-age set. Pin this so a future change can't silently flip it.
+def test_parse_init_data_no_auth_date_refused_when_expiry_enabled(monkeypatch):
     monkeypatch.setenv("MINIAPP_INITDATA_MAX_AGE", "60")
     fields = {"user": json.dumps({"id": 1}, separators=(",", ":"))}
     dcs = "\n".join(f"{k}={fields[k]}" for k in sorted(fields))
     secret = hmac.new(b"WebAppData", FAKE_TOKEN.encode(), hashlib.sha256).digest()
     fields["hash"] = hmac.new(secret, dcs.encode(), hashlib.sha256).hexdigest()
-    parsed = parse_init_data(urlencode(fields), bot_token=FAKE_TOKEN)
-    assert parsed["user"]["id"] == 1
+    with pytest.raises(AuthError):
+        parse_init_data(urlencode(fields), bot_token=FAKE_TOKEN)
 
 
 def test_parse_init_data_max_age_zero_disables_expiry(monkeypatch):
