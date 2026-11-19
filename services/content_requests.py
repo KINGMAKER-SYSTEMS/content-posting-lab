@@ -73,6 +73,8 @@ def add_request(
     source: str = "miniapp",
 ) -> dict:
     """Append a new content request. Returns the stored entry with a generated id."""
+    if quantity is not None and (type(quantity) is not int or quantity <= 0):
+        raise ValueError("quantity must be a positive integer")
     entry = {
         "id": uuid.uuid4().hex[:12],
         "poster_id": poster_id,
@@ -126,9 +128,12 @@ def update_request(
         for r in data["requests"]:
             if r.get("id") == request_id:
                 if status is not None:
+                    previous_status = r.get("status")
                     r["status"] = status
-                    if status == "fulfilled":
+                    if status == "fulfilled" and previous_status != "fulfilled":
                         r["fulfilled_at"] = _now()
+                    elif status != "fulfilled":
+                        r["fulfilled_at"] = None
                 if agent_note is not None:
                     r["agent_note"] = agent_note
                 r["updated_at"] = _now()

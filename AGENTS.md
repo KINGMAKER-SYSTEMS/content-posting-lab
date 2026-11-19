@@ -492,6 +492,10 @@
   seconds of future clock skew. Removing a numeric Telegram binding also removes
   its legacy username alias; other numeric bindings remain valid. Poster-name
   fallback requires compatible name tokens and exactly one matching poster.
+  Mini App filesystem/auth/store work runs through synchronous endpoint thread
+  dispatch. Media URLs encode filename delimiters without changing filesystem
+  identity. Content quantities are omitted or positive integers; fulfillment
+  retries preserve the original timestamp and reopening clears current completion.
 - `routers/upload.py` passes the legacy cookie-login account to its static
   Python subprocess runner as an argv value. Request values must never be
   interpolated into executable source; the exact account argument is preserved.
