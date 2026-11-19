@@ -14,7 +14,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
 
-from services.json_store import atomic_load, atomic_save, lock_for
+from services.json_store import JsonStoreUnavailable, atomic_save, load_mapping, lock_for
 
 BASE_DIR = Path(__file__).parent.parent
 _VOLUME_PATH = os.getenv("RAILWAY_VOLUME_MOUNT_PATH", "")
@@ -34,10 +34,12 @@ def _empty() -> dict:
 
 
 def load_requests() -> dict:
-    """Load the request store. Returns empty structure if missing or corrupt."""
-    data = atomic_load(REQUESTS_PATH, default=None)
-    if not isinstance(data, dict) or "requests" not in data:
-        return _empty()
+    """Load requests without replacing unreadable history with an empty queue."""
+    data = load_mapping(REQUESTS_PATH, missing=_empty)
+    if not isinstance(data.get("requests"), list) or any(
+        not isinstance(row, dict) for row in data["requests"]
+    ):
+        raise JsonStoreUnavailable("content request history has invalid contents")
     return data
 
 

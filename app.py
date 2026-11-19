@@ -51,6 +51,7 @@ from routers.video import router as video_router
 from routers.agenticnews import router as agenticnews_router
 import services.agenticnews as agenticnews_db
 from services.post_render import source_duration_repair_enabled
+from services.json_store import JsonStoreUnavailable
 
 load_dotenv()
 
@@ -314,6 +315,11 @@ app = FastAPI(
     version="0.1.0",
     lifespan=lifespan,
 )
+
+
+@app.exception_handler(JsonStoreUnavailable)
+async def durable_store_unavailable(request: Request, exc: JsonStoreUnavailable):
+    return JSONResponse(status_code=503, content={"detail": "durable state is unavailable"})
 
 app.add_middleware(
     CORSMiddleware,
