@@ -14,7 +14,7 @@ from typing import Iterator
 
 import os
 
-from services.json_store import atomic_load, atomic_save, lock_for
+from services.json_store import JsonStoreUnavailable, atomic_save, load_mapping, lock_for
 
 BASE_DIR = Path(__file__).parent.parent
 
@@ -90,11 +90,14 @@ def _gen_id() -> str:
 
 def load_config() -> dict:
     """Load config from disk. Auto-seeds with defaults on first boot."""
-    if not CONFIG_PATH.exists():
-        return _seed_config()
-    data = atomic_load(CONFIG_PATH, default=None)
-    if not isinstance(data, dict) or "version" not in data:
-        return _empty_config()
+    with lock_for(CONFIG_PATH):
+        data = load_mapping(CONFIG_PATH, missing=_seed_config)
+    if "version" not in data or any(
+        not isinstance(data.get(key), expected)
+        for key, expected in (("posters", dict), ("staging_group", dict),
+                              ("inventory", dict), ("sounds", list))
+    ) or any(not isinstance(row, dict) for row in data["posters"].values()):
+        raise JsonStoreUnavailable("Telegram configuration has invalid contents")
     return data
 
 

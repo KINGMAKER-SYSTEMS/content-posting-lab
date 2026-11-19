@@ -36,6 +36,30 @@ _LOCKS: dict[str, threading.RLock] = {}
 _LOCKS_GUARD = threading.Lock()
 
 
+class JsonStoreUnavailable(RuntimeError):
+    """An existing durable store cannot safely be read or mutated."""
+
+
+def load_mapping(path: Path | str, *, missing: Callable[[], dict]) -> dict:
+    """Read durable state, initializing only genuinely missing first-use files.
+
+    Existing invalid/unreadable bytes must never become an empty mutation base.
+    ``atomic_load`` retains its best-effort contract for caches and sidecars.
+    """
+    p = Path(path)
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except FileNotFoundError as exc:
+        if not p.is_symlink():
+            return missing()
+        raise JsonStoreUnavailable(f"{p.name} is unavailable") from exc
+    except (OSError, ValueError) as exc:
+        raise JsonStoreUnavailable(f"{p.name} is unavailable") from exc
+    if not isinstance(data, dict):
+        raise JsonStoreUnavailable(f"{p.name} has invalid contents")
+    return data
+
+
 def lock_for(path: Path | str) -> threading.RLock:
     """Return the process-wide reentrant lock guarding mutations to ``path``."""
     key = str(Path(path))

@@ -11,7 +11,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
 
-from services.json_store import atomic_load, atomic_save, lock_for
+from services.json_store import JsonStoreUnavailable, atomic_save, load_mapping, lock_for
 
 BASE_DIR = Path(__file__).parent.parent
 _VOLUME_PATH = os.getenv("RAILWAY_VOLUME_MOUNT_PATH", "")
@@ -26,10 +26,12 @@ def _empty_roster() -> dict:
 
 
 def load_roster() -> dict:
-    """Load roster from disk. Returns empty structure if file missing or corrupt."""
-    data = atomic_load(ROSTER_PATH, default=None)
-    if not isinstance(data, dict) or "pages" not in data:
-        return _empty_roster()
+    """Load roster, preserving unreadable prior authority for reconciliation."""
+    data = load_mapping(ROSTER_PATH, missing=_empty_roster)
+    if not isinstance(data.get("pages"), dict) or any(
+        not isinstance(row, dict) for row in data["pages"].values()
+    ):
+        raise JsonStoreUnavailable("page roster has invalid contents")
     return data
 
 
