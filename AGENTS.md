@@ -487,6 +487,11 @@
   values for video filtering or content requests must resolve inside the
   authenticated poster's pages; unknown or foreign IDs return 404 before
   content is returned or queued.
+  Mini App credentials reject malformed hashes and user records as auth errors.
+  Freshness-enabled initData requires a positive timestamp, with at most thirty
+  seconds of future clock skew. Removing a numeric Telegram binding also removes
+  its legacy username alias; other numeric bindings remain valid. Poster-name
+  fallback requires compatible name tokens and exactly one matching poster.
 - `routers/upload.py` passes the legacy cookie-login account to its static
   Python subprocess runner as an argv value. Request values must never be
   interpolated into executable source; the exact account argument is preserved.

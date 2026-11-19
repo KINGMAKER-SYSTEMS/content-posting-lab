@@ -61,3 +61,18 @@ def test_exact_match_preferred_over_fuzzy(monkeypatch):
     resolved = pr.resolve_poster_for_page({"poster_name": "Jake Donnelly"})
     assert resolved is not None
     assert resolved["poster_id"] == "po_jaked"
+
+
+def test_prefix_is_not_a_first_name_match(monkeypatch):
+    _patch_posters(monkeypatch, [{"poster_id": "johnny", "name": "Johnny Balik"}])
+    assert pr.resolve_poster_for_page({"poster_name": "John Smith"}) is None
+
+
+def test_fuzzy_routing_requires_compatible_surname_and_unique_candidate(monkeypatch):
+    _patch_posters(monkeypatch, [
+        {"poster_id": "a", "name": "Jake Balik"},
+        {"poster_id": "b", "name": "Jake Brown"},
+    ])
+    assert pr.resolve_poster_for_page({"poster_name": "Jake B."}) is None
+    assert pr.resolve_poster_for_page({"poster_name": "Jake Smith"}) is None
+    assert pr.resolve_poster_for_page({"poster_name": "Jake"}) is None

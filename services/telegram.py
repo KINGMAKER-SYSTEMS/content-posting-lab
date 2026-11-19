@@ -366,6 +366,9 @@ def unbind_user_from_poster(poster_id: str, user_id: int) -> dict:
         ids = poster.get("telegram_user_ids", [])
         if uid in ids:
             ids.remove(uid)
+            # The single legacy username alias is not bound to a particular ID.
+            # Retaining it would immediately authenticate the removed user again.
+            poster.pop("telegram_username", None)
         poster["updated_at"] = _now()
         return poster
 
