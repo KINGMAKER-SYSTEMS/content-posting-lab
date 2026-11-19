@@ -19,9 +19,10 @@ server key is unset, they remain unavailable (503) rather than opening access.
 
 import hmac
 import os
+from typing import Annotated
 
 from fastapi import APIRouter, Header, HTTPException, Query, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from services import content_requests
 from services.miniapp_auth import AuthError, resolve_poster_from_request
@@ -79,7 +80,7 @@ def _poster_page(poster: dict, page_id: str) -> dict:
 class ContentRequestBody(BaseModel):
     text: str
     page_id: str | None = None
-    quantity: int | None = None
+    quantity: Annotated[int, Field(strict=True, gt=0)] | None = None
 
 
 class AgentUpdateBody(BaseModel):
@@ -91,14 +92,14 @@ class AgentUpdateBody(BaseModel):
 
 
 @router.get("/me")
-async def me(request: Request):
+def me(request: Request):
     """Poster profile plus the pages they run (from Master Pages)."""
     poster = _require_poster(request)
     return poster_summary(poster)
 
 
 @router.get("/videos")
-async def my_videos(request: Request, page_id: str | None = Query(default=None)):
+def my_videos(request: Request, page_id: str | None = Query(default=None)):
     """Rendered videos aggregated across the poster's pages."""
     poster = _require_poster(request)
     result = videos_for_poster(poster, page_id=page_id)
@@ -110,7 +111,7 @@ async def my_videos(request: Request, page_id: str | None = Query(default=None))
 
 
 @router.get("/requests")
-async def my_requests(request: Request, status: str | None = Query(default=None)):
+def my_requests(request: Request, status: str | None = Query(default=None)):
     """List the calling poster's content requests."""
     poster = _require_poster(request)
     return {
@@ -121,7 +122,7 @@ async def my_requests(request: Request, status: str | None = Query(default=None)
 
 
 @router.post("/requests", status_code=201)
-async def create_request(request: Request, body: ContentRequestBody):
+def create_request(request: Request, body: ContentRequestBody):
     """File a content request for the calling poster."""
     poster = _require_poster(request)
     if not (body.text or "").strip():
@@ -147,7 +148,7 @@ async def create_request(request: Request, body: ContentRequestBody):
 
 
 @router.get("/agent/requests")
-async def agent_list_requests(
+def agent_list_requests(
     status: str | None = Query(default="open"),
     poster_id: str | None = Query(default=None),
     x_agent_key: str | None = Header(default=None),
@@ -164,7 +165,7 @@ async def agent_list_requests(
 
 
 @router.patch("/agent/requests/{request_id}")
-async def agent_update_request(
+def agent_update_request(
     request_id: str,
     body: AgentUpdateBody,
     x_agent_key: str | None = Header(default=None),

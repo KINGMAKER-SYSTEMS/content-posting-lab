@@ -19,6 +19,7 @@ This is a read/aggregation layer only; it does not send anything.
 
 import logging
 from typing import Any
+from urllib.parse import quote
 
 from project_manager import sanitize_project_name
 from services.poster_router import resolve_poster_for_page
@@ -76,8 +77,8 @@ def _static_url_for(project: str, video_path: str) -> str:
     """
     sanitized = sanitize_project_name(project)
     if video_path.startswith("clips/"):
-        return f"/projects/{sanitized}/{video_path}"
-    return f"/projects/{sanitized}/videos/{video_path}"
+        return quote(f"/projects/{sanitized}/{video_path}", safe="/")
+    return quote(f"/projects/{sanitized}/videos/{video_path}", safe="/")
 
 
 def videos_for_poster(
