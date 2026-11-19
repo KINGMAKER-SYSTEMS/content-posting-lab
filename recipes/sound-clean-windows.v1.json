@@ -1,0 +1,10 @@
+{
+  "schema": "content-lab.sound-clean-windows.v1",
+  "note": "Per-sound clean windows (seconds from the sound's start) where a body may END. Source: EM windows on the 11-18 fan-out brief (COMMON-WED.md); computed windows from the sound's own audio come with standard item 6. A sound with no entry is not checked.",
+  "sounds": {
+    "6704982590421469186": {"name": "Holly", "cleanWindows": [{"startS": 8.66, "endS": 9.29, "kind": "quiet"}]},
+    "6753170535640729601": {"name": "Beginning", "cleanWindows": [{"startS": 6.47, "endS": 7.62, "kind": "quiet"}, {"startS": 9.43, "endS": 9.58, "kind": "quiet"}]},
+    "7652818168142235664": {"name": "Chemical", "cleanWindows": [{"startS": 7.35, "endS": 7.48, "kind": "clean", "note": "thin"}]},
+    "7701226037748779806": {"name": "truck sound 226", "cleanWindows": [{"startS": 5.82, "endS": 8.66, "kind": "clean"}]}
+  }
+}

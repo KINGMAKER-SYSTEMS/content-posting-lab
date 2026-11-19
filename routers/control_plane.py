@@ -188,7 +188,7 @@ from services.ffmpeg import (
 from services.master_pages_contract import SCHEMA as MASTER_PAGES_SCHEMA, canonical_intent, exact_intent, intent_hash
 from services.page_frame import VERTICAL_FRAME, resolved_frame
 from services.pool_supplied_pages import is_pool_supplied
-from services import generation_budget, moderation_retry
+from services import generation_budget, moderation_retry, qa_gate
 from services.roster_public import require_roster_auth
 from services import clip_similarity
 from services.clip_transforms import CutTransforms, apply_transforms, cut_transforms, transforms_disabled_reason, transforms_enabled, transforms_from_manifest
@@ -3438,6 +3438,10 @@ async def _run_owned_dossier_generation(job_id: str) -> None:
               and "frameFit" in recipe.recipe_spec["renderTreatment"])
     manifests: list[dict[str, Any]] = list(job.get("clips", [])) if durable else []
     provider_failures: list[dict[str, Any]] = list(job.get("providerFailures", [])) if durable else []
+    # Provider clips the QA gate blocked (services/qa_gate.py, L57098): the
+    # paid provider file stays on disk as evidence; it never becomes a clip.
+    qa_refused_clips: list[dict[str, Any]] = list(job.get("qaRefusedClips", [])) if durable else []
+    qa_mode = qa_gate.gate_mode()
     completed_calls = list(job.get("completedGenerationCalls", [])) if durable else []
     attempts: Any = json.loads(json.dumps(job.get("generationAttempts") or {})) if durable else {}
     provider_calls_completed = len(completed_calls)
@@ -3799,7 +3803,69 @@ async def _run_owned_dossier_generation(job_id: str) -> None:
                         clip_crop=clip_crop,
                         **frame_cut,
                     )
+                # QA gate on a provider clip (services/qa_gate.py; L57062 +
+                # L57098): broken file, rotation/orientation, codec, SAR,
+                # stripped-provider audio and the picture-level sideways test
+                # BLOCK; look issues are scored. A SAR-only fault is repaired
+                # into treated/ (the provider file is paid evidence and is
+                # never rewritten). A blocked candidate is skipped: when a
+                # call keeps no candidate it is recorded as a provider
+                # failure under class qa_gate, so the existing terminal
+                # handling completes the batch with the other clips or fails
+                # it with zero, and the consumer plans the deficit.
+                qa_manifest = None
+                if qa_mode != qa_gate.MODE_OFF:
+                    treated_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+                    # run_gate never raises (a tool outage passes the clip as
+                    # in shadow) and repairs only under enforce.
+                    verdict = await asyncio.to_thread(
+                        qa_gate.run_gate, artifact,
+                        qa_gate.policy_for_generated_clip(recipe, PROVIDERS.get(recipe.engine)), qa_mode,
+                        repaired_destination=treated_root / f"g{call_index:02d}-c{candidate_index:02d}-sar1.mp4")
+                    log.info("content_lab.qa_gate job_id=%s page_id=%s generation=%s candidate=%s mode=%s"
+                             " ok=%s score=%s blocks=%s warnings=%s repaired_sar=%s elapsed_ms=%d",
+                             job_id, job["pageId"], call_index, candidate_index, qa_mode, verdict.ok,
+                             verdict.score, [item.code for item in verdict.blocks],
+                             [item.code for item in verdict.warnings], verdict.repaired_sar,
+                             int(verdict.elapsed_s * 1000))
+                    if verdict.repaired_sar and verdict.path is not None:
+                        artifact = Path(verdict.path)
+                    if not verdict.ok and qa_mode == qa_gate.MODE_ENFORCE:
+                        if artifact != source:
+                            artifact.unlink(missing_ok=True)
+                        qa_refused_clips.append({
+                            "generationIndex": call_index,
+                            "candidateIndex": candidate_index,
+                            "file": rel_path,
+                            "reason": verdict.reason,
+                            "detail": verdict.detail[:200],
+                        })
+                        log.warning("content_lab.qa_gate_refused page=%s job=%s generation=%s candidate=%s"
+                                    " reason=%s detail=%s", job["pageId"], job_id, call_index,
+                                    candidate_index, verdict.reason, verdict.detail)
+                        await asyncio.to_thread(_update_job, job_id, qaRefusedClips=list(qa_refused_clips))
+                        if candidate_index == len(candidates) - 1 and not any(
+                                clip.get("generationIndex") == call_index for clip in manifests):
+                            blocked = [row for row in qa_refused_clips if row["generationIndex"] == call_index]
+                            failure = {
+                                "class": "qa_gate",
+                                "provider": recipe.engine,
+                                "model": recipe.provider_model,
+                                "generationIndex": call_index,
+                                "providerRequestId": None,
+                                "detail": blocked[0]["reason"],
+                                "terminal": blocked[0]["reason"],
+                                "at": datetime.now(timezone.utc).isoformat(),
+                            }
+                            provider_failures.append(failure)
+                            await asyncio.to_thread(_update_job, job_id,
+                                errorClass="qa_gate", errorDetail=blocked[0]["reason"],
+                                providerFailure=failure, providerFailures=list(provider_failures))
+                        continue
+                    qa_manifest = verdict.manifest(mode=qa_mode)
                 manifest = _generated_manifest(job_root, artifact)
+                if qa_manifest is not None:
+                    manifest["qaGate"] = qa_manifest
                 manifest["generationIndex"] = call_index
                 manifest["promptCombinationId"] = prompt_entry["combinationId"]
                 # promptHash is the prompt actually sent; the immutable plan's
@@ -3990,6 +4056,7 @@ async def _run_owned_dossier_generation(job_id: str) -> None:
         providerCallsCompleted=len(completed_calls),
         completedGenerationCalls=list(completed_calls),
         completedAt=datetime.now(timezone.utc).isoformat(),
+        **({"qaRefusedClips": list(qa_refused_clips)} if qa_refused_clips else {}),
     )
 
 
@@ -4593,6 +4660,10 @@ async def _run_dossier_source_inner(job_id: str) -> None:
     skipped_backup_cuts: list = []
     refused_scrambler_cuts: list = []
     refused_legacy_cuts: list[str] = []
+    # Cuts the QA gate blocked (services/qa_gate.py): durable evidence on the
+    # job so a later planner change can skip a window that cut badly.
+    qa_refused_cuts: list[dict[str, Any]] = []
+    qa_mode = qa_gate.gate_mode()
     try:
         if vary_look or vary_transforms:
             # One read of the job store, inside the try that terminalizes the
@@ -4861,7 +4932,52 @@ async def _run_dossier_source_inner(job_id: str) -> None:
                     _layer_b_probe_unreadable(job["pageId"], job_id)
                 elif not 5.0 <= measured_duration <= maximum:
                     raise RuntimeError("source_output_duration_unsupported")
+            # QA gate (services/qa_gate.py; standard item 3, ruling L57062):
+            # the finished cut is probed and decoded once before it can become
+            # a clip. A SAR-only container fault is repaired in place (stream
+            # copy, frame-identical). A hard fault (broken file, wrong frame,
+            # codec, audio, length) drops THIS cut through the existing
+            # refusal paths - a Scrambler cut releases its reservation, a
+            # legacy cut is skipped - and the job fails with the gate's reason
+            # only when no cut survives, so a bad body never reaches a row.
+            # Look issues (tail cut, black run, freeze, sound window) are
+            # scored and recorded on the manifest; they never block.
+            qa_manifest = None
+            if qa_mode != qa_gate.MODE_OFF:
+                qa_policy = qa_gate.policy_for_source_cut(
+                    recipe, render_duration_ms, render_speed, job=job,
+                    encode_args=delivery_encode_args(recipe.encode_preset))
+                # run_gate never raises (a tool outage passes the cut as in
+                # shadow) and repairs only under enforce.
+                verdict = await _settle_source_call(
+                    qa_gate.run_gate, destination, qa_policy, qa_mode)
+                log.info("content_lab.qa_gate job_id=%s page_id=%s cut=%s mode=%s ok=%s"
+                         " score=%s blocks=%s warnings=%s repaired_sar=%s elapsed_ms=%d",
+                         job_id, job["pageId"], index, qa_mode, verdict.ok, verdict.score,
+                         [item.code for item in verdict.blocks],
+                         [item.code for item in verdict.warnings],
+                         verdict.repaired_sar, int(verdict.elapsed_s * 1000))
+                if not verdict.ok and qa_mode == qa_gate.MODE_ENFORCE:
+                    destination.unlink(missing_ok=True)
+                    qa_refused_cuts.append({
+                        "cutIndex": index,
+                        "slotId": source_cut.get("slotId"),
+                        "reason": verdict.reason,
+                        "detail": verdict.detail[:200],
+                    })
+                    if scram_record is not None:
+                        await _skip_refused_scrambler_cut(
+                            job, job_id, scram_record,
+                            _ScramblerCutRefused(verdict.reason), refused_scrambler_cuts)
+                    else:
+                        log.warning("source_cut_refused page=%s job=%s cut=%s reason=%s detail=%s",
+                                    job["pageId"], job_id, index, verdict.reason, verdict.detail)
+                        refused_legacy_cuts.append(verdict.reason)
+                    continue
+                qa_manifest = verdict.manifest(mode=qa_mode)
             manifest = _generated_manifest(job_root, destination)
+            if qa_manifest is not None:
+                manifest["qaGate"] = qa_manifest
             manifest["clipSpeed"] = cut_speed
             manifest["clipCrop"] = cut_crop
             if vary_transforms:
@@ -5007,6 +5123,7 @@ async def _run_dossier_source_inner(job_id: str) -> None:
             status="failed",
             error=_exception_failure_reason(error),
             completedAt=datetime.now(timezone.utc).isoformat(),
+            **({"qaRefusedCuts": list(qa_refused_cuts)} if qa_refused_cuts else {}),
         )
         return
     if not _job_matches_current_master_pages(job):
@@ -5033,6 +5150,7 @@ async def _run_dossier_source_inner(job_id: str) -> None:
         clips=manifests,
         sourceCuts=delivered_cuts,
         completedAt=datetime.now(timezone.utc).isoformat(),
+        **({"qaRefusedCuts": list(qa_refused_cuts)} if qa_refused_cuts else {}),
     )
 
 
