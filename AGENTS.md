@@ -597,6 +597,8 @@
   unreadable state without replacing its bytes; HTTP callers receive 503.
   Only genuinely missing first-use files initialize defaults. Telegram seeding
   shares the configuration transaction lock, including read-triggered first use.
+  Startup treats an unavailable Telegram configuration as Telegram off: the
+  service still starts and keeps the file's bytes.
 - Recipe listing reuses unchanged file bytes after checking every current file's
   inode, size and timestamps; additions, edits and removals apply on the next read.
   Callers receive independent matching rows, not mutable shared cache entries.

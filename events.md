@@ -1782,3 +1782,15 @@ compaction. Before this, eleven readers cleaned a bad value into an empty
 index, so the capability poll could still advertise Burnt supply. Now
 capabilities, job creation and photo reservation answer 503 and every
 reservation helper refuses. A guard test fails on any new direct read.
+
+### 2026-11-19 — Unavailable Telegram config no longer blocks startup
+
+worktree: claude/telegram-startup-unavailable. Codex P1 on #403, still live on
+main: with `TELEGRAM_BOT_TOKEN` unset, the lifespan's token lookup read a
+malformed or unreadable Telegram config and raised `JsonStoreUnavailable`
+before yielding, so the whole service failed to start (health included)
+instead of Telegram routes answering 503. The lifespan now catches that error
+at the token lookup, logs it, keeps the file's bytes and skips the bot; the
+rest of the app serves and `/api/telegram/*` still answers 503. New
+`tests/test_telegram_startup_unavailable.py` (truncated, non-mapping and
+undecodable bytes) fails on main and passes with the fix. No deployment.
