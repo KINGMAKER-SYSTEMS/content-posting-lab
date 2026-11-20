@@ -418,7 +418,6 @@ async def generate_one(
             log.info("job=%s idx=%d provider=%s starting", job_id, index, provider)
 
             provider_info = PROVIDERS[provider]
-            mod = provider_info["module"]
 
             # One billable generation's estimated cost, pinned to the catalog.
             # The Control Plane executor passes its recipe-pinned cost explicitly;
@@ -446,7 +445,17 @@ async def generate_one(
                 **extra,
             }
 
-            media_url = await mod.generate(prompt, params, client)
+            from . import backend_order
+            from services import generation_budget
+
+            def price(backend: str) -> float:
+                return generation_budget.per_gen_cost_usd(backend, duration, resolution=resolution,
+                    parameters={**extra, "aspect_ratio": aspect_ratio, "image_data_uri": image_data_uri})
+
+            # Usually the requested provider; with CONTENT_LAB_BACKEND_ORDER on,
+            # possibly its local twin or (after a local refusal) its hosted twin.
+            media_url, served = await backend_order.generate(provider, prompt, params, client, price=price)
+            provider_info = PROVIDERS[served]
 
             filename = f"{job_id}_{index}.mp4"
             dest = sub_dir / filename
@@ -472,13 +481,13 @@ async def generate_one(
             # Complete-subject dossier recipes instead use ``contain`` so a
             # landscape-only provider cannot amputate the required subject.
             crop_mode = extra.get("crop_mode")
-            if crop_mode == "contain" and provider in FORCE_LANDSCAPE:
+            if crop_mode == "contain" and served in FORCE_LANDSCAPE:
                 entry["status"] = "framing"
                 await fit_to_vertical(dest)
                 entry["status"] = "done"
                 entry["file"] = f"{rel_dir}/{filename}"
                 entry["url"] = f"{url_prefix}/{rel_dir}/{filename}"
-            elif crop_mode in ("dual", "triptych", "both") and provider in FORCE_LANDSCAPE:
+            elif crop_mode in ("dual", "triptych", "both") and served in FORCE_LANDSCAPE:
                 entry["status"] = "cropping"
                 crop_paths = await multi_crop_vertical(dest, crop_mode)
                 crop_probe = await asyncio.create_subprocess_exec(
@@ -511,7 +520,7 @@ async def generate_one(
                 # Use the first crop as the primary file
                 entry["file"] = entry["crops"][0]["file"]
                 entry["url"] = entry["crops"][0]["url"]
-            elif aspect_ratio == "9:16" and provider in FORCE_LANDSCAPE:
+            elif aspect_ratio == "9:16" and served in FORCE_LANDSCAPE:
                 # Auto-crop to 9:16 for providers that only output 16:9
                 entry["status"] = "cropping"
                 await crop_to_vertical(dest)

@@ -88,6 +88,12 @@ _QUEUE_CHECK_EVERY = 5   # polls between checks that the server still has the jo
 _FREE_SETTLE_SECONDS = 2.0
 _server_locks: dict[str, asyncio.Lock] = {}
 _server_model: dict[str, str] = {}
+_server_waiting: dict[str, int] = {}
+
+
+def waiting_jobs(url: str) -> int:
+    """Jobs in this process waiting for ``url``'s render lock (not yet on its /queue)."""
+    return _server_waiting.get(url.rstrip("/"), 0)
 
 # ``API_KEYS["comfyui"]`` holds this instead of a URL when jobs go to a worker.
 WORKER_QUEUE = "worker-queue"
@@ -439,7 +445,10 @@ async def _generate_via_worker(prompt: str, params: dict):
     })
     entry["provider_request_id"] = job.id
     entry["status"] = "queued"
-    return await local_worker_queue.wait(job, entry, _timeout_seconds())
+    # With a hosted fallback configured (providers/backend_order.py), an
+    # unclaimed job stops waiting after this long instead of indefinitely.
+    return await local_worker_queue.wait(job, entry, _timeout_seconds(),
+                                         claim_timeout=params.get("local_claim_timeout"))
 
 
 async def _release_other_models(client: httpx.AsyncClient, url: str, model_id: str) -> None:
@@ -468,10 +477,17 @@ async def run_on_server(url: str, prompt: str, params: dict, client: httpx.Async
     lock = _server_locks.setdefault(url, asyncio.Lock())
     if lock.locked():
         entry["status"] = "queued"
-    async with lock:
+    _server_waiting[url] = _server_waiting.get(url, 0) + 1
+    try:
+        await lock.acquire()
+    finally:
+        _server_waiting[url] -= 1
+    try:
         entry["status"] = "generating"
         await _release_other_models(client, url, params.get("model_id"))
         return await _render(url, prompt, params, client)
+    finally:
+        lock.release()
 
 
 async def _render(url: str, prompt: str, params: dict, client: httpx.AsyncClient) -> str:
