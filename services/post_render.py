@@ -417,21 +417,42 @@ def _square_pixels(sample_aspect_ratio: str) -> bool:
     return abs(numerator / denominator - 1) <= SQUARE_PIXEL_TOLERANCE
 
 
-def _final_frame_rate(source: Path, tools: RenderTools, *, paired: bool = False) -> Fraction | None:
-    """The final's one output rate: the body's own rate (60p is halved to 30).
+def _final_frame_rate(source: Path, tools: RenderTools, *, paired: bool = False,
+                      max_rate: Fraction | None = None) -> tuple[Fraction | None, bool]:
+    """The final's one output rate, and whether it differs from the body's own.
+
+    The rate is the body's own (60p is halved to 30). ``max_rate`` caps it for a
+    duration repair, whose frame count the Worker sets at 30 fps: a faster body
+    keeps every k-th frame, the smallest whole k that brings it to the cap (a
+    39 fps body that shows each frame twice goes back to its own 19.5; a 33 fps
+    body plays at 16.5). An even pick never repeats a frame; resampling straight
+    to 30 would hold some frames for one slot and some for two. When the rate
+    differs from the body's own, the graph's ``fps`` step makes the change.
 
     None when ffprobe cannot read the rate; a lone final then keeps 30 fps as
     before. A paired final (clean + captioned, ``normalize_pair_timing``) fails
     closed instead: its twin may have read the rate, and the pair must match.
     """
     native = probe_frame_rate(source, tools.ffprobe)
-    if native is None and paired:
-        raise PostRenderError("frame_rate_unreadable", "paired final cannot prove the source frame rate")
-    return None if native is None else delivery_frame_rate(native)
+    if native is None:
+        if paired:
+            raise PostRenderError("frame_rate_unreadable", "paired final cannot prove the source frame rate")
+        return None, False
+    rate = delivery_frame_rate(native)
+    if max_rate is not None and rate > max_rate:
+        rate = native / math.ceil(native / max_rate)
+    return rate, rate != native
+
+
+def _repair_frame_rate_cap() -> Fraction:
+    from services.source_duration_repair import SOURCE_DURATION_REPAIR_DELIVERY_FPS
+
+    return Fraction(SOURCE_DURATION_REPAIR_DELIVERY_FPS)
 
 
 def _video_graph(source_probe: MediaProbe, frame_height: int | None = None, *, in_app: bool = False,
-                 normalize_pair_timing: bool = False, frame_rate: Fraction | None = None) -> str:
+                 normalize_pair_timing: bool = False, frame_rate: Fraction | None = None,
+                 resample: bool = False) -> str:
     chain = []
     if (source_probe.width, source_probe.height) != (1080, 1920):
         if abs(source_probe.width * 16 - source_probe.height * 9) <= 32:
@@ -456,6 +477,13 @@ def _video_graph(source_probe: MediaProbe, frame_height: int | None = None, *, i
         # The rate is the body's own (the same one the encoder gets), so this
         # passes each frame through instead of repeating frames to make 30 fps.
         chain.append(f"fps={frame_rate_text(frame_rate or Fraction(30))}")
+    elif resample and frame_rate is not None:
+        # The final's rate is not the body's own (60p kept at every second
+        # frame, a sub-20 fps body shown k times, a repair capped at 30). The
+        # fps step picks the frames on the final's own grid, which is the
+        # sound's clock; the encoder's -r alone could keep the frames between
+        # grid points instead, up to one source frame off the sound.
+        chain.append(f"fps={frame_rate_text(frame_rate)}")
     if in_app:
         # No caption overlay input: the clean clip is delivery-only. The
         # encoder's -pix_fmt yuv420p still turns the chain into the delivery
@@ -470,10 +498,10 @@ def _video_graph(source_probe: MediaProbe, frame_height: int | None = None, *, i
 
 def _encode_final(source: Path, overlay: Path | None, final: Path, source_probe: MediaProbe,
                   tools: RenderTools, frame_height: int | None = None, *, in_app: bool = False,
-                  normalize_pair_timing: bool = False) -> MediaProbe:
-    frame_rate = _final_frame_rate(source, tools, paired=normalize_pair_timing)
+                  normalize_pair_timing: bool = False, max_frame_rate: Fraction | None = None) -> MediaProbe:
+    frame_rate, resample = _final_frame_rate(source, tools, paired=normalize_pair_timing, max_rate=max_frame_rate)
     graph = _video_graph(source_probe, frame_height, in_app=in_app, normalize_pair_timing=normalize_pair_timing,
-                         frame_rate=frame_rate)
+                         frame_rate=frame_rate, resample=resample)
     base = [tools.ffmpeg, "-nostdin", "-v", "error", "-xerror", "-protocol_whitelist", "file,pipe",
             "-noautorotate", "-f", "mov", "-i", str(source)]
     if in_app:
@@ -483,6 +511,11 @@ def _encode_final(source: Path, overlay: Path | None, final: Path, source_probe:
     else:
         base += ["-protocol_whitelist", "file,pipe", "-i", str(overlay), "-filter_complex", graph,
                  "-map", "[v]", "-map", "0:a?", "-map_metadata", "-1", "-map_chapters", "-1"]
+    if max_frame_rate is not None and resample:
+        # A capped final never ends past the body: the fps step can round its
+        # last frame up by up to half a frame, and a repair may not run past
+        # its commanded cut by even one frame.
+        base += ["-frames:v", str(max(1, math.floor(Fraction(source_probe.duration_ms, 1000) * frame_rate)))]
     for attempt in range(2):
         encode = delivery_encode_args("tiktok_delivery_v1")
         if frame_rate is not None:
@@ -704,7 +737,8 @@ def _ink_refusal(share: float, pixels: int, box_match: float | None,
 
 def _check_caption_ink(output_directory: Path, qa_path: Path, qa_at_ms: int, overlay_bytes: bytes,
                        background_png: bytes | None, line_centers: list[int], *, reference_source: Path,
-                       frame_height: int | None, normalize_pair_timing: bool, tools: RenderTools) -> dict:
+                       frame_height: int | None, normalize_pair_timing: bool, tools: RenderTools,
+                       max_frame_rate: Fraction | None = None) -> dict:
     """Refuse a burned final whose QA frame does not show the caption; return the decode.json facts.
 
     The reference is the same frame of the clip the final was encoded from (the trimmed
@@ -717,7 +751,8 @@ def _check_caption_ink(output_directory: Path, qa_path: Path, qa_at_ms: int, ove
     """
     clip_probe = _probe(reference_source, tools)
     # The same rate the final was encoded at, so the reference is the same frame.
-    frame_rate = _final_frame_rate(reference_source, tools, paired=normalize_pair_timing)
+    frame_rate, resample = _final_frame_rate(reference_source, tools, paired=normalize_pair_timing,
+                                             max_rate=max_frame_rate)
     seek = ["-nostdin", "-v", "error", "-xerror", "-protocol_whitelist", "file,pipe",
             "-noautorotate", "-ss", f"{qa_at_ms / 1000:.3f}", "-f", "mov", "-i", str(reference_source)]
     cut = ["-map", "[v]", "-frames:v", "1", "-q:v", "3", "-update", "1"]
@@ -728,17 +763,17 @@ def _check_caption_ink(output_directory: Path, qa_path: Path, qa_at_ms: int, ove
         if background_png is None:
             _run([tools.ffmpeg, *seek, "-filter_complex",
                   _video_graph(clip_probe, frame_height, in_app=True, normalize_pair_timing=normalize_pair_timing,
-                               frame_rate=frame_rate),
+                               frame_rate=frame_rate, resample=resample),
                   *cut, str(reference_path)], tools, output_file=reference_path, output_limit=MAX_QA_BYTES)
         else:
             background_path.write_bytes(background_png)
             _run([tools.ffmpeg, *seek, "-protocol_whitelist", "file,pipe", "-i", str(background_path), "-filter_complex",
                   _video_graph(clip_probe, frame_height, normalize_pair_timing=normalize_pair_timing,
-                               frame_rate=frame_rate),
+                               frame_rate=frame_rate, resample=resample),
                   *cut, str(reference_path)], tools, output_file=reference_path, output_limit=MAX_QA_BYTES)
             _run([tools.ffmpeg, *seek, "-filter_complex",
                   _video_graph(clip_probe, frame_height, in_app=True, normalize_pair_timing=normalize_pair_timing,
-                               frame_rate=frame_rate),
+                               frame_rate=frame_rate, resample=resample),
                   *cut, str(bare_path)], tools, output_file=bare_path, output_limit=MAX_QA_BYTES)
         frames = [Image.open(path) for path in (qa_path, reference_path, bare_path) if path is not None]
         try:
@@ -904,7 +939,8 @@ def _render_post_single(source_path: Path, output_directory: Path, request: Post
                 output_directory, qa_path, qa_at_ms, overlay_bytes, background_png,
                 [record.center_y_px for record in overlay.plan.lines if record.text],
                 reference_source=(output_directory / "repair" / "trimmed.mp4") if repair is not None else source,
-                frame_height=band_height, normalize_pair_timing=paired_caption, tools=tools)
+                frame_height=band_height, normalize_pair_timing=paired_caption, tools=tools,
+                max_frame_rate=_repair_frame_rate_cap() if repair is not None else None)
         final_sha, final_length = _file_hash(final_path, MAX_FINAL_BYTES)
         qa_sha, _ = _file_hash(qa_path, MAX_QA_BYTES)
         if final_sha == request.source_sha256:

@@ -33,6 +33,7 @@ import math
 import os
 import shutil
 import subprocess
+from fractions import Fraction
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -54,6 +55,14 @@ from services.post_render import (
 )
 
 SOURCE_DURATION_REPAIR_SCHEMA = "rt.source-duration-repair.v1"
+# The Worker counts a repair's expected_output_frames at 30 fps, and the final
+# may not carry more frames than that. So a repaired final is never faster
+# than 30 fps: a faster body keeps every second frame in the delivery graph
+# (a 39 fps body that shows each frame twice goes back to 19.5; a 1.1x cut at
+# 33 fps plays at 16.5), an even pick that never repeats a frame. A slower body
+# (25p, a 0.7x cut at 21) keeps its own rate. Lifting this needs the Worker to
+# count frames at the body's own rate.
+SOURCE_DURATION_REPAIR_DELIVERY_FPS = 30
 RECEIPT_SCHEMA = "source-duration-repair-receipt.v1"
 
 # Mirrors SOURCE_DURATION_REPAIR_KEYS on the Worker side, lexicographic order.
@@ -479,7 +488,8 @@ def encode_shorter_final(source: Path, out: Path, *,
             raise RepairError("overlay_invalid", "caption overlay is empty or exceeds the byte limit")
     try:
         _encode_final(source, overlay_path, out, source_probe, tools, frame_height,
-                      in_app=in_app, normalize_pair_timing=normalize_pair_timing)
+                      in_app=in_app, normalize_pair_timing=normalize_pair_timing,
+                      max_frame_rate=Fraction(SOURCE_DURATION_REPAIR_DELIVERY_FPS))
     except PostRenderError as error:
         raise RepairError(error.code, str(error)) from error
     if out.stat().st_size > MAX_FINAL_BYTES:

@@ -310,6 +310,96 @@ def test_a_paired_final_fails_closed_when_its_rate_cannot_be_read(tmp_path, monk
     assert _frame_gaps(tmp_path / "lone.mp4")[0] == pytest.approx(1 / 30, abs=0.001)
 
 
+# -- the final: rate changes and duration repairs (#209 step 2) -------------
+
+def _sync_source_at(root: Path, rate: str) -> Path:
+    """A clip at ``rate`` with one white frame at 0.6 s and a 1 kHz beep at the same 0.6 s."""
+    path = root / f"sync-{rate}.mp4"
+    _ffmpeg("-f", "lavfi", "-i", f"testsrc2=size=540x960:rate={rate}:duration=4",
+            "-f", "lavfi", "-i",
+            "aevalsrc='if(between(t,0.6,0.6333),0.8*sin(2*PI*1000*t),0)':s=48000:d=4",
+            "-vf", "drawbox=x=0:y=0:w=iw:h=ih:color=white:t=fill:enable='between(t,0.595,0.605)'",
+            "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23", "-threads", "2",
+            "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "128k", "-shortest", str(path))
+    return path
+
+
+def test_a_lone_final_of_a_sub_20_body_shows_every_frame_twice_from_the_first(tmp_path):
+    # A 16 fps body (an AI clip delivered without a speed cut) goes out at 32
+    # fps with every frame shown exactly twice. (main forced 30 fps: uneven
+    # repeats.)
+    source = _moving_source(tmp_path, "16")
+    _final(source, tmp_path / "final.mp4", paired=False)
+    _assert_clean(tmp_path / "final.mp4", Fraction(32), "16p lone final", shown=2)
+
+
+@pytest.mark.parametrize("rate,expected", [("50", Fraction(25)), ("60", Fraction(30))])
+def test_a_lone_final_that_drops_frames_keeps_picture_and_sound_together(tmp_path, rate, expected):
+    source = _sync_source_at(tmp_path, rate)
+    before = _flash_time(source) - _beep_time(source)
+    _final(source, tmp_path / "final.mp4", paired=False)
+    final = tmp_path / "final.mp4"
+    _assert_clean(final, expected, f"{rate}p lone final")
+    # The white frame sits on the final's own grid, with the beep. Keeping the
+    # frames between grid points (the encoder's -r) drops it and shows every
+    # kept frame up to one source frame off the sound.
+    try:
+        flash = _flash_time(final)
+    except AssertionError:
+        pytest.fail(f"{rate}p final dropped the frame that lines up with the beep: its frames are off the sound's clock")
+    drift = (flash - _beep_time(final)) - before
+    assert abs(drift) < 1 / float(expected) / 2, f"{rate}p final moved the picture {drift * 1000:+.1f} ms off the sound"
+
+
+def _repaired_final(source: Path, out: Path) -> dict:
+    from services.source_duration_repair import encode_shorter_final
+
+    return encode_shorter_final(source, out)
+
+
+@pytest.mark.parametrize("rate", ["25", "24", "21"])
+def test_a_repaired_final_under_30_keeps_its_own_rate(tmp_path, rate):
+    source = _moving_source(tmp_path, rate)
+    _repaired_final(source, tmp_path / "final.mp4")
+    _assert_clean(tmp_path / "final.mp4", Fraction(int(rate)), f"{rate}p repaired final")
+
+
+def _repeat_map(path: Path) -> str:
+    return "".join("R" if repeat else "." for repeat in _repeat_flags(path))
+
+
+@pytest.mark.parametrize("rate,frames,expected", [
+    ("33", 99, Fraction(33, 2)),   # a 1.1x cut of 30p: every second frame, 16.5 fps
+    ("33", 101, Fraction(33, 2)),  # an odd frame count must not end past the body
+    ("36", 108, Fraction(18)),
+])
+def test_a_repaired_final_faster_than_30_keeps_every_second_frame(tmp_path, rate, frames, expected):
+    # The Worker counts a repair's expected_output_frames at 30 fps and the Lab
+    # refuses more frames than that, or a final that ends past the commanded cut.
+    source = tmp_path / f"body-{rate}.mp4"
+    _ffmpeg("-f", "lavfi", "-i", f"testsrc2=size=540x960:rate={rate}", "-frames:v", str(frames), "-an",
+            "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23", "-threads", "2",
+            "-pix_fmt", "yuv420p", str(source))
+    facts = _repaired_final(source, tmp_path / "final.mp4")
+    assert Fraction(facts["fps_num"], facts["fps_den"]) == expected
+    _assert_clean(tmp_path / "final.mp4", expected, f"{rate} fps repaired final")
+    body_seconds = Fraction(frames) / Fraction(rate)
+    count = len(_frame_gaps(tmp_path / "final.mp4")) + 1
+    assert count <= body_seconds * 30, f"{count} frames is over the Worker's 30 fps count"
+    assert Fraction(count) / expected <= body_seconds, "the repaired final ends past the body"
+
+
+def test_a_repaired_final_of_a_shown_twice_body_gets_its_own_frames_back(tmp_path):
+    # 0.65x of 30p is 19.5 fps of picture, cut at 39 fps with every frame shown
+    # twice. Resampling that straight to 30 held frames for 1 or 2 slots
+    # unevenly (the stutter); keeping every second frame gives back the 19.5.
+    source = _moving_source(tmp_path, "30")
+    cut = _cut(source, tmp_path / "cut.mp4", 0.65, delivery_encode_args(DELIVERY))
+    facts = _repaired_final(cut, tmp_path / "final.mp4")
+    assert Fraction(facts["fps_num"], facts["fps_den"]) == Fraction(39, 2)
+    assert not any(_repeat_flags(tmp_path / "final.mp4")), _repeat_map(tmp_path / "final.mp4")
+
+
 # -- the cut's transforms ---------------------------------------------------
 
 def test_camera_move_on_a_25p_cut_keeps_its_rate(tmp_path):
