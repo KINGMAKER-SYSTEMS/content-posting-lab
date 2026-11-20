@@ -723,8 +723,9 @@ def _try_heal_stutter(verdict: QaVerdict, source: Path, destination: Path, polic
 # tag (the frames are turned upright and the tag dropped), an audio stream on a
 # video-only recipe (dropped) and a non-square SAR the stream copy missed.
 HEALABLE_BLOCKS = frozenset({"qa_codec_mismatch", "qa_rotation", "qa_audio_unexpected", "qa_sar_non_square"})
-# Longest hold at either edge: a held frame stays under the freeze warning.
-EDGE_HOLD_MAX_S = 0.5
+# Longest hold at either edge: well under the 0.5 s freeze warning at any
+# rate (15 frames at 29.97 fps would already be 0.5005 s).
+EDGE_HOLD_MAX_S = 0.4
 
 
 def _ffmpeg_heal(args: list[str], what: str) -> None:
@@ -734,6 +735,8 @@ def _ffmpeg_heal(args: list[str], what: str) -> None:
             stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=SCAN_TIMEOUT_S, check=False)
     except FileNotFoundError as error:
         raise QaGateError("ffmpeg_unavailable") from error
+    except (subprocess.SubprocessError, OSError) as error:
+        raise RuntimeError(f"{what}_heal_failed: {type(error).__name__}") from error
     if completed.returncode != 0:
         raise RuntimeError(f"{what}_heal_failed: " + completed.stderr.strip()[-200:])
 
@@ -762,7 +765,7 @@ def edge_plan(verdict: QaVerdict, policy: QaPolicy) -> tuple[int, int, int] | No
     codes = {item.code for item in verdict.findings}
     head, tail = 0, total
     if "qa_tail_cut" in codes:
-        tail = min(tail, min(cut[0] for cut in verdict.extra.get("tail_cuts", ())))
+        tail = min(tail, min((cut[0] for cut in verdict.extra.get("tail_cuts", ())), default=tail))
     if "qa_black_run" in codes and not policy.fade:
         end_s = total / fps
         for start, end in scan.black_runs:
@@ -774,7 +777,7 @@ def edge_plan(verdict: QaVerdict, policy: QaPolicy) -> tuple[int, int, int] | No
                 tail = min(tail, int(math.floor(start * fps + 1e-6)))
     if (head, tail) == (0, total) or tail - head < 1:
         return None
-    if max(head, total - tail) > int(round(EDGE_HOLD_MAX_S * fps)):
+    if max(head, total - tail) > int(EDGE_HOLD_MAX_S * fps):
         return None
     return head, tail, total
 
@@ -812,7 +815,7 @@ def _heal_step(name: str, verdict: QaVerdict, source: Path, destination: Path, p
                 after.extra[key] = verdict.extra[key]
         log.info("qa_gate.healed path=%s heal=%s", source.name, name)
         return after
-    except (RuntimeError, OSError) as error:
+    except Exception as error:  # noqa: BLE001 - a failed heal keeps the body's own verdict
         log.warning("qa_gate.%s_heal_failed path=%s error=%s", name, source.name, error)
         return None
     finally:

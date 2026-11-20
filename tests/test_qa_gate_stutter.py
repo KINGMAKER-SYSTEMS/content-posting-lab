@@ -224,6 +224,20 @@ def test_enforce_holds_a_frame_over_black_at_either_edge_but_not_in_the_middle(t
     assert verdict.healed == () and _codes(verdict) == ["qa_black_run"] and _sha(middle) == before
 
 
+def test_a_format_heal_that_times_out_still_blocks(tmp_path, monkeypatch):
+    # GLM review: a timed-out re-encode must not become run_gate's
+    # fail-open pass; the hard block stands.
+    paid = tmp_path / "provider.mp4"
+    clips._encode(paid, clips._src(3.0, size="768x1344"), frames=90, extra=["-pix_fmt", "yuv444p"])
+
+    def slow(args, what):
+        raise RuntimeError(f"{what}_heal_failed: TimeoutExpired")
+
+    monkeypatch.setattr(qa_gate, "_ffmpeg_heal", slow)
+    verdict = qa_gate.run_gate(paid, PAID, qa_gate.MODE_ENFORCE, repaired_destination=tmp_path / "t.mp4")
+    assert not verdict.ok and verdict.reason == "qa_codec_mismatch" and verdict.extra.get("tool_error") is None
+
+
 def test_a_long_black_tail_is_not_held_into_a_freeze(tmp_path):
     body = clips.with_black_run(tmp_path / "long.mp4", black_s=1.2, at_s=4.8)
     before = _sha(body)
