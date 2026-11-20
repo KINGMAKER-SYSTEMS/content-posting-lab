@@ -72,10 +72,11 @@ def _stub_render(monkeypatch, tmp_path, writers):
 
 
 @pytest.mark.asyncio
-async def test_a_real_cut_with_a_tail_jump_is_delivered_with_a_warning_score(lab, monkeypatch):
+async def test_a_real_cut_with_a_tail_jump_is_healed_and_delivered(lab, monkeypatch):
     # The master jumps to another shot 2 frames before the planned 6 s window
-    # ends; the real executor cuts it. Ruling L57062: endings never block, so
-    # the clip ships with the look recorded on its manifest for ranking.
+    # ends; the real executor cuts it. Ruling L57062: endings never block.
+    # Enforce heals it (control-plane-pad#283): the last good frame is held
+    # over the jump, same 180 frames, and the clip ships clean.
     client, tmp_path, _ = lab
     job_id = _queue_one_cut(client, "tail")
     master = tmp_path / "master.mp4"
@@ -92,8 +93,8 @@ async def test_a_real_cut_with_a_tail_jump_is_delivered_with_a_warning_score(lab
     assert job["status"] == "completed", job.get("error")
     record = job["clips"][0]["qaGate"]
     assert record["ok"] is True and record["blocks"] == [] and record["mode"] == "enforce"
-    assert record["warnings"] == ["qa_tail_cut"] and record["score"] == 60
-    assert record["frames"] == 180 and record["tailCuts"][0][0] >= 174
+    assert record["warnings"] == [] and record["score"] == 100 and record["healed"] == ["edges"]
+    assert record["frames"] == 180 and record["tailCuts"] == []
     assert "qaRefusedCuts" not in job
 
 

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import subprocess
+from fractions import Fraction
 from pathlib import Path
 
 import pytest
@@ -210,3 +211,132 @@ def test_a_dark_truck_scene_is_not_a_black_run(tmp_path):
                   frames=180)
     verdict = qa_gate.validate_clip(body, VIDEO_6S)
     assert not [item for item in verdict.findings if item.code == "qa_black_run"]
+
+
+# ── heals that keep a job's count (control-plane-pad#283) ────────────────────
+
+def _codes(verdict):
+    return [item.code for item in verdict.findings]
+
+
+def test_enforce_holds_the_last_good_frame_over_a_tail_jump(tmp_path):
+    body = clips.with_tail_cut(tmp_path / "tail.mp4", frames_before_end=3)
+    assert _codes(qa_gate.validate_clip(body, VIDEO_6S)) == ["qa_tail_cut"]
+    verdict = qa_gate.run_gate(body, VIDEO_6S, qa_gate.MODE_ENFORCE)
+    assert verdict.healed == ("edges",) and verdict.findings == () and verdict.score == 100
+    assert _rate_and_frames(body) == ("30/1", 180)
+
+
+def test_enforce_holds_a_frame_over_black_at_either_edge_but_not_in_the_middle(tmp_path):
+    head = clips.with_black_run(tmp_path / "head.mp4", black_s=0.3, at_s=0.0)
+    verdict = qa_gate.run_gate(head, VIDEO_6S, qa_gate.MODE_ENFORCE)
+    assert verdict.healed == ("edges",) and verdict.findings == ()
+    tail = clips.with_black_run(tmp_path / "tail.mp4", black_s=0.6, at_s=5.7)
+    verdict = qa_gate.run_gate(tail, VIDEO_6S, qa_gate.MODE_ENFORCE)
+    assert verdict.healed == ("edges",) and verdict.findings == () and _rate_and_frames(tail)[1] == 180
+    middle = clips.with_black_run(tmp_path / "middle.mp4", black_s=0.5, at_s=3.0)
+    before = _sha(middle)
+    verdict = qa_gate.run_gate(middle, VIDEO_6S, qa_gate.MODE_ENFORCE)
+    assert verdict.healed == () and _codes(verdict) == ["qa_black_run"] and _sha(middle) == before
+
+
+def test_a_completed_format_heal_that_still_blocks_is_discarded(tmp_path, monkeypatch):
+    original = tmp_path / "provider.mp4"
+    clips._encode(original, clips._src(3.0, size="768x1344"), frames=90, extra=["-pix_fmt", "yuv444p"])
+    treated = tmp_path / "treated.mp4"
+    before = _sha(original)
+
+    def still_wrong_format(source, destination, policy):
+        destination.write_bytes(source.read_bytes())
+
+    monkeypatch.setattr(qa_gate, "heal_format", still_wrong_format)
+    verdict = qa_gate.run_gate(original, PAID, qa_gate.MODE_ENFORCE, repaired_destination=treated)
+    assert not verdict.ok and verdict.reason == "qa_codec_mismatch"
+    assert verdict.healed == () and verdict.path == original
+    assert _sha(original) == before and not treated.exists()
+
+
+def test_a_completed_edge_heal_that_keeps_the_tail_jump_is_discarded(tmp_path, monkeypatch):
+    original = clips.with_tail_cut(tmp_path / "tail.mp4", frames_before_end=3)
+    treated = tmp_path / "treated.mp4"
+    before = _sha(original)
+
+    def still_jumps(source, destination, plan, fps, policy):
+        destination.write_bytes(source.read_bytes())
+
+    monkeypatch.setattr(qa_gate, "heal_edges", still_jumps)
+    verdict = qa_gate.run_gate(original, VIDEO_6S, qa_gate.MODE_ENFORCE, repaired_destination=treated)
+    assert verdict.ok and _codes(verdict) == ["qa_tail_cut"]
+    assert verdict.healed == () and verdict.path == original
+    assert _sha(original) == before and not treated.exists()
+
+
+def test_a_format_heal_that_times_out_still_blocks(tmp_path, monkeypatch):
+    # GLM review: a timed-out re-encode must not become run_gate's
+    # fail-open pass; the hard block stands.
+    paid = tmp_path / "provider.mp4"
+    clips._encode(paid, clips._src(3.0, size="768x1344"), frames=90, extra=["-pix_fmt", "yuv444p"])
+
+    def slow(args, what):
+        raise RuntimeError(f"{what}_heal_failed: TimeoutExpired")
+
+    monkeypatch.setattr(qa_gate, "_ffmpeg_heal", slow)
+    verdict = qa_gate.run_gate(paid, PAID, qa_gate.MODE_ENFORCE, repaired_destination=tmp_path / "t.mp4")
+    assert not verdict.ok and verdict.reason == "qa_codec_mismatch" and verdict.extra.get("tool_error") is None
+
+
+def test_a_long_black_tail_is_not_held_into_a_freeze(tmp_path):
+    body = clips.with_black_run(tmp_path / "long.mp4", black_s=1.2, at_s=4.8)
+    before = _sha(body)
+    verdict = qa_gate.run_gate(body, VIDEO_6S, qa_gate.MODE_ENFORCE)
+    assert verdict.healed == () and verdict.ok and _sha(body) == before
+
+
+PAID = qa_gate.QaPolicy(width=None, height=None, expected_frames=None, audio=qa_gate.AUDIO_FORBIDDEN)
+
+
+def test_a_paid_clip_with_a_rotate_tag_is_turned_upright_not_refused(tmp_path):
+    landscape_coded = clips.upright_scene(tmp_path / "coded.mp4", seconds=3.0, size="1920x1080", seed=3)
+    paid = clips.with_display_rotation(landscape_coded, tmp_path / "provider.mp4", degrees=90)
+    assert "qa_rotation" in [item.code for item in qa_gate.validate_clip(paid, PAID).blocks]
+    before = _sha(paid)
+    treated = tmp_path / "treated" / "g00-c00.mp4"
+    verdict = qa_gate.run_gate(paid, PAID, qa_gate.MODE_ENFORCE, repaired_destination=treated)
+    assert verdict.ok and verdict.healed[0] == "format" and verdict.path == treated
+    assert verdict.probe.rotation == 0 and verdict.probe.height > verdict.probe.width
+    assert _sha(paid) == before
+
+
+def test_a_paid_clip_in_the_wrong_pixel_format_with_stray_audio_is_re_encoded(tmp_path):
+    paid = tmp_path / "provider.mp4"
+    clips._encode(paid, clips._src(3.0, size="768x1344"), frames=90, audio=True, extra=["-pix_fmt", "yuv444p"])
+    blocks = {item.code for item in qa_gate.validate_clip(paid, PAID).blocks}
+    assert blocks == {"qa_codec_mismatch", "qa_audio_unexpected"}
+    treated = tmp_path / "treated" / "g00-c00.mp4"
+    verdict = qa_gate.run_gate(paid, PAID, qa_gate.MODE_ENFORCE, repaired_destination=treated)
+    assert verdict.ok and verdict.healed == ("format",)
+    assert verdict.probe.pixel_format == "yuv420p" and verdict.probe.has_audio is False
+
+
+def test_a_landscape_picture_still_blocks(tmp_path):
+    paid = clips.clean(tmp_path / "provider.mp4", seconds=3.0, size="1920x1080")
+    verdict = qa_gate.run_gate(paid, PAID, qa_gate.MODE_ENFORCE, repaired_destination=tmp_path / "t.mp4")
+    assert not verdict.ok and verdict.reason == "qa_orientation_mismatch" and verdict.healed == ()
+
+
+def test_one_body_with_every_healable_fault_comes_back_clean(tmp_path):
+    # Break: 25 fps footage padded to 30, a scene jump in the last frames.
+    native = tmp_path / "n25.mp4"
+    graph = clips._concat(clips._src(5.9, fps=25), clips._solid(0.6, "red", fps=25))
+    clips._encode(native, graph, frames=150, fps=25)
+    body = tmp_path / "broken.mp4"
+    subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-i", str(native), "-vf", "fps=30",
+                    "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", str(body)],
+                   check=True, capture_output=True)
+    assert set(_codes(qa_gate.validate_clip(body, VIDEO_6S))) == {"qa_stutter", "qa_tail_cut"}
+    verdict = qa_gate.run_gate(body, VIDEO_6S, qa_gate.MODE_ENFORCE)
+    assert verdict.healed == ("stutter", "edges") and verdict.findings == () and verdict.score == 100
+    # The solid flash frames repeat too, so ~25 fps; the body still lasts 6 s.
+    rate, frames = _rate_and_frames(body)
+    assert 24.5 <= float(Fraction(rate)) <= 25.0
+    assert frames / float(Fraction(rate)) == pytest.approx(6.0, abs=1 / 25)

@@ -187,3 +187,52 @@ async def test_a_tool_outage_passes_every_provider_clip_and_never_fails_the_job(
     assert len(job["clips"]) == 5 and "qaRefusedClips" not in job
     assert all(clip["qaGate"]["ok"] and clip["qaGate"]["toolError"] == "ffprobe_unavailable" for clip in job["clips"])
     assert all((Path(job["artifactRoot"]) / clip["path"]).is_file() for clip in job["clips"])
+
+
+def _rotated_upright(dst):
+    coded = clips.upright_scene(dst.with_name(dst.stem + ".coded.mp4"), seconds=3.0, size="1920x1080", seed=7)
+    return clips.with_display_rotation(coded, dst, degrees=90)
+
+
+def _yuv444(dst):
+    return clips._encode(dst, clips._src(3.0), frames=90, extra=["-pix_fmt", "yuv444p"])
+
+
+def _padded_25(dst):
+    import subprocess
+    native = clips.clean(dst.with_name(dst.stem + ".n25.mp4"), seconds=3.0, fps=25)
+    subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-i", str(native), "-vf", "fps=30",
+                    "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", str(dst)],
+                   check=True, capture_output=True)
+    return dst
+
+
+def _tail_jump(dst):
+    return clips.with_tail_cut(dst, seconds=3.0, frames_before_end=3)
+
+
+@pytest.mark.asyncio
+async def test_break_and_recover_every_healable_paid_clip_is_delivered(lab, monkeypatch):
+    # control-plane-pad#283: a paid call whose clips carry a rotate tag, a
+    # 4:4:4 pixel format, 25-in-30 stutter and a last-frames jump comes back
+    # with all five clips clean; before the heals two were refused and the
+    # page needed a hand-started make-up job.
+    client, tmp_path, _ = lab
+    job_id = _queue(client)
+    _wire(monkeypatch, [_rotated_upright, _yuv444, _padded_25, _tail_jump] + _uprights(1))
+    await cp._run_dossier_generation(job_id)
+    job = cp._load_jobs()["jobs"][job_id]
+    assert job["status"] == "completed", job.get("error")
+    assert len(job["clips"]) == 5 and "qaRefusedClips" not in job
+    records = [clip["qaGate"] for clip in job["clips"]]
+    assert all(record["ok"] and record["blocks"] == [] for record in records), records
+    assert [record["healed"] for record in records[:4]] == [["format"], ["format"], ["stutter"], ["edges"]]
+    assert all(not ({"qa_stutter", "qa_tail_cut"} & set(record["warnings"])) for record in records)
+    # The paid provider files are evidence: never rewritten.
+    root = Path(job["artifactRoot"])
+    assert all((root / "treated" / f"g00-c{index:02d}-sar1.mp4").exists() for index in range(4))
+    from services import qa_gate
+    provider_files = sorted(tmp_path.rglob("crop-0.mp4")) + sorted(tmp_path.rglob("crop-1.mp4"))
+    assert len(provider_files) == 2
+    assert qa_gate.probe_clip(provider_files[0]).rotation != 0          # still the paid original
+    assert qa_gate.probe_clip(provider_files[1]).pixel_format == "yuv444p"
