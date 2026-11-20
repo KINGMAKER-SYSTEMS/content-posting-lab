@@ -49,7 +49,7 @@ def request(source_sha="a" * 64, frame=_NO_FRAME, frame_fit=_NO_FRAME, caption_d
 
 @pytest.fixture(scope="module", params=[
     ("1080x1920", "1"), ("606x1080", "1"), ("606x1080", "0"), ("1080x1920", "0"),
-    ("704x1280", "1"), ("432x768", "1"), ("432x768", "0"), ("1080x1920", "1216/1215"),
+    ("704x1280", "1"), ("432x768", "1"), ("432x768", "0"), ("1080x1920", "sar=1216/1215:max=10000"),
 ], ids=["full", "provider-crop", "provider-crop-unspecified-sar", "full-unspecified-sar",
         "wan-near-vertical", "hailuo-768p", "hailuo-768p-unspecified-sar", "pool-near-square-sar"])
 def actual_source(tmp_path_factory, request):
