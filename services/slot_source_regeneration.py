@@ -15,6 +15,7 @@ new visual.
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import hashlib
 import json
 import math
@@ -53,6 +54,15 @@ PROBE_OUTPUT_LIMIT = 1024 * 1024
 # but keep at most one repair thread inside the renderer at a time as a further
 # bound on concurrent master copies and encode setup.
 _RENDER_LOCK = threading.Lock()
+# The production render wait is bounded (pad #333). run_color_correct already
+# bounds the ffmpeg encode itself with services.ffmpeg._encode_timeout_seconds
+# of the cut's input duration; the cross-thread wait allows that plus
+# RENDER_WAIT_GRACE_S for the work around the encode (planned-cut reload, frame
+# and colour probes) and a short wait for the color-correction gate. A render
+# still not finished then is cancelled on the loop, _RENDER_LOCK is released,
+# and the attempt fails as RENDER_TIMEOUT_CODE, which post_render_jobs retries.
+RENDER_WAIT_GRACE_S = 300.0
+RENDER_TIMEOUT_CODE = "source_regeneration_render_timeout"
 
 Hash = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
 Identity = Annotated[str, Field(min_length=1, max_length=512)]
@@ -759,6 +769,13 @@ def _reload_planned_cut(command: dict):
     return recipe, master
 
 
+def _render_wait_timeout_s(command: dict) -> float:
+    """Seconds regenerate waits for the dispatched render before giving up."""
+    from services.ffmpeg import _encode_timeout_seconds
+
+    return _encode_timeout_seconds(command["cut"]["duration_ms"] / 1000) + RENDER_WAIT_GRACE_S
+
+
 async def _render(
     command: dict, master_path: Path, output_path: Path,
 ) -> None:
@@ -825,7 +842,15 @@ def regenerate(
                 future = asyncio.run_coroutine_threadsafe(
                     _render(command, master_path, output), loop,
                 )
-                future.result()
+                try:
+                    future.result(timeout=_render_wait_timeout_s(command))
+                except concurrent.futures.TimeoutError:
+                    # Only the wait ran out if the render is still pending.
+                    # Cancelling it cancels the task on the loop, where
+                    # run_color_correct terminates its ffmpeg child.
+                    if not future.done() and future.cancel():
+                        raise SourceRegenerationError(RENDER_TIMEOUT_CODE) from None
+                    future.result()
             else:
                 # Direct/test invocation without a shared loop.
                 asyncio.run(_render(command, master_path, output))
