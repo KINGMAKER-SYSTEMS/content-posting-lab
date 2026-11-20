@@ -7,6 +7,7 @@ reads those five crops as one body (siblings), so a page whose Dossier sets
 import hashlib
 import json
 import shutil
+import types
 
 import pytest
 
@@ -151,14 +152,56 @@ async def test_five_posts_are_five_separate_renders_not_five_sibling_crops(lab, 
     assert all("groupId" not in clip.get("delivery", {}).get("crop", {}) for clip in clips)
 
 
-def test_one_crop_recipe_never_reuses_a_master_as_five_sibling_crops():
+
+def _truck_stub(clips_per_generation):
+    return types.SimpleNamespace(
+        recipe_id=cp.TRUCK_RECIPE_ID, engine="ai_video",
+        engine_registry_hash="h-engine", engine_profile_hash="h-profile",
+        family_name="truck-scenic", material_source="generated",
+        asset_type="video/mp4", format_contract_version="h-format",
+        executor_version="h-executor", prompt_catalog_hash="h-catalog",
+        clips_per_generation=clips_per_generation, provider_model="h-model",
+        recipe_spec={"renderTreatment": {}},
+    )
+
+
+def test_one_crop_recipe_never_reuses_a_master_as_five_sibling_crops(tmp_path, monkeypatch):
     # Recovery re-cuts a stored wide master into five crops. A page that asked
-    # for one crop per render must never be served that way.
+    # for one crop per render must never be served that way, even when an
+    # unused, otherwise valid master is sitting in the store.
+    monkeypatch.setattr(cp, "_is_exact_16x9_video", lambda path: True)
+    monkeypatch.setattr(cp, "recovery_treatment_matches", lambda *args, **kwargs: True)
+    root = tmp_path / "artifact"
+    root.mkdir()
+    (root / "clip.mp4").write_bytes(b"0" * 128)
+    page_id = "truck-page"
+    job = {
+        "jobId": "gen-1", "pageId": page_id, "sourceKind": "generated",
+        "status": "completed", "engine": "ai_video", "recipeId": cp.TRUCK_RECIPE_ID,
+        "engineRegistryHash": "h-engine", "engineProfileHash": "h-profile",
+        "family": "truck-scenic", "materialSource": "generated",
+        "assetType": "video/mp4", "formatContractVersion": "h-format",
+        "executorVersion": "h-executor", "promptCatalogHash": "h-catalog",
+        "providerModel": "h-model", "artifactRoot": str(root),
+        "createdAt": "2026-01-01T00:00:00+00:00",
+        "clips": [{
+            "path": "clip.mp4", "sha256": "a" * 64, "bytes": 128,
+            "source": {"pageId": page_id, "recipeId": cp.TRUCK_RECIPE_ID,
+                       "contentNiche": "TRUCK", "contentEngine": "ai_video"},
+            "sourceTreatment": {"recipeSpecHash": "sha256:" + "ef" * 32},
+        }],
+    }
+    store = {"jobs": {"gen-1": job}, "version": 1, "byIdempotency": {}, "served": {}}
+
+    def candidates(stub):
+        return cp._truck_master_candidates(
+            store, page_id, 10, content_engine="ai_video",
+            recipe_id=cp.TRUCK_RECIPE_ID, generation_recipe=stub,
+        )
+
+    assert len(candidates(_truck_stub(5))) == 1  # the master is recoverable
+    assert candidates(_truck_stub(1)) == []      # but never for a one-crop page
     one_crop = resolve_generation_recipe(one_crop_publication("none"))
-    store = {"jobs": {}}
-    assert cp._truck_master_candidates(
-        store, PAGE_ID, 5, content_engine="ai_video",
-        recipe_id=cp.TRUCK_RECIPE_ID, generation_recipe=one_crop,
-    ) == []
-    five_crop = resolve_generation_recipe(one_crop_publication("both"))
-    assert five_crop.clips_per_generation == cp.CROP_MODE_CLIPS[cp.TRUCK_CROP_MODE]
+    assert one_crop.clips_per_generation == 1
+    assert resolve_generation_recipe(one_crop_publication("both")).clips_per_generation == \
+        cp.CROP_MODE_CLIPS[cp.TRUCK_CROP_MODE]

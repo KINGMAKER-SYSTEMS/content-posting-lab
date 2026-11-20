@@ -7421,7 +7421,7 @@ def job_artifacts(
         artifact_limit = math.ceil(requested / TRUCK_CROP_COUNT) * TRUCK_CROP_COUNT
     if 0 < artifact_limit < len(job["clips"]):
         boundary = job["clips"][artifact_limit - 1].get("delivery", {}).get("crop", {})
-        count = {"dual": 2, "triptych": 3, "both": 5}.get(boundary.get("mode"))
+        count = CROP_MODE_CLIPS.get(boundary.get("mode"))
         index = boundary.get("index")
         if count is not None and type(index) is int and 0 <= index < count:
             artifact_limit += count - index - 1
