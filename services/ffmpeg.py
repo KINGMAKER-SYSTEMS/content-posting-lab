@@ -114,12 +114,8 @@ def parse_frame_rate(value) -> Fraction | None:
     return rate if rate <= _MAX_PLAUSIBLE_FRAME_RATE else None
 
 
-def probe_frame_rate(input_path, ffprobe: str = "ffprobe") -> Fraction | None:
-    """The first video stream's real frame rate, or None when ffprobe cannot prove one.
-
-    r_frame_rate is the stream's frame grid; avg_frame_rate (a mean over the
-    stream) is the fallback when the grid is missing or implausible.
-    """
+def _probe_stream_rates(input_path, ffprobe: str) -> dict | None:
+    """ffprobe's raw r_frame_rate and avg_frame_rate for the first video stream, or None."""
     try:
         result = subprocess.run(
             [
@@ -139,7 +135,62 @@ def probe_frame_rate(input_path, ffprobe: str = "ffprobe") -> Fraction | None:
         return None
     if result.returncode != 0 or not isinstance(stream, dict):
         return None
+    return stream
+
+
+def probe_frame_rate(input_path, ffprobe: str = "ffprobe") -> Fraction | None:
+    """The first video stream's real frame rate, or None when ffprobe cannot prove one.
+
+    r_frame_rate is the stream's frame grid; avg_frame_rate (a mean over the
+    stream) is the fallback when the grid is missing or implausible.
+    """
+    stream = _probe_stream_rates(input_path, ffprobe)
+    if stream is None:
+        return None
     return parse_frame_rate(stream.get("r_frame_rate")) or parse_frame_rate(stream.get("avg_frame_rate"))
+
+
+# A variable-rate body declares a time grid well above its real frames: a
+# healed body with its repeated frames cut out sits on a 1/150 s grid with
+# 26.4 frames a second on average, a phone capture on a 60 or 90000 grid with
+# about 30. Any constant output rate must repeat or drop frames there (a 26.4
+# fps heal made 30 fps again gets its repeats back), so the final keeps the
+# body's own frame times instead. A constant-rate file's mean sits within a
+# fraction of a percent of its grid (an edit list can move it a little).
+VARIABLE_RATE_GRID_RATIO = Fraction(105, 100)
+
+
+def _any_rate(value) -> Fraction | None:
+    if not isinstance(value, str):
+        return None
+    numerator, separator, denominator = value.partition("/")
+    if not (separator and numerator.isdigit() and denominator.isdigit()):
+        return None
+    if int(numerator) <= 0 or int(denominator) <= 0:
+        return None
+    return Fraction(int(numerator), int(denominator))
+
+
+def probe_variable_frame_rate(input_path, ffprobe: str = "ffprobe") -> Fraction | None:
+    """The mean rate of a variable-rate body, or None for a constant-rate (or unreadable) one."""
+    stream = _probe_stream_rates(input_path, ffprobe)
+    if stream is None:
+        return None
+    grid, average = _any_rate(stream.get("r_frame_rate")), parse_frame_rate(stream.get("avg_frame_rate"))
+    if grid is None or average is None or grid <= average * VARIABLE_RATE_GRID_RATIO:
+        return None
+    return average
+
+
+def with_source_timestamps(encode_args: list[str]) -> list[str]:
+    """``encode_args`` without its ``-r``, keeping each frame's own time (a variable-rate body)."""
+    args = list(encode_args)
+    if "-r" in args:
+        index = args.index("-r")
+        if index + 1 >= len(args):
+            raise ValueError("encode args end with a bare -r")
+        del args[index:index + 2]
+    return args + ["-fps_mode", "passthrough"]
 
 
 def delivery_frame_rate(native: Fraction, playback_speed: float = 1.0) -> Fraction:

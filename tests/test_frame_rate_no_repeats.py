@@ -351,6 +351,38 @@ def test_a_lone_final_that_drops_frames_keeps_picture_and_sound_together(tmp_pat
     assert abs(drift) < 1 / float(expected) / 2, f"{rate}p final moved the picture {drift * 1000:+.1f} ms off the sound"
 
 
+def _packet_times(path: Path) -> list[float]:
+    raw = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0",
+                          "-show_entries", "packet=pts_time", "-of", "json", str(path)],
+                         check=True, timeout=120, capture_output=True, text=True).stdout
+    return sorted(float(row["pts_time"]) for row in json.loads(raw)["packets"])
+
+
+def _variable_rate_source(root: Path) -> Path:
+    """A healed-style body: 30p with every 6th frame cut out, the rest at their own times (25 fps mean)."""
+    path = root / "variable.mp4"
+    _ffmpeg("-f", "lavfi", "-i", "testsrc2=size=540x960:rate=30:duration=3",
+            "-vf", "select='not(eq(mod(n\\,6)\\,5))'", "-fps_mode", "passthrough", "-an",
+            "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23", "-threads", "2",
+            "-pix_fmt", "yuv420p", str(path))
+    return path
+
+
+@pytest.mark.parametrize("paired", [False, True])
+def test_a_variable_rate_heal_keeps_its_own_frame_times_through_the_final(tmp_path, paired):
+    # A heal cuts a body's repeated frames out and keeps the rest at their own
+    # times. Made 30 fps again at delivery, every gap is filled with a repeat
+    # (a Josie heal went from 188 frames back to 222). The final keeps them.
+    source = _variable_rate_source(tmp_path)
+    assert 24 < post_render.probe_variable_frame_rate(source) < 26  # read as variable rate
+    _final(source, tmp_path / "final.mp4", paired)
+    final = tmp_path / "final.mp4"
+    assert not any(_repeat_flags(final)), f"{sum(_repeat_flags(final))} repeated frames in the final"
+    before, after = _packet_times(source), _packet_times(final)
+    assert len(after) == len(before), f"{len(before)} frames became {len(after)}"
+    assert max(abs(a - b) for a, b in zip(before, after)) < 0.001, "frame times moved"
+
+
 def _repaired_final(source: Path, out: Path) -> dict:
     from services.source_duration_repair import encode_shorter_final
 
