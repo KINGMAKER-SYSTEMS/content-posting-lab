@@ -255,6 +255,7 @@ def test_dropping_truck_reservations_over_admits_is_caught(tmp_path, monkeypatch
         format_contract_version="h-format",
         executor_version="h-executor",
         prompt_catalog_hash="h-catalog",
+        clips_per_generation=5,  # a truck recipe cuts five crops per master
         provider_model="h-model",
         recipe_spec={"renderTreatment": {}},
     )

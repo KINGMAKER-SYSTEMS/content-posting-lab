@@ -2569,8 +2569,9 @@ def _truck_master_candidates(
     grade, speed and crop; caption-only recipe changes still permit reuse.
     """
     # Recovery always re-cuts five sibling crops. A recipe that no longer asks
-    # for five crops per render must get fresh renders instead.
-    if generation_options(generation_recipe).get("crop_mode") != TRUCK_CROP_MODE:
+    # for five crops per render (e.g. Dossier crop_mode "none") must get fresh
+    # renders instead.
+    if generation_recipe.clips_per_generation != CROP_MODE_CLIPS[TRUCK_CROP_MODE]:
         return []
     reserved: set[str] = set()
     jobs = store.get("jobs", {})

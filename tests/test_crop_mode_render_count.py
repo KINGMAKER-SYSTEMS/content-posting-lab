@@ -149,3 +149,16 @@ async def test_five_posts_are_five_separate_renders_not_five_sibling_crops(lab, 
     assert len({clip["source"]["sha256"] for clip in clips}) == 5
     assert len({clip["sha256"] for clip in clips}) == 5
     assert all("groupId" not in clip.get("delivery", {}).get("crop", {}) for clip in clips)
+
+
+def test_one_crop_recipe_never_reuses_a_master_as_five_sibling_crops():
+    # Recovery re-cuts a stored wide master into five crops. A page that asked
+    # for one crop per render must never be served that way.
+    one_crop = resolve_generation_recipe(one_crop_publication("none"))
+    store = {"jobs": {}}
+    assert cp._truck_master_candidates(
+        store, PAGE_ID, 5, content_engine="ai_video",
+        recipe_id=cp.TRUCK_RECIPE_ID, generation_recipe=one_crop,
+    ) == []
+    five_crop = resolve_generation_recipe(one_crop_publication("both"))
+    assert five_crop.clips_per_generation == cp.CROP_MODE_CLIPS[cp.TRUCK_CROP_MODE]
