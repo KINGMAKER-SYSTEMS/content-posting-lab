@@ -35,7 +35,21 @@
   Local generations from `/generate` take `_local_gen_semaphore`
   (`LOCAL_GEN_MAX_PENDING`, default 60), never the paid providers' 10 shared
   slots. Local jobs use the entry's `stuck_timeout_secs` instead
-  of the 20-minute watchdog. Control Plane recipes do not select local engines.
+  of the 20-minute watchdog.
+- Control Plane recipes can select a local engine. `recipes/generation/local_engines.v1.json`
+  adds `local-h3`, `local-h3-vertical` and `local-wan-i2v` to the bundled prompt
+  catalog's providers (`_merge_local_engines`): it may only add entries that the
+  runtime declares `billing: local`, never replace or re-price a provider, and it
+  is not part of the catalog version, so every published recipe keeps its
+  executor version. The Dossier offers them as visual-model options (image-only
+  `local-wan-i2v` only where the format has reference images); existing
+  selection versions do not move. For a local engine the resolver skips the
+  priced-provider check, admission skips pricing and the daily-budget gate, and
+  the runner never debits or treats a failure as a moderation refusal
+  (`is_local_engine`). A local recipe is unavailable (`provider_runtime`) where no
+  ComfyUI server or worker key is configured. Local generation jobs are not
+  checkpointed: a restart fails an in-flight one (`generation_runtime_restarted`)
+  and the Worker re-orders after its backoff.
   On Apple silicon the ComfyUI server must be started with
   `--use-pytorch-cross-attention`: its default sub-quadratic attention and
   `--use-split-cross-attention` both return wrong values past roughly 20k

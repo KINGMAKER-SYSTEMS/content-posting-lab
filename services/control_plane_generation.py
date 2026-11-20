@@ -34,6 +34,9 @@ CATALOG_PATH = (
     Path(__file__).resolve().parents[1]
     / "recipes/generation/prompt_modules.v1.json"
 )
+# Free studio-Mac engines offered beside the paid providers. A separate file so
+# the prompt catalog bytes (every recipe's executor version) never change.
+LOCAL_ENGINES_PATH = CATALOG_PATH.with_name("local_engines.v1.json")
 READY_MODE = "ready"
 MAX_PROVIDER_CALLS = 20
 MAX_CAPABILITY_QUANTITY = 10
@@ -176,9 +179,35 @@ def _catalog_path() -> Path:
     return Path(configured).resolve() if configured else CATALOG_PATH
 
 
+def _merge_local_engines(catalog: dict[str, Any]) -> None:
+    """Add the local engine providers; they may add options, never replace one.
+
+    Each entry must be a runtime provider declared ``billing: local``, so this
+    file cannot turn a paid provider free. Formats, families and prompts are
+    untouched, and the catalog version stays the prompt catalog's own hash.
+    """
+    overlay = json.loads(LOCAL_ENGINES_PATH.read_bytes())
+    providers = overlay.get("providers") if isinstance(overlay, dict) else None
+    if not isinstance(providers, dict) or set(overlay) - {"schema", "note", "providers"}:
+        raise ValueError("local engine catalog may only add providers")
+    for provider_id, config in providers.items():
+        if provider_id in catalog["providers"]:
+            raise ValueError(f"local engine {provider_id!r} would replace a catalog provider")
+        runtime = PROVIDERS.get(provider_id)
+        if (
+            not isinstance(config, dict)
+            or config.get("billing") != "local"
+            or not isinstance(runtime, dict)
+            or runtime.get("billing") != "local"
+        ):
+            raise ValueError(f"{provider_id!r} is not a local engine")
+        catalog["providers"][provider_id] = config
+
+
 def load_prompt_catalog(format_slug: str | None = None) -> tuple[dict[str, Any], str]:
     path = _catalog_path()
-    if format_slug == "pov-seasonal" and path == CATALOG_PATH.resolve():
+    bundled = path == CATALOG_PATH.resolve()
+    if format_slug == "pov-seasonal" and bundled:
         path = CATALOG_PATH.with_name("christmas_pov.v1.json")
     raw = path.read_bytes()
     catalog = json.loads(raw)
@@ -218,7 +247,18 @@ def load_prompt_catalog(format_slug: str | None = None) -> tuple[dict[str, Any],
             catalog[field].update(boat[field])
         if format_slug == "boat-lake":
             version = hashlib.sha256(boat_raw).hexdigest()
+    # The main catalog only: the separate Christmas catalog keeps its single
+    # H3 portrait preset until a local vertical route is proven for it.
+    if path == CATALOG_PATH.resolve():
+        _merge_local_engines(catalog)
     return catalog, version
+
+
+def is_local_engine(engine: str) -> bool:
+    """True for a free studio-Mac engine (see generation_budget.is_local_provider)."""
+    from services.generation_budget import is_local_provider
+
+    return is_local_provider(engine)
 
 
 def _runtime_ready(engine: str) -> bool:
@@ -491,7 +531,12 @@ def _resolve_generation_recipe(
     model = production.get("modelId") or provider_config.get("replicate_model")
     if model not in runtime_provider.get("models", []):
         return _unavailable(publication, "provider_model")
-    if float(provider_config.get("cost_per_gen_usd") or 0) <= 0:
+    # Paid providers must be priced to be metered; a local engine is free by
+    # declaration (billing: local) and never reserves or debits the budget.
+    if (
+        float(provider_config.get("cost_per_gen_usd") or 0) <= 0
+        and not is_local_engine(provider_engine)
+    ):
         return _unavailable(publication, "provider_cost")
 
     return GenerationRecipe(

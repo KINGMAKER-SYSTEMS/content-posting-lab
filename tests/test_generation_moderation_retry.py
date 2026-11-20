@@ -569,16 +569,22 @@ def test_attempt_cost_resolves_every_generation_catalog_model():
     positive amount through the one provider-catalog source of truth (no
     unlisted model silently returns None for a priced catalog entry)."""
     models = {}
+    local_models = set()
     for path in sorted((Path(__file__).resolve().parents[1] / "recipes" / "generation").glob("*.json")):
         for provider in json.loads(path.read_text()).get("providers", {}).values():
             model = provider.get("replicate_model")
-            if model is not None:
+            if model is not None and provider.get("billing") == "local":
+                local_models.add(model)
+            elif model is not None:
                 models.setdefault(model)
     assert models, "the catalog was found"
     for model in models:
         cost = moderation_retry.attempt_cost_usd(model, 6)
         assert cost is not None, f"{model} must price through the provider catalog"
         assert cost > 0
+    # Studio-Mac engines (billing: local) are free by declaration.
+    for model in local_models:
+        assert moderation_retry.attempt_cost_usd(model, 6) == 0
 
 
 def test_attempt_cost_matches_the_provider_catalog_price():

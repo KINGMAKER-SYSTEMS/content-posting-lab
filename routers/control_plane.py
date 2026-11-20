@@ -95,6 +95,7 @@ from services.control_plane_generation import (
     dossier_clip_speed,
     dossier_filters_to_color_correction,
     generation_options,
+    is_local_engine,
     new_generation_options,
     load_generation_anchor,
     plan_prompt_combinations,
@@ -581,6 +582,7 @@ def _prompt_catalog_freshness_signature() -> tuple[tuple[str, int, int, int, int
         paths.append(base.with_name("silhouette_stills.v1.json"))
         paths.append(base.with_name("boat_minimax.v1.json"))
         paths.append(base.with_name("christmas_pov.v1.json"))
+        paths.append(base.with_name("local_engines.v1.json"))
     return tuple(_file_stat_signature(path) for path in paths)
 
 
@@ -3414,6 +3416,7 @@ async def _run_owned_dossier_generation(job_id: str) -> None:
         return
 
     job_root = Path(job["artifactRoot"]).resolve()
+    local_engine = is_local_engine(recipe.engine)
     durable = _checkpointed_generation(job)
     resuming = durable and bool(job.get("providerCheckpoints") or job.get("clips"))
     # Never rewrite bytes already referenced by a preserved manifest when an
@@ -3566,7 +3569,7 @@ async def _run_owned_dossier_generation(job_id: str) -> None:
                 attempt, reserve = rows[-1]["attempt"], False
             else:
                 attempt, reserve = 0, False
-            attempt_cost = moderation_retry.attempt_cost_usd(
+            attempt_cost = 0.0 if local_engine else moderation_retry.attempt_cost_usd(
                 recipe.provider_model, duration, resolution=resolution,
                 parameters={**options, "aspect_ratio": aspect_ratio, "image_data_uri": image_data_uri},
             )
@@ -3633,7 +3636,7 @@ async def _run_owned_dossier_generation(job_id: str) -> None:
                 # resumed prediction with the same id) reserves exactly once.
                 # Polling/resuming the SAME prediction stays free.
                 debit_id = f"{provider_job_id}:s0"
-                if not await asyncio.to_thread(
+                if not local_engine and not await asyncio.to_thread(
                     generation_budget.debit_generation_spend_at,
                     generation_budget.jobs_store_path(), attempt_cost, debit_id,
                 ):
@@ -3687,7 +3690,10 @@ async def _run_owned_dossier_generation(job_id: str) -> None:
                     budget_exhausted = True
                     break
                 error_class = classify_provider_error(provider_error)
-                refused = moderation_retry.confirmed_refusal(error_class, request_id, provider_error)
+                # A local engine has no moderation, so a failure is never a
+                # paid refusal to retry against the moderation budget.
+                refused = (not local_engine
+                           and moderation_retry.confirmed_refusal(error_class, request_id, provider_error))
                 # A refused Replicate prediction is billed like a successful
                 # one; no prediction id means nothing was created or billed.
                 row.update({"providerRequestId": request_id, "class": error_class,
@@ -6196,10 +6202,13 @@ async def _create_job_impl(
             # _run_owned_dossier_generation). Admission still validates that the
             # recipe provider is priced so a job can never be admitted against
             # an unmeterable paid provider (fail closed).
+            # A local engine (billing: local) is free: no price, no budget gate.
+            local_engine = is_local_engine(generation_recipe.engine)
             try:
-                generation_budget.charged_cost_per_gen(
-                    generation_recipe.provider_config.get("cost_per_gen_usd")
-                )
+                if not local_engine:
+                    generation_budget.charged_cost_per_gen(
+                        generation_recipe.provider_config.get("cost_per_gen_usd")
+                    )
             except ValueError as exc:
                 raise HTTPException(
                     status_code=500, detail=f"generation_pricing_unavailable: {exc}"
@@ -6211,18 +6220,20 @@ async def _create_job_impl(
             # `resets_at` and `Retry-After` header. No job
             # row, no ghost state on refusal.
             provider_options = new_generation_options(generation_recipe)
-            first_call_cost = moderation_retry.attempt_cost_usd(
+            first_call_cost = None if local_engine else moderation_retry.attempt_cost_usd(
                 generation_recipe.provider_model,
                 int(provider_options.get("duration", 6)),
                 resolution=str(provider_options.get("resolution", "1080p")),
                 parameters=provider_options,
             )
-            if first_call_cost is None:
+            if first_call_cost is None and not local_engine:
                 first_call_cost = generation_budget.charged_cost_per_gen(
                     generation_recipe.provider_config.get("cost_per_gen_usd")
                 )
             now = datetime.now(timezone.utc)
-            if not generation_budget.can_reserve_at(_jobs_path(), first_call_cost, now=now):
+            if not local_engine and not generation_budget.can_reserve_at(
+                _jobs_path(), first_call_cost, now=now,
+            ):
                 resets_at = generation_budget.next_reset_iso(now)
                 raise HTTPException(
                     status_code=429,

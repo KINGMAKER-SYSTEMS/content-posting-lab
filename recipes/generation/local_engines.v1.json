@@ -1,0 +1,34 @@
+{
+  "schema": "content-lab.local-engines.v1",
+  "note": "Free engines on the studio Mac's ComfyUI server (providers/comfyui.py), offered to Dossier visual-model selections beside the paid providers. Kept out of prompt_modules.v1.json so its bytes, and every recipe pinned to them, stay unchanged. These entries add engine options only: formats, families and prompts are untouched. billing: local means no budget reservation or debit, matching generation_budget.is_local_provider.",
+  "providers": {
+    "local-h3": {
+      "replicate_model": "comfyui/minimax-h3-fl2va",
+      "base_input": {
+        "duration": 6
+      },
+      "billing": "local",
+      "cost_per_gen_usd": 0,
+      "note": "MiniMax H3 first/last-frame, always 16:9 (FORCE_LANDSCAPE), so a crop_mode family (truck, boat) still cuts five 9:16 crops. About 10 minutes per 6 s master on the studio Mac with the 8-step LoRA."
+    },
+    "local-h3-vertical": {
+      "replicate_model": "comfyui/minimax-h3-fl2va",
+      "base_input": {
+        "duration": 6
+      },
+      "billing": "local",
+      "cost_per_gen_usd": 0,
+      "note": "The same H3 model rendered natively 9:16 (or in the start image's shape). About 6 minutes per 6 s clip."
+    },
+    "local-wan-i2v": {
+      "replicate_model": "comfyui/wan-2.2-i2v-14b",
+      "base_input": {
+        "resolution": "720p"
+      },
+      "image_input_key": "image",
+      "billing": "local",
+      "cost_per_gen_usd": 0,
+      "note": "Wan 2.2 image-to-video 14B; the output keeps the start image's shape. 720p matches wan-i2v-fast; 480p renders in about 2-3 minutes, 720p takes longer."
+    }
+  }
+}
