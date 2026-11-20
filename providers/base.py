@@ -117,8 +117,9 @@ API_KEYS = {
     or ("worker-queue" if (os.getenv("LOCAL_WORKER_KEY") or "").strip() else None),
 }
 
-# Providers that always output 16:9 regardless of aspect_ratio setting
-FORCE_LANDSCAPE = {"hailuo", "pruna-pvideo", "local-h3"}
+# Providers that always output 16:9 regardless of aspect_ratio setting. Filled
+# from the catalog (`landscape_master: True` in providers/__init__.py).
+FORCE_LANDSCAPE: set[str] = set()
 
 
 async def still_to_video(image: Path, dest: Path, duration: int) -> None:
