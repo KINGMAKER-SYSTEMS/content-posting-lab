@@ -19,10 +19,10 @@ SERVER = "http://comfy.test:8188"
 @pytest.fixture(autouse=True)
 def fresh_comfy_server_state(monkeypatch):
     monkeypatch.setattr(comfyui, "_FREE_SETTLE_SECONDS", 0)
-    comfyui._server_locks.clear()
+    comfyui._server_gates.clear()
     comfyui._server_model.clear()
     yield
-    comfyui._server_locks.clear()
+    comfyui._server_gates.clear()
     comfyui._server_model.clear()
 
 
