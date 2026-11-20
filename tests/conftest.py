@@ -1,5 +1,6 @@
 import contextlib
 import ipaddress
+import os
 import socket
 import sys
 import threading
@@ -237,3 +238,15 @@ async def async_client():
 def sync_client():
     with TestClient(app) as client:
         yield client
+
+
+# ── QA gate default for the suite ────────────────────────────────────────────
+# Many executor tests stand in for the cut encode with placeholder bytes or
+# audio-bearing lavfi masters; the post-cut QA gate (services/qa_gate.py)
+# would rightly refuse those. The suite therefore runs with the gate off
+# unless a test sets CONTENT_LAB_QA_GATE itself (tests/test_qa_gate_wiring.py
+# sets "enforce"/"shadow"). Production keeps the module default: shadow.
+@pytest.fixture(autouse=True)
+def _qa_gate_off_unless_a_test_sets_it(monkeypatch):
+    if "CONTENT_LAB_QA_GATE" not in os.environ:
+        monkeypatch.setenv("CONTENT_LAB_QA_GATE", "off")
