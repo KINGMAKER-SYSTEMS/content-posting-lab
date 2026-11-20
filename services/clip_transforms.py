@@ -28,7 +28,10 @@ import os
 import shutil
 import subprocess
 from dataclasses import dataclass
+from fractions import Fraction
 from pathlib import Path
+
+from services.ffmpeg import frame_rate_text, parse_frame_rate, probe_frame_rate, with_frame_rate
 
 REVERSE_SHARE = 1 / 15
 MIRROR_SHARE = 1 / 3
@@ -195,8 +198,13 @@ def transforms_from_manifest(value) -> CutTransforms | None:
                          bool(value.get("reverse")), bool(value.get("loop_swap")))
 
 
-def _motion_graph(motion: str, duration_s: float, width: int, height: int) -> str:
+def _motion_graph(motion: str, duration_s: float, width: int, height: int,
+                  rate: Fraction = Fraction(30)) -> str:
     """A time-based move as a filtergraph from [0:v] to [m]; the frame keeps its size.
+
+    ``rate`` is the clip's own frame rate. The zoom's black canvas is the
+    overlay's main input, so it sets the output rate: a 30 fps canvas under a
+    25p or slowed 21 fps clip would repeat frames.
 
     A zoom scales every frame (eval=frame) and centres it on a fixed canvas by
     overlay, whose position is evaluated per frame (crop's is not: it keeps the
@@ -208,7 +216,7 @@ def _motion_graph(motion: str, duration_s: float, width: int, height: int) -> st
         factor = (f"(1+{MOTION_ZOOM}*{progress})" if motion == "push_in"
                   else f"(1+{MOTION_ZOOM}*(1-{progress}))")
         return (f"[0:v]scale=w='trunc({width}*{factor}/2)*2':h='trunc({height}*{factor}/2)*2'"
-                f":eval=frame:flags=lanczos[zoomed];color=c=black:s={width}x{height}:r=30[canvas];"
+                f":eval=frame:flags=lanczos[zoomed];color=c=black:s={width}x{height}:r={frame_rate_text(rate)}[canvas];"
                 f"[canvas][zoomed]overlay=x='(W-w)/2':y='(H-h)/2':eval=frame:shortest=1[m]")
     scaled_w = int(round(width * (1 + PAN_MARGIN) / 2)) * 2
     scaled_h = int(round(height * (1 + PAN_MARGIN) / 2)) * 2
@@ -243,22 +251,21 @@ def _probe_full(path: Path) -> tuple[float, int, int, bool, list[str]]:
     return float(data["format"]["duration"]), int(video["width"]), int(video["height"]), has_audio, color
 
 
-def _probe_frames(path: Path, duration_s: float) -> tuple[int, float]:
-    """The exact frame count and rate, so a loop split lands on a frame boundary."""
+def _probe_frames(path: Path, duration_s: float) -> tuple[int, Fraction]:
+    """The exact frame count and rate, so a loop split lands on a frame boundary.
+
+    The rate is the stream's own frame grid (r_frame_rate, then avg_frame_rate),
+    exact: a slowed cut runs at 21 fps, and reading 30 there would cut the audio
+    at a different moment from the picture.
+    """
     completed = subprocess.run([
         "ffprobe", "-v", "error", "-select_streams", "v:0",
         "-show_entries", "stream=nb_frames,r_frame_rate,avg_frame_rate",
         "-of", "json", str(path),
     ], check=True, capture_output=True, text=True, timeout=120)
     video = json.loads(completed.stdout)["streams"][0]
-    fps = 30.0
-    for key in ("r_frame_rate", "avg_frame_rate"):
-        value = video.get(key)
-        if isinstance(value, str) and "/" in value:
-            numerator, _, denominator = value.partition("/")
-            if denominator and float(denominator) > 0:
-                fps = float(numerator) / float(denominator)
-                break
+    fps = (parse_frame_rate(video.get("r_frame_rate")) or parse_frame_rate(video.get("avg_frame_rate"))
+           or Fraction(30))
     raw = video.get("nb_frames")
     if isinstance(raw, str) and raw.isdigit() and int(raw) > 0:
         return int(raw), fps
@@ -300,18 +307,19 @@ def _reverse_chunked(source: Path, destination: Path, duration_s: float, has_aud
           *_audio_only(encode_args), "-shortest", "-movflags", "+faststart", str(destination)])
 
 
-def _loop_swap(source: Path, destination: Path, n_frames: int, fps: float,
+def _loop_swap(source: Path, destination: Path, n_frames: int, fps: Fraction,
                has_audio: bool, encode_args: list[str], color: list[str]) -> None:
     """Second half then first half, split at the frame nearest the midpoint.
 
     Uses ffmpeg's ``trim``/``concat`` filters: each half is selected by frame
     index and streamed out, so the whole clip is never decoded into RAM (the
     same bounded-memory approach as reverse). Audio is split at the matching
-    sample boundary (1600 samples per frame at 30 fps / 48 kHz) and concat'd
-    in the same order, so it stays in step with the picture.
+    sample boundary (frame ``split`` starts at ``split / fps`` seconds, at the
+    clip's own exact rate) and concat'd in the same order, so it stays in step
+    with the picture.
     """
     split = (n_frames + 1) // 2  # ceil(n/2): frame 0 of the result
-    split_s = split / fps
+    split_s = float(split / fps)
     video = (f"[0:v]trim=start_frame={split}:end_frame={n_frames},setpts=PTS-STARTPTS[v2];"
              f"[0:v]trim=end_frame={split},setpts=PTS-STARTPTS[v1];"
              f"[v2][v1]concat=n=2:v=1:a=0[v]")
@@ -319,7 +327,12 @@ def _loop_swap(source: Path, destination: Path, n_frames: int, fps: float,
         _run(["-i", str(source), "-filter_complex", video, "-map", "[v]",
               *_video_only(encode_args), *color, str(destination)])
         return
-    audio = (f"[0:a]atrim=start={split_s:.6f},asetpts=PTS-STARTPTS[a2];"
+    # The second half's sound is exactly as long as its picture: a slowed cut's
+    # audio can end ~40 ms before its video (atempo), which would start the
+    # first half's sound that much early. apad fills the gap with silence.
+    second_s = (n_frames - split) / fps
+    audio = (f"[0:a]atrim=start={split_s:.6f}:end={float(n_frames / fps):.6f},asetpts=PTS-STARTPTS,"
+             f"apad=whole_dur={float(second_s):.6f}[a2];"
              f"[0:a]atrim=end={split_s:.6f},asetpts=PTS-STARTPTS[a1];"
              f"[a2][a1]concat=n=2:v=0:a=1[a]")
     _run(["-i", str(source), "-filter_complex", video + ";" + audio,
@@ -345,6 +358,11 @@ def apply_transforms(path: Path, transforms: CutTransforms, encode_args: list[st
     work.mkdir(mode=0o700)
     try:
         duration_s, width, height, has_audio, color = _probe_full(path)
+        # Re-encode at the cut's own rate: the preset's "-r 30" would repeat
+        # frames in a 25p or slowed cut. Unreadable rate: the args stay as given.
+        rate = probe_frame_rate(path)
+        if rate is not None and "-r" in encode_args:
+            encode_args = with_frame_rate(encode_args, rate)
         current = path
         if transforms.loop_swap:
             # loop_swap is a re-order: frames (and the audio) are re-arranged,
@@ -366,7 +384,7 @@ def apply_transforms(path: Path, transforms: CutTransforms, encode_args: list[st
                 current = mirrored
             if transforms.motion is not None:
                 moved = work / "moved.mp4"
-                graph = _motion_graph(transforms.motion, duration_s, width, height)
+                graph = _motion_graph(transforms.motion, duration_s, width, height, rate or Fraction(30))
                 graph += ";[m]setsar=1,format=yuv420p[v]"
                 _run(["-i", str(current), "-filter_complex", graph, "-map", "[v]",
                       *(["-map", "0:a", "-c:a", "copy"] if has_audio else ["-an"]),
@@ -377,7 +395,7 @@ def apply_transforms(path: Path, transforms: CutTransforms, encode_args: list[st
             # reverse, so a non-loop-swapped cut re-encodes at most twice and is
             # byte-identical to the pre-loop-swap build for the same seeds.
             if transforms.motion is not None or transforms.mirror:
-                graph = (_motion_graph(transforms.motion, duration_s, width, height)
+                graph = (_motion_graph(transforms.motion, duration_s, width, height, rate or Fraction(30))
                          if transforms.motion is not None else "[0:v]null[m]")
                 graph += f";[m]{'hflip,' if transforms.mirror else ''}setsar=1,format=yuv420p[v]"
                 moved = work / "moved.mp4"

@@ -43,7 +43,8 @@ SOURCE_ACK_SCHEMA = "content-lab.slot-source-ack.v1"
 ARTIFACT_MIME_TYPE = "video/mp4"
 ARTIFACT_NAME = "source.mp4"
 OBJECT_KEY_PREFIX = "post-renders"
-# One delivered frame at the sourced format's 30 fps delivery rate.
+# One delivered frame at 30 fps. A slower cut (25p, or 21 fps at 0.7x) allows
+# one of its own, longer frames instead (see regenerate).
 FRAME_TOLERANCE_MS = 34
 PROBE_TIMEOUT_S = 120
 PROBE_OUTPUT_LIMIT = 1024 * 1024
@@ -694,7 +695,18 @@ def _probe_artifact(path: Path) -> dict:
         raise SourceRegenerationError("source_regeneration_decode_unavailable") from error
 
 
+# The rate the repaired cut must come out at when the master's own rate cannot
+# be read (the cut encode then keeps the preset's 30 fps too).
 DELIVERY_FPS = 30
+
+
+def _expected_output_rate(master_path: Path, playback_speed: float) -> float:
+    """The cut's one output rate: the master's own rate times the speed (see
+    services.ffmpeg.delivery_frame_rate), the same rate run_color_correct sets."""
+    from services.ffmpeg import delivery_frame_rate, probe_frame_rate
+
+    native = probe_frame_rate(master_path)
+    return DELIVERY_FPS if native is None else float(delivery_frame_rate(native, playback_speed))
 
 
 def _frame_rate(stream: dict) -> float:
@@ -820,10 +832,12 @@ def regenerate(
         probe = _probe_artifact(output)
         if (probe["width"], probe["height"]) != (render["outputWidth"], render["outputHeight"]):
             raise SourceRegenerationError("source_regeneration_output_geometry_invalid")
-        if abs(probe["frame_rate"] - DELIVERY_FPS) > 0.01:
+        expected_rate = _expected_output_rate(master_path, render["playbackSpeed"])
+        if abs(probe["frame_rate"] - expected_rate) > 0.01:
             raise SourceRegenerationError("source_regeneration_output_rate_invalid")
         expected_ms = round(cut["duration_ms"] / render["playbackSpeed"])
-        if abs(probe["duration_ms"] - expected_ms) > FRAME_TOLERANCE_MS:
+        tolerance_ms = max(FRAME_TOLERANCE_MS, math.ceil(1000 / expected_rate))
+        if abs(probe["duration_ms"] - expected_ms) > tolerance_ms:
             raise SourceRegenerationError("source_regeneration_output_duration_invalid")
         sha256, byte_length = _hash_file(output, master["bytes"] + 64 * 1024 * 1024)
         if sha256 == master["sha256"]:

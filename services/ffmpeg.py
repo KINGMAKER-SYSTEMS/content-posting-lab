@@ -43,6 +43,9 @@ _COLOR_CORRECT_GATE = asyncio.Semaphore(1)
 
 # TikTok-optimized encode: 1080x1920, 30fps, H.264 High.
 # Used by the burn router to guarantee consistent TikTok-ready output.
+# "-r 30" is only the rate for a clip whose own rate cannot be read. Every
+# posting-path encode (the cut, its transforms and the final) swaps it for the
+# clip's own rate with with_frame_rate(); see delivery_frame_rate().
 # -minrate 8M / -maxrate 20M keeps text overlays crisp on re-upload even
 # when the source is simple (low-entropy) footage.
 TIKTOK_ENCODE_ARGS: list[str] = [
@@ -72,6 +75,165 @@ def delivery_encode_args(preset: str) -> list[str]:
         return list(DELIVERY_ENCODE_PRESETS[preset])
     except (KeyError, TypeError) as exc:
         raise ValueError("delivery encode preset is unavailable") from exc
+
+
+# Frame rate. A constant output rate that differs from the clip's real rate
+# repeats frames unevenly (a 25p body or a 0.7x cut forced to 30 fps) and the
+# repeats play back as a stutter. So every output gets ONE exact rate, derived
+# from the clip's own rate times its playback speed as an exact fraction, and
+# set with output "-r". Each frame then lands on that grid, on an even beat.
+#
+# One rule keeps every output between 20 and 40 fps:
+#   - under 20 (a 0.55x cut of 30p is 16.5): show every frame k times, the
+#     smallest whole k that reaches 20 (16.5 -> 33, 11 -> 22, 19.5 -> 39);
+#   - 40 or more (60p, 120p, 60p at 0.7x = 42): keep every k-th frame, the
+#     smallest whole k that brings it to 30 or under (60 -> 30, 42 -> 21);
+#   - 20 up to 40: unchanged (25 stays 25, 30p at 1.1x stays 33).
+# The rule maps its own outputs to themselves, so a later step that re-reads
+# a cut's rate (the final, a transform) keeps it.
+DELIVERY_MIN_FRAME_RATE = Fraction(20)
+DELIVERY_MAX_FRAME_RATE = Fraction(30)
+# Middle of the Worker's 5-9 s delivered length; a cut's whole-frame ending
+# rounds toward it (see output_frame_count).
+DELIVERY_LENGTH_MIDDLE = Fraction(7)
+# ffprobe reports a container time base (90000/1, 1000/1) as r_frame_rate for
+# some variable-rate files; no real clip is faster than this.
+_MAX_PLAUSIBLE_FRAME_RATE = Fraction(240)
+
+
+def parse_frame_rate(value) -> Fraction | None:
+    """ffprobe's ``num/den`` rate as an exact Fraction, or None when it is not a real rate."""
+    if not isinstance(value, str):
+        return None
+    numerator, separator, denominator = value.partition("/")
+    if not (separator and numerator.isdigit() and denominator.isdigit()):
+        return None
+    if int(numerator) <= 0 or int(denominator) <= 0:
+        return None
+    rate = Fraction(int(numerator), int(denominator))
+    return rate if rate <= _MAX_PLAUSIBLE_FRAME_RATE else None
+
+
+def _probe_stream_rates(input_path, ffprobe: str) -> dict | None:
+    """ffprobe's raw r_frame_rate and avg_frame_rate for the first video stream, or None."""
+    try:
+        result = subprocess.run(
+            [
+                ffprobe, "-v", "error", "-protocol_whitelist", "file,pipe",
+                "-select_streams", "v:0",
+                "-show_entries", "stream=r_frame_rate,avg_frame_rate",
+                "-of", "json", str(input_path),
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=_INPUT_PROBE_TIMEOUT_SECONDS,
+            check=False,
+        )
+        stream = json.loads(result.stdout)["streams"][0]
+    except (OSError, subprocess.TimeoutExpired, ValueError, KeyError, IndexError, TypeError):
+        return None
+    if result.returncode != 0 or not isinstance(stream, dict):
+        return None
+    return stream
+
+
+def probe_frame_rate(input_path, ffprobe: str = "ffprobe") -> Fraction | None:
+    """The first video stream's real frame rate, or None when ffprobe cannot prove one.
+
+    r_frame_rate is the stream's frame grid; avg_frame_rate (a mean over the
+    stream) is the fallback when the grid is missing or implausible.
+    """
+    stream = _probe_stream_rates(input_path, ffprobe)
+    if stream is None:
+        return None
+    return parse_frame_rate(stream.get("r_frame_rate")) or parse_frame_rate(stream.get("avg_frame_rate"))
+
+
+# A variable-rate body declares a time grid well above its real frames: a
+# healed body with its repeated frames cut out sits on a 1/150 s grid with
+# 26.4 frames a second on average, a phone capture on a 60 or 90000 grid with
+# about 30. Any constant output rate must repeat or drop frames there (a 26.4
+# fps heal made 30 fps again gets its repeats back), so the final keeps the
+# body's own frame times instead. A constant-rate file's mean sits within a
+# fraction of a percent of its grid (an edit list can move it a little).
+VARIABLE_RATE_GRID_RATIO = Fraction(105, 100)
+
+
+def _any_rate(value) -> Fraction | None:
+    if not isinstance(value, str):
+        return None
+    numerator, separator, denominator = value.partition("/")
+    if not (separator and numerator.isdigit() and denominator.isdigit()):
+        return None
+    if int(numerator) <= 0 or int(denominator) <= 0:
+        return None
+    return Fraction(int(numerator), int(denominator))
+
+
+def probe_variable_frame_rate(input_path, ffprobe: str = "ffprobe") -> Fraction | None:
+    """The mean rate of a variable-rate body, or None for a constant-rate (or unreadable) one."""
+    stream = _probe_stream_rates(input_path, ffprobe)
+    if stream is None:
+        return None
+    grid, average = _any_rate(stream.get("r_frame_rate")), parse_frame_rate(stream.get("avg_frame_rate"))
+    if grid is None or average is None or grid <= average * VARIABLE_RATE_GRID_RATIO:
+        return None
+    return average
+
+
+def with_source_timestamps(encode_args: list[str]) -> list[str]:
+    """``encode_args`` without its ``-r``, keeping each frame's own time (a variable-rate body)."""
+    args = list(encode_args)
+    if "-r" in args:
+        index = args.index("-r")
+        if index + 1 >= len(args):
+            raise ValueError("encode args end with a bare -r")
+        del args[index:index + 2]
+    return args + ["-fps_mode", "passthrough"]
+
+
+def delivery_frame_rate(native: Fraction, playback_speed: float = 1.0) -> Fraction:
+    """The one constant output rate for a clip of ``native`` fps played at ``playback_speed``."""
+    # The same six-decimal factor build_cc_filter's setpts divides by.
+    target = native * Fraction(f"{_validated_playback_speed(playback_speed):.6f}")
+    if target < DELIVERY_MIN_FRAME_RATE:
+        return target * math.ceil(DELIVERY_MIN_FRAME_RATE / target)
+    kept = target / math.ceil(target / DELIVERY_MAX_FRAME_RATE)
+    return kept if kept >= DELIVERY_MIN_FRAME_RATE else target
+
+
+def output_frame_count(output_seconds: Fraction, rate: Fraction) -> int:
+    """Whole frames for a cut ``output_seconds`` long at ``rate`` (at least one).
+
+    A cut that ends on a whole frame ends where its video does: a "-t" alone
+    keeps the last frame that STARTS before the end, and at 22.5 fps that
+    frame runs 22 ms past a 9.0 s cut. When the length is not a whole number
+    of frames it moves by under one frame toward the middle of the Worker's
+    5-9 s window (down from 7 s or more, up from under 7 s), so a cut at
+    either edge (9.0 s at 0.75x, 5.0 s at 1.5x) stays inside it.
+    """
+    exact = output_seconds * rate
+    frames = math.floor(exact) if output_seconds >= DELIVERY_LENGTH_MIDDLE else math.ceil(exact)
+    return max(1, frames)
+
+
+def frame_rate_text(rate: Fraction) -> str:
+    """``30`` or ``30000/1001``: the form both ``-r`` and filter rate options read."""
+    return str(rate.numerator) if rate.denominator == 1 else f"{rate.numerator}/{rate.denominator}"
+
+
+def with_frame_rate(encode_args: list[str], rate: Fraction) -> list[str]:
+    """``encode_args`` with its ``-r`` value set to ``rate`` (appended when absent)."""
+    args = list(encode_args)
+    if args[-1:] == ["-r"]:
+        # A bare trailing "-r" is a broken preset; appending would give two.
+        raise ValueError("encode args end with a bare -r")
+    if "-r" in args:
+        args[args.index("-r") + 1] = frame_rate_text(rate)
+    else:
+        args += ["-r", frame_rate_text(rate)]
+    return args
 
 
 # Standard encode that preserves the source's frame rate and skips TikTok-
@@ -852,6 +1014,32 @@ async def run_color_correct(
         for index, argument in enumerate(enc[:-1]):
             if argument == "-c:a" and enc[index + 1] == "copy":
                 enc[index + 1] = "aac"
+    if "-r" in enc or speed != 1.0:
+        # setpts spaces the frames out (0.7x turns 30 fps into 21 fps); the
+        # output rate follows (delivery_frame_rate), so no frame is repeated
+        # unevenly to refill 30 fps. A clip whose rate ffprobe cannot read
+        # keeps the args (and the window's plain "-t") as they were.
+        native = await asyncio.to_thread(probe_frame_rate, input_path)
+        if native is not None:
+            rate = delivery_frame_rate(native, speed)
+            enc = with_frame_rate(enc, rate)
+            if rate > native * Fraction(f"{speed:.6f}"):
+                # Under 20 fps of picture: show every frame k times in the
+                # graph itself (an exact multiple, so each frame fills exactly
+                # k slots starting at its own time). Leaving it to the
+                # encoder's -r shows the first frame once and every later one
+                # half a frame early.
+                vf += f",fps={frame_rate_text(rate)}"
+            if window is not None:
+                # End the cut on a whole frame at its own rate, and end the
+                # sound at the same instant (rounded down to the microsecond,
+                # so "-t" keeps exactly ``frames`` frames: frame N starts at
+                # or after it). No "-frames:v": ffmpeg 5.1 (production) stops
+                # the whole file at the video limit, cutting the last ~60 ms
+                # of sound that is still queued.
+                frames = output_frame_count(Fraction(window[1], 1000) / Fraction(f"{speed:.6f}"), rate)
+                end = math.floor(Fraction(frames) / rate * 1_000_000) / 1_000_000
+                output_window = ["-t", f"{end:.6f}"]
     input_window = (
         [
             "-ss", f"{window[0] / 1000:.3f}",

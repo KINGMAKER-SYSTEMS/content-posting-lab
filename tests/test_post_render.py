@@ -1371,7 +1371,8 @@ def test_in_app_pair_matches_when_source_ends_on_half_a_delivery_frame(tmp_path)
     if not shutil.which("ffmpeg") or not shutil.which("ffprobe"):
         pytest.skip("ffmpeg/ffprobe are required for actual render proof")
     source = tmp_path / "source.mp4"
-    # 226 frames at 24 fps end 282.5 frames into the 30 fps delivery clock.
+    # 226 frames at 24 fps would end 282.5 frames into a 30 fps clock. Both
+    # finals keep the 24 fps clock instead, so each decodes all 226 frames.
     subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-f", "lavfi", "-i",
                     "color=c=navy:s=432x768:r=24", "-frames:v", "226", "-an",
                     "-c:v", "libx264", "-preset", "ultrafast", "-threads", "2", str(source)],
@@ -1381,8 +1382,8 @@ def test_in_app_pair_matches_when_source_ends_on_half_a_delivery_frame(tmp_path)
                        caption_delivery="in_app"), clock_ms=lambda: NOW)
     clean = json.loads((output / "decode.json").read_text())
     burned = json.loads((output / "burned" / "decode.json").read_text())
-    assert clean["decoded_video_frames"] == burned["decoded_video_frames"] == 283
-    assert clean["final_probe"]["duration_ms"] == burned["final_probe"]["duration_ms"] == 9433
+    assert clean["decoded_video_frames"] == burned["decoded_video_frames"] == 226
+    assert clean["final_probe"]["duration_ms"] == burned["final_probe"]["duration_ms"] == 9417
 
 
 def test_dual_render_fallback_failure_removes_clean_artifact(actual_source, tmp_path, monkeypatch):

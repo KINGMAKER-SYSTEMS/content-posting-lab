@@ -18,6 +18,7 @@ import stat
 import subprocess
 import time
 from dataclasses import dataclass
+from fractions import Fraction
 from pathlib import Path
 from typing import Annotated, Callable, Literal
 
@@ -28,7 +29,8 @@ from pydantic_core import PydanticCustomError
 
 from burn_quality_gate import overlay_geometry_reasons
 from services.caption_render import CaptionRenderError, CaptionRenderRequest, CaptionStyle, render_caption_with_background
-from services.ffmpeg import delivery_encode_args
+from services.ffmpeg import (delivery_encode_args, delivery_frame_rate, frame_rate_text, probe_frame_rate,
+                             probe_variable_frame_rate, with_frame_rate, with_source_timestamps)
 from services.page_frame import frame_band_height, frame_band_rows, frame_fit, letterbox_filter
 from services.pool_supplied_pages import is_pool_supplied
 from services.source_treatment import normalized_visual_treatment
@@ -415,8 +417,62 @@ def _square_pixels(sample_aspect_ratio: str) -> bool:
     return abs(numerator / denominator - 1) <= SQUARE_PIXEL_TOLERANCE
 
 
+@dataclass(frozen=True)
+class _FinalRate:
+    """How the final's frames are timed.
+
+    ``rate`` is the final's one constant rate (None: the preset's 30, the rate
+    could not be read). ``resample``: it is not the body's own, so the graph's
+    fps step makes the change. ``keep_times``: a variable-rate body keeps each
+    frame's own time (no constant rate at all).
+    """
+    rate: Fraction | None = None
+    resample: bool = False
+    keep_times: bool = False
+
+
+def _final_frame_rate(source: Path, tools: RenderTools, *, paired: bool = False,
+                      max_rate: Fraction | None = None) -> _FinalRate:
+    """The final's frame timing: the body's own rate (60p is halved to 30).
+
+    A variable-rate body (``probe_variable_frame_rate``: a heal on a 1/150 s
+    grid) keeps its own frame times, so no frame is repeated or dropped.
+
+    ``max_rate`` caps the rate for a duration repair, whose frame count the
+    Worker sets at 30 fps: a faster body keeps every k-th frame, the smallest
+    whole k that brings it to the cap (a 39 fps body that shows each frame
+    twice goes back to its own 19.5; a 33 fps body plays at 16.5). An even
+    pick never repeats a frame; resampling straight to 30 would hold some
+    frames for one slot and some for two. A body within 1% of the cap goes to
+    the cap (a 30.01 fps file is a 30 fps file, not a 15 fps one).
+
+    A lone final whose rate cannot be read keeps 30 fps as before. A paired
+    final (clean + captioned, ``normalize_pair_timing``) fails closed instead:
+    its twin may have read the rate, and the pair must match.
+    """
+    average = probe_variable_frame_rate(source, tools.ffprobe)
+    if average is not None and (max_rate is None or average <= max_rate):
+        return _FinalRate(keep_times=True)
+    native = probe_frame_rate(source, tools.ffprobe)
+    if native is None:
+        if paired:
+            raise PostRenderError("frame_rate_unreadable", "paired final cannot prove the source frame rate")
+        return _FinalRate()
+    rate = delivery_frame_rate(native)
+    if max_rate is not None and rate > max_rate:
+        rate = max_rate if native <= max_rate * Fraction(101, 100) else native / math.ceil(native / max_rate)
+    return _FinalRate(rate, rate != native)
+
+
+def _repair_frame_rate_cap() -> Fraction:
+    from services.source_duration_repair import SOURCE_DURATION_REPAIR_DELIVERY_FPS
+
+    return Fraction(SOURCE_DURATION_REPAIR_DELIVERY_FPS)
+
+
 def _video_graph(source_probe: MediaProbe, frame_height: int | None = None, *, in_app: bool = False,
-                 normalize_pair_timing: bool = False) -> str:
+                 normalize_pair_timing: bool = False, timing: "_FinalRate | None" = None) -> str:
+    timing = timing or _FinalRate()
     chain = []
     if (source_probe.width, source_probe.height) != (1080, 1920):
         if abs(source_probe.width * 16 - source_probe.height * 9) <= 32:
@@ -435,10 +491,23 @@ def _video_graph(source_probe: MediaProbe, frame_height: int | None = None, *, i
         # The delivery frame is exactly 1080x1920 here. A page frame keeps its
         # centred band and letterboxes it in plain black on the same canvas.
         chain.append(letterbox_filter(frame_height))
-    if normalize_pair_timing:
+    if timing.keep_times:
+        # A variable-rate body keeps each frame's own time, in both twins of a
+        # pair alike: no fps step, and the encoder passes the times through.
+        pass
+    elif normalize_pair_timing:
         # Resample before the paths diverge. FFmpeg 5.1 can round a half-frame
-        # at EOF differently with an overlay if only the encoder sets 30 fps.
-        chain.append("fps=30")
+        # at EOF differently with an overlay if only the encoder sets the rate.
+        # The rate is the body's own (the same one the encoder gets), so this
+        # passes each frame through instead of repeating frames to make 30 fps.
+        chain.append(f"fps={frame_rate_text(timing.rate or Fraction(30))}")
+    elif timing.resample and timing.rate is not None:
+        # The final's rate is not the body's own (60p kept at every second
+        # frame, a sub-20 fps body shown k times, a repair capped at 30). The
+        # fps step picks the frames on the final's own grid, which is the
+        # sound's clock; the encoder's -r alone could keep the frames between
+        # grid points instead, up to one source frame off the sound.
+        chain.append(f"fps={frame_rate_text(timing.rate)}")
     if in_app:
         # No caption overlay input: the clean clip is delivery-only. The
         # encoder's -pix_fmt yuv420p still turns the chain into the delivery
@@ -453,8 +522,12 @@ def _video_graph(source_probe: MediaProbe, frame_height: int | None = None, *, i
 
 def _encode_final(source: Path, overlay: Path | None, final: Path, source_probe: MediaProbe,
                   tools: RenderTools, frame_height: int | None = None, *, in_app: bool = False,
-                  normalize_pair_timing: bool = False) -> MediaProbe:
-    graph = _video_graph(source_probe, frame_height, in_app=in_app, normalize_pair_timing=normalize_pair_timing)
+                  normalize_pair_timing: bool = False, max_frame_rate: Fraction | None = None,
+                  end_seconds: Fraction | None = None) -> MediaProbe:
+    timing = _final_frame_rate(source, tools, paired=normalize_pair_timing, max_rate=max_frame_rate)
+    frame_rate = timing.rate
+    graph = _video_graph(source_probe, frame_height, in_app=in_app, normalize_pair_timing=normalize_pair_timing,
+                         timing=timing)
     base = [tools.ffmpeg, "-nostdin", "-v", "error", "-xerror", "-protocol_whitelist", "file,pipe",
             "-noautorotate", "-f", "mov", "-i", str(source)]
     if in_app:
@@ -464,8 +537,24 @@ def _encode_final(source: Path, overlay: Path | None, final: Path, source_probe:
     else:
         base += ["-protocol_whitelist", "file,pipe", "-i", str(overlay), "-filter_complex", graph,
                  "-map", "[v]", "-map", "0:a?", "-map_metadata", "-1", "-map_chapters", "-1"]
+    if max_frame_rate is not None and timing.resample:
+        # A capped final never ends past the body: the fps step can round its
+        # last frame up by up to half a frame, and a repair may not run past
+        # its commanded cut by even one frame. "-t" at exactly that many
+        # frames (rounded down to the microsecond) keeps them; "-frames:v"
+        # would make ffmpeg 5.1 (production) stop the file before its sound.
+        frames = max(1, math.floor(Fraction(source_probe.duration_ms, 1000) * frame_rate))
+        capped = Fraction(frames) / frame_rate
+        end_seconds = capped if end_seconds is None else min(end_seconds, capped)
+    if end_seconds is not None:
+        # Rounded down to the microsecond: nothing (picture or sound) runs past it.
+        base += ["-t", f"{math.floor(end_seconds * 1_000_000) / 1_000_000:.6f}"]
     for attempt in range(2):
         encode = delivery_encode_args("tiktok_delivery_v1")
+        if timing.keep_times:
+            encode = with_source_timestamps(encode)
+        elif frame_rate is not None:
+            encode = with_frame_rate(encode, frame_rate)
         if attempt:
             # Reserve ten percent container/rate-control margin and the full preset audio rate.
             bitrate = int(MAX_FINAL_BYTES * 8 * 0.90 * 1000 / source_probe.duration_ms) - 192_000
@@ -683,7 +772,8 @@ def _ink_refusal(share: float, pixels: int, box_match: float | None,
 
 def _check_caption_ink(output_directory: Path, qa_path: Path, qa_at_ms: int, overlay_bytes: bytes,
                        background_png: bytes | None, line_centers: list[int], *, reference_source: Path,
-                       frame_height: int | None, normalize_pair_timing: bool, tools: RenderTools) -> dict:
+                       frame_height: int | None, normalize_pair_timing: bool, tools: RenderTools,
+                       max_frame_rate: Fraction | None = None) -> dict:
     """Refuse a burned final whose QA frame does not show the caption; return the decode.json facts.
 
     The reference is the same frame of the clip the final was encoded from (the trimmed
@@ -695,6 +785,8 @@ def _check_caption_ink(output_directory: Path, qa_path: Path, qa_at_ms: int, ove
     well as the caption as a whole (``_ink_refusal``).
     """
     clip_probe = _probe(reference_source, tools)
+    # The same rate the final was encoded at, so the reference is the same frame.
+    timing = _final_frame_rate(reference_source, tools, paired=normalize_pair_timing, max_rate=max_frame_rate)
     seek = ["-nostdin", "-v", "error", "-xerror", "-protocol_whitelist", "file,pipe",
             "-noautorotate", "-ss", f"{qa_at_ms / 1000:.3f}", "-f", "mov", "-i", str(reference_source)]
     cut = ["-map", "[v]", "-frames:v", "1", "-q:v", "3", "-update", "1"]
@@ -704,15 +796,18 @@ def _check_caption_ink(output_directory: Path, qa_path: Path, qa_at_ms: int, ove
     try:
         if background_png is None:
             _run([tools.ffmpeg, *seek, "-filter_complex",
-                  _video_graph(clip_probe, frame_height, in_app=True, normalize_pair_timing=normalize_pair_timing),
+                  _video_graph(clip_probe, frame_height, in_app=True, normalize_pair_timing=normalize_pair_timing,
+                               timing=timing),
                   *cut, str(reference_path)], tools, output_file=reference_path, output_limit=MAX_QA_BYTES)
         else:
             background_path.write_bytes(background_png)
             _run([tools.ffmpeg, *seek, "-protocol_whitelist", "file,pipe", "-i", str(background_path), "-filter_complex",
-                  _video_graph(clip_probe, frame_height, normalize_pair_timing=normalize_pair_timing),
+                  _video_graph(clip_probe, frame_height, normalize_pair_timing=normalize_pair_timing,
+                               timing=timing),
                   *cut, str(reference_path)], tools, output_file=reference_path, output_limit=MAX_QA_BYTES)
             _run([tools.ffmpeg, *seek, "-filter_complex",
-                  _video_graph(clip_probe, frame_height, in_app=True, normalize_pair_timing=normalize_pair_timing),
+                  _video_graph(clip_probe, frame_height, in_app=True, normalize_pair_timing=normalize_pair_timing,
+                               timing=timing),
                   *cut, str(bare_path)], tools, output_file=bare_path, output_limit=MAX_QA_BYTES)
         frames = [Image.open(path) for path in (qa_path, reference_path, bare_path) if path is not None]
         try:
@@ -878,7 +973,8 @@ def _render_post_single(source_path: Path, output_directory: Path, request: Post
                 output_directory, qa_path, qa_at_ms, overlay_bytes, background_png,
                 [record.center_y_px for record in overlay.plan.lines if record.text],
                 reference_source=(output_directory / "repair" / "trimmed.mp4") if repair is not None else source,
-                frame_height=band_height, normalize_pair_timing=paired_caption, tools=tools)
+                frame_height=band_height, normalize_pair_timing=paired_caption, tools=tools,
+                max_frame_rate=_repair_frame_rate_cap() if repair is not None else None)
         final_sha, final_length = _file_hash(final_path, MAX_FINAL_BYTES)
         qa_sha, _ = _file_hash(qa_path, MAX_QA_BYTES)
         if final_sha == request.source_sha256:
