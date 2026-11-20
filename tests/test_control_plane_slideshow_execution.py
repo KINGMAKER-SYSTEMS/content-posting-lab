@@ -18,6 +18,7 @@ from services.control_plane_slideshows import (
     SyzygyError,
     SyzygyLibrary,
     SyzygyObject,
+    SyzygyUnavailable,
     library_subject,
     plan_slideshows,
     resolve_slideshow_recipe,
@@ -57,13 +58,14 @@ def _library(count: int = 5) -> SyzygyLibrary:
                 key=f"{LANE}/{SUBJECT}/photos/img-{index:02d}.jpg",
                 bytes=1_000 + index,
                 url=f"https://r2.example/{LANE}/{SUBJECT}/photos/img-{index:02d}.jpg",
+                indexed_sha256=hashlib.sha256(b"x" * (1_000 + index)).hexdigest(),
             )
             for index in range(count)
         ),
         key=lambda item: item.key,
     ))
     canonical = json.dumps(
-        [[item.key, item.bytes] for item in objects],
+        [[item.key, item.bytes, item.indexed_sha256] for item in objects],
         separators=(",", ":"), ensure_ascii=False,
     )
     return SyzygyLibrary(
@@ -73,6 +75,31 @@ def _library(count: int = 5) -> SyzygyLibrary:
         objects=objects,
         snapshot_hash=hashlib.sha256(canonical.encode()).hexdigest(),
     )
+
+
+def test_syzygy_listing_hash_changes_snapshot_at_same_size(monkeypatch):
+    from services import control_plane_slideshows as slideshows
+
+    source = _library(2)
+    rows = [
+        {"key": item.key, "bytes": item.bytes, "url": item.url,
+         "indexed_sha256": item.indexed_sha256}
+        for item in source.objects
+    ]
+    payload = {"lane": LANE, "subject": SUBJECT, "truncated": False,
+               "skipped": 0, "count": 2, "objects": rows}
+    monkeypatch.setattr(slideshows, "_runtime", lambda: ("https://syzygy.test", "key"))
+    monkeypatch.setattr(slideshows.httpx, "get", lambda *_args, **_kwargs: httpx.Response(200, json=payload))
+    first = slideshows._fetch_library(LIBRARY_ID, LANE, SUBJECT)
+    rows[0]["indexed_sha256"] = "0" * 64
+    second = slideshows._fetch_library(LIBRARY_ID, LANE, SUBJECT)
+    assert first.snapshot_hash != second.snapshot_hash
+    assert first.objects[0].bytes == second.objects[0].bytes
+    rows[0]["indexed_sha256"] = None
+    assert len(slideshows._fetch_library(LIBRARY_ID, LANE, SUBJECT).objects) == 1
+    del rows[0]["indexed_sha256"]
+    with pytest.raises(SyzygyUnavailable, match="index hash is unavailable"):
+        slideshows._fetch_library(LIBRARY_ID, LANE, SUBJECT)
 
 
 def publication(
@@ -480,13 +507,13 @@ def test_failed_slideshow_job_releases_its_plan_signatures(lab):
     )
 
 
-def _fake_syzygy_boundary(monkeypatch, library, *, mutate=False):
+def _fake_syzygy_boundary(monkeypatch, library, *, mutate=False, mutate_before=False):
     observations = {
         item.key: {
             "objectKey": item.key,
             "bytes": item.bytes,
             "etag": f'"etag-{item.key.rsplit("/", 1)[-1]}"',
-            "sha256": hashlib.sha256(item.key.encode()).hexdigest(),
+            "sha256": item.indexed_sha256,
         }
         for item in library.objects
     }
@@ -500,7 +527,7 @@ def _fake_syzygy_boundary(monkeypatch, library, *, mutate=False):
         result = []
         for key in keys:
             row = dict(observations[key])
-            if mutate and calls["observe"] % 2 == 0:
+            if mutate_before or (mutate and calls["observe"] % 2 == 0):
                 row["sha256"] = "0" * 64
             result.append(row)
         return result
@@ -806,6 +833,43 @@ async def test_runner_rejects_source_mutation_during_render(lab, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_runner_rejects_same_size_source_replacement_before_render(lab, monkeypatch):
+    client, _, _, library, payload = lab
+    response = client.post(
+        "/api/control-plane/v1/jobs", json=job_body(1, payload),
+        headers=headers("slideshow-same-size-replacement-0001"),
+    )
+    assert response.status_code == 200
+    calls = _fake_syzygy_boundary(monkeypatch, library, mutate_before=True)
+    await cp._run_syzygy_slideshow(response.json()["jobId"])
+    stored = cp._load_jobs()["jobs"][response.json()["jobId"]]
+    assert stored["status"] == "failed"
+    assert stored["error"] == "slideshow_source_sha_mismatch"
+    assert calls["submit"] == []
+
+
+@pytest.mark.asyncio
+async def test_legacy_unpinned_job_fails_with_named_reason(lab, monkeypatch):
+    client, _, _, library, payload = lab
+    response = client.post(
+        "/api/control-plane/v1/jobs", json=job_body(1, payload),
+        headers=headers("slideshow-legacy-unpinned-0001"),
+    )
+    assert response.status_code == 200
+    job_id = response.json()["jobId"]
+    plans = json.loads(json.dumps(cp._load_jobs()["jobs"][job_id]["slideshowPlan"]))
+    for item in plans[0]["media"]:
+        del item["sha256"]
+    cp._update_job(job_id, slideshowPlan=plans)
+    calls = _fake_syzygy_boundary(monkeypatch, library)
+    await cp._run_syzygy_slideshow(job_id)
+    stored = cp._load_jobs()["jobs"][job_id]
+    assert stored["status"] == "failed"
+    assert stored["error"] == "slideshow_source_pin_missing"
+    assert calls["submit"] == []
+
+
+@pytest.mark.asyncio
 async def test_runner_rejects_duplicate_output_bytes_from_an_earlier_job(
     lab, monkeypatch,
 ):
@@ -852,7 +916,7 @@ async def test_runner_rejects_a_plan_whose_library_object_changed(
     job_id = response.json()["jobId"]
     changed = _library()
     drifted = tuple(
-        SyzygyObject(item.key, item.bytes + 1, item.url)
+        SyzygyObject(item.key, item.bytes + 1, item.url, item.indexed_sha256)
         if index == 0 else item
         for index, item in enumerate(changed.objects)
     )

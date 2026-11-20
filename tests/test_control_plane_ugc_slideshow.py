@@ -758,7 +758,8 @@ def test_generic_photo_arc_survives_actual_library_fetch_sort(monkeypatch):
     ) for index in range(3))
     mixed = (*expected.objects, *clips)
     payload = {"lane": "ugc", "subject": "french-core", "truncated": False, "skipped": 0,
-        "count": len(mixed), "objects": [{"key": item.key, "bytes": item.bytes, "url": item.url}
+        "count": len(mixed), "objects": [{"key": item.key, "bytes": item.bytes, "url": item.url,
+            "indexed_sha256": hashlib.sha256(item.key.encode()).hexdigest()}
             for item in reversed(mixed)]}
     monkeypatch.setattr(slideshows, "_runtime", lambda: ("https://syzygy.test", "syz_test"))
     monkeypatch.setattr(slideshows.httpx, "get", lambda *args, **kwargs: slideshows.httpx.Response(200, json=payload))

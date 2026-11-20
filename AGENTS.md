@@ -291,6 +291,14 @@
   `external--<sha256(exact pageId UTF-8)>`, never its handle. The double-hyphen
   prefix cannot be produced by the unchanged ordinary handle slugger. The closed external-owner set lives in the
   contract module so the router and the service read one definition.
+  The subject listing must supply an indexed SHA-256 for every selectable
+  object. Ordinary photo slideshow jobs pin key, size, and hash at admission;
+  their snapshot identity includes all three. The runner compares the live
+  index and streamed source bytes with that pin before render submission.
+  Legacy jobs without a hash pin fail as `slideshow_source_pin_missing` before
+  render submission. Unindexed objects are not
+  selectable; a listing from an older Syzygy without the hash field is
+  unavailable rather than empty inventory.
   The shared external-owner constant also governs the exact ShipStream
   null-Notion-id manifest exception.
 - `POST /api/control-plane/v1/jobs` checks a validated slideshow request's
