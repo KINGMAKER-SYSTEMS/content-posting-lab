@@ -3823,12 +3823,12 @@ async def _run_owned_dossier_generation(job_id: str) -> None:
                         qa_gate.policy_for_generated_clip(recipe, PROVIDERS.get(recipe.engine)), qa_mode,
                         repaired_destination=treated_root / f"g{call_index:02d}-c{candidate_index:02d}-sar1.mp4")
                     log.info("content_lab.qa_gate job_id=%s page_id=%s generation=%s candidate=%s mode=%s"
-                             " ok=%s score=%s blocks=%s warnings=%s repaired_sar=%s elapsed_ms=%d",
+                             " ok=%s score=%s blocks=%s warnings=%s repaired_sar=%s healed=%s elapsed_ms=%d",
                              job_id, job["pageId"], call_index, candidate_index, qa_mode, verdict.ok,
                              verdict.score, [item.code for item in verdict.blocks],
-                             [item.code for item in verdict.warnings], verdict.repaired_sar,
+                             [item.code for item in verdict.warnings], verdict.repaired_sar, list(verdict.healed),
                              int(verdict.elapsed_s * 1000))
-                    if verdict.repaired_sar and verdict.path is not None:
+                    if (verdict.repaired_sar or verdict.healed) and verdict.path is not None:
                         artifact = Path(verdict.path)
                     if not verdict.ok and qa_mode == qa_gate.MODE_ENFORCE:
                         if artifact != source:
@@ -4952,11 +4952,11 @@ async def _run_dossier_source_inner(job_id: str) -> None:
                 verdict = await _settle_source_call(
                     qa_gate.run_gate, destination, qa_policy, qa_mode)
                 log.info("content_lab.qa_gate job_id=%s page_id=%s cut=%s mode=%s ok=%s"
-                         " score=%s blocks=%s warnings=%s repaired_sar=%s elapsed_ms=%d",
+                         " score=%s blocks=%s warnings=%s repaired_sar=%s healed=%s elapsed_ms=%d",
                          job_id, job["pageId"], index, qa_mode, verdict.ok, verdict.score,
                          [item.code for item in verdict.blocks],
                          [item.code for item in verdict.warnings],
-                         verdict.repaired_sar, int(verdict.elapsed_s * 1000))
+                         verdict.repaired_sar, list(verdict.healed), int(verdict.elapsed_s * 1000))
                 if not verdict.ok and qa_mode == qa_gate.MODE_ENFORCE:
                     destination.unlink(missing_ok=True)
                     qa_refused_cuts.append({
