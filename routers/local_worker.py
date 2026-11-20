@@ -41,9 +41,17 @@ def _spool_dir() -> Path:
 
 
 @router.post("/claim")
-async def claim(wait: float = 0.0, x_worker_key: str | None = Header(default=None)):
-    """Long-poll for the next job. ``{"job": null}`` means nothing is waiting."""
+async def claim(wait: float = 0.0, busy: bool = False, x_worker_key: str | None = Header(default=None)):
+    """Long-poll for the next job. ``{"job": null}`` means nothing is waiting.
+
+    ``busy=true`` is a check-in from a worker whose ComfyUI server is rendering
+    something else: it stays online but takes no job, so new jobs go to their
+    hosted twin (providers/backend_order.py) instead of waiting behind it.
+    """
     _require_worker_key(x_worker_key)
+    if busy:
+        queue.touch(busy=True)
+        return {"job": None}
     deadline = time.monotonic() + max(0.0, min(wait, _MAX_CLAIM_WAIT_SECONDS))
     while True:
         job = queue.claim()

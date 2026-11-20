@@ -53,6 +53,43 @@
   spoken for `WORKER_STALE_SECONDS` or the render outlasts
   `COMFYUI_TIMEOUT_SECONDS` from its claim; a restart drops queued hand-offs.
 
+- `providers/backend_order.py` and `providers/backend_order.json` own which
+  backend serves a generation. Off by default: with `CONTENT_LAB_BACKEND_ORDER`
+  unset every job uses exactly the provider it asked for. With it `on` (or set
+  to another order file), `generate_one` walks the first chain naming the
+  requested provider: a `billing: local` engine is tried only when its ComfyUI
+  `/queue` answers within `local.probe_timeout_s` with fewer than
+  `local.max_queue` jobs (counting this process's jobs waiting for the render
+  lock), or, in worker mode, when a worker checked in within
+  `WORKER_STALE_SECONDS`, is not busy, and the hand-off line is short. A worker
+  whose ComfyUI is rendering someone else's job (or whose load is over
+  `LOCAL_WORKER_MAX_LOAD`) checks in with `claim?busy=true` and takes nothing;
+  an unclaimed hand-off gives up after `local.claim_timeout_s`. A down, busy or
+  failed local engine falls to the next entry; a request shape the local engine
+  refuses (`ValueError`) skips it quietly. A chain holds at most one paid
+  provider, after every local one, and a paid failure ends the job as before, so
+  one job makes at most one paid request plus that provider's own retries. A
+  paid substitute the caller did not reserve is priced from the same request
+  and debited under `<job id>:fallback:<provider>`, so a retry of the job never
+  reserves twice and the zero-budget stop holds. A resumed hosted prediction
+  (`_prediction_checkpoint` with a record) never detours through a local
+  engine. Post-processing (`FORCE_LANDSCAPE`, `strip_audio`, `output_kind`)
+  follows the served provider; the entry records `backend_attempts`,
+  `served_provider` and `billing`. Every job probes again, so jobs return to
+  the local engine on their own once it answers and is idle. Each local
+  engine's change of state (down, back) logs one warning line and each job
+  served by a later entry one `backend-order fallback` line; an
+  `ALERT backend-order` fires only when every backend in a job's chain failed.
+  A malformed order file alerts once and turns ordering off. Control Plane recipes still pin hosted engines; ordering only
+  changes who serves them. The same file's `vision.studio` section, with
+  `CONTENT_LAB_VISION_STUDIO_URL` set, asks the Studio's fast vision model
+  (then the hard one, only if already loaded) after the primary vision model
+  fails. Its verdict is a `studioHint` beside the hosted fallback's verdict
+  unless `authority: verdict` carries a passing `agreement` record from
+  `scripts/vision_agreement.py` (rate and frame count at or above
+  `min_agreement` / `min_frames`, same model); otherwise it alerts and stays a
+  hint.
+
 - `routers/recreate.py` confines REST and WebSocket job IDs to one real
   recreate-directory child before any job write or deletion. Reject encoded
   parent traversal and symlinked job directories; listing skips unsafe jobs and

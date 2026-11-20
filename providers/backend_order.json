@@ -1,0 +1,35 @@
+{
+  "schema": "content-lab.backend-order.v1",
+  "about": "Read only when CONTENT_LAB_BACKEND_ORDER=on. A job walks the first chain that names its provider: local engines first, then at most one paid provider. See providers/backend_order.py.",
+  "local": {
+    "probe_timeout_s": 5,
+    "max_queue": 2,
+    "claim_timeout_s": 600
+  },
+  "chains": {
+    "video-t2v": [
+      ["local-wan-t2v", "wan-t2v"]
+    ],
+    "video-i2v": [
+      ["local-wan-i2v", "wan-i2v-fast"],
+      ["local-wan-i2v", "wan-i2v"],
+      ["local-h3-vertical", "h3-highspeed"]
+    ],
+    "still": [
+      ["flux-image"]
+    ]
+  },
+  "vision": {
+    "studio": {
+      "fast_model": "mimo-v2.6:9b-nvfp4",
+      "hard_model": "ornith-1.5:122b-nvfp4",
+      "fast_requires_resident": false,
+      "hard_requires_resident": true,
+      "timeout_s": 30,
+      "authority": "hint",
+      "agreement": null,
+      "min_agreement": 0.95,
+      "min_frames": 200
+    }
+  }
+}
