@@ -51,6 +51,7 @@ from services.post_render import (
     RenderTools,
     _encode_final,
     _probe as post_render_probe,
+    source_geometry_refusal,
 )
 
 SOURCE_DURATION_REPAIR_SCHEMA = "rt.source-duration-repair.v1"
@@ -515,12 +516,9 @@ def render_shorter(source_path: Path, output_directory: Path, command: Dict, *,
         # The SAME near-9:16 acceptance the prepared-post renderer applies; the
         # real `_encode_final` then owns the scale/crop to 1080x1920.
         source_probe = _post_probe(source_path, tools)
-        target_width = source_probe.height * 9 / 16
-        near_vertical = abs(source_probe.width - target_width) <= target_width * 0.03
-        if (source_probe.height < 768 or source_probe.sample_aspect_ratio not in {"1:1", "", "N/A", "0:1"}
-                or source_probe.rotation != 0 or not near_vertical):
-            raise RepairError("regeneration_required",
-                              "source must be upright square-pixel near-9:16 video at least 768 pixels high")
+        refusal = source_geometry_refusal(source_probe)
+        if refusal:
+            raise RepairError("regeneration_required", refusal)
         # Impossible/minimum-duration interval: when the authoritative clean
         # allowed interval [official_start_ms, official_end_ms] = [complete final
         # word end, next word onset] contains NO video frame boundary, there is

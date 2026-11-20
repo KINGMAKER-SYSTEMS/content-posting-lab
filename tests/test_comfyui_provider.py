@@ -326,6 +326,9 @@ def test_h3_landscape_variant_always_renders_16x9_for_the_crop_pipeline():
     from providers import base
 
     assert "local-h3" in base.FORCE_LANDSCAPE and "local-h3-vertical" not in base.FORCE_LANDSCAPE
+    # The set is derived from the catalog flag, not a separate list of ids.
+    assert base.FORCE_LANDSCAPE == {pid for pid, info in PROVIDERS.items() if info.get("landscape_master") is True}
+    assert base.FORCE_LANDSCAPE == {"hailuo", "pruna-pvideo", "local-h3"}
     assert PROVIDERS["local-h3"]["variant"] == "landscape"
     for params in ({"aspect_ratio": "9:16"}, {"image_data_uri": _image_data_uri(900, 1600)}):
         node = _h3(variant="landscape", **params)["h3"]["inputs"]

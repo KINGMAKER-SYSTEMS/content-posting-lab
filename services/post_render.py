@@ -213,6 +213,43 @@ def sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+MIN_SOURCE_HEIGHT_ENV = "CONTENT_LAB_POST_RENDER_MIN_SOURCE_HEIGHT"
+# 720 is the common HD tier across video models (Wan, HunyuanVideo, LTX). The
+# floor used to be 768 only because Hailuo's cheapest tier is 768p.
+DEFAULT_MIN_SOURCE_HEIGHT = 720
+_MIN_SOURCE_HEIGHT_BOUNDS = (360, 1920)
+
+
+def min_source_height() -> int:
+    """Shortest near-9:16 source the delivery encode will scale to 1080x1920.
+
+    An operator may raise or lower it per deployment. A blank, non-numeric or
+    out-of-range value falls back to the default instead of silently admitting
+    thumbnails or refusing everything.
+    """
+    raw = os.getenv(MIN_SOURCE_HEIGHT_ENV, "").strip()
+    if raw.isdigit() and _MIN_SOURCE_HEIGHT_BOUNDS[0] <= int(raw) <= _MIN_SOURCE_HEIGHT_BOUNDS[1]:
+        return int(raw)
+    return DEFAULT_MIN_SOURCE_HEIGHT
+
+
+def source_geometry_refusal(probe: "MediaProbe") -> str | None:
+    """Why a source cannot be delivered as a 9:16 post, or None when it can.
+
+    The rule is about the picture, not about which model made it: upright,
+    square pixels, within 3% of 9:16, and tall enough to scale up cleanly.
+    Landscape masters therefore qualify through their 9:16 crops (432x768 from
+    a 768p master, 404x720 from a 720p one, 606x1080 from 1080p).
+    """
+    floor = min_source_height()
+    target_width = probe.height * 9 / 16
+    near_vertical = abs(probe.width - target_width) <= target_width * 0.03
+    if (probe.height < floor or probe.sample_aspect_ratio not in {"1:1", "", "N/A", "0:1"}
+            or probe.rotation != 0 or not near_vertical):
+        return f"source must be upright square-pixel near-9:16 video at least {floor} pixels high"
+    return None
+
+
 SOURCE_DURATION_REPAIR_ENV = "CONTENT_LAB_SOURCE_DURATION_REPAIR"
 
 
@@ -779,16 +816,14 @@ def _render_post_single(source_path: Path, output_directory: Path, request: Post
         source = output_directory / "source.mp4"
         _copy_verified_source(source_path, source, request.source_sha256)
         source_probe = _probe(source, tools)
-        # Landscape 768p/1080p masters produce 432x768/606x1080 9:16 crops
-        # after even-pixel alignment. Preserve that selected frame: delivery
-        # scaling is not another creative crop, grade, or speed treatment.
-        # Provider H.264 crops may omit SAR entirely. Keep their coded frame
-        # and declare square pixels at encode; explicit non-square SAR refuses.
-        target_width = source_probe.height * 9 / 16
-        near_vertical = abs(source_probe.width - target_width) <= target_width * 0.03
-        if (source_probe.height < 768 or source_probe.sample_aspect_ratio not in {"1:1", "", "N/A", "0:1"}
-                or source_probe.rotation != 0 or not near_vertical):
-            raise PostRenderError("regeneration_required", "source must be upright square-pixel near-9:16 video at least 768 pixels high")
+        # Landscape masters produce 9:16 crops after even-pixel alignment.
+        # Preserve that selected frame: delivery scaling is not another
+        # creative crop, grade, or speed treatment. Provider H.264 crops may
+        # omit SAR entirely. Keep their coded frame and declare square pixels
+        # at encode; explicit non-square SAR refuses.
+        refusal = source_geometry_refusal(source_probe)
+        if refusal:
+            raise PostRenderError("regeneration_required", refusal)
         caption_request = None if lyric_source else _caption_request(request)
         band_height = _frame_band_height(request)
         if no_overlay:

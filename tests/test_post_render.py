@@ -217,7 +217,7 @@ def test_size_retry_changes_encoding_only_and_is_bounded_to_two_attempts(monkeyp
     (1920, 1080, "1:1", 0), (560, 1080, "1:1", 0),
     (606, 1080, "2:1", 0), (1080, 1920, "1:1", 90),
     (304, 540, "1:1", 0),
-    (430, 766, "1:1", 0),
+    (404, 718, "1:1", 0),
 ])
 def test_wrong_source_geometry_fails_without_compositing(monkeypatch, tmp_path, geometry):
     source = tmp_path / "source"
@@ -227,6 +227,41 @@ def test_wrong_source_geometry_fails_without_compositing(monkeypatch, tmp_path, 
         render.render_post(source, tmp_path / "render", request(render.sha256(source.read_bytes())), clock_ms=lambda: NOW)
     assert error.value.code == "regeneration_required"
     assert not (tmp_path / "render").exists()
+
+
+def _geometry(width, height, sar="1:1", rotation=0):
+    return render.MediaProbe(width, height, 1000, "h264", "yuv420p", sar, rotation)
+
+
+@pytest.mark.parametrize("width,height", [(404, 720), (432, 768), (606, 1080), (480, 832), (768, 1344)])
+def test_source_floor_admits_every_common_model_tier(monkeypatch, width, height):
+    """720p, 768p and 1080p masters all qualify through their 9:16 crops, whatever made them."""
+    monkeypatch.delenv(render.MIN_SOURCE_HEIGHT_ENV, raising=False)
+    assert render.min_source_height() == 720
+    assert render.source_geometry_refusal(_geometry(width, height)) is None
+
+
+def test_source_floor_is_an_operator_setting(monkeypatch):
+    monkeypatch.setenv(render.MIN_SOURCE_HEIGHT_ENV, "768")
+    assert render.min_source_height() == 768
+    refusal = render.source_geometry_refusal(_geometry(404, 720))
+    assert refusal and "at least 768 pixels high" in refusal
+    assert render.source_geometry_refusal(_geometry(432, 768)) is None
+    monkeypatch.setenv(render.MIN_SOURCE_HEIGHT_ENV, "540")
+    assert render.source_geometry_refusal(_geometry(304, 540)) is None
+
+
+@pytest.mark.parametrize("raw", ["", "   ", "tall", "-720", "720.5", "0", "359", "1921", "99999"])
+def test_source_floor_junk_falls_back_to_the_default(monkeypatch, raw):
+    monkeypatch.setenv(render.MIN_SOURCE_HEIGHT_ENV, raw)
+    assert render.min_source_height() == render.DEFAULT_MIN_SOURCE_HEIGHT
+    assert render.source_geometry_refusal(_geometry(404, 718)) is not None
+
+
+def test_source_floor_still_refuses_wrong_shape_at_any_height(monkeypatch):
+    monkeypatch.delenv(render.MIN_SOURCE_HEIGHT_ENV, raising=False)
+    for probe in (_geometry(1920, 1080), _geometry(560, 1080), _geometry(606, 1080, "2:1"), _geometry(1080, 1920, rotation=90)):
+        assert render.source_geometry_refusal(probe) is not None
 
 
 def test_failed_complete_decode_cannot_leave_a_ready_receipt(actual_source, monkeypatch, tmp_path):
