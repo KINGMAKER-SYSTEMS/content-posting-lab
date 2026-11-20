@@ -177,7 +177,7 @@ class QaPolicy:
     still: bool = False
     fade: bool = False
     sound_id: str | None = None
-    last_frames: int = 6
+    last_frames: int = 6     # only when the clip's rate is unknown; tail_window_s governs
     scene_threshold: float = 3.0
     # The lead's stutter.py prints last-0.2 s scene cuts at scdet threshold 8
     # and black runs at blackdetect d=0.1 pix_th=0.06. A 114-body agreement
