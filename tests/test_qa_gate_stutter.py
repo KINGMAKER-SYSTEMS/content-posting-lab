@@ -162,6 +162,21 @@ def test_a_heal_that_would_not_come_back_clean_keeps_the_original(tmp_path, monk
     assert not list(tmp_path.glob("*.heal.mp4"))
 
 
+def test_a_heal_that_times_out_keeps_the_bodys_own_verdict(tmp_path, monkeypatch):
+    # GLM review: a timeout must not fall through to run_gate's fail-open
+    # tool pass (which drops every finding); the heal just does not happen.
+    body = _padded(tmp_path / "pad25.mp4", 25)
+    before = _sha(body)
+
+    def slow_heal(source, destination, dups, rate):
+        raise subprocess.TimeoutExpired("ffmpeg", 1)
+
+    monkeypatch.setattr(qa_gate, "heal_stutter", slow_heal)
+    verdict = qa_gate.run_gate(body, VIDEO_6S, qa_gate.MODE_ENFORCE)
+    assert verdict.extra.get("tool_error") is None
+    assert [item.code for item in verdict.findings] == ["qa_stutter"] and _sha(body) == before
+
+
 def test_native_rate_keeps_the_duration_and_never_snaps_away_from_it():
     assert qa_gate.native_rate(180, 30, 30.0) == 25
     assert qa_gate.native_rate(180, 36, 30.0) == 24

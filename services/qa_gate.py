@@ -649,6 +649,10 @@ def heal_stutter(source: Path | str, destination: Path | str, dups: tuple[int, .
             timeout=SCAN_TIMEOUT_S, check=False)
     except FileNotFoundError as error:
         raise QaGateError("ffmpeg_unavailable") from error
+    except (subprocess.SubprocessError, OSError) as error:
+        # A heal that times out is a failed heal: the body keeps its own
+        # verdict (a block still blocks), never the fail-open tool pass.
+        raise RuntimeError(f"stutter_heal_failed: {type(error).__name__}") from error
     if completed.returncode != 0:
         raise RuntimeError("stutter_heal_failed: " + completed.stderr.strip()[-200:])
 
@@ -698,7 +702,7 @@ def _try_heal_stutter(verdict: QaVerdict, source: Path, destination: Path, polic
         after.extra["healedFps"] = f"{rate.numerator}/{rate.denominator}"
         log.info("qa_gate.stutter_healed path=%s rate=%s dups_dropped=%s", source.name, rate, len(dups))
         return after
-    except (RuntimeError, OSError) as error:
+    except Exception as error:  # noqa: BLE001 - a failed heal keeps the original verdict
         log.warning("qa_gate.stutter_heal_failed path=%s error=%s", source.name, error)
         return None
     finally:
