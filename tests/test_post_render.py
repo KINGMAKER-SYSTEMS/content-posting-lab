@@ -49,9 +49,9 @@ def request(source_sha="a" * 64, frame=_NO_FRAME, frame_fit=_NO_FRAME, caption_d
 
 @pytest.fixture(scope="module", params=[
     ("1080x1920", "1"), ("606x1080", "1"), ("606x1080", "0"), ("1080x1920", "0"),
-    ("704x1280", "1"), ("432x768", "1"), ("432x768", "0"),
+    ("704x1280", "1"), ("432x768", "1"), ("432x768", "0"), ("1080x1920", "1216/1215"),
 ], ids=["full", "provider-crop", "provider-crop-unspecified-sar", "full-unspecified-sar",
-        "wan-near-vertical", "hailuo-768p", "hailuo-768p-unspecified-sar"])
+        "wan-near-vertical", "hailuo-768p", "hailuo-768p-unspecified-sar", "pool-near-square-sar"])
 def actual_source(tmp_path_factory, request):
     if not shutil.which("ffmpeg") or not shutil.which("ffprobe"):
         pytest.skip("ffmpeg/ffprobe are required for actual render proof")
@@ -218,6 +218,7 @@ def test_size_retry_changes_encoding_only_and_is_bounded_to_two_attempts(monkeyp
     (606, 1080, "2:1", 0), (1080, 1920, "1:1", 90),
     (304, 540, "1:1", 0),
     (430, 766, "1:1", 0),
+    (1080, 1920, "4:3", 0), (1080, 1920, "1230:1215", 0),
 ])
 def test_wrong_source_geometry_fails_without_compositing(monkeypatch, tmp_path, geometry):
     source = tmp_path / "source"
@@ -1466,3 +1467,13 @@ def test_burned_slot_caption_refusal_is_unchanged(actual_source, tmp_path, monke
         render.render_post(actual_source, tmp_path / "burned-slot", request(
             render.sha256(actual_source.read_bytes())), clock_ms=lambda: NOW)
     assert not (tmp_path / "burned-slot" / render.BURNED_REFUSED_MARKER).exists()
+
+
+@pytest.mark.parametrize("value,square", [
+    ("1:1", True), ("", True), ("N/A", True), ("0:1", True),
+    ("1216:1215", True), ("1214:1215", True),
+    ("1230:1215", False), ("4:3", False), ("2:1", False), ("0:0", False),
+    ("1:0", False), ("-1:1", False), ("abc", False), ("1216:1215:1", False),
+])
+def test_square_pixel_sar_tolerates_only_rounding_error(value, square):
+    assert render.square_pixel_sar(value) is square

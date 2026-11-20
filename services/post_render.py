@@ -399,6 +399,27 @@ def _file_hash(path: Path, limit: int) -> tuple[str, int]:
     return digest.hexdigest(), total
 
 
+# A finished 1080x1920 clip can carry a rounding-error pixel shape such as
+# 1216:1215 (0.08% off square). That is square to the eye, and delivery
+# encoding already rewrites it to exactly 1:1 (setsar=1 in _video_graph), so
+# it must not be refused as "needs regenerating". A clearly non-square shape
+# still refuses.
+SQUARE_SAR_TOLERANCE = 0.005
+
+
+def square_pixel_sar(value: str) -> bool:
+    """Return whether an ffprobe sample_aspect_ratio is square or unspecified."""
+    if value in {"1:1", "", "N/A", "0:1"}:
+        return True
+    num, sep, den = value.partition(":")
+    if sep != ":" or not num.isdigit() or not den.isdigit():
+        return False
+    num_i, den_i = int(num), int(den)
+    if num_i <= 0 or den_i <= 0:
+        return False
+    return abs(num_i / den_i - 1) <= SQUARE_SAR_TOLERANCE
+
+
 def _video_graph(source_probe: MediaProbe, frame_height: int | None = None, *, in_app: bool = False,
                  normalize_pair_timing: bool = False) -> str:
     chain = []
@@ -786,7 +807,7 @@ def _render_post_single(source_path: Path, output_directory: Path, request: Post
         # and declare square pixels at encode; explicit non-square SAR refuses.
         target_width = source_probe.height * 9 / 16
         near_vertical = abs(source_probe.width - target_width) <= target_width * 0.03
-        if (source_probe.height < 768 or source_probe.sample_aspect_ratio not in {"1:1", "", "N/A", "0:1"}
+        if (source_probe.height < 768 or not square_pixel_sar(source_probe.sample_aspect_ratio)
                 or source_probe.rotation != 0 or not near_vertical):
             raise PostRenderError("regeneration_required", "source must be upright square-pixel near-9:16 video at least 768 pixels high")
         caption_request = None if lyric_source else _caption_request(request)
