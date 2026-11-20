@@ -123,7 +123,9 @@ def test_a_fast_montage_may_end_on_a_short_card(tmp_path):
     # Golden/Glossy/Fly: 0.2 s cards, a 3-frame last card. The look, not a jump.
     fast = clips.montage(tmp_path / "fast.mp4", cards=29, card_s=0.2, last_card_s=0.1)
     verdict = qa_gate.validate_clip(fast, qa_gate.QaPolicy(still=True))
-    assert verdict.extra["tail_cuts"] and verdict.extra["fast_montage"]
+    # The last card may or may not score as a lead-strength cut (>= 8); a
+    # fast montage passes either way.
+    assert verdict.extra["fast_montage"]
     assert verdict.findings == () and verdict.score == 100
 
 

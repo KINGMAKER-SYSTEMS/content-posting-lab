@@ -34,6 +34,15 @@ manifest so a planner can rank picks; never stops a post):
                            recipe is a still/photo format
   qa_sound_window_miss     the body ends outside its sound's clean window
                            (recipes/sound-clean-windows.v1.json)
+  qa_stutter               the lead's stutter test (stutter.py v4, 11-20):
+                           near-duplicate frames (YDIF < 0.3 against the
+                           previous frame) that repeat on a fixed pattern
+                           (PERIODIC: >= 8 repeats and >= 60 % of the gaps
+                           between them are 4-6 frames, or one fixed gap
+                           >= 3) or spread unevenly over the whole clip in
+                           a moving shot (IRREGULAR). A frame shown exactly
+                           twice (DOUBLED-OK), a still held on purpose and a
+                           low-motion shot pass. A look issue: never blocks.
   qa_sideways_picture      the picture inside an upright 9:16 frame looks
                            turned a quarter turn (Joy eba568ef, L57098): three
                            sampled frames all carry a left-right brightness
@@ -43,8 +52,8 @@ manifest so a planner can rank picks; never stops a post):
                            same); only the params rung above may block.
 
 Quality score: 100 minus 40 (tail cut), 25 per black run (cap 50), 15 per
-freeze (cap 30), 20 (sound window miss), 40 (sideways picture); floor 0. A
-clean body scores 100.
+freeze (cap 30), 20 (sound window miss), 40 (sideways picture), 40 (stutter);
+floor 0. A clean body scores 100.
 
 Fail open (ruling L57135): a missing ffmpeg/ffprobe, a tool timeout, an OS
 error spawning it, or any unexpected exception inside the gate is logged and
@@ -67,6 +76,7 @@ Runtime: one ffprobe (~20 ms) plus one decode pass with the three detectors
 """
 from __future__ import annotations
 
+import dataclasses
 import json
 import logging
 import math
@@ -109,9 +119,10 @@ BLOCKING_CODES = frozenset({
 })
 WARNING_CODES = frozenset({
     "qa_tail_cut", "qa_black_run", "qa_freeze", "qa_sound_window_miss", "qa_sideways_picture",
+    "qa_stutter",
 })
 PENALTIES = {"qa_tail_cut": 40, "qa_black_run": 25, "qa_freeze": 15, "qa_sound_window_miss": 20,
-             "qa_sideways_picture": 40}
+             "qa_sideways_picture": 40, "qa_stutter": 40}
 PENALTY_CAPS = {"qa_black_run": 50, "qa_freeze": 30}
 
 PROBE_TIMEOUT_S = 60
@@ -166,11 +177,18 @@ class QaPolicy:
     still: bool = False
     fade: bool = False
     sound_id: str | None = None
-    last_frames: int = 6
+    last_frames: int = 6     # only when the clip's rate is unknown; tail_window_s governs
     scene_threshold: float = 3.0
+    # The lead's stutter.py prints last-0.2 s scene cuts at scdet threshold 8
+    # and black runs at blackdetect d=0.1 pix_th=0.06. A 114-body agreement
+    # run (control-plane-pad#237) found threshold 3 flags 16 tails the lead
+    # passes and pix_th 0.1 flags 2 dim scenes, so the warnings use the
+    # lead's numbers; threshold 3 still counts montage cards.
+    tail_cut_score: float = 8.0
+    tail_window_s: float = 0.2
     black_min_s: float = 0.1
-    black_d: float = 0.05
-    black_pix_th: float = 0.1
+    black_d: float = 0.1
+    black_pix_th: float = 0.06
     freeze_min_s: float = 0.5
     freeze_noise_db: float = -60.0
     montage_min_cuts: int = 4
@@ -198,6 +216,8 @@ class ClipScan:
     cuts: tuple[tuple[int, float, float], ...]      # (frame, time_s, score)
     black_runs: tuple[tuple[float, float], ...]     # (start_s, end_s)
     freeze_runs: tuple[tuple[float, float], ...]    # (start_s, end_s)
+    # signalstats YDIF per decoded frame (frame 0 first; its value is 0).
+    ydif: tuple[float, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -216,6 +236,9 @@ class QaVerdict:
     probe: ClipProbe | None
     scan: ClipScan | None
     repaired_sar: bool = False
+    # Look faults healed under enforce (e.g. ("stutter",)); the verdict is
+    # about the healed file at ``path``.
+    healed: tuple[str, ...] = ()
     elapsed_s: float = 0.0
     sound_window: dict[str, Any] | None = None
     extra: dict[str, Any] = field(default_factory=dict)
@@ -266,6 +289,7 @@ class QaVerdict:
             "warnings": [item.code for item in self.warnings],
             "details": [f"{item.code}: {item.detail}" for item in self.findings],
             "repairedSar": self.repaired_sar,
+            "healed": list(self.healed),
             "frames": scan.frames if scan else (probe.nb_frames if probe else None),
             "durationS": round(probe.duration_s, 3) if probe else None,
             "tailCuts": [list(cut) for cut in self.extra.get("tail_cuts", ())],
@@ -273,6 +297,9 @@ class QaVerdict:
             "freezeRuns": [list(run) for run in scan.freeze_runs] if scan else [],
             "soundWindow": self.sound_window,
             "orientation": self.extra.get("orientation"),
+            "stutter": self.extra.get("stutter"),
+            "stutterBefore": self.extra.get("stutterBefore"),
+            "healedFps": self.extra.get("healedFps"),
             "toolError": self.extra.get("tool_error"),
             "elapsedMs": int(self.elapsed_s * 1000),
         }
@@ -449,6 +476,7 @@ def scan_clip(path: Path | str, policy: QaPolicy) -> ClipScan:
         f"scdet=threshold={policy.scene_threshold:g},"
         f"blackdetect=d={policy.black_d:g}:pix_th={policy.black_pix_th:g},"
         f"freezedetect=n={policy.freeze_noise_db:g}dB:d={policy.freeze_min_s:g},"
+        "signalstats,"
         "metadata=mode=print:file=-"
     )
     try:
@@ -469,6 +497,7 @@ def scan_clip(path: Path | str, policy: QaPolicy) -> ClipScan:
     cuts: list[tuple[int, float, float]] = []
     freeze_starts: list[float] = []
     freeze_runs: list[tuple[float, float]] = []
+    ydif: list[float] = []
     score = 0.0
     for line in completed.stdout.splitlines():
         match = _FRAME_LINE.match(line)
@@ -485,6 +514,8 @@ def scan_clip(path: Path | str, policy: QaPolicy) -> ClipScan:
             cuts.append((frame, pts, score))
         elif key == "lavfi.freezedetect.freeze_start":
             freeze_starts.append(float(value))
+        elif key == "lavfi.signalstats.YDIF":
+            ydif.append(float(value))
         elif key == "lavfi.freezedetect.freeze_end" and freeze_starts:
             freeze_runs.append((freeze_starts.pop(0), float(value)))
     frames = frame + 1
@@ -494,7 +525,54 @@ def scan_clip(path: Path | str, policy: QaPolicy) -> ClipScan:
         freeze_runs.append((start, end_s))
     black_runs = [(float(start), float(end)) for start, end in _BLACK_LINE.findall(completed.stderr)]
     return ClipScan(frames=frames, last_pts_s=pts, cuts=tuple(cuts),
-                    black_runs=tuple(black_runs), freeze_runs=tuple(sorted(freeze_runs)))
+                    black_runs=tuple(black_runs), freeze_runs=tuple(sorted(freeze_runs)),
+                    ydif=tuple(ydif))
+
+
+# ── the lead's stutter test ──────────────────────────────────────────────────
+
+STUTTER_DUP_YDIF = 0.3          # a frame this close to the one before is a repeat
+STUTTER_BAD = frozenset({"PERIODIC", "IRREGULAR"})
+
+
+def stutter_verdict(ydif: list[float] | tuple[float, ...], fps: float) -> dict[str, Any]:
+    """The lead's stutter.py v4 (seeno-claude/scouts-1120/stutter.py, md5
+    261855824b7c796215a5801f5fb7dfea), same thresholds, same order of rules.
+
+    ``ydif`` is signalstats YDIF for every decoded frame, frame 0 first (the
+    script drops frame 0 too: it has no previous frame). ``fps`` is the
+    stream's r_frame_rate. Returns the verdict plus the numbers the lead
+    prints, and ``dups``: the repeated frames' indices in decode order."""
+    values = list(ydif)[1:]
+    idx = [i for i, y in enumerate(values) if y < STUTTER_DUP_YDIF]
+    gaps = [b - a for a, b in zip(idx, idx[1:])]
+    share = (sum(1 for g in gaps if g in (4, 5, 6)) / len(gaps)) if gaps else 0.0
+    n = max(len(values), 1)
+    win = max(int(round(fps if fps > 0 else 30.0)), 1)
+    windows = max((n + win - 1) // win, 1)
+    spread = len({i // win for i in idx}) / windows
+    mode_gap = max(set(gaps), key=gaps.count) if gaps else 0
+    mode_share = (gaps.count(mode_gap) / len(gaps)) if gaps else 0.0
+    rate = len(idx) / n
+    moving = sorted(y for y in values if y >= STUTTER_DUP_YDIF)
+    nondup_med = moving[len(moving) // 2] if moving else 0.0
+    if len(idx) >= 8 and share >= 0.6:
+        verdict = "PERIODIC"
+    elif rate > 0.05 and spread > 0.7 and mode_share >= 0.9 and gaps and mode_gap == 2:
+        verdict = "DOUBLED-OK"      # every frame shown exactly twice: a smooth doubled rate
+    elif rate > 0.05 and spread > 0.7 and mode_share >= 0.9 and gaps and mode_gap >= 3:
+        verdict = "PERIODIC"        # one frame repeated every k >= 3 frames (20p in 30): judder
+    elif rate > 0.05 and spread > 0.7 and gaps and sum(1 for g in gaps if g == 1) / len(gaps) >= 0.55:
+        verdict = "ok-heldstills"   # repeats in long runs: a still held on purpose
+    elif rate > 0.05 and spread > 0.7 and nondup_med >= 1.2:
+        verdict = "IRREGULAR"
+    elif rate > 0.05 and spread > 0.7:
+        verdict = "ok-lowmotion"    # nothing moves, so frames repeat
+    else:
+        verdict = "ok"
+    return {"verdict": verdict, "nearDups": len(idx), "frames": len(values), "share": round(share, 3),
+            "spread": round(spread, 3), "modeGap": mode_gap, "modeShare": round(mode_share, 3),
+            "dups": [i + 1 for i in idx]}
 
 
 class _DecodeFailed(Exception):
@@ -519,6 +597,116 @@ def fix_sample_aspect_ratio(source: Path | str, destination: Path | str) -> None
         raise QaGateError("ffmpeg_unavailable") from error
     if completed.returncode != 0:
         raise RuntimeError("sar_fix_failed: " + completed.stderr.strip()[-200:])
+
+
+# ── the stutter heal ─────────────────────────────────────────────────────────
+
+# Rates a padded clip usually came from; a re-timed rate this close snaps to it.
+_NATIVE_RATES = (Fraction(12), Fraction(15), Fraction(20), Fraction(24000, 1001), Fraction(24),
+                 Fraction(25), Fraction(30000, 1001))
+HEAL_MIN_FPS = 12.0
+
+
+HEAL_MAX_DUPS_AFTER = 3        # the lead's #239 rule: <= 3 near-dups left
+
+
+def native_rate(frames: int, dups: int, fps: float) -> Fraction | None:
+    """The rate that plays the kept frames (every frame minus the repeats)
+    over the same duration. A standard rate (24, 25, ...) is used only when
+    it keeps the duration within one source frame; otherwise the exact rate
+    (to 1/1000 fps). Unlike a fixed-cycle decimate this never drops a real
+    picture, so a montage that mixes padded and native-30 clips loses no
+    motion (heal-stutter-1120 REPORT: fixed 24/25 decimate skipped pictures
+    in 13 of 24 mixed bodies). None when nothing sensible is left."""
+    if frames <= 0 or dups <= 0 or fps <= 0 or dups >= frames:
+        return None
+    source_fps = Fraction(fps).limit_denominator(1001)
+    kept = frames - dups
+    duration = Fraction(frames) / source_fps
+    raw = Fraction(kept) / duration
+    closest = min(_NATIVE_RATES, key=lambda rate: abs(Fraction(kept) / rate - duration))
+    if abs(Fraction(kept) / closest - duration) <= 1 / source_fps:
+        return closest
+    rate = Fraction(round(float(raw) * 1000), 1000)
+    return rate if HEAL_MIN_FPS <= float(rate) < fps else None
+
+
+def heal_stutter(source: Path | str, destination: Path | str, dups: tuple[int, ...] | list[int],
+                 rate: Fraction) -> None:
+    """Drop the repeated frames and play the rest evenly at ``rate``: the same
+    frames the camera made, the same duration, the audio copied untouched
+    (the lead's #239 heal: back to the native rate, same frames)."""
+    keep_out = "+".join(f"eq(n,{index})" for index in sorted(set(dups)))
+    graph = f"select='not({keep_out})',setpts=N/({rate.numerator}/{rate.denominator})/TB,setsar=1"
+    try:
+        completed = subprocess.run(
+            ["ffmpeg", "-nostdin", "-hide_banner", "-y", "-v", "error", "-protocol_whitelist", "file,pipe",
+             "-i", str(source), "-map", "0:v:0", "-map", "0:a?", "-vf", graph,
+             "-r", f"{rate.numerator}/{rate.denominator}",
+             "-c:v", "libx264", "-preset", "medium", "-crf", "17", "-pix_fmt", "yuv420p",
+             "-c:a", "copy", "-movflags", "+faststart", str(destination)],
+            stdin=subprocess.DEVNULL, capture_output=True, text=True,
+            timeout=SCAN_TIMEOUT_S, check=False)
+    except FileNotFoundError as error:
+        raise QaGateError("ffmpeg_unavailable") from error
+    except (subprocess.SubprocessError, OSError) as error:
+        # A heal that times out is a failed heal: the body keeps its own
+        # verdict (a block still blocks), never the fail-open tool pass.
+        raise RuntimeError(f"stutter_heal_failed: {type(error).__name__}") from error
+    if completed.returncode != 0:
+        raise RuntimeError("stutter_heal_failed: " + completed.stderr.strip()[-200:])
+
+
+def _healed_policy(policy: QaPolicy, rate: Fraction) -> QaPolicy:
+    """The same contract at the native rate: the same duration in frames of
+    the new rate (a 6 s body is 150 frames at 25 fps, not 180)."""
+    expected = None
+    if policy.expected_frames is not None and policy.fps > 0:
+        expected = frames_for(policy.expected_frames / policy.fps, float(rate))
+    return dataclasses.replace(policy, fps=float(rate), expected_frames=expected)
+
+
+def _try_heal_stutter(verdict: QaVerdict, source: Path, destination: Path, policy: QaPolicy) -> QaVerdict | None:
+    """Heal a PERIODIC/IRREGULAR body and keep the heal only when the healed
+    file passes the whole gate again with no stutter and no block. Anything
+    else leaves the original body as it was: a look issue never blocks."""
+    dups = verdict.extra.get("stutter_dups") or ()
+    probe = verdict.probe
+    scan = verdict.scan
+    if not dups or probe is None or scan is None:
+        return None
+    rate = native_rate(scan.frames, len(dups), probe.fps)
+    if rate is None:
+        log.info("qa_gate.stutter_heal_skipped path=%s reason=no_native_rate frames=%s dups=%s",
+                 source.name, scan.frames, len(dups))
+        return None
+    healed = destination.with_name(destination.stem + ".heal" + destination.suffix)
+    try:
+        healed.parent.mkdir(parents=True, exist_ok=True)
+        heal_stutter(source, healed, dups, rate)
+        healed_policy = _healed_policy(policy, rate)
+        after = validate_clip(healed, healed_policy)
+        stutter = (after.extra.get("stutter") or {}).get("verdict")
+        dups_after = (after.extra.get("stutter") or {}).get("nearDups")
+        drift_s = abs(after.probe.duration_s - probe.duration_s) if after.probe else math.inf
+        if (not after.ok or stutter in STUTTER_BAD or stutter is None
+                or dups_after is None or dups_after > HEAL_MAX_DUPS_AFTER
+                or drift_s > 1.0 / probe.fps + 1e-3):
+            log.warning("qa_gate.stutter_heal_rejected path=%s rate=%s ok=%s stutter=%s dups_after=%s"
+                        " drift_s=%.3f blocks=%s", source.name, rate, after.ok, stutter, dups_after,
+                        drift_s, [item.code for item in after.blocks])
+            return None
+        os.replace(healed, destination)
+        after.healed = ("stutter",)
+        after.extra["stutterBefore"] = verdict.extra.get("stutter")
+        after.extra["healedFps"] = f"{rate.numerator}/{rate.denominator}"
+        log.info("qa_gate.stutter_healed path=%s rate=%s dups_dropped=%s", source.name, rate, len(dups))
+        return after
+    except Exception as error:  # noqa: BLE001 - a failed heal keeps the original verdict
+        log.warning("qa_gate.stutter_heal_failed path=%s error=%s", source.name, error)
+        return None
+    finally:
+        healed.unlink(missing_ok=True)
 
 
 # ── sound clean windows ──────────────────────────────────────────────────────
@@ -699,7 +887,14 @@ def _scan_findings(scan: ClipScan, probe: ClipProbe, policy: QaPolicy, verdict_e
     fault = _duration_finding(scan.frames, policy)
     if fault:
         findings.append(fault)
-    tail_cuts = [cut for cut in scan.cuts if cut[0] >= scan.frames - policy.last_frames and cut[0] > 0]
+    tail_frames = policy.last_frames
+    if probe.fps > 0:
+        tail_frames = max(1, int(round(policy.tail_window_s * probe.fps)))
+    tail_cuts = [cut for cut in scan.cuts
+                 # The window's first frame counts too, unlike the lead's
+                 # -sseof read (it cannot score that frame): a 6-frame last
+                 # card is the Tis 2825b619 jump the lead ruled a fault.
+                 if cut[0] >= scan.frames - tail_frames and cut[0] > 0 and cut[2] >= policy.tail_cut_score]
     verdict_extra["tail_cuts"] = tuple(tail_cuts)
     verdict_extra["fast_montage"] = is_fast_montage(scan, policy)
     if tail_cuts and not verdict_extra["fast_montage"]:
@@ -710,6 +905,14 @@ def _scan_findings(scan: ClipScan, probe: ClipProbe, policy: QaPolicy, verdict_e
         for start, end in scan.black_runs:
             if end - start > policy.black_min_s + 1e-6:
                 findings.append(QaFinding("qa_black_run", f"near-black {start:.3f}-{end:.3f} s ({end - start:.2f} s)"))
+    if scan.ydif:
+        stutter = stutter_verdict(scan.ydif, probe.fps)
+        verdict_extra["stutter"] = {key: value for key, value in stutter.items() if key != "dups"}
+        verdict_extra["stutter_dups"] = tuple(stutter["dups"])
+        if stutter["verdict"] in STUTTER_BAD:
+            findings.append(QaFinding("qa_stutter",
+                                      f"{stutter['verdict']}: {stutter['nearDups']}/{stutter['frames']} repeated "
+                                      f"frames, periodic share {stutter['share']:.2f}, spread {stutter['spread']:.2f}"))
     if not policy.still:
         for start, end in scan.freeze_runs:
             if end - start > policy.freeze_min_s + 1e-3:
@@ -800,6 +1003,12 @@ def validate_and_repair(path: Path | str, policy: QaPolicy, *, repair: bool = Tr
                 finally:
                     fixed.unlink(missing_ok=True)
     verdict = validate_clip(target, policy)
+    if repair and verdict.ok and any(item.code == "qa_stutter" for item in verdict.findings):
+        destination = Path(repaired_destination) if repaired_destination else path
+        healed = _try_heal_stutter(verdict, target, destination, policy)
+        if healed is not None:
+            verdict = healed
+            target = destination
     verdict.repaired_sar = repaired
     verdict.path = target
     verdict.elapsed_s = time.monotonic() - started
