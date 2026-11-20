@@ -249,7 +249,13 @@ async def lifespan(app: FastAPI):
         stop_sounds_bot,
     )
 
-    tg_token = get_tg_token()
+    try:
+        tg_token = get_tg_token()
+    except JsonStoreUnavailable as e:
+        # Malformed or unreadable Telegram config: keep its bytes and serve
+        # everything else; Telegram routes answer 503 until it is repaired.
+        log.error("telegram bot: configuration unavailable (%s); bot not started", e)
+        tg_token = None
     if tg_token:
         try:
             await start_tg_bot(tg_token)
