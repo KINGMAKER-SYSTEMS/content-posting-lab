@@ -383,6 +383,29 @@ def test_a_variable_rate_heal_keeps_its_own_frame_times_through_the_final(tmp_pa
     assert max(abs(a - b) for a, b in zip(before, after)) < 0.001, "frame times moved"
 
 
+def test_variable_rate_twins_keep_the_same_frame_times_with_a_burned_caption(tmp_path):
+    # The clean and captioned twins of a paired post must match frame for
+    # frame. With no fps step for a variable-rate body, the overlay twin must
+    # still keep exactly the body's frame times.
+    from PIL import Image, ImageDraw
+
+    source = _variable_rate_source(tmp_path)
+    overlay = tmp_path / "overlay.png"
+    image = Image.new("RGBA", (1080, 1920), (0, 0, 0, 0))
+    ImageDraw.Draw(image).rectangle((200, 900, 880, 1000), fill=(255, 255, 255, 255))
+    image.save(overlay)
+    tools = post_render.RenderTools()
+    probe = post_render._probe(source, tools)
+    post_render._encode_final(source, None, tmp_path / "clean.mp4", probe, tools, in_app=True,
+                              normalize_pair_timing=True)
+    post_render._encode_final(source, overlay, tmp_path / "burned.mp4", probe, tools,
+                              normalize_pair_timing=True)
+    clean, burned = _packet_times(tmp_path / "clean.mp4"), _packet_times(tmp_path / "burned.mp4")
+    assert clean == burned, f"twins differ: {len(clean)} vs {len(burned)} frames"
+    assert len(clean) == len(_packet_times(source))
+    assert not any(_repeat_flags(tmp_path / "burned.mp4"))
+
+
 def _repaired_final(source: Path, out: Path) -> dict:
     from services.source_duration_repair import encode_shorter_final
 
