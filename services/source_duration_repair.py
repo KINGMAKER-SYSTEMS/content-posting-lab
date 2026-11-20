@@ -63,6 +63,8 @@ SOURCE_DURATION_REPAIR_SCHEMA = "rt.source-duration-repair.v1"
 # (25p, a 0.7x cut at 21) keeps its own rate. Lifting this needs the Worker to
 # count frames at the body's own rate.
 SOURCE_DURATION_REPAIR_DELIVERY_FPS = 30
+# Samples in one AAC frame: the delivery encode's sound ends on a whole one.
+AAC_FRAME_SAMPLES = 1024
 RECEIPT_SCHEMA = "source-duration-repair-receipt.v1"
 
 # Mirrors SOURCE_DURATION_REPAIR_KEYS on the Worker side, lexicographic order.
@@ -441,6 +443,10 @@ def trim_source(source: Path, out: Path, start_ms: int, end_ms: int, *,
     if sr:
         a_start = (start_ms * sr) // 1000
         a_end = (end_ms * sr) // 1000
+        # End on a whole AAC frame (1024 samples): ffmpeg 5.1 (production)
+        # counts the encoder's padding of a part-filled last frame as sound,
+        # which would run past the cut. At most 21 ms early at 48 kHz.
+        a_end = a_start + (a_end - a_start) // AAC_FRAME_SAMPLES * AAC_FRAME_SAMPLES
         if a_end <= a_start:
             raise RepairError("trim_quantization", "commanded trim is shorter than one source audio sample")
         audio_filter = f"atrim=start_sample={a_start}:end_sample={a_end},asetpts=N/SR/TB"
@@ -470,8 +476,14 @@ def encode_shorter_final(source: Path, out: Path, *,
                          frame_height: Optional[int] = None,
                          normalize_pair_timing: bool = False,
                          ffmpeg_bin: Optional[str] = None,
-                         ffprobe_bin: Optional[str] = None) -> Dict:
+                         ffprobe_bin: Optional[str] = None,
+                         end_seconds: Optional[Fraction] = None) -> Dict:
     """Delivery-encode the trimmed source through the REAL `_encode_final`.
+
+    ``end_seconds`` (the commanded cut's length) ends the final there, sound
+    included: ffmpeg 5.1 (production) decodes the trimmed clip's AAC with its
+    encoder padding (~5 ms past the cut), which the delivery encode would
+    otherwise carry past the commanded end.
 
     The real path owns the near-9:16 scale/crop, the `setsar=1` step, the
     `normalize_pair_timing` fps step, the letterbox, the caption overlay and
@@ -486,10 +498,19 @@ def encode_shorter_final(source: Path, out: Path, *,
         overlay_path = Path(overlay_path)
         if not 0 < overlay_path.stat().st_size <= MAX_OVERLAY_BYTES:
             raise RepairError("overlay_invalid", "caption overlay is empty or exceeds the byte limit")
+    if end_seconds is not None:
+        sample_rate = probe(source, ffprobe_bin).get("audio_sample_rate")
+        if sample_rate:
+            # ffmpeg 5.1 decodes an AAC stream with its end padding (the rest
+            # of the last 1024-sample frame), so sound that stops mid-frame
+            # decodes past the cut. Ending on a whole AAC frame at or before
+            # the cut (at most 21 ms early at 48 kHz) leaves no padding.
+            frames = math.floor(end_seconds * sample_rate / AAC_FRAME_SAMPLES)
+            end_seconds = Fraction(frames * AAC_FRAME_SAMPLES, sample_rate)
     try:
         _encode_final(source, overlay_path, out, source_probe, tools, frame_height,
                       in_app=in_app, normalize_pair_timing=normalize_pair_timing,
-                      max_frame_rate=Fraction(SOURCE_DURATION_REPAIR_DELIVERY_FPS))
+                      max_frame_rate=Fraction(SOURCE_DURATION_REPAIR_DELIVERY_FPS), end_seconds=end_seconds)
     except PostRenderError as error:
         raise RepairError(error.code, str(error)) from error
     if out.stat().st_size > MAX_FINAL_BYTES:
@@ -555,7 +576,9 @@ def render_shorter(source_path: Path, output_directory: Path, command: Dict, *,
         final_facts = encode_shorter_final(trimmed_path, final_path,
                                            overlay_path=overlay_path, frame_height=frame_height,
                                            normalize_pair_timing=normalize_pair_timing,
-                                           ffmpeg_bin=ffmpeg_bin, ffprobe_bin=ffprobe_bin)
+                                           ffmpeg_bin=ffmpeg_bin, ffprobe_bin=ffprobe_bin,
+                                           end_seconds=Fraction(command["source_trim_end_ms"]
+                                                                - command["source_trim_start_ms"], 1000))
         final_sha, final_length = file_hash(final_path, MAX_FINAL_BYTES)
         # The clean-end bound must hold on the DELIVERED bytes: the container,
         # the audio stream and the video stream must all end at or before the

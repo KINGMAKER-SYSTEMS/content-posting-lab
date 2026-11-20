@@ -522,7 +522,8 @@ def _video_graph(source_probe: MediaProbe, frame_height: int | None = None, *, i
 
 def _encode_final(source: Path, overlay: Path | None, final: Path, source_probe: MediaProbe,
                   tools: RenderTools, frame_height: int | None = None, *, in_app: bool = False,
-                  normalize_pair_timing: bool = False, max_frame_rate: Fraction | None = None) -> MediaProbe:
+                  normalize_pair_timing: bool = False, max_frame_rate: Fraction | None = None,
+                  end_seconds: Fraction | None = None) -> MediaProbe:
     timing = _final_frame_rate(source, tools, paired=normalize_pair_timing, max_rate=max_frame_rate)
     frame_rate = timing.rate
     graph = _video_graph(source_probe, frame_height, in_app=in_app, normalize_pair_timing=normalize_pair_timing,
@@ -543,7 +544,11 @@ def _encode_final(source: Path, overlay: Path | None, final: Path, source_probe:
         # frames (rounded down to the microsecond) keeps them; "-frames:v"
         # would make ffmpeg 5.1 (production) stop the file before its sound.
         frames = max(1, math.floor(Fraction(source_probe.duration_ms, 1000) * frame_rate))
-        base += ["-t", f"{math.floor(Fraction(frames) / frame_rate * 1_000_000) / 1_000_000:.6f}"]
+        capped = Fraction(frames) / frame_rate
+        end_seconds = capped if end_seconds is None else min(end_seconds, capped)
+    if end_seconds is not None:
+        # Rounded down to the microsecond: nothing (picture or sound) runs past it.
+        base += ["-t", f"{math.floor(end_seconds * 1_000_000) / 1_000_000:.6f}"]
     for attempt in range(2):
         encode = delivery_encode_args("tiktok_delivery_v1")
         if timing.keep_times:
