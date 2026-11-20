@@ -36,6 +36,20 @@ MAX_PROMPT_HISTORY = 200
 # Limit concurrent video generation tasks to prevent resource exhaustion
 _gen_semaphore = asyncio.Semaphore(10)
 
+
+def _local_gen_limit() -> int:
+    try:
+        return max(1, int(os.getenv("LOCAL_GEN_MAX_PENDING", "60")))
+    except ValueError:
+        return 60
+
+
+# Local engines render one at a time on one machine, so most of their tasks sit
+# in that machine's queue for minutes or hours. Holding the shared slots above
+# while they wait would block every paid provider and hide the backlog from the
+# local scheduler's batching, so they get their own, larger bound.
+_local_gen_semaphore = asyncio.Semaphore(_local_gen_limit())
+
 # Cap concurrent color-correct ffmpeg encodes so a big bulk request can't
 # exhaust the host's CPU/IO. 4 is conservative and matches the burn router's
 # tolerance for parallel ffmpeg work.
@@ -682,7 +696,7 @@ async def generate_video(
         # provider errors), this ensures the corresponding video entry is
         # flipped to "error" instead of silently sticking on "queued" forever.
         try:
-            async with _gen_semaphore:
+            async with (_local_gen_semaphore if is_local else _gen_semaphore):
                 # Local engines send no paid request: nothing to debit.
                 if not is_local and not await asyncio.to_thread(
                     generation_budget.debit_generation_spend_at,
