@@ -27,7 +27,8 @@ from services.pool_supplied_pages import (
 
 # The exact committed pool-fed set: 12 original pages + 3 replacement Warner
 # pages + Goldford sunsetsoul46 + Christmas tis-the-szn7 + Culture Core
-# + Burnt Mill (bridge until about Nov 24; Worker list carries it too).
+# + Burnt Mill + Johnny's four pages (bridges until about Nov 24; Worker list
+# carries them too).
 # Keep this literal set in lockstep with recipes/pool-supplied-pages.v1.json.
 POOL_FED_PAGE_IDS = frozenset({
     "acct:chemically-lit",
@@ -49,6 +50,10 @@ POOL_FED_PAGE_IDS = frozenset({
     "acct:sunsetsoul46",
     "acct:tis-the-szn7",
     "acct:burnt-mill-rd",
+    "acct:lovenightdrives",
+    "acct:lovenightwalks",
+    "acct:theonlywayisaerial",
+    "acct:thingsleftunsaid52",
 })
 
 
