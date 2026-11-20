@@ -383,6 +383,78 @@ def _vision(samples, deadline):
             primary_error = str(error)
             if primary_error not in {"vision_timeout", "vision_rate_limited", "vision_service_unavailable", "vision_provider_1305", "vision_response_invalid", "vision_response_oversized"}:
                 raise
+    studio, hint = _studio_vision(samples, deadline)
+    if studio is not None:
+        # Only a config whose recorded agreement run passed may decide.
+        studio["model"].update(fallback=True, fallbackReason=primary_error, studioHint=hint)
+        return studio
+    try:
+        result = _hosted_vision_fallback(samples, deadline, primary_error)
+    except VisionUnavailable as error:
+        if hint:
+            error.model["studioHint"] = hint
+        raise
+    if hint:
+        result["model"]["studioHint"] = hint
+    return result
+
+
+def _studio_resident(url, model, deadline):
+    """Is ``model`` already loaded on the Studio's Ollama? Never loads one."""
+    parsed = urlparse(url)
+    try:
+        with httpx.Client(timeout=min(5, max(.1, deadline-time.monotonic())), follow_redirects=False) as client:
+            response = client.get(f"{parsed.scheme}://{parsed.netloc}/api/ps")
+            response.raise_for_status()
+            return model in {m.get("name") for m in response.json().get("models") or [] if isinstance(m, dict)}
+    except (httpx.HTTPError, ValueError, AttributeError):
+        return False
+
+
+def _studio_vision(samples, deadline):
+    """Ask the Studio's local vision models (providers/backend_order.json, vision.studio).
+
+    Returns ``(decisive_result_or_None, hint_or_None)``. The fast model answers
+    first; the hard model is asked only when the fast one could not decide and,
+    by default, only when it is already loaded. Local output is a hint recorded
+    beside the hosted verdict unless the config carries a passing agreement run.
+    """
+    from providers import backend_order
+
+    cfg = backend_order.studio_vision()
+    if cfg is None:
+        return None, None
+    url = cfg["url"]
+    limit = min(deadline, time.monotonic() + cfg["timeout_s"])
+    hint = {"provider": "studio", "urlHost": urlparse(url).hostname, "authority": cfg["authority"]}
+    decided = None
+    for tier in ("fast", "hard"):
+        if decided is not None:
+            break
+        model = cfg[f"{tier}_model"]
+        if cfg[f"{tier}_requires_resident"] and not _studio_resident(url, model, limit):
+            hint[tier] = {"model": model, "skipped": "not_loaded"}
+            continue
+        try:
+            result = _vision_request(samples, limit, url=url, model=model, provider="studio")
+        except httpx.TransportError as error:
+            hint[tier] = {"model": model, "error": "vision_timeout" if isinstance(error, httpx.TimeoutException) else "vision_transport_unavailable"}
+            continue
+        except httpx.HTTPStatusError:
+            hint[tier] = {"model": model, "error": "vision_service_unavailable"}
+            continue
+        except RuntimeError as error:
+            hint[tier] = {"model": model, "error": str(error)[:80]}
+            continue
+        hint[tier] = {"model": model, "verdict": result["verdict"], "reason": result["reason"][:200]}
+        if result["verdict"] in ("clean", "text"):
+            decided = result
+    if decided is not None and cfg["authority"] == "verdict":
+        return decided, hint
+    return None, hint
+
+
+def _hosted_vision_fallback(samples, deadline, primary_error):
     fallback_provider = "openai" if VISION_FALLBACK_MODEL == "gpt-4o-mini" else "ollama"
     if VISION_FALLBACK_MODEL not in ALLOWED_VISION_MODELS:
         raise VisionUnavailable("vision_model_not_allowed", model={"name": VISION_FALLBACK_MODEL, "provider": fallback_provider, "urlHost": urlparse(VISION_FALLBACK_URL).hostname, "fallback": True, "fallbackReason": primary_error})

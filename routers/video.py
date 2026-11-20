@@ -770,7 +770,16 @@ def _sweep_stuck_entries(job: dict) -> None:
         return
     age = (datetime.now(timezone.utc) - created_dt).total_seconds()
     # Local engines queue on one machine and may legitimately run far longer.
-    timeout = (PROVIDERS.get(job.get("provider")) or {}).get("stuck_timeout_secs", _STUCK_JOB_TIMEOUT_SECS)
+    # With backend ordering on and a local engine configured, a job may be
+    # served by any engine in its chain.
+    from providers import backend_order
+
+    provider = job.get("provider") or ""
+    chain = backend_order.chain_for(provider) if API_KEYS.get("comfyui") else (provider,)
+    timeout = max(
+        (PROVIDERS.get(backend) or {}).get("stuck_timeout_secs", _STUCK_JOB_TIMEOUT_SECS)
+        for backend in chain
+    )
     if age < timeout:
         return
     swept = False

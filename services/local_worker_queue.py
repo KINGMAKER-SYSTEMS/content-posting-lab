@@ -55,11 +55,13 @@ _jobs: dict[str, Job] = {}
 _pending: list[str] = []          # arrival order
 _last_seen: float | None = None
 _loaded_model: str | None = None  # model of the most recently claimed job
+# The worker said its ComfyUI server is rendering someone else's job.
+_busy = False
 
 
 def reset() -> None:
     """Drop all state (tests)."""
-    global _last_seen, _loaded_model
+    global _last_seen, _loaded_model, _busy
     for job in _jobs.values():
         if not job.future.done():
             job.future.cancel()
@@ -67,20 +69,34 @@ def reset() -> None:
     _pending.clear()
     _last_seen = None
     _loaded_model = None
+    _busy = False
 
 
 def worker_key() -> str:
     return os.getenv("LOCAL_WORKER_KEY", "").strip()
 
 
-def touch() -> None:
+def touch(busy: bool = False) -> None:
     """Record that an authenticated worker just spoke to the lab."""
-    global _last_seen
+    global _last_seen, _busy
     _last_seen = time.monotonic()
+    _busy = busy
 
 
 def worker_online() -> bool:
     return _last_seen is not None and time.monotonic() - _last_seen < WORKER_STALE_SECONDS
+
+
+def worker_ready(max_queue: int) -> tuple[bool, str]:
+    """Whether a new job would start soon: a worker is online, idle, and the line is short."""
+    if not worker_online():
+        return False, "worker_offline"
+    if _busy:
+        return False, "worker_busy"
+    live = [job for job in _jobs.values() if not job.future.done()]
+    if len(live) >= max_queue:
+        return False, "queue_full"
+    return True, "ok"
 
 
 def enqueue(payload: dict) -> Job:
@@ -153,10 +169,11 @@ def fail(job_id: str, claim_token: str, message: str) -> None:
     job.future.set_exception(LocalWorkerError(f"local worker: {message}"[:600]))
 
 
-async def wait(job: Job, entry: dict, render_timeout: float) -> Path:
+async def wait(job: Job, entry: dict, render_timeout: float, claim_timeout: float | None = None) -> Path:
     """Wait for the worker's video. Fails closed when nobody is rendering it.
 
-    Time spent queued behind other jobs is unbounded while a worker is alive;
+    Time spent queued behind other jobs is unbounded while a worker is alive,
+    unless ``claim_timeout`` is given (a hosted fallback is waiting);
     ``render_timeout`` only bounds the render itself, from the claim.
     """
     try:
@@ -172,6 +189,8 @@ async def wait(job: Job, entry: dict, render_timeout: float) -> Path:
                     raise LocalWorkerError("the job was stopped before a worker claimed it")
                 if not worker_online() and now - job.created >= WORKER_STALE_SECONDS:
                     raise LocalWorkerError("no local worker is online to render this job")
+                if claim_timeout is not None and now - job.created >= claim_timeout:
+                    raise LocalWorkerError("the local worker has not claimed this job")
                 continue
             entry["status"] = "polling"
             if not _claim_alive(job, now):

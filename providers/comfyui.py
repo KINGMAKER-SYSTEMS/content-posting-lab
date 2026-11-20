@@ -89,6 +89,12 @@ _QUEUE_CHECK_EVERY = 5   # polls between checks that the server still has the jo
 # server switches (services.local_render_order).
 _FREE_SETTLE_SECONDS = 2.0
 _server_model: dict[str, str] = {}
+_server_waiting: dict[str, int] = {}
+
+
+def waiting_jobs(url: str) -> int:
+    """Jobs in this process waiting for ``url``'s render lock (not yet on its /queue)."""
+    return _server_waiting.get(url.rstrip("/"), 0)
 
 
 class _ServerGate:
@@ -490,7 +496,10 @@ async def _generate_via_worker(prompt: str, params: dict):
     })
     entry["provider_request_id"] = job.id
     entry["status"] = "queued"
-    return await local_worker_queue.wait(job, entry, _timeout_seconds())
+    # With a hosted fallback configured (providers/backend_order.py), an
+    # unclaimed job stops waiting after this long instead of indefinitely.
+    return await local_worker_queue.wait(job, entry, _timeout_seconds(),
+                                         claim_timeout=params.get("local_claim_timeout"))
 
 
 async def _release_other_models(client: httpx.AsyncClient, url: str, model_id: str) -> None:
@@ -519,7 +528,11 @@ async def run_on_server(url: str, prompt: str, params: dict, client: httpx.Async
     gate = _server_gates.setdefault(url, _ServerGate(url))
     if gate.locked():
         entry["status"] = "queued"
-    await gate.acquire(params.get("model_id"))
+    _server_waiting[url] = _server_waiting.get(url, 0) + 1
+    try:
+        await gate.acquire(params.get("model_id"))
+    finally:
+        _server_waiting[url] -= 1
     try:
         if entry.get("status") in STOPPED_STATUSES:
             raise RuntimeError("local job was stopped while waiting in line; not started")

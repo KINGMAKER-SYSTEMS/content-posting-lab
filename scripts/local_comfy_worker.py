@@ -12,6 +12,9 @@ Environment:
     CONTENT_LAB_URL     Base URL of the lab (required).
     LOCAL_WORKER_KEY    Shared secret, the same value set on the lab (required).
     COMFYUI_SERVER_URL  Local ComfyUI server (default http://127.0.0.1:8188).
+    LOCAL_WORKER_MAX_LOAD  Optional: take no job while the 1-minute load average
+                        is above this (the lab then sends new jobs to their
+                        hosted twin when CONTENT_LAB_BACKEND_ORDER is on).
 """
 
 from __future__ import annotations
@@ -41,12 +44,37 @@ class Worker:
         self.comfy = comfy_url.rstrip("/")
         self.key = key
         self.client = client
+        self.last_busy: str | None = None
 
     def _headers(self, job: dict | None = None) -> dict:
         headers = {"X-Worker-Key": self.key}
         if job is not None:
             headers["X-Claim-Token"] = job["claim_token"]
         return headers
+
+    async def busy(self) -> str | None:
+        """Why this machine should take no job right now, or None when it is free."""
+        limit = os.getenv("LOCAL_WORKER_MAX_LOAD", "").strip()
+        try:
+            if limit and os.getloadavg()[0] > float(limit):
+                return "load"
+        except (OSError, ValueError):
+            pass
+        try:
+            resp = await self.client.get(f"{self.comfy}/queue", timeout=10)
+            body = resp.json() if resp.status_code == 200 else None
+        except (httpx.HTTPError, ValueError):
+            return "comfyui_unreachable"
+        if not isinstance(body, dict):
+            return "comfyui_unreachable"
+        if body.get("queue_running") or body.get("queue_pending"):
+            return "comfyui_busy"   # another user's render; ours run one at a time
+        return None
+
+    async def check_in_busy(self) -> None:
+        resp = await self.client.post(
+            f"{self.lab}/claim", params={"busy": "true"}, headers=self._headers(), timeout=30)
+        resp.raise_for_status()
 
     async def claim(self) -> dict | None:
         resp = await self.client.post(
@@ -96,6 +124,14 @@ class Worker:
         log.info("worker online: lab=%s comfyui=%s", self.lab, self.comfy)
         while True:
             try:
+                reason = await self.busy()
+                if reason != self.last_busy:
+                    log.info("not taking jobs: %s" % reason if reason else "taking jobs again")
+                    self.last_busy = reason
+                if reason:
+                    await self.check_in_busy()
+                    await asyncio.sleep(_RETRY_SECONDS)
+                    continue
                 job = await self.claim()
             except httpx.HTTPError as exc:
                 log.warning("claim failed: %s; retrying in %ss", exc, _RETRY_SECONDS)
