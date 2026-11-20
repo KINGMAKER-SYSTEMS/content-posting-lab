@@ -230,6 +230,18 @@ def catalog_cost_usd_by_model(
     raise ValueError(f"unknown replicate model: {model_id!r}")
 
 
+def is_local_provider(provider_id: str) -> bool:
+    """True only for a catalog entry explicitly declared ``billing: local``.
+
+    Local engines run on operator-owned hardware and send no paid request, so
+    they are never debited. A missing or mistyped declaration stays paid.
+    """
+    from providers import PROVIDERS
+
+    info = PROVIDERS.get(provider_id)
+    return isinstance(info, dict) and info.get("billing") == "local"
+
+
 def per_gen_cost_usd(
     provider_id: str,
     duration_seconds: int | float | None = None,
@@ -247,6 +259,8 @@ def per_gen_cost_usd(
     info = PROVIDERS.get(provider_id)
     if not isinstance(info, dict):
         raise ValueError(f"unknown provider: {provider_id!r}")
+    if is_local_provider(provider_id):
+        return 0.0
     params = dict(parameters or {})
     if duration_seconds is not None:
         if not _is_finite_nonnegative(duration_seconds):
