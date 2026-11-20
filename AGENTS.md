@@ -7,6 +7,50 @@
 
 ## Ownership
 
+- `providers/comfyui.py` owns local, unpaid generation on an operator-owned
+  ComfyUI server named by `COMFYUI_URL` (for example the studio Mac). The
+  `local-h3` and `local-h3-vertical` engines build a MiniMax H3 first/last-frame
+  graph (picture only) and the `local-wan-t2v` / `local-wan-i2v` engines a Wan
+  2.2 14B graph. `local-h3` mirrors Hailuo: it always renders 16:9, belongs to
+  `FORCE_LANDSCAPE`, and feeds the dual/triptych/both multi-crop pipeline;
+  `local-h3-vertical` renders native 9:16. Each
+  run uploads any start or end image, submits to `/prompt`, polls `/history`
+  and hands `generate_one` the server's `/view` URL. A catalog entry is free only
+  when it declares `billing: local`; `generation_budget.is_local_provider` is the
+  single test, so those engines skip the reservation check and the debit and
+  keep working under the zero-budget emergency stop. Every other provider stays
+  paid and fail-closed. A prompt that ComfyUI no longer lists as running or
+  pending and never reached history (cancelled, or the server restarted) fails
+  the job at once. One process sends a server one render at a time
+  (`_server_locks`), so `COMFYUI_TIMEOUT_SECONDS` bounds a render and not its
+  time in line, and posts `/free` before a job whose model differs from the
+  previous one. ComfyUI otherwise keeps every loaded model: on the 512 GB
+  studio Mac H3 holds about 186 GB and each Wan pair about 120 GB, and holding
+  all three got the server killed by the OS (jetsam) mid-render. Local jobs use
+  the entry's `stuck_timeout_secs` instead
+  of the 20-minute watchdog. Control Plane recipes do not select local engines.
+  On Apple silicon the ComfyUI server must be started with
+  `--use-pytorch-cross-attention`: its default sub-quadratic attention and
+  `--use-split-cross-attention` both return wrong values past roughly 20k
+  tokens with H3's 56 heads, which renders any 768p clip longer than about two
+  seconds as noise. PyTorch attention was measured correct to 110k tokens.
+
+- `services/local_worker_queue.py` and `routers/local_worker.py` own the reverse
+  path for a deployment that cannot reach the ComfyUI server. With
+  `LOCAL_WORKER_KEY` set and no `COMFYUI_URL`, the local engines queue each
+  generation in memory; `scripts/local_comfy_worker.py`, run beside ComfyUI,
+  long-polls `POST /api/local-worker/claim`, renders with
+  `providers.comfyui.run_on_server` and uploads the MP4 to
+  `/api/local-worker/jobs/{id}/result`. The worker makes outbound requests
+  only. Every route needs `X-Worker-Key` (503 when the key is unset, 401 on a
+  mismatch) and every job route the per-claim `X-Claim-Token` (409 otherwise),
+  so a stale worker cannot finish a job it no longer holds. The worker receives
+  only the whitelisted request fields. Uploads are byte-bounded by
+  `CONTENT_LAB_PROVIDER_DOWNLOAD_BYTES`, must be ISO media, and are moved, not
+  re-downloaded, by `generate_one`. A job fails closed when no worker has
+  spoken for `WORKER_STALE_SECONDS` or the render outlasts
+  `COMFYUI_TIMEOUT_SECONDS` from its claim; a restart drops queued hand-offs.
+
 - `routers/recreate.py` confines REST and WebSocket job IDs to one real
   recreate-directory child before any job write or deletion. Reject encoded
   parent traversal and symlinked job directories; listing skips unsafe jobs and

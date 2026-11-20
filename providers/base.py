@@ -5,6 +5,7 @@ import logging
 import math
 import os
 import re
+import shutil
 import subprocess
 import time
 from pathlib import Path
@@ -110,10 +111,14 @@ API_KEYS = {
     "xai": (os.getenv("XAI_API_KEY") or "").strip() or None,
     "replicate": (os.getenv("REPLICATE_API_TOKEN") or "").strip() or None,
     "openai": (os.getenv("OPENAI_API_KEY") or "").strip() or None,
+    # Not a secret: the base URL of a local ComfyUI server enables local engines.
+    # Without a reachable server, LOCAL_WORKER_KEY queues jobs for a worker.
+    "comfyui": (os.getenv("COMFYUI_URL") or "").strip()
+    or ("worker-queue" if (os.getenv("LOCAL_WORKER_KEY") or "").strip() else None),
 }
 
 # Providers that always output 16:9 regardless of aspect_ratio setting
-FORCE_LANDSCAPE = {"hailuo", "pruna-pvideo"}
+FORCE_LANDSCAPE = {"hailuo", "pruna-pvideo", "local-h3"}
 
 
 async def still_to_video(image: Path, dest: Path, duration: int) -> None:
@@ -454,6 +459,9 @@ async def generate_one(
                 await still_to_video(image_dest, dest, duration)
                 entry["provider_image_file"] = f"{rel_dir}/{image_name}"
                 entry["provider_image_url"] = f"{url_prefix}/{rel_dir}/{image_name}"
+            elif isinstance(media_url, Path):
+                # A local worker already delivered the bytes to this machine.
+                await asyncio.to_thread(shutil.move, str(media_url), str(dest))
             else:
                 await download_media(client, media_url, dest)
                 if provider_info.get("strip_audio") is True:
