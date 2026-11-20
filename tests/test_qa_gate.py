@@ -53,12 +53,21 @@ def test_sar_only_fault_is_repaired_in_place_frame_identical(tmp_path):
     assert verdict.manifest()["repairedSar"] is True
 
 
-def test_sar_plus_another_hard_fault_is_not_repaired(tmp_path):
+def test_sar_plus_another_hard_fault_is_not_stream_copied_but_healed(tmp_path):
+    # The frame-identical stream copy is for a SAR-only fault. With stray
+    # audio as well, the format heal (control-plane-pad#283) re-encodes with
+    # square pixels and no audio instead of refusing the body.
     bad = clips.non_square_sar(clips.clean(tmp_path / "audio.mp4", audio=True), tmp_path / "sar-audio.mp4")
+    before = qa_gate.validate_clip(bad, VIDEO_6S)
+    assert {"qa_sar_non_square", "qa_audio_unexpected"} <= set(codes(before))
     verdict = qa_gate.validate_and_repair(bad, VIDEO_6S)
-    assert not verdict.ok and not verdict.repaired_sar
-    assert {"qa_sar_non_square", "qa_audio_unexpected"} <= set(codes(verdict))
-    assert qa_gate.probe_clip(bad).sample_aspect_ratio == "2272:2277"
+    assert verdict.ok and not verdict.repaired_sar and verdict.healed == ("format",)
+    assert qa_gate.probe_clip(bad).sample_aspect_ratio in qa_gate.SQUARE_SAR
+    assert qa_gate.probe_clip(bad).has_audio is False
+    unhealed = qa_gate.validate_and_repair(
+        clips.non_square_sar(clips.clean(tmp_path / "a2.mp4", audio=True), tmp_path / "keep.mp4"),
+        VIDEO_6S, repair=False)
+    assert not unhealed.ok and qa_gate.probe_clip(tmp_path / "keep.mp4").sample_aspect_ratio == "2272:2277"
 
 
 def test_baked_audio_on_a_video_only_recipe_blocks(tmp_path):

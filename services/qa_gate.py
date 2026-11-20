@@ -709,6 +709,148 @@ def _try_heal_stutter(verdict: QaVerdict, source: Path, destination: Path, polic
         healed.unlink(missing_ok=True)
 
 
+# ── heals that keep a job's count (control-plane-pad#283) ────────────────────
+#
+# Enforce only. A body with a fault the Lab can fix is fixed instead of being
+# dropped, so a job delivers every clean body it was ordered and nobody
+# hand-starts a make-up job. Each heal writes a new file, the gate reads it
+# again, and the heal is kept only when the healed file passes with the fault
+# gone and nothing new. A paid provider file is never rewritten: heals land
+# in its treated/ copy. What cannot be healed (a broken file, a landscape
+# picture on a 9:16 page, a wrong length or frame on a Lab cut) still blocks.
+
+# Blocks a re-encode fixes: codec/pixel format (HEVC, 10-bit, 4:4:4), a rotate
+# tag (the frames are turned upright and the tag dropped), an audio stream on a
+# video-only recipe (dropped) and a non-square SAR the stream copy missed.
+HEALABLE_BLOCKS = frozenset({"qa_codec_mismatch", "qa_rotation", "qa_audio_unexpected", "qa_sar_non_square"})
+# Longest hold at either edge: a held frame stays under the freeze warning.
+EDGE_HOLD_MAX_S = 0.5
+
+
+def _ffmpeg_heal(args: list[str], what: str) -> None:
+    try:
+        completed = subprocess.run(
+            ["ffmpeg", "-nostdin", "-hide_banner", "-y", "-v", "error", "-protocol_whitelist", "file,pipe", *args],
+            stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=SCAN_TIMEOUT_S, check=False)
+    except FileNotFoundError as error:
+        raise QaGateError("ffmpeg_unavailable") from error
+    if completed.returncode != 0:
+        raise RuntimeError(f"{what}_heal_failed: " + completed.stderr.strip()[-200:])
+
+
+_X264 = ["-c:v", "libx264", "-preset", "medium", "-crf", "17", "-pix_fmt", "yuv420p"]
+
+
+def heal_format(source: Path | str, destination: Path | str, policy: QaPolicy) -> None:
+    """Re-encode to h264 8-bit 4:2:0 with square pixels. ffmpeg's autorotate
+    turns rotate-tagged frames upright and writes no tag. Audio is copied,
+    or dropped on a video-only recipe."""
+    audio = ["-an"] if policy.audio == AUDIO_FORBIDDEN else ["-map", "0:a?", "-c:a", "copy"]
+    _ffmpeg_heal(["-i", str(source), "-map", "0:v:0", *audio, "-vf", "setsar=1", *_X264,
+                  "-movflags", "+faststart", str(destination)], "format")
+
+
+def edge_plan(verdict: QaVerdict, policy: QaPolicy) -> tuple[int, int, int] | None:
+    """(first kept frame, end of kept frames, total frames) that removes a
+    last-frames scene cut and near-black runs touching either edge by holding
+    the nearest good frame over them; None when there is nothing to heal or
+    the hold would be long enough to read as a freeze."""
+    scan, probe = verdict.scan, verdict.probe
+    if scan is None or probe is None or probe.fps <= 0 or scan.frames < 2:
+        return None
+    fps, total = probe.fps, scan.frames
+    codes = {item.code for item in verdict.findings}
+    head, tail = 0, total
+    if "qa_tail_cut" in codes:
+        tail = min(tail, min(cut[0] for cut in verdict.extra.get("tail_cuts", ())))
+    if "qa_black_run" in codes and not policy.fade:
+        end_s = total / fps
+        for start, end in scan.black_runs:
+            if end - start <= policy.black_min_s + 1e-6:
+                continue
+            if start <= 0.5 / fps:
+                head = max(head, int(math.ceil(end * fps - 1e-6)))
+            if end >= end_s - 1.5 / fps:
+                tail = min(tail, int(math.floor(start * fps + 1e-6)))
+    if (head, tail) == (0, total) or tail - head < 1:
+        return None
+    if max(head, total - tail) > int(round(EDGE_HOLD_MAX_S * fps)):
+        return None
+    return head, tail, total
+
+
+def heal_edges(source: Path | str, destination: Path | str, plan: tuple[int, int, int], fps: float,
+               policy: QaPolicy) -> None:
+    """Keep frames [head, tail) and hold the first/last kept frame over the
+    rest: same frame count, same duration, same rate."""
+    head, tail, total = plan
+    rate = Fraction(fps).limit_denominator(1001)
+    graph = (f"trim=start_frame={head}:end_frame={tail},setpts=PTS-STARTPTS,"
+             f"tpad=start_mode=clone:start={head}:stop_mode=clone:stop={total - tail},setsar=1")
+    audio = ["-an"] if policy.audio == AUDIO_FORBIDDEN else ["-map", "0:a?", "-c:a", "copy"]
+    _ffmpeg_heal(["-i", str(source), "-map", "0:v:0", *audio, "-vf", graph,
+                  "-r", f"{rate.numerator}/{rate.denominator}", "-frames:v", str(total), *_X264,
+                  "-movflags", "+faststart", str(destination)], "edges")
+
+
+def _heal_step(name: str, verdict: QaVerdict, source: Path, destination: Path, policy: QaPolicy,
+               make, accept) -> QaVerdict | None:
+    """Run one heal into a side file, re-read it, keep it only if ``accept``."""
+    side = destination.with_name(destination.stem + f".{name}" + destination.suffix)
+    try:
+        side.parent.mkdir(parents=True, exist_ok=True)
+        make(source, side)
+        after = validate_clip(side, policy)
+        if not accept(after):
+            log.warning("qa_gate.%s_heal_rejected path=%s ok=%s findings=%s", name, source.name, after.ok,
+                        [item.code for item in after.findings])
+            return None
+        os.replace(side, destination)
+        after.healed = verdict.healed + (name,)
+        for key in ("stutterBefore", "healedFps"):
+            if key in verdict.extra and key not in after.extra:
+                after.extra[key] = verdict.extra[key]
+        log.info("qa_gate.healed path=%s heal=%s", source.name, name)
+        return after
+    except (RuntimeError, OSError) as error:
+        log.warning("qa_gate.%s_heal_failed path=%s error=%s", name, source.name, error)
+        return None
+    finally:
+        side.unlink(missing_ok=True)
+
+
+def _edge_codes(verdict: QaVerdict) -> list[str]:
+    return [item.code for item in verdict.findings if item.code in {"qa_tail_cut", "qa_black_run"}]
+
+
+def heal_body(verdict: QaVerdict, target: Path, destination: Path, policy: QaPolicy) -> tuple[QaVerdict, Path]:
+    """Format, then stutter, then edges. Each heal reads the file the last
+    one left; a heal that does not come back clean leaves the body as it was."""
+    if not verdict.ok and {item.code for item in verdict.blocks} <= HEALABLE_BLOCKS:
+        healed = _heal_step("format", verdict, target, destination, policy,
+                            lambda src, dst: heal_format(src, dst, policy),
+                            lambda after: after.ok)
+        if healed is not None:
+            verdict, target = healed, destination
+    if verdict.ok and any(item.code == "qa_stutter" for item in verdict.findings):
+        healed = _try_heal_stutter(verdict, target, destination, policy)
+        if healed is not None:
+            healed.healed = verdict.healed + healed.healed
+            verdict, target = healed, destination
+            policy = _healed_policy(policy, Fraction(healed.extra["healedFps"]))
+    plan = edge_plan(verdict, policy) if verdict.ok else None
+    if plan is not None:
+        before = {item.code for item in verdict.findings}
+        fps = verdict.probe.fps if verdict.probe else policy.fps
+        healed = _heal_step("edges", verdict, target, destination, policy,
+                            lambda src, dst: heal_edges(src, dst, plan, fps, policy),
+                            lambda after: (after.ok and len(_edge_codes(after)) < len(_edge_codes(verdict))
+                                           and {item.code for item in after.findings} <= before))
+        if healed is not None:
+            verdict, target = healed, destination
+    return verdict, target
+
+
 # ── sound clean windows ──────────────────────────────────────────────────────
 
 def load_sound_windows(path: Path | None = None) -> dict[str, tuple[tuple[float, float], ...]]:
@@ -1003,12 +1145,9 @@ def validate_and_repair(path: Path | str, policy: QaPolicy, *, repair: bool = Tr
                 finally:
                     fixed.unlink(missing_ok=True)
     verdict = validate_clip(target, policy)
-    if repair and verdict.ok and any(item.code == "qa_stutter" for item in verdict.findings):
+    if repair:
         destination = Path(repaired_destination) if repaired_destination else path
-        healed = _try_heal_stutter(verdict, target, destination, policy)
-        if healed is not None:
-            verdict = healed
-            target = destination
+        verdict, target = heal_body(verdict, target, destination, policy)
     verdict.repaired_sar = repaired
     verdict.path = target
     verdict.elapsed_s = time.monotonic() - started
