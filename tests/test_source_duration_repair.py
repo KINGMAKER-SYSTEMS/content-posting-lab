@@ -442,3 +442,33 @@ def test_near_vertical_source_is_scaled_by_real_encode_path(tmp_path):
     receipt = render_shorter(src, out, _command_for(src_sha, 3000))
     assert (receipt["width"], receipt["height"]) == (1080, 1920)
     assert (out / "final.mp4").exists()
+
+
+@pytest.mark.skipif(not _has_ffmpeg(), reason="ffmpeg/ffprobe not available")
+@pytest.mark.parametrize("sar,accepted", [("sar=1216/1215:max=10000", True), ("sar=4/3", False)])
+def test_near_square_pool_clip_is_repaired_and_non_square_still_refuses(tmp_path, sar, accepted):
+    """A finished pool clip tagged 1216:1215 (0.08% off square) gets the same
+    acceptance as the prepared-post renderer; a clearly non-square tag still
+    refuses with regeneration_required."""
+    src = tmp_path / "pool.mp4"
+    subprocess.run([
+        FFMPEG, "-nostdin", "-v", "error", "-f", "lavfi",
+        "-i", "testsrc2=size=1080x1920:rate=30:duration=4",
+        "-f", "lavfi", "-i", "sine=frequency=440:duration=4",
+        "-vf", f"setsar={sar}",
+        "-c:v", "libx264", "-preset", "ultrafast", "-crf", "18",
+        "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", str(src),
+    ], check=True, timeout=60)
+    src_sha = hashlib.sha256(src.read_bytes()).hexdigest()
+    out = tmp_path / "out"
+    if accepted:
+        receipt = render_shorter(src, out, _command_for(src_sha, 3000))
+        assert (receipt["width"], receipt["height"]) == (1080, 1920)
+        sar_out = subprocess.run([FFPROBE, "-v", "error", "-select_streams", "v:0", "-show_entries",
+                                  "stream=sample_aspect_ratio", "-of", "csv=p=0", str(out / "final.mp4")],
+                                 check=True, capture_output=True, text=True, timeout=30).stdout.strip()
+        assert sar_out == "1:1"
+    else:
+        with pytest.raises(RepairError) as exc:
+            render_shorter(src, out, _command_for(src_sha, 3000))
+        assert exc.value.code == "regeneration_required"
