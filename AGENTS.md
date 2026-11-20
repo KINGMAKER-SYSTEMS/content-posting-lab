@@ -22,12 +22,19 @@
   paid and fail-closed. A prompt that ComfyUI no longer lists as running or
   pending and never reached history (cancelled, or the server restarted) fails
   the job at once. One process sends a server one render at a time
-  (`_server_locks`), so `COMFYUI_TIMEOUT_SECONDS` bounds a render and not its
+  (`_ServerGate`), so `COMFYUI_TIMEOUT_SECONDS` bounds a render and not its
   time in line, and posts `/free` before a job whose model differs from the
   previous one. ComfyUI otherwise keeps every loaded model: on the 512 GB
   studio Mac H3 holds about 186 GB and each Wan pair about 120 GB, and holding
-  all three got the server killed by the OS (jetsam) mid-render. Local jobs use
-  the entry's `stuck_timeout_secs` instead
+  all three got the server killed by the OS (jetsam) mid-render. Waiting jobs
+  are let in batch order, not first-come-first-served
+  (`services/local_render_order.py`, used by both the gate and the worker
+  queue's `claim`): the oldest job for the already-loaded model goes next, and
+  the server switches only when that model has nothing queued or another job
+  has waited `LOCAL_BATCH_MAX_WAIT_SECONDS` (default 30 min; 0 = oldest first).
+  Local generations from `/generate` take `_local_gen_semaphore`
+  (`LOCAL_GEN_MAX_PENDING`, default 60), never the paid providers' 10 shared
+  slots. Local jobs use the entry's `stuck_timeout_secs` instead
   of the 20-minute watchdog. Control Plane can use a local engine when an
   operator explicitly includes it in the pinned prompt catalog with a
   compatible method and zero cost. Bundled recipes keep their existing provider
