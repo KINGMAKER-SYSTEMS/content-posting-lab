@@ -218,6 +218,7 @@ def test_size_retry_changes_encoding_only_and_is_bounded_to_two_attempts(monkeyp
     (606, 1080, "2:1", 0), (1080, 1920, "1:1", 90),
     (304, 540, "1:1", 0),
     (430, 766, "1:1", 0),
+    (1080, 1920, "1250:1215", 0), (1080, 1920, "bad", 0),
 ])
 def test_wrong_source_geometry_fails_without_compositing(monkeypatch, tmp_path, geometry):
     source = tmp_path / "source"
@@ -1466,3 +1467,13 @@ def test_burned_slot_caption_refusal_is_unchanged(actual_source, tmp_path, monke
         render.render_post(actual_source, tmp_path / "burned-slot", request(
             render.sha256(actual_source.read_bytes())), clock_ms=lambda: NOW)
     assert not (tmp_path / "burned-slot" / render.BURNED_REFUSED_MARKER).exists()
+
+
+@pytest.mark.parametrize(("sar", "square"), [
+    ("1:1", True), ("", True), ("N/A", True), ("0:1", True),
+    ("1216:1215", True), ("1214:1215", True), ("1001:1000", True),
+    ("1250:1215", False), ("2:1", False), ("0:0", False), ("-1:1", False), ("bad", False), ("4:3", False),
+])
+def test_near_square_pool_sar_counts_as_square(sar, square):
+    # Vault pool clips carry 1216:1215 or 1214:1215; delivery declares setsar=1.
+    assert render._square_pixels(sar) is square

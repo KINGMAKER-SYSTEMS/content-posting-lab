@@ -399,6 +399,22 @@ def _file_hash(path: Path, limit: int) -> tuple[str, int]:
     return digest.hexdigest(), total
 
 
+SQUARE_PIXEL_TOLERANCE = 0.005
+
+
+def _square_pixels(sample_aspect_ratio: str) -> bool:
+    """Return whether a probed SAR is unset, square, or within 0.5% of square."""
+    if sample_aspect_ratio in {"1:1", "", "N/A", "0:1"}:
+        return True
+    try:
+        numerator, denominator = (int(part) for part in sample_aspect_ratio.split(":"))
+    except ValueError:
+        return False
+    if numerator <= 0 or denominator <= 0:
+        return False
+    return abs(numerator / denominator - 1) <= SQUARE_PIXEL_TOLERANCE
+
+
 def _video_graph(source_probe: MediaProbe, frame_height: int | None = None, *, in_app: bool = False,
                  normalize_pair_timing: bool = False) -> str:
     chain = []
@@ -784,9 +800,12 @@ def _render_post_single(source_path: Path, output_directory: Path, request: Post
         # scaling is not another creative crop, grade, or speed treatment.
         # Provider H.264 crops may omit SAR entirely. Keep their coded frame
         # and declare square pixels at encode; explicit non-square SAR refuses.
+        # A SAR within 0.5% of square (vault pool clips carry 1216:1215 or
+        # 1214:1215, under 0.2% off) is square for delivery: _video_graph
+        # declares setsar=1 and the change cannot be seen.
         target_width = source_probe.height * 9 / 16
         near_vertical = abs(source_probe.width - target_width) <= target_width * 0.03
-        if (source_probe.height < 768 or source_probe.sample_aspect_ratio not in {"1:1", "", "N/A", "0:1"}
+        if (source_probe.height < 768 or not _square_pixels(source_probe.sample_aspect_ratio)
                 or source_probe.rotation != 0 or not near_vertical):
             raise PostRenderError("regeneration_required", "source must be upright square-pixel near-9:16 video at least 768 pixels high")
         caption_request = None if lyric_source else _caption_request(request)
