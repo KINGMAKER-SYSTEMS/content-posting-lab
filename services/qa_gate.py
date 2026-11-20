@@ -58,8 +58,9 @@ SAR-only faults are repaired in place with the frame-identical stream-copy
 rewrite proven in ~/ec-work/lanes/fanout-1117/aiw-render-1118/REPORT.md:
 ``-c copy -bsf:v h264_metadata=sample_aspect_ratio=1/1 -aspect 9:16``.
 
-Mode switch ``CONTENT_LAB_QA_GATE``: ``enforce`` (default), ``shadow`` (scan,
-log and record, never refuse, never repair) or ``off``; anything else = shadow.
+Mode switch ``CONTENT_LAB_QA_GATE``: ``shadow`` (default: scan, log and record,
+never refuse, never repair), ``enforce`` (set it explicitly) or ``off``; unset,
+empty or anything unknown = shadow.
 
 Runtime: one ffprobe (~20 ms) plus one decode pass with the three detectors
 (~0.4 s per 8 s 1080x1920 body on an M-series Mac; bounded by SCAN_TIMEOUT_S).
@@ -122,7 +123,9 @@ SOUND_WINDOWS_SCHEMA = "content-lab.sound-clean-windows.v1"
 
 
 def gate_mode() -> str:
-    value = os.environ.get("CONTENT_LAB_QA_GATE", MODE_ENFORCE).strip().lower() or MODE_ENFORCE
+    # Shadow-first: an unset or empty switch never refuses clips. Merging the
+    # Lab deploys it at once, so enforce must be an explicit choice.
+    value = os.environ.get("CONTENT_LAB_QA_GATE", "").strip().lower()
     if value in {"on", "1", "true"}:
         return MODE_ENFORCE
     # A typo during a shadow-first rollout must not start refusing clips.

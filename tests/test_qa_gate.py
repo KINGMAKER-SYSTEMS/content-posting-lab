@@ -227,10 +227,14 @@ def test_policy_for_a_source_cut_is_the_window_at_the_effective_speed():
 
 
 def test_gate_mode_reads_the_switch(monkeypatch):
+    # Shadow-first: unset or empty never refuses; enforce must be set on purpose.
     monkeypatch.delenv("CONTENT_LAB_QA_GATE", raising=False)
-    assert qa_gate.gate_mode() == qa_gate.MODE_ENFORCE
+    assert qa_gate.gate_mode() == qa_gate.MODE_SHADOW
+    for blank in ("", "   "):
+        monkeypatch.setenv("CONTENT_LAB_QA_GATE", blank)
+        assert qa_gate.gate_mode() == qa_gate.MODE_SHADOW
     # L57135 (e): a typo during a shadow-first rollout means shadow, never enforce.
-    for raw, mode in (("shadow", "shadow"), ("off", "off"), ("ON", "enforce"), ("bogus", "shadow"),
+    for raw, mode in (("shadow", "shadow"), ("off", "off"), ("ON", "enforce"), ("enforce", "enforce"), ("bogus", "shadow"),
                       ("shaddow", "shadow"), ("observe", "shadow"), ("1", "enforce")):
         monkeypatch.setenv("CONTENT_LAB_QA_GATE", raw)
         assert qa_gate.gate_mode() == mode

@@ -245,7 +245,7 @@ def sync_client():
 # audio-bearing lavfi masters; the post-cut QA gate (services/qa_gate.py)
 # would rightly refuse those. The suite therefore runs with the gate off
 # unless a test sets CONTENT_LAB_QA_GATE itself (tests/test_qa_gate_wiring.py
-# sets "enforce"/"shadow"). Production keeps the module default: enforce.
+# sets "enforce"/"shadow"). Production keeps the module default: shadow.
 @pytest.fixture(autouse=True)
 def _qa_gate_off_unless_a_test_sets_it(monkeypatch):
     if "CONTENT_LAB_QA_GATE" not in os.environ:
