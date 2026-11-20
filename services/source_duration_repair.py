@@ -10,7 +10,7 @@ encode is NOT vendored here: this module imports and calls the real
 ``delivery_encode_args`` (services/ffmpeg.py), ``letterbox_filter``
 (services/page_frame.py) and ``_encode_final``/``_probe``/``MediaProbe``/
 ``RenderTools`` (services/post_render.py). The near-9:16 scale/crop, the
-``setsar=1`` step, the ``normalize_pair_timing`` fps=30 step, the letterbox,
+``setsar=1`` step, the ``normalize_pair_timing`` fps step, the letterbox,
 the caption overlay and the two-attempt bitrate-budget fallback are therefore
 all the single-source-of-truth code the ordinary prepared-post renderer uses.
 
@@ -54,7 +54,6 @@ from services.post_render import (
 )
 
 SOURCE_DURATION_REPAIR_SCHEMA = "rt.source-duration-repair.v1"
-SOURCE_DURATION_REPAIR_DELIVERY_FPS = 30
 RECEIPT_SCHEMA = "source-duration-repair-receipt.v1"
 
 # Mirrors SOURCE_DURATION_REPAIR_KEYS on the Worker side, lexicographic order.
@@ -278,7 +277,12 @@ def probe(path: Path, ffprobe_bin: Optional[str] = None) -> Dict:
         duration = float(video.get("duration", data["format"]["duration"]))
         if not math.isfinite(duration) or not 1 <= round(duration * 1000) <= MAX_DURATION_MS:
             raise ValueError("invalid duration")
-        rate = _parse_rate(video.get("avg_frame_rate")) or _parse_rate(video.get("r_frame_rate"))
+        # r_frame_rate is the stream's own frame grid. The average can sit a
+        # fraction of a frame off it on a slowed cut, which would move the trim
+        # boundary by a frame. A container time base (90000/1) is not a rate.
+        rate = next((pair for pair in (_parse_rate(video.get("r_frame_rate")),
+                                       _parse_rate(video.get("avg_frame_rate")))
+                     if pair and pair[0] <= 240 * pair[1]), None)
         audio = [row for row in data["streams"] if row.get("codec_type") == "audio"]
         sample_rate = int(audio[0]["sample_rate"]) if audio and audio[0].get("sample_rate") else None
         channels = int(audio[0]["channels"]) if audio and audio[0].get("channels") else None
@@ -461,7 +465,7 @@ def encode_shorter_final(source: Path, out: Path, *,
     """Delivery-encode the trimmed source through the REAL `_encode_final`.
 
     The real path owns the near-9:16 scale/crop, the `setsar=1` step, the
-    `normalize_pair_timing` fps=30 step, the letterbox, the caption overlay and
+    `normalize_pair_timing` fps step, the letterbox, the caption overlay and
     the two-attempt bitrate-budget fallback — nothing here re-implements page
     look. With no overlay the source is delivery-only (in_app/lyric); its own
     audio is still mapped through.
@@ -498,7 +502,7 @@ def render_shorter(source_path: Path, output_directory: Path, command: Dict, *,
     the typed caption overlay the real `_encode_final` burns (None for in_app /
     lyric delivery); ``frame_height`` is the page frame's letterbox band (None
     for full-bleed 9:16); ``normalize_pair_timing`` mirrors the prepared-post
-    ``paired_caption`` fps=30 step. All three ride the REAL encode path.
+    ``paired_caption`` fps step. All three ride the REAL encode path.
     """
     command = validate_command(command)
     source_path = Path(source_path).absolute()

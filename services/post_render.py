@@ -18,6 +18,7 @@ import stat
 import subprocess
 import time
 from dataclasses import dataclass
+from fractions import Fraction
 from pathlib import Path
 from typing import Annotated, Callable, Literal
 
@@ -28,7 +29,8 @@ from pydantic_core import PydanticCustomError
 
 from burn_quality_gate import overlay_geometry_reasons
 from services.caption_render import CaptionRenderError, CaptionRenderRequest, CaptionStyle, render_caption_with_background
-from services.ffmpeg import delivery_encode_args
+from services.ffmpeg import (delivery_encode_args, delivery_frame_rate, frame_rate_text, probe_frame_rate,
+                             with_frame_rate)
 from services.page_frame import frame_band_height, frame_band_rows, frame_fit, letterbox_filter
 from services.pool_supplied_pages import is_pool_supplied
 from services.source_treatment import normalized_visual_treatment
@@ -415,8 +417,21 @@ def _square_pixels(sample_aspect_ratio: str) -> bool:
     return abs(numerator / denominator - 1) <= SQUARE_PIXEL_TOLERANCE
 
 
+def _final_frame_rate(source: Path, tools: RenderTools, *, paired: bool = False) -> Fraction | None:
+    """The final's one output rate: the body's own rate (60p is halved to 30).
+
+    None when ffprobe cannot read the rate; a lone final then keeps 30 fps as
+    before. A paired final (clean + captioned, ``normalize_pair_timing``) fails
+    closed instead: its twin may have read the rate, and the pair must match.
+    """
+    native = probe_frame_rate(source, tools.ffprobe)
+    if native is None and paired:
+        raise PostRenderError("frame_rate_unreadable", "paired final cannot prove the source frame rate")
+    return None if native is None else delivery_frame_rate(native)
+
+
 def _video_graph(source_probe: MediaProbe, frame_height: int | None = None, *, in_app: bool = False,
-                 normalize_pair_timing: bool = False) -> str:
+                 normalize_pair_timing: bool = False, frame_rate: Fraction | None = None) -> str:
     chain = []
     if (source_probe.width, source_probe.height) != (1080, 1920):
         if abs(source_probe.width * 16 - source_probe.height * 9) <= 32:
@@ -437,8 +452,10 @@ def _video_graph(source_probe: MediaProbe, frame_height: int | None = None, *, i
         chain.append(letterbox_filter(frame_height))
     if normalize_pair_timing:
         # Resample before the paths diverge. FFmpeg 5.1 can round a half-frame
-        # at EOF differently with an overlay if only the encoder sets 30 fps.
-        chain.append("fps=30")
+        # at EOF differently with an overlay if only the encoder sets the rate.
+        # The rate is the body's own (the same one the encoder gets), so this
+        # passes each frame through instead of repeating frames to make 30 fps.
+        chain.append(f"fps={frame_rate_text(frame_rate or Fraction(30))}")
     if in_app:
         # No caption overlay input: the clean clip is delivery-only. The
         # encoder's -pix_fmt yuv420p still turns the chain into the delivery
@@ -454,7 +471,9 @@ def _video_graph(source_probe: MediaProbe, frame_height: int | None = None, *, i
 def _encode_final(source: Path, overlay: Path | None, final: Path, source_probe: MediaProbe,
                   tools: RenderTools, frame_height: int | None = None, *, in_app: bool = False,
                   normalize_pair_timing: bool = False) -> MediaProbe:
-    graph = _video_graph(source_probe, frame_height, in_app=in_app, normalize_pair_timing=normalize_pair_timing)
+    frame_rate = _final_frame_rate(source, tools, paired=normalize_pair_timing)
+    graph = _video_graph(source_probe, frame_height, in_app=in_app, normalize_pair_timing=normalize_pair_timing,
+                         frame_rate=frame_rate)
     base = [tools.ffmpeg, "-nostdin", "-v", "error", "-xerror", "-protocol_whitelist", "file,pipe",
             "-noautorotate", "-f", "mov", "-i", str(source)]
     if in_app:
@@ -466,6 +485,8 @@ def _encode_final(source: Path, overlay: Path | None, final: Path, source_probe:
                  "-map", "[v]", "-map", "0:a?", "-map_metadata", "-1", "-map_chapters", "-1"]
     for attempt in range(2):
         encode = delivery_encode_args("tiktok_delivery_v1")
+        if frame_rate is not None:
+            encode = with_frame_rate(encode, frame_rate)
         if attempt:
             # Reserve ten percent container/rate-control margin and the full preset audio rate.
             bitrate = int(MAX_FINAL_BYTES * 8 * 0.90 * 1000 / source_probe.duration_ms) - 192_000
@@ -695,6 +716,8 @@ def _check_caption_ink(output_directory: Path, qa_path: Path, qa_at_ms: int, ove
     well as the caption as a whole (``_ink_refusal``).
     """
     clip_probe = _probe(reference_source, tools)
+    # The same rate the final was encoded at, so the reference is the same frame.
+    frame_rate = _final_frame_rate(reference_source, tools, paired=normalize_pair_timing)
     seek = ["-nostdin", "-v", "error", "-xerror", "-protocol_whitelist", "file,pipe",
             "-noautorotate", "-ss", f"{qa_at_ms / 1000:.3f}", "-f", "mov", "-i", str(reference_source)]
     cut = ["-map", "[v]", "-frames:v", "1", "-q:v", "3", "-update", "1"]
@@ -704,15 +727,18 @@ def _check_caption_ink(output_directory: Path, qa_path: Path, qa_at_ms: int, ove
     try:
         if background_png is None:
             _run([tools.ffmpeg, *seek, "-filter_complex",
-                  _video_graph(clip_probe, frame_height, in_app=True, normalize_pair_timing=normalize_pair_timing),
+                  _video_graph(clip_probe, frame_height, in_app=True, normalize_pair_timing=normalize_pair_timing,
+                               frame_rate=frame_rate),
                   *cut, str(reference_path)], tools, output_file=reference_path, output_limit=MAX_QA_BYTES)
         else:
             background_path.write_bytes(background_png)
             _run([tools.ffmpeg, *seek, "-protocol_whitelist", "file,pipe", "-i", str(background_path), "-filter_complex",
-                  _video_graph(clip_probe, frame_height, normalize_pair_timing=normalize_pair_timing),
+                  _video_graph(clip_probe, frame_height, normalize_pair_timing=normalize_pair_timing,
+                               frame_rate=frame_rate),
                   *cut, str(reference_path)], tools, output_file=reference_path, output_limit=MAX_QA_BYTES)
             _run([tools.ffmpeg, *seek, "-filter_complex",
-                  _video_graph(clip_probe, frame_height, in_app=True, normalize_pair_timing=normalize_pair_timing),
+                  _video_graph(clip_probe, frame_height, in_app=True, normalize_pair_timing=normalize_pair_timing,
+                               frame_rate=frame_rate),
                   *cut, str(bare_path)], tools, output_file=bare_path, output_limit=MAX_QA_BYTES)
         frames = [Image.open(path) for path in (qa_path, reference_path, bare_path) if path is not None]
         try:

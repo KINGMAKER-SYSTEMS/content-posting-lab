@@ -419,6 +419,9 @@ async def _probe_video(path: Path) -> SourceImportMedia:
 
 
 async def _normalize_video(source: Path, destination: Path) -> None:
+    # fps=30 stays: the Worker refuses an imported master whose media.fps is
+    # not 30 (contentLabClient.js page-source-import check). 60p/120p sources
+    # are halved/quartered evenly; a 24/25p import still gains repeats here.
     deadline = asyncio.get_running_loop().time() + MAX_SOURCE_NORMALIZE_SECONDS
     process = await create_import_subprocess(
         "ffmpeg", "-y", "-loglevel", "error", "-i", str(source),

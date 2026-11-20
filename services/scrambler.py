@@ -1732,8 +1732,15 @@ def apply_split_swap(path: Path, encode_args: list[str]) -> None:
     Raises if probing or encoding fails. Runs under the caller's encode gate
     like every other full 1080x1920 re-encode.
     """
+    from services.ffmpeg import probe_frame_rate, with_frame_rate
+
     path = Path(path)
     duration_s, has_audio = _probe_duration_audio(path)
+    # Re-encode at the cut's own rate: the preset's "-r 30" would repeat
+    # frames in a slowed (e.g. 21 fps) cut. Unreadable rate: args as given.
+    rate = probe_frame_rate(path)
+    if rate is not None and "-r" in encode_args:
+        encode_args = with_frame_rate(encode_args, rate)
     work = path.parent / f".{path.stem}-splitswap"
     shutil.rmtree(work, ignore_errors=True)
     work.mkdir(mode=0o700)
