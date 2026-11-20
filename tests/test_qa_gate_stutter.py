@@ -148,7 +148,7 @@ def test_a_paid_clip_is_healed_into_the_treated_copy_never_in_place(tmp_path):
     assert _sha(paid) == before
 
 
-def test_a_heal_that_would_not_come_back_clean_keeps_the_original(tmp_path, monkeypatch):
+def test_a_failed_stutter_encode_keeps_the_original(tmp_path, monkeypatch):
     body = _padded(tmp_path / "pad25.mp4", 25)
     before = _sha(body)
 
@@ -159,6 +159,22 @@ def test_a_heal_that_would_not_come_back_clean_keeps_the_original(tmp_path, monk
     verdict = qa_gate.run_gate(body, VIDEO_6S, qa_gate.MODE_ENFORCE)
     assert verdict.ok and verdict.healed == () and _sha(body) == before
     assert [item.code for item in verdict.findings] == ["qa_stutter"]
+    assert not list(tmp_path.glob("*.heal.mp4"))
+
+
+def test_a_completed_heal_that_still_stutters_is_discarded(tmp_path, monkeypatch):
+    body = _padded(tmp_path / "pad25.mp4", 25)
+    before = _sha(body)
+    treated = tmp_path / "treated.mp4"
+
+    def still_stutters(source, destination, dups, rate):
+        destination.write_bytes(source.read_bytes())
+
+    monkeypatch.setattr(qa_gate, "heal_stutter", still_stutters)
+    verdict = qa_gate.run_gate(body, VIDEO_6S, qa_gate.MODE_ENFORCE, repaired_destination=treated)
+    assert verdict.healed == () and verdict.path == body
+    assert verdict.extra["stutter"]["verdict"] == "PERIODIC"
+    assert _sha(body) == before and not treated.exists()
     assert not list(tmp_path.glob("*.heal.mp4"))
 
 
