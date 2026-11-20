@@ -48,6 +48,7 @@ from routers.email_routing import router as email_router
 from routers.pipeline import router as pipeline_router
 from routers.upload import router as upload_router
 from routers.video import router as video_router
+from routers.local_worker import router as local_worker_router
 from routers.agenticnews import router as agenticnews_router
 import services.agenticnews as agenticnews_db
 from services.post_render import source_duration_repair_enabled
@@ -333,9 +334,10 @@ app.add_middleware(
 _APP_API_KEY = os.getenv("APP_API_KEY")
 # Only routes with their own authentication may skip the API key:
 # /api/miniapp/* verifies Telegram initData (HMAC over the bot token).
+# /api/local-worker/* requires X-Worker-Key matching LOCAL_WORKER_KEY (503 unset).
 # /api/telegram/* is NOT exempt: the bot long-polls (no webhook route), and the
 # router can replace the bot token, repoint the staging group and send files.
-_AUTH_SKIP = ("/api/health", "/api/miniapp/")
+_AUTH_SKIP = ("/api/health", "/api/miniapp/", "/api/local-worker/")
 
 
 @app.middleware("http")
@@ -401,6 +403,7 @@ app.include_router(
 )
 app.include_router(debug_router, prefix="/api/debug", tags=["debug"])
 app.include_router(video_router, prefix="/api/video", tags=["video"])
+app.include_router(local_worker_router, prefix="/api/local-worker", tags=["local-worker"])
 app.include_router(captions_router, prefix="/api/captions", tags=["captions"])
 app.include_router(burn_router, prefix="/api/burn", tags=["burn"])
 app.include_router(projects_router, prefix="/api/projects", tags=["projects"])

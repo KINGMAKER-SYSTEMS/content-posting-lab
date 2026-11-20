@@ -406,6 +406,47 @@ PROVIDER_SCHEMAS: dict[str, dict] = {
         "resolution": {"type": "select", "options": ["720p", "1080p"], "default": "720p", "label": "Resolution"},
         "optimize_prompt": {"type": "toggle", "default": True, "label": "Prompt Optimizer"},
     },
+    "local-h3": {
+        "duration": {"type": "range", "min": 2, "max": 15, "default": 6, "label": "Duration (seconds)"},
+        "crop_mode": {"type": "select", "options": ["none", "dual", "triptych", "both"], "default": "both", "label": "Multi-Crop", "note": "dual=2, triptych=3, both=5 crops from one 16:9"},
+        "last_image_supported": True,
+        "_advanced": {
+            "go_fast": {"type": "toggle", "default": True, "label": "Go Fast (8-step LoRA)"},
+            "sample_steps": {"type": "range", "min": 2, "max": 50, "default": 20, "step": 2, "label": "Sample Steps", "note": "Used when Go Fast is off"},
+        },
+    },
+    "local-h3-vertical": {
+        "duration": {"type": "range", "min": 2, "max": 15, "default": 6, "label": "Duration (seconds)", "note": "With a start image, output keeps the image's shape"},
+        "last_image_supported": True,
+        "_advanced": {
+            "go_fast": {"type": "toggle", "default": True, "label": "Go Fast (8-step LoRA)"},
+            "sample_steps": {"type": "range", "min": 2, "max": 50, "default": 20, "step": 2, "label": "Sample Steps", "note": "Used when Go Fast is off"},
+        },
+    },
+    "local-wan-t2v": {
+        "aspect_ratio": {"type": "select", "options": ["9:16", "16:9", "1:1"], "default": "9:16", "label": "Aspect Ratio"},
+        "resolution": {"type": "select", "options": ["480p", "720p"], "default": "480p", "label": "Resolution"},
+        "num_frames": {"type": "range", "min": 49, "max": 121, "default": 81, "step": 4, "label": "Frames", "note": "81 = ~5s, 121 = ~7.5s at 16fps"},
+        "_advanced": {
+            "go_fast": {"type": "toggle", "default": True, "label": "Go Fast (4-step LoRA)"},
+            "sample_steps": {"type": "range", "min": 2, "max": 50, "default": 20, "step": 2, "label": "Sample Steps", "note": "Used when Go Fast is off"},
+            "sample_shift": {"type": "range", "min": 1, "max": 20, "default": 5, "step": 1, "label": "Sample Shift"},
+            "frames_per_second": {"type": "range", "min": 5, "max": 30, "default": 16, "step": 1, "label": "FPS"},
+            "negative_prompt": {"type": "text", "default": "", "label": "Negative Prompt", "placeholder": "motion, morphing, text, extra vehicles..."},
+        },
+    },
+    "local-wan-i2v": {
+        "resolution": {"type": "select", "options": ["480p", "720p"], "default": "480p", "label": "Resolution", "note": "Output keeps the image's shape"},
+        "num_frames": {"type": "range", "min": 49, "max": 121, "default": 81, "step": 4, "label": "Frames", "note": "81 = ~5s, 121 = ~7.5s at 16fps"},
+        "image_required": True,
+        "_advanced": {
+            "go_fast": {"type": "toggle", "default": True, "label": "Go Fast (4-step LoRA)"},
+            "sample_steps": {"type": "range", "min": 2, "max": 50, "default": 20, "step": 2, "label": "Sample Steps", "note": "Used when Go Fast is off"},
+            "sample_shift": {"type": "range", "min": 1, "max": 20, "default": 5, "step": 1, "label": "Sample Shift"},
+            "frames_per_second": {"type": "range", "min": 5, "max": 30, "default": 16, "step": 1, "label": "FPS"},
+            "negative_prompt": {"type": "text", "default": "", "label": "Negative Prompt", "placeholder": "motion, morphing, text, extra vehicles..."},
+        },
+    },
     "wan-i2v-fast": {
         "resolution": {"type": "select", "options": ["480p", "720p"], "default": "480p", "label": "Resolution"},
         "num_frames": {"type": "range", "min": 81, "max": 121, "default": 81, "step": 4, "label": "Frames", "note": "81 = ~5s, 121 = ~7.5s at 16fps"},
@@ -547,6 +588,19 @@ async def generate_video(
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
 
+    # A local engine has no paid admission step, so its workflow builder is the
+    # one place a bad request (missing image, unsupported size) is refused.
+    is_local = generation_budget.is_local_provider(provider)
+    if is_local:
+        info = PROVIDERS[provider]
+        try:
+            info["module"].build_workflow(prompt, {
+                "aspect_ratio": aspect_ratio, "resolution": resolution, "duration": duration,
+                "image_data_uri": image_data_uri, "model_id": info["models"][0],
+                "variant": info.get("variant"), **extra})
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+
     # Check affordability before creating job/prompt state. Queued indices debit
     # only after acquiring the generation permit, on their execution UTC day.
     # Cost follows the unchanged provider payload; an unpriced provider
@@ -562,7 +616,7 @@ async def generate_video(
         )
     planned_usd = count * cost_per_gen
     now = datetime.now(timezone.utc)
-    if not generation_budget.can_reserve_at(
+    if not is_local and not generation_budget.can_reserve_at(
         generation_budget.jobs_store_path(), planned_usd, now=now,
     ):
         resets_at = generation_budget.next_reset_iso(now)
@@ -629,7 +683,8 @@ async def generate_video(
         # flipped to "error" instead of silently sticking on "queued" forever.
         try:
             async with _gen_semaphore:
-                if not await asyncio.to_thread(
+                # Local engines send no paid request: nothing to debit.
+                if not is_local and not await asyncio.to_thread(
                     generation_budget.debit_generation_spend_at,
                     generation_budget.jobs_store_path(), cost_per_gen, f"{job_id}#{index}:s0",
                 ):
@@ -697,7 +752,9 @@ def _sweep_stuck_entries(job: dict) -> None:
     except ValueError:
         return
     age = (datetime.now(timezone.utc) - created_dt).total_seconds()
-    if age < _STUCK_JOB_TIMEOUT_SECS:
+    # Local engines queue on one machine and may legitimately run far longer.
+    timeout = (PROVIDERS.get(job.get("provider")) or {}).get("stuck_timeout_secs", _STUCK_JOB_TIMEOUT_SECS)
+    if age < timeout:
         return
     swept = False
     for entry in job.get("videos", []):
@@ -708,7 +765,7 @@ def _sweep_stuck_entries(job: dict) -> None:
         entry["status"] = "error"
         entry["error"] = (
             f"Stuck in '{entry.get('status', 'queued')}' for over "
-            f"{_STUCK_JOB_TIMEOUT_SECS // 60} minutes — task likely crashed"
+            f"{timeout // 60} minutes — task likely crashed"
         )
         swept = True
     if swept:
