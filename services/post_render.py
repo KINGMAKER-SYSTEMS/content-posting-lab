@@ -431,7 +431,11 @@ class _FinalRate:
     keep_times: bool = False
 
 
-def _final_frame_rate(source: Path, tools: RenderTools, *, paired: bool = False,
+# One frame-timing reading shared by both twins of a paired final, by rate cap.
+PairTiming = dict  # dict[Fraction | None, _FinalRate]
+
+
+def _final_frame_rate(source: Path, tools: RenderTools, *, pair_timing: PairTiming | None = None,
                       max_rate: Fraction | None = None) -> _FinalRate:
     """The final's frame timing: the body's own rate (60p is halved to 30).
 
@@ -446,17 +450,29 @@ def _final_frame_rate(source: Path, tools: RenderTools, *, paired: bool = False,
     frames for one slot and some for two. A body within 1% of the cap goes to
     the cap (a 30.01 fps file is a 30 fps file, not a 15 fps one).
 
-    A lone final whose rate cannot be read keeps 30 fps as before. A paired
-    final (clean + captioned, ``normalize_pair_timing``) fails closed instead:
-    its twin may have read the rate, and the pair must match.
+    A final whose rate cannot be read uses the preset's 30 fps, as before.
+
+    ``pair_timing`` is shared by the two twins of a paired final (clean +
+    captioned, ``render_post``). The first twin's reading is stored there,
+    readable or not, and the other twin reuses it instead of reading again.
+    So the twins always get the same timing: both 30 fps when the one reading
+    fails, both the body's rate when it works. A second ffprobe call that
+    failed (or worked) where the first did not can never split the pair.
     """
+    if pair_timing is not None and max_rate in pair_timing:
+        return pair_timing[max_rate]
+    timing = _read_final_frame_rate(source, tools, max_rate)
+    if pair_timing is not None:
+        pair_timing[max_rate] = timing
+    return timing
+
+
+def _read_final_frame_rate(source: Path, tools: RenderTools, max_rate: Fraction | None) -> _FinalRate:
     average = probe_variable_frame_rate(source, tools.ffprobe)
     if average is not None and (max_rate is None or average <= max_rate):
         return _FinalRate(keep_times=True)
     native = probe_frame_rate(source, tools.ffprobe)
     if native is None:
-        if paired:
-            raise PostRenderError("frame_rate_unreadable", "paired final cannot prove the source frame rate")
         return _FinalRate()
     rate = delivery_frame_rate(native)
     if max_rate is not None and rate > max_rate:
@@ -523,8 +539,8 @@ def _video_graph(source_probe: MediaProbe, frame_height: int | None = None, *, i
 def _encode_final(source: Path, overlay: Path | None, final: Path, source_probe: MediaProbe,
                   tools: RenderTools, frame_height: int | None = None, *, in_app: bool = False,
                   normalize_pair_timing: bool = False, max_frame_rate: Fraction | None = None,
-                  end_seconds: Fraction | None = None) -> MediaProbe:
-    timing = _final_frame_rate(source, tools, paired=normalize_pair_timing, max_rate=max_frame_rate)
+                  end_seconds: Fraction | None = None, pair_timing: PairTiming | None = None) -> MediaProbe:
+    timing = _final_frame_rate(source, tools, pair_timing=pair_timing, max_rate=max_frame_rate)
     frame_rate = timing.rate
     graph = _video_graph(source_probe, frame_height, in_app=in_app, normalize_pair_timing=normalize_pair_timing,
                          timing=timing)
@@ -773,7 +789,7 @@ def _ink_refusal(share: float, pixels: int, box_match: float | None,
 def _check_caption_ink(output_directory: Path, qa_path: Path, qa_at_ms: int, overlay_bytes: bytes,
                        background_png: bytes | None, line_centers: list[int], *, reference_source: Path,
                        frame_height: int | None, normalize_pair_timing: bool, tools: RenderTools,
-                       max_frame_rate: Fraction | None = None) -> dict:
+                       max_frame_rate: Fraction | None = None, pair_timing: PairTiming | None = None) -> dict:
     """Refuse a burned final whose QA frame does not show the caption; return the decode.json facts.
 
     The reference is the same frame of the clip the final was encoded from (the trimmed
@@ -786,7 +802,7 @@ def _check_caption_ink(output_directory: Path, qa_path: Path, qa_at_ms: int, ove
     """
     clip_probe = _probe(reference_source, tools)
     # The same rate the final was encoded at, so the reference is the same frame.
-    timing = _final_frame_rate(reference_source, tools, paired=normalize_pair_timing, max_rate=max_frame_rate)
+    timing = _final_frame_rate(reference_source, tools, pair_timing=pair_timing, max_rate=max_frame_rate)
     seek = ["-nostdin", "-v", "error", "-xerror", "-protocol_whitelist", "file,pipe",
             "-noautorotate", "-ss", f"{qa_at_ms / 1000:.3f}", "-f", "mov", "-i", str(reference_source)]
     cut = ["-map", "[v]", "-frames:v", "1", "-q:v", "3", "-update", "1"]
@@ -857,7 +873,8 @@ def _render_post_single(source_path: Path, output_directory: Path, request: Post
                 font_dir: Path | None = None, tools: RenderTools = RenderTools(),
                 clock_ms: Callable[[], int] = lambda: time.time_ns() // 1_000_000,
                 burned_fallback: bool = False,
-                allow_pool_supplied_without_provenance: bool = False) -> RenderedPost:
+                allow_pool_supplied_without_provenance: bool = False,
+                pair_timing: PairTiming | None = None) -> RenderedPost:
     """Render one prepared artifact; create a new output directory or leave none on failure.
 
     The source must already be upright vertical video with the exact requested
@@ -937,7 +954,7 @@ def _render_post_single(source_path: Path, output_directory: Path, request: Post
             repair_dir = output_directory / "repair"
             render_shorter(source_path, repair_dir, repair,
                            overlay_path=overlay_path, frame_height=band_height,
-                           normalize_pair_timing=paired_caption)
+                           normalize_pair_timing=paired_caption, pair_timing=pair_timing)
             shutil.move(str(repair_dir / "final.mp4"), final_path)
             final_probe = _probe(final_path, tools)
             if (final_probe.width, final_probe.height, final_probe.video_codec, final_probe.pixel_format,
@@ -945,7 +962,8 @@ def _render_post_single(source_path: Path, output_directory: Path, request: Post
                 raise PostRenderError("final_probe_mismatch", "encoded final media facts do not match delivery contract")
         else:
             final_probe = _encode_final(source, overlay_path, final_path, source_probe, tools, band_height,
-                                        in_app=no_overlay, normalize_pair_timing=paired_caption)
+                                        in_app=no_overlay, normalize_pair_timing=paired_caption,
+                                        pair_timing=pair_timing)
             if (final_probe.width, final_probe.height, final_probe.video_codec, final_probe.pixel_format,
                 final_probe.sample_aspect_ratio, final_probe.rotation) != (1080, 1920, "h264", "yuv420p", "1:1", 0):
                 raise PostRenderError("final_probe_mismatch", "encoded final media facts do not match delivery contract")
@@ -974,7 +992,8 @@ def _render_post_single(source_path: Path, output_directory: Path, request: Post
                 [record.center_y_px for record in overlay.plan.lines if record.text],
                 reference_source=(output_directory / "repair" / "trimmed.mp4") if repair is not None else source,
                 frame_height=band_height, normalize_pair_timing=paired_caption, tools=tools,
-                max_frame_rate=_repair_frame_rate_cap() if repair is not None else None)
+                max_frame_rate=_repair_frame_rate_cap() if repair is not None else None,
+                pair_timing=pair_timing)
         final_sha, final_length = _file_hash(final_path, MAX_FINAL_BYTES)
         qa_sha, _ = _file_hash(qa_path, MAX_QA_BYTES)
         if final_sha == request.source_sha256:
@@ -1026,10 +1045,15 @@ def render_post(source_path: Path, output_directory: Path, request: PostRenderRe
     exception: a fallback refused for its burned caption alone
     (IN_APP_FALLBACK_CLEAN_ONLY_CODES) keeps the validated clean final, publishes
     it with no burned_fallback, and records the refusal in BURNED_REFUSED_MARKER.
+    Both variants share one frame-rate reading (``_final_frame_rate``'s
+    ``pair_timing``), so they always come out at the same rate.
     """
+    # Only an in-app slot renders a twin; a lone final reads its own rate.
+    pair_timing = {} if _caption_delivery(request) == CAPTION_DELIVERY_IN_APP else None
     result = _render_post_single(source_path, output_directory, request,
                                  font_dir=font_dir, tools=tools, clock_ms=clock_ms,
-                                 allow_pool_supplied_without_provenance=allow_pool_supplied_without_provenance)
+                                 allow_pool_supplied_without_provenance=allow_pool_supplied_without_provenance,
+                                 pair_timing=pair_timing)
     if _caption_delivery(request) != CAPTION_DELIVERY_IN_APP:
         return result
     try:
@@ -1037,7 +1061,8 @@ def render_post(source_path: Path, output_directory: Path, request: PostRenderRe
             fallback = _render_post_single(source_path, Path(output_directory) / "burned", request,
                                           font_dir=font_dir, tools=tools, clock_ms=clock_ms,
                                           burned_fallback=True,
-                                          allow_pool_supplied_without_provenance=allow_pool_supplied_without_provenance)
+                                          allow_pool_supplied_without_provenance=allow_pool_supplied_without_provenance,
+                                          pair_timing=pair_timing)
         except (CaptionRenderError, PostRenderError) as error:
             if error.code not in IN_APP_FALLBACK_CLEAN_ONLY_CODES:
                 raise
