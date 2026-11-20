@@ -1032,10 +1032,14 @@ async def run_color_correct(
                 vf += f",fps={frame_rate_text(rate)}"
             if window is not None:
                 # End the cut on a whole frame at its own rate, and end the
-                # sound at the same instant (rounded down to the microsecond).
+                # sound at the same instant (rounded down to the microsecond,
+                # so "-t" keeps exactly ``frames`` frames: frame N starts at
+                # or after it). No "-frames:v": ffmpeg 5.1 (production) stops
+                # the whole file at the video limit, cutting the last ~60 ms
+                # of sound that is still queued.
                 frames = output_frame_count(Fraction(window[1], 1000) / Fraction(f"{speed:.6f}"), rate)
                 end = math.floor(Fraction(frames) / rate * 1_000_000) / 1_000_000
-                output_window = ["-frames:v", str(frames), "-t", f"{end:.6f}"]
+                output_window = ["-t", f"{end:.6f}"]
     input_window = (
         [
             "-ss", f"{window[0] / 1000:.3f}",

@@ -539,8 +539,11 @@ def _encode_final(source: Path, overlay: Path | None, final: Path, source_probe:
     if max_frame_rate is not None and timing.resample:
         # A capped final never ends past the body: the fps step can round its
         # last frame up by up to half a frame, and a repair may not run past
-        # its commanded cut by even one frame.
-        base += ["-frames:v", str(max(1, math.floor(Fraction(source_probe.duration_ms, 1000) * frame_rate)))]
+        # its commanded cut by even one frame. "-t" at exactly that many
+        # frames (rounded down to the microsecond) keeps them; "-frames:v"
+        # would make ffmpeg 5.1 (production) stop the file before its sound.
+        frames = max(1, math.floor(Fraction(source_probe.duration_ms, 1000) * frame_rate))
+        base += ["-t", f"{math.floor(Fraction(frames) / frame_rate * 1_000_000) / 1_000_000:.6f}"]
     for attempt in range(2):
         encode = delivery_encode_args("tiktok_delivery_v1")
         if timing.keep_times:
