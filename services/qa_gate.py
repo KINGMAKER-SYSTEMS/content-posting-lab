@@ -1117,8 +1117,9 @@ def validate_clip(path: Path | str, policy: QaPolicy, *, scan: bool = True) -> Q
 
 def validate_and_repair(path: Path | str, policy: QaPolicy, *, repair: bool = True,
                         repaired_destination: Path | str | None = None) -> QaVerdict:
-    """The gate: repair a SAR-only container fault (frame-identical stream
-    copy), then validate. In place by default; with ``repaired_destination``
+    """Validate the clip and optionally repair it. An isolated SAR fault uses
+    a frame-identical stream copy. Format, stutter and edge repairs can
+    re-encode the clip. Repairs replace the input by default; with ``repaired_destination``
     the source is left untouched (a paid provider master is evidence) and the
     repaired file lands there. ``verdict.path`` is the file the verdict is
     about: the repaired destination when a repair happened, else ``path``."""
@@ -1190,7 +1191,7 @@ def _main(argv: list[str]) -> int:
     parser.add_argument("--still", action="store_true", help="still/photo format: freezes are the look")
     parser.add_argument("--fade", action="store_true", help="recipe declares a fade: black runs are the look")
     parser.add_argument("--sound", default=None, help="sound id for the clean-window check")
-    parser.add_argument("--repair", action="store_true", help="rewrite a SAR-only fault in place")
+    parser.add_argument("--repair", action="store_true", help="repair SAR, format, stutter or edges in place; repairs can re-encode the input")
     parser.add_argument("--any-size", action="store_true", help="a provider's native frame: skip the 1080x1920 check")
     parser.add_argument("--sideways-check", action="store_true", help="read 3 frames for a quarter-turned picture (ai_video)")
     parser.add_argument("--json", action="store_true")
@@ -1211,7 +1212,7 @@ def _main(argv: list[str]) -> int:
             state = "PASS" if verdict.ok else "BLOCK"
             print(f"{state} score={verdict.score:3d} {Path(raw).name} "
                   f"blocks={[f.code for f in verdict.blocks]} warnings={[f.code for f in verdict.warnings]} "
-                  f"sar_fixed={verdict.repaired_sar} tool_error={verdict.extra.get('tool_error')} "
+                  f"sar_fixed={verdict.repaired_sar} healed={list(verdict.healed)} tool_error={verdict.extra.get('tool_error')} "
                   f"{verdict.elapsed_s:.2f}s")
         worst = max(worst, 0 if verdict.ok else 1)
     return worst

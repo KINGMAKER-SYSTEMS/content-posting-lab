@@ -224,6 +224,37 @@ def test_enforce_holds_a_frame_over_black_at_either_edge_but_not_in_the_middle(t
     assert verdict.healed == () and _codes(verdict) == ["qa_black_run"] and _sha(middle) == before
 
 
+def test_a_completed_format_heal_that_still_blocks_is_discarded(tmp_path, monkeypatch):
+    original = tmp_path / "provider.mp4"
+    clips._encode(original, clips._src(3.0, size="768x1344"), frames=90, extra=["-pix_fmt", "yuv444p"])
+    treated = tmp_path / "treated.mp4"
+    before = _sha(original)
+
+    def still_wrong_format(source, destination, policy):
+        destination.write_bytes(source.read_bytes())
+
+    monkeypatch.setattr(qa_gate, "heal_format", still_wrong_format)
+    verdict = qa_gate.run_gate(original, PAID, qa_gate.MODE_ENFORCE, repaired_destination=treated)
+    assert not verdict.ok and verdict.reason == "qa_codec_mismatch"
+    assert verdict.healed == () and verdict.path == original
+    assert _sha(original) == before and not treated.exists()
+
+
+def test_a_completed_edge_heal_that_keeps_the_tail_jump_is_discarded(tmp_path, monkeypatch):
+    original = clips.with_tail_cut(tmp_path / "tail.mp4", frames_before_end=3)
+    treated = tmp_path / "treated.mp4"
+    before = _sha(original)
+
+    def still_jumps(source, destination, plan, fps, policy):
+        destination.write_bytes(source.read_bytes())
+
+    monkeypatch.setattr(qa_gate, "heal_edges", still_jumps)
+    verdict = qa_gate.run_gate(original, VIDEO_6S, qa_gate.MODE_ENFORCE, repaired_destination=treated)
+    assert verdict.ok and _codes(verdict) == ["qa_tail_cut"]
+    assert verdict.healed == () and verdict.path == original
+    assert _sha(original) == before and not treated.exists()
+
+
 def test_a_format_heal_that_times_out_still_blocks(tmp_path, monkeypatch):
     # GLM review: a timed-out re-encode must not become run_gate's
     # fail-open pass; the hard block stands.
