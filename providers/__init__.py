@@ -1,4 +1,4 @@
-from . import grok, replicate
+from . import comfyui, grok, replicate
 
 PROVIDERS = {
     "h3-highspeed": {
@@ -87,5 +87,49 @@ PROVIDERS = {
         "models": ["prunaai/p-video"],
         "module": replicate,
         "variant": "vertical",
+    },
+    # Local engines run on a ComfyUI server the operator owns (COMFYUI_URL).
+    # ``billing: local`` is the only way a provider may meter as free.
+    "local-h3": {
+        "name": "H3 (local)",
+        "group": "Local (ComfyUI)",
+        "key_id": "comfyui",
+        "pricing": "Free — runs on the studio Mac → 5 crops per run",
+        "billing": "local",
+        "stuck_timeout_secs": 6 * 60 * 60,
+        "models": [comfyui.H3_FL2VA],
+        "module": comfyui,
+        "variant": "landscape",
+    },
+    "local-h3-vertical": {
+        "name": "H3 Vertical (local)",
+        "group": "Local (ComfyUI)",
+        "key_id": "comfyui",
+        "pricing": "Free — runs on the studio Mac",
+        "billing": "local",
+        "stuck_timeout_secs": 6 * 60 * 60,
+        "models": [comfyui.H3_FL2VA],
+        "module": comfyui,
+        "variant": "vertical",
+    },
+    "local-wan-t2v": {
+        "name": "Text-to-Video (2.2 14B, local)",
+        "group": "Local (ComfyUI)",
+        "key_id": "comfyui",
+        "pricing": "Free — runs on the studio Mac",
+        "billing": "local",
+        "stuck_timeout_secs": 6 * 60 * 60,
+        "models": [comfyui.WAN_T2V],
+        "module": comfyui,
+    },
+    "local-wan-i2v": {
+        "name": "Image-to-Video (2.2 14B, local)",
+        "group": "Local (ComfyUI)",
+        "key_id": "comfyui",
+        "pricing": "Free — runs on the studio Mac",
+        "billing": "local",
+        "stuck_timeout_secs": 6 * 60 * 60,
+        "models": [comfyui.WAN_I2V],
+        "module": comfyui,
     },
 }
