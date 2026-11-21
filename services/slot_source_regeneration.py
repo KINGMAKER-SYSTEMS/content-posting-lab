@@ -58,9 +58,13 @@ _RENDER_LOCK = threading.Lock()
 # bounds the ffmpeg encode itself with services.ffmpeg._encode_timeout_seconds
 # of the cut's input duration; the cross-thread wait allows that plus
 # RENDER_WAIT_GRACE_S for the work around the encode (planned-cut reload, frame
-# and colour probes) and a short wait for the color-correction gate. A render
-# still not finished then is cancelled on the loop, _RENDER_LOCK is released,
-# and the attempt fails as RENDER_TIMEOUT_CODE, which post_render_jobs retries.
+# and colour probes) and any wait for the color-correction gate. That gate is
+# shared with normal generation, so under load the gate wait alone can use most
+# of the budget and the attempt can time out without a hang; the retries in
+# post_render_jobs absorb that. A render still not finished at the limit is
+# cancelled on the loop, _RENDER_LOCK is released, and the attempt fails as
+# RENDER_TIMEOUT_CODE. If every attempt times out, the job itself ends as
+# retry_budget_exhausted; the attempt rows keep RENDER_TIMEOUT_CODE.
 RENDER_WAIT_GRACE_S = 300.0
 RENDER_TIMEOUT_CODE = "source_regeneration_render_timeout"
 
