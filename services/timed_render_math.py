@@ -17,9 +17,10 @@ from __future__ import annotations
 # The retry pass budgets against 85% of the delivery byte cap (see
 # ``services/post_render.py:MAX_FINAL_BYTES``) to leave headroom after a CRF
 # attempt exceeds it. Single-pass x264 at a fixed -b:v can land about 11% over
-# its own target on short, busy clips (Glossy body 3dd39340, 10 s: a 90% retry
-# came out 4,171 bytes over the cap, 85% fit at 21,810,620 bytes on two ffmpeg
-# versions), so the retry needs more than 10% headroom. Both the prepared-post
+# its own target on short, busy clips. Glossy body 3dd39340 (10 s): a 90% retry
+# came out over the cap (23,091,288 bytes on ffmpeg 5.1.9, 23,072,843 on 9.0.2),
+# and an 85% retry fit (21,802,228 and 21,810,620 bytes). So the retry needs more
+# than 10% headroom. Both the prepared-post
 # and timed lyric renderers use this one fraction. It is a delivery-QA policy,
 # not a page value.
 RETRY_BUDGET_FRACTION = 0.85
