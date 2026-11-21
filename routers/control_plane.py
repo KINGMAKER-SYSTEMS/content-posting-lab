@@ -3415,6 +3415,7 @@ async def _run_owned_dossier_generation(job_id: str) -> None:
 
     job_root = Path(job["artifactRoot"]).resolve()
     durable = _checkpointed_generation(job)
+    local = generation_budget.is_local_provider(recipe.engine)
     resuming = durable and bool(job.get("providerCheckpoints") or job.get("clips"))
     # Never rewrite bytes already referenced by a preserved manifest when an
     # interrupted crop/treatment is rebuilt from the same paid prediction.
@@ -3526,10 +3527,11 @@ async def _run_owned_dossier_generation(job_id: str) -> None:
         # idempotently, on every resume) so every create below is also reserved
         # against its commission's lifetime caps. No commission configured for
         # the page: nothing changes. Malformed config or ledger: fail closed here.
-        await asyncio.to_thread(
-            generation_budget.bind_commission_job,
-            generation_budget.jobs_store_path(), job_id, job.get("pageId"),
-        )
+        if not local:
+            await asyncio.to_thread(
+                generation_budget.bind_commission_job,
+                generation_budget.jobs_store_path(), job_id, job.get("pageId"),
+            )
         for call_index in range(calls):
             if not _job_matches_current_master_pages(job):
                 raise RuntimeError("master_pages_strategy_changed")
@@ -3570,7 +3572,7 @@ async def _run_owned_dossier_generation(job_id: str) -> None:
                 attempt, reserve = rows[-1]["attempt"], False
             else:
                 attempt, reserve = 0, False
-            attempt_cost = moderation_retry.attempt_cost_usd(
+            attempt_cost = 0.0 if local else moderation_retry.attempt_cost_usd(
                 recipe.provider_model, duration, resolution=resolution,
                 parameters={**options, "aspect_ratio": aspect_ratio, "image_data_uri": image_data_uri},
             )
@@ -3637,7 +3639,7 @@ async def _run_owned_dossier_generation(job_id: str) -> None:
                 # resumed prediction with the same id) reserves exactly once.
                 # Polling/resuming the SAME prediction stays free.
                 debit_id = f"{provider_job_id}:s0"
-                if not await asyncio.to_thread(
+                if not local and not await asyncio.to_thread(
                     generation_budget.debit_generation_spend_at,
                     generation_budget.jobs_store_path(), attempt_cost, debit_id,
                 ):
@@ -3691,7 +3693,7 @@ async def _run_owned_dossier_generation(job_id: str) -> None:
                     budget_exhausted = True
                     break
                 error_class = classify_provider_error(provider_error)
-                refused = moderation_retry.confirmed_refusal(error_class, request_id, provider_error)
+                refused = not local and moderation_retry.confirmed_refusal(error_class, request_id, provider_error)
                 # A refused Replicate prediction is billed like a successful
                 # one; no prediction id means nothing was created or billed.
                 row.update({"providerRequestId": request_id, "class": error_class,
@@ -6306,52 +6308,43 @@ async def _create_job_impl(
                     detail="prompt_inventory_exhausted",
                     headers={"X-RT-Zero-Reason": PROMPT_INVENTORY_EXHAUSTED},
                 )
-            # Daily total generation budget: the admission no longer reserves
-            # the whole planned amount (that would let queued work shift
-            # unbounded reserved spend across midnight). Every *new billable
-            # submission* is instead reserved at its own UTC submission day,
-            # idempotently, right before the provider call (see
-            # _run_owned_dossier_generation). Admission still validates that the
-            # recipe provider is priced so a job can never be admitted against
-            # an unmeterable paid provider (fail closed).
-            try:
-                generation_budget.charged_cost_per_gen(
-                    generation_recipe.provider_config.get("cost_per_gen_usd")
-                )
-            except ValueError as exc:
-                raise HTTPException(
-                    status_code=500, detail=f"generation_pricing_unavailable: {exc}"
-                )
-            # Cheap admission gate (the per-submission debit remains the real
-            # cap): refuse BEFORE creating any job row when the day's metered
-            # spend already leaves no room for the job's FIRST billable
-            # submission. One clock sample feeds the admission decision, body
-            # `resets_at` and `Retry-After` header. No job
-            # row, no ghost state on refusal.
             provider_options = new_generation_options(generation_recipe)
-            first_call_cost = moderation_retry.attempt_cost_usd(
-                generation_recipe.provider_model,
-                int(provider_options.get("duration", 6)),
-                resolution=str(provider_options.get("resolution", "1080p")),
-                parameters=provider_options,
-            )
-            if first_call_cost is None:
-                first_call_cost = generation_budget.charged_cost_per_gen(
-                    generation_recipe.provider_config.get("cost_per_gen_usd")
+            if not generation_budget.is_local_provider(generation_recipe.engine):
+                try:
+                    catalog_cost = generation_budget.charged_cost_per_gen(
+                        generation_recipe.provider_config.get("cost_per_gen_usd")
+                    )
+                except ValueError as exc:
+                    raise HTTPException(
+                        status_code=500, detail=f"generation_pricing_unavailable: {exc}"
+                    ) from exc
+                # Cheap admission gate (the per-submission debit remains the real
+                # cap): refuse BEFORE creating any job row when the day's metered
+                # spend already leaves no room for the job's FIRST billable
+                # submission. One clock sample feeds the admission decision, body
+                # `resets_at` and `Retry-After` header. No job
+                # row, no ghost state on refusal.
+                first_call_cost = moderation_retry.attempt_cost_usd(
+                    generation_recipe.provider_model,
+                    int(provider_options.get("duration", 6)),
+                    resolution=str(provider_options.get("resolution", "1080p")),
+                    parameters=provider_options,
                 )
-            now = datetime.now(timezone.utc)
-            if not generation_budget.can_reserve_at(_jobs_path(), first_call_cost, now=now):
-                resets_at = generation_budget.next_reset_iso(now)
-                raise HTTPException(
-                    status_code=429,
-                    detail={
-                        "error": "generation_daily_budget_reached",
-                        "resets_at": resets_at,
-                    },
-                    headers={
-                        "Retry-After": str(generation_budget.retry_after_seconds(now)),
-                    },
-                )
+                if first_call_cost is None:
+                    first_call_cost = catalog_cost
+                now = datetime.now(timezone.utc)
+                if not generation_budget.can_reserve_at(_jobs_path(), first_call_cost, now=now):
+                    resets_at = generation_budget.next_reset_iso(now)
+                    raise HTTPException(
+                        status_code=429,
+                        detail={
+                            "error": "generation_daily_budget_reached",
+                            "resets_at": resets_at,
+                        },
+                        headers={
+                            "Retry-After": str(generation_budget.retry_after_seconds(now)),
+                        },
+                    )
             job_root = (
                 _generation_root() / page_id / recipe_version / job_id
             ).resolve()

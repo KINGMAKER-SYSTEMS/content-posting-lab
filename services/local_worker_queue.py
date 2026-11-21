@@ -42,6 +42,7 @@ class Job:
     created: float
     claim_token: str | None = None
     claimed_at: float | None = None
+    claim_heartbeat_at: float | None = None
 
 
 _jobs: dict[str, Job] = {}
@@ -95,6 +96,7 @@ def claim() -> dict | None:
             continue
         job.claim_token = secrets.token_urlsafe(24)
         job.claimed_at = time.monotonic()
+        job.claim_heartbeat_at = job.claimed_at
         return {"id": job.id, "claim_token": job.claim_token, **job.payload}
     return None
 
@@ -105,11 +107,18 @@ def _claimed(job_id: str, claim_token: str) -> Job:
         raise ClaimRejected(job_id)
     if not secrets.compare_digest(job.claim_token.encode(), (claim_token or "").encode()):
         raise ClaimRejected(job_id)
+    if not _claim_alive(job, time.monotonic()):
+        raise ClaimRejected(job_id)
     return job
 
 
+def _claim_alive(job: Job, now: float) -> bool:
+    return job.claim_heartbeat_at is not None and now - job.claim_heartbeat_at < WORKER_STALE_SECONDS
+
+
 def heartbeat(job_id: str, claim_token: str) -> None:
-    _claimed(job_id, claim_token)
+    job = _claimed(job_id, claim_token)
+    job.claim_heartbeat_at = time.monotonic()
     touch()
 
 
@@ -143,7 +152,7 @@ async def wait(job: Job, entry: dict, render_timeout: float) -> Path:
                     raise LocalWorkerError("no local worker is online to render this job")
                 continue
             entry["status"] = "polling"
-            if not worker_online():
+            if not _claim_alive(job, now):
                 raise LocalWorkerError("the local worker went offline during the render")
             if now - job.claimed_at >= render_timeout:
                 raise LocalWorkerError("the local render timed out")

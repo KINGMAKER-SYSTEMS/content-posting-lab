@@ -100,13 +100,13 @@ async def result(
         raise HTTPException(status_code=409, detail="job is not held under this claim")
 
     limit = _provider_download_limit()
-    dest = _spool_dir() / f"{job_id}.mp4"
-    partial = dest.with_name(dest.name + ".part")
-    partial.unlink(missing_ok=True)
+    descriptor, filename = tempfile.mkstemp(prefix=f"{job_id}-", suffix=".mp4", dir=_spool_dir())
+    dest = Path(filename)
+    accepted = False
     total = 0
     head = b""
     try:
-        with partial.open("xb") as f:
+        with os.fdopen(descriptor, "wb") as f:
             async for chunk in request.stream():
                 total += len(chunk)
                 if total > limit:
@@ -119,13 +119,11 @@ async def result(
         # ISO base media (MP4/MOV) carries "ftyp" at byte 4; refuse anything else.
         if total < 12 or head[4:8] != b"ftyp":
             raise HTTPException(status_code=400, detail="upload is not an MP4 video")
-        os.replace(partial, dest)
-    finally:
-        partial.unlink(missing_ok=True)
-
-    try:
         queue.complete(job_id, x_claim_token or "", dest)
+        accepted = True
     except queue.ClaimRejected:
-        dest.unlink(missing_ok=True)
         raise HTTPException(status_code=409, detail="job is not held under this claim")
+    finally:
+        if not accepted:
+            dest.unlink(missing_ok=True)
     return {"ok": True, "bytes": total}

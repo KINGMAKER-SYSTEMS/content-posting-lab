@@ -520,7 +520,7 @@ def _model_binding(family: dict[str, Any], catalog: dict[str, Any]) -> dict[str,
     runtime = PROVIDERS.get(provider_id)
     if not isinstance(provider_id, str) or not isinstance(provider, dict) or not isinstance(runtime, dict):
         return None
-    model_id = provider.get("replicate_model")
+    model_id = provider.get("model") or provider.get("replicate_model")
     if not isinstance(model_id, str) or model_id not in runtime.get("models", []):
         return None
     controls = PROVIDER_SCHEMAS.get(provider_id)
@@ -753,7 +753,11 @@ def _generated_ingredients(
     reference = _reference_binding(family) if family is not None else None
     model_options = [
         option for option in model_options
-        if (option["inputContract"]["referenceImage"] == "required") == (reference is not None)
+        if (
+            (family or {}).get("method") in PROVIDERS[option["providerId"]]["generation_methods"]
+            if "generation_methods" in PROVIDERS[option["providerId"]]
+            else (option["inputContract"]["referenceImage"] == "required") == (reference is not None)
+        )
     ]
     reference_requirement = (
         model.get("inputContract", {}).get("referenceImage") if model is not None else None

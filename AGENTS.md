@@ -28,7 +28,10 @@
   studio Mac H3 holds about 186 GB and each Wan pair about 120 GB, and holding
   all three got the server killed by the OS (jetsam) mid-render. Local jobs use
   the entry's `stuck_timeout_secs` instead
-  of the 20-minute watchdog. Control Plane recipes do not select local engines.
+  of the 20-minute watchdog. Control Plane can use a local engine when an
+  operator explicitly includes it in the pinned prompt catalog with a
+  compatible method and zero cost. Bundled recipes keep their existing provider
+  selections. Local jobs bypass the paid ledger and Replicate retries.
   On Apple silicon the ComfyUI server must be started with
   `--use-pytorch-cross-attention`: its default sub-quadratic attention and
   `--use-split-cross-attention` both return wrong values past roughly 20k
@@ -47,9 +50,13 @@
   so a stale worker cannot finish a job it no longer holds. The worker receives
   only the whitelisted request fields. Uploads are byte-bounded by
   `CONTENT_LAB_PROVIDER_DOWNLOAD_BYTES`, must be ISO media, and are moved, not
-  re-downloaded, by `generate_one`. A job fails closed when no worker has
-  spoken for `WORKER_STALE_SECONDS` or the render outlasts
-  `COMFYUI_TIMEOUT_SECONDS` from its claim; a restart drops queued hand-offs.
+  re-downloaded, by `generate_one`. Unclaimed jobs check pool liveness.
+  Claimed jobs expire when their own worker stops heartbeating for
+  `WORKER_STALE_SECONDS` or the render outlasts `COMFYUI_TIMEOUT_SECONDS`
+  from its claim. A restart drops queued hand-offs. Explicit local Generate
+  requests use a separate one-job permit from paid Generate requests. Concurrent
+  result uploads use independent spool files. Only the winning result is handed
+  to the waiting job.
 
 - `routers/recreate.py` confines REST and WebSocket job IDs to one real
   recreate-directory child before any job write or deletion. Reject encoded

@@ -27,6 +27,7 @@ from providers.base import API_KEYS
 from services.content_engine_registry import resolve_material_profile
 from services.caption_discipline import validate_caption_discipline
 from services.content_format_contracts import load_format_contracts
+from services.generation_budget import charged_cost_per_gen, is_local_provider
 from services.page_frame import frame_fit
 
 
@@ -488,11 +489,20 @@ def _resolve_generation_recipe(
     runtime_provider = PROVIDERS.get(provider_engine)
     if not isinstance(provider_config, dict) or not isinstance(runtime_provider, dict):
         return _unavailable(publication, "provider_config")
-    model = production.get("modelId") or provider_config.get("replicate_model")
+    model = production.get("modelId") or provider_config.get("model") or provider_config.get("replicate_model")
     if model not in runtime_provider.get("models", []):
         return _unavailable(publication, "provider_model")
-    if float(provider_config.get("cost_per_gen_usd") or 0) <= 0:
-        return _unavailable(publication, "provider_cost")
+    cost = provider_config.get("cost_per_gen_usd")
+    if is_local_provider(provider_engine):
+        if type(cost) not in (int, float) or cost != 0:
+            return _unavailable(publication, "provider_cost")
+        if method not in runtime_provider.get("generation_methods", ()):
+            return _unavailable(publication, "generation_method")
+    else:
+        try:
+            charged_cost_per_gen(cost)
+        except ValueError:
+            return _unavailable(publication, "provider_cost")
 
     return GenerationRecipe(
         recipe_id=recipe_id,
