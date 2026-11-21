@@ -279,3 +279,46 @@ async def test_a_tool_outage_passes_the_cut_and_never_fails_the_job(lab, monkeyp
     assert record["ok"] and record["blocks"] == [] and record["toolError"] == "ffmpeg_scan_TimeoutExpired"
     assert (Path(job["artifactRoot"]) / job["clips"][0]["path"]).is_file()
     assert "qaRefusedCuts" not in job
+
+
+# ── a cut is counted at its own rate (control-plane-pad#327) ─────────────────
+#
+# Since Lab #414 a 25 fps master is cut at 25 fps (delivery_frame_rate). The
+# gate counts the 6 s window in the cut's own frames: 150 at 25 fps, not 180.
+
+@pytest.mark.asyncio
+async def test_a_25fps_cut_of_the_right_length_is_delivered_under_enforce(lab, monkeypatch):
+    client, tmp_path, _ = lab
+    job_id = _queue_one_cut(client, "rate25")
+    _stub_render(monkeypatch, tmp_path, [lambda dst: clips.clean(dst, seconds=6.0, fps=25)])
+    await cp._run_dossier_source(job_id)
+    job = cp._load_jobs()["jobs"][job_id]
+    assert job["status"] == "completed", job.get("error")
+    record = job["clips"][0]["qaGate"]
+    assert record["ok"] is True and record["blocks"] == [] and record["frames"] == 150
+    assert "qaRefusedCuts" not in job
+
+
+@pytest.mark.asyncio
+async def test_a_25fps_cut_of_the_wrong_length_is_still_refused(lab, monkeypatch):
+    client, tmp_path, _ = lab
+    job_id = _queue_one_cut(client, "rate25long")
+    _stub_render(monkeypatch, tmp_path, [lambda dst: clips.clean(dst, seconds=7.0, fps=25)])
+    await cp._run_dossier_source(job_id)
+    job = cp._load_jobs()["jobs"][job_id]
+    assert job["status"] == "failed" and job["error"] == "qa_duration_mismatch"
+    assert job["qaRefusedCuts"][0]["detail"] == "175 frames (7.000 s) is not the recipe's 150 +-1"
+
+
+@pytest.mark.asyncio
+async def test_shadow_records_a_25fps_cut_of_the_right_length_as_ok(lab, monkeypatch):
+    client, tmp_path, _ = lab
+    monkeypatch.setenv("CONTENT_LAB_QA_GATE", "shadow")
+    job_id = _queue_one_cut(client, "rate25shadow")
+    _stub_render(monkeypatch, tmp_path, [lambda dst: clips.clean(dst, seconds=6.0, fps=25)])
+    await cp._run_dossier_source(job_id)
+    job = cp._load_jobs()["jobs"][job_id]
+    assert job["status"] == "completed", job.get("error")
+    record = job["clips"][0]["qaGate"]
+    assert record["mode"] == "shadow" and record["ok"] is True and record["blocks"] == []
+    assert record["details"] == [] and record["frames"] == 150
