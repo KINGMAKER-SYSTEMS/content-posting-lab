@@ -514,8 +514,10 @@ def _video_graph(source_probe: MediaProbe, frame_height: int | None = None, *, i
     elif normalize_pair_timing:
         # Resample before the paths diverge. FFmpeg 5.1 can round a half-frame
         # at EOF differently with an overlay if only the encoder sets the rate.
-        # The rate is the body's own (the same one the encoder gets), so this
-        # passes each frame through instead of repeating frames to make 30 fps.
+        # When the pair's one reading worked, the rate is the body's own (the
+        # same one the encoder gets), so this passes each frame through. When
+        # that reading failed, both twins resample to 30 fps together, which
+        # repeats frames of a 24/25 fps body, as before #414.
         chain.append(f"fps={frame_rate_text(timing.rate or Fraction(30))}")
     elif timing.resample and timing.rate is not None:
         # The final's rate is not the body's own (60p kept at every second
