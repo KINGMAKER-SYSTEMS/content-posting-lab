@@ -7,6 +7,12 @@ cut changed either file. Every later change must reproduce these bytes: the
 cut filter strings, the full ffmpeg argv of both executors' cut call, and the
 prepared-post graph and argv for pages without a frame (absent or "9:16").
 The reference is generated on an untouched current-main worktree before integrating framed cuts; do not regenerate it from the implementation under test.
+
+One deliberate exception: the bounded size-retry bitrate in postRenderEncodes
+(-b:v, -maxrate, and -bufsize at twice that) now follows the 85% retry budget
+(services/timed_render_math.py:RETRY_BUDGET_FRACTION, control-plane-pad #347).
+Only those three numbers were edited in the fixture; every other byte is still
+the dca377d5d1a0f5b30e0d4e2048b31652d788c3f7 output.
 """
 from __future__ import annotations
 
