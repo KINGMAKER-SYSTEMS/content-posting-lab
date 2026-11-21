@@ -2,7 +2,8 @@
 (control-plane-pad#327).
 
 A format or edge heal on a Lab cut used the gate's own h264 args, so both
-lacked the delivery preset's settings and its -minrate/-maxrate floor. The
+lacked the delivery preset's settings (crf 18, profile, level, -maxrate/-bufsize
+cap; its -minrate is passed but libx264 ignores it in CRF mode). The
 format heal also passed no -r (ffmpeg then kept the input rate); the edge heal
 already set -r to the clip's rate. Now both use the preset, and the format heal
 sets -r explicitly to the rate the cut's encode picks (Lab #414:
@@ -70,7 +71,7 @@ def test_a_source_cut_policy_carries_the_delivery_preset():
     assert generated.encode_args == ()
 
 
-def test_a_format_heal_of_a_25fps_cut_keeps_25_and_the_bitrate_floor(tmp_path, monkeypatch):
+def test_a_format_heal_of_a_25fps_cut_keeps_25_and_the_preset_args(tmp_path, monkeypatch):
     cut = tmp_path / "cut25.mp4"
     clips._encode(cut, clips._src(2.0, size="360x640", fps=25), frames=50, fps=25, audio=True,
                   extra=["-pix_fmt", "yuv444p"])
@@ -98,7 +99,7 @@ def test_a_format_heal_on_a_video_only_cut_drops_audio_with_the_preset(tmp_path,
     assert _value(args, "-r") == "25" and _value(args, "-minrate") == "8M"
 
 
-def test_an_edge_heal_of_a_25fps_cut_keeps_25_and_the_bitrate_floor(tmp_path, monkeypatch):
+def test_an_edge_heal_of_a_25fps_cut_keeps_25_and_the_preset_args(tmp_path, monkeypatch):
     cut = tmp_path / "cut25.mp4"
     clips._encode(cut, clips._src(2.0, size="360x640", fps=25), frames=50, fps=25)
     calls = _spy(monkeypatch)

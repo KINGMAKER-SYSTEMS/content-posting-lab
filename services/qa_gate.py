@@ -195,9 +195,11 @@ class QaPolicy:
     montage_max_median_s: float = 0.5
     # The delivery preset's encode args (services.ffmpeg.delivery_encode_args)
     # for a Lab cut. Only the enforce heals read them: a format or edge heal
-    # re-encodes with the preset's video settings, -minrate/-maxrate floor
-    # included, at the clip's own rate. Empty (a provider clip): the gate's
-    # own h264 args. No check reads this, so shadow verdicts do not change.
+    # re-encodes with the preset's video settings (crf, profile, level and its
+    # -maxrate/-bufsize cap) at the clip's own rate. The preset's -minrate is
+    # passed too, but libx264 ignores it in CRF mode, so it is not a real floor.
+    # Empty (a provider clip): the gate's own h264 args. No check reads this,
+    # so shadow verdicts do not change.
     encode_args: tuple[str, ...] = ()
 
 
@@ -755,7 +757,8 @@ _HEAL_OWN_OPTIONS = frozenset({"-c:a", "-b:a", "-movflags"})
 
 def _heal_video_args(policy: QaPolicy, rate: Fraction | None) -> list[str]:
     """Video encode args for a format or edge heal. With a delivery preset on
-    the policy: the preset's video args (its -minrate/-maxrate floor too) with
+    the policy: the preset's video args (its -maxrate/-bufsize cap too; libx264
+    ignores the preset's -minrate in CRF mode) with
     -r set to ``rate`` by services.ffmpeg.with_frame_rate; ``rate`` None keeps
     the preset's -r as given, like the cut's own encode when a rate cannot be
     read. Without a preset: the gate's own h264 args, plus -r ``rate`` when given."""
