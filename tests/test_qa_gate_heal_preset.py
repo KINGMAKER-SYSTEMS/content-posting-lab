@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import dataclasses
 import subprocess
+from fractions import Fraction
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -130,3 +131,31 @@ def test_shadow_runs_no_re_encode_on_a_cut_with_a_preset(tmp_path, monkeypatch):
     verdict = qa_gate.run_gate(cut, _cut_policy(fps=25.0, expected_frames=50), qa_gate.MODE_SHADOW)
     assert "qa_codec_mismatch" in [item.code for item in verdict.blocks]
     assert calls == [] and cut.read_bytes() == before and verdict.healed == ()
+
+
+# ── the source-cut policy counts frames at the cut's own rate ────────────────
+
+def test_a_25fps_cut_is_counted_in_25fps_frames(tmp_path):
+    cut = clips.clean(tmp_path / "cut25.mp4", seconds=2.0, size="360x640", fps=25)
+    policy = qa_gate.policy_for_source_cut(_recipe(), 6_000, 1.0, cut_path=cut)
+    assert policy.fps == 25.0 and policy.expected_frames == 150
+    # A 0.75x cut of the same 6 s window lasts 8 s: 200 frames at 25 fps.
+    assert qa_gate.policy_for_source_cut(_recipe(), 6_000, 0.75, cut_path=cut).expected_frames == 200
+
+
+def test_the_cut_rate_goes_through_the_delivery_rule(monkeypatch):
+    import services.ffmpeg as ffmpeg
+
+    for probed, fps, frames in [(Fraction(60), 30.0, 180), (Fraction(30000, 1001), 30000 / 1001, 180),
+                                (Fraction(21), 21.0, 126), (Fraction(16), 32.0, 192)]:
+        monkeypatch.setattr(ffmpeg, "probe_frame_rate", lambda path, rate=probed: rate)
+        policy = qa_gate.policy_for_source_cut(_recipe(), 6_000, 1.0, cut_path="cut.mp4")
+        assert (policy.fps, policy.expected_frames) == (fps, frames)
+
+
+def test_an_unreadable_cut_rate_is_counted_at_30(tmp_path):
+    unreadable = tmp_path / "not-a-video.mp4"
+    unreadable.write_bytes(b"not a video")
+    policy = qa_gate.policy_for_source_cut(_recipe(), 6_000, 1.0, cut_path=unreadable)
+    assert policy.fps == 30.0 and policy.expected_frames == 180
+    assert qa_gate.policy_for_source_cut(_recipe(), 6_000, 1.0).fps == 30.0

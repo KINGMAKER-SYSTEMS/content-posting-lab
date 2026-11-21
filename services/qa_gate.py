@@ -947,10 +947,15 @@ def _encode_fps(encode_args: list[str] | None, default: float = 30.0) -> float:
 
 
 def policy_for_source_cut(recipe: Any, render_duration_ms: int, render_speed: float,
-                          job: dict | None = None, encode_args: list[str] | None = None) -> QaPolicy:
-    """The source-dna-recut contract: the recipe's frame, h264 4:2:0 at the
-    delivery preset's rate, exactly the rendered window at the effective
-    speed. Audio is ALLOWED here: the executor's cut inherits whatever its
+                          job: dict | None = None, encode_args: list[str] | None = None,
+                          cut_path: Path | str | None = None) -> QaPolicy:
+    """The source-dna-recut contract: the recipe's frame, h264 4:2:0,
+    exactly the rendered window at the effective speed, counted in frames of
+    the cut's own rate. With ``cut_path`` that rate is the cut's probed rate
+    put through services.ffmpeg.delivery_frame_rate, the rule the cut's
+    encode used (it maps a delivered rate to itself, so a 25 fps cut is
+    counted at 25 and a 0.7x cut of 30p at 21); a cut whose rate cannot be
+    read, or no ``cut_path``, is counted at the delivery preset's -r (30). Audio is ALLOWED here: the executor's cut inherits whatever its
     master carries (page imports strip audio with -an; a registry master may
     not), every sourced format's audioPolicy is campaign_sound_bound_downstream
     and the prepared-post render maps video only, so a cut's own audio never
@@ -972,6 +977,12 @@ def policy_for_source_cut(recipe: Any, render_duration_ms: int, render_speed: fl
         except Exception:  # noqa: BLE001 - an unknown preset fails the render itself
             encode_args = None
     fps = _encode_fps(encode_args)
+    if cut_path is not None:
+        from services.ffmpeg import delivery_frame_rate, probe_frame_rate
+
+        native = probe_frame_rate(cut_path)
+        if native is not None:
+            fps = float(delivery_frame_rate(native))
     speed = float(render_speed) if render_speed else 1.0
     sound_id = None
     if isinstance(job, dict):
