@@ -213,6 +213,30 @@ def test_size_retry_changes_encoding_only_and_is_bounded_to_two_attempts(monkeyp
     assert not final.exists()
 
 
+def test_size_retry_aims_below_the_cap_with_room_for_encoder_overshoot(monkeypatch, tmp_path):
+    # Glossy body 3dd39340 (10 s, 30 fps): the CRF encode and a retry aimed at 90%
+    # of the cap both came out over 22 MiB, and the post was swapped. A retry aimed
+    # at 85% came out at 21,810,620 bytes, so x264 lands ~11.2% over its own
+    # bitrate target here. This fake encoder overshoots by exactly that much.
+    overshoot = 21_810_620 / (render.MAX_FINAL_BYTES * 0.85)
+    final = tmp_path / "final.mp4"
+    probe = render.MediaProbe(1080, 1920, 10_000, "h264", "yuv420p", "1:1", 0)
+    calls = []
+    def run(args, _tools, **kwargs):
+        calls.append(args)
+        if "-crf" in args:
+            raise render.PostRenderError("artifact_too_large", "busy clip overflows the CRF encode")
+        video_bps = int(args[args.index("-b:v") + 1])
+        with final.open("wb") as handle:
+            handle.truncate(int((video_bps + 192_000) * probe.duration_ms / 1000 / 8 * overshoot))
+        return b""
+    monkeypatch.setattr(render, "_run", run)
+    monkeypatch.setattr(render, "_probe", lambda *_: probe)
+    assert render._encode_final(tmp_path / "source", None, final, probe, render.RenderTools(), in_app=True) == probe
+    assert len(calls) == 2
+    assert final.stat().st_size <= render.MAX_FINAL_BYTES
+
+
 @pytest.mark.parametrize("geometry", [
     (1920, 1080, "1:1", 0), (560, 1080, "1:1", 0),
     (606, 1080, "2:1", 0), (1080, 1920, "1:1", 90),

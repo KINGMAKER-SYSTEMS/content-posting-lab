@@ -34,6 +34,7 @@ from services.ffmpeg import (delivery_encode_args, delivery_frame_rate, frame_ra
 from services.page_frame import frame_band_height, frame_band_rows, frame_fit, letterbox_filter
 from services.pool_supplied_pages import is_pool_supplied
 from services.source_treatment import normalized_visual_treatment
+from services.timed_render_math import retry_bitrate_bps
 
 REQUEST_SCHEMA = "content-lab.post-render-request.v1"
 RECEIPT_SCHEMA = "posting-prepared-artifact/v1"
@@ -556,8 +557,9 @@ def _encode_final(source: Path, overlay: Path | None, final: Path, source_probe:
         elif frame_rate is not None:
             encode = with_frame_rate(encode, frame_rate)
         if attempt:
-            # Reserve ten percent container/rate-control margin and the full preset audio rate.
-            bitrate = int(MAX_FINAL_BYTES * 8 * 0.90 * 1000 / source_probe.duration_ms) - 192_000
+            # Aim below the cap with real headroom (see RETRY_BUDGET_FRACTION) and
+            # reserve the full preset audio rate.
+            bitrate = retry_bitrate_bps(MAX_FINAL_BYTES, source_probe.duration_ms) - 192_000
             if bitrate <= 0:
                 raise PostRenderError("delivery_budget_impossible", "duration cannot fit the delivery byte budget")
             for option in ("-crf", "-minrate", "-maxrate", "-bufsize"):

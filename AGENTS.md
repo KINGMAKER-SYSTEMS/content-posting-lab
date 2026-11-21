@@ -839,7 +839,8 @@
   In-app caption pairs share a 30 fps filter clock before the clean and burned
   paths diverge, so the same fractional source tail yields the same frames.
 - Prepared delivery caps final video at 22 MiB and QA JPEG at 2 MiB. One automatic
-  bitrate retry may fit the video budget without changing content or treatment.
+  bitrate retry, aimed at 85% of the cap, may fit the video budget without changing
+  content or treatment.
   Persistent overflow or failed decode yields no artifact result. Subprocesses
   have bounded output and process-group lifetime and cannot use network protocols.
 
