@@ -35,6 +35,7 @@ MAX_PROMPT_HISTORY = 200
 
 # Limit concurrent video generation tasks to prevent resource exhaustion
 _gen_semaphore = asyncio.Semaphore(10)
+_local_gen_semaphore = asyncio.Semaphore(1)
 
 # Cap concurrent color-correct ffmpeg encodes so a big bulk request can't
 # exhaust the host's CPU/IO. 4 is conservative and matches the burn router's
@@ -682,7 +683,10 @@ async def generate_video(
         # provider errors), this ensures the corresponding video entry is
         # flipped to "error" instead of silently sticking on "queued" forever.
         try:
-            async with _gen_semaphore:
+            permits = _local_gen_semaphore if is_local else _gen_semaphore
+            async with permits:
+                if is_local and jobs[job_id]["videos"][index]["status"] != "queued":
+                    return
                 # Local engines send no paid request: nothing to debit.
                 if not is_local and not await asyncio.to_thread(
                     generation_budget.debit_generation_spend_at,

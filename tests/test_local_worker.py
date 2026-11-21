@@ -3,6 +3,7 @@
 import asyncio
 import importlib.util
 import json
+import threading
 import time
 from pathlib import Path
 
@@ -97,6 +98,29 @@ async def test_job_fails_when_worker_goes_silent_mid_render(monkeypatch):
     queue.claim()
     with pytest.raises(queue.LocalWorkerError, match="went offline"):
         await queue.wait(job, {}, 60)
+
+
+async def test_another_workers_heartbeat_does_not_revive_an_expired_claim(monkeypatch):
+    now = 100.0
+    monkeypatch.setattr(queue, "time", type("Clock", (), {"monotonic": staticmethod(lambda: now)}))
+    monkeypatch.setattr(queue, "_WAIT_SLICE_SECONDS", 0.001)
+    monkeypatch.setattr(queue, "WORKER_STALE_SECONDS", 30)
+    lost = queue.enqueue({"prompt": "first"})
+    lost_claim = queue.claim()
+    healthy = queue.enqueue({"prompt": "second"})
+    healthy_claim = queue.claim()
+
+    now += 20
+    queue.heartbeat(healthy.id, healthy_claim["claim_token"])
+    now += 10
+    assert queue.worker_online()
+    with pytest.raises(queue.ClaimRejected):
+        queue.heartbeat(lost.id, lost_claim["claim_token"])
+    with pytest.raises(queue.LocalWorkerError, match="went offline"):
+        await queue.wait(lost, {}, 60)
+
+    queue.complete(healthy.id, healthy_claim["claim_token"], Path("healthy.mp4"))
+    assert await queue.wait(healthy, {}, 60) == Path("healthy.mp4")
 
 
 async def test_render_timeout_counts_from_the_claim(monkeypatch):
@@ -253,10 +277,72 @@ def test_oversized_upload_is_refused(sync_client, monkeypatch):
                             headers=_claim_headers(job), content=MP4).status_code == 413
 
 
+async def test_duplicate_upload_cannot_delete_the_first_accepted_result(async_client, monkeypatch, tmp_path):
+    spool = tmp_path / "spool"
+    spool.mkdir()
+    monkeypatch.setattr("routers.local_worker._spool_dir", lambda: spool)
+    job = queue.enqueue({})
+    claimed = queue.claim()
+    first_started = asyncio.Event()
+    finish_first = asyncio.Event()
+
+    async def slow_body():
+        yield MP4
+        first_started.set()
+        await finish_first.wait()
+        yield b"late bytes"
+
+    path = f"/api/local-worker/jobs/{job.id}/result"
+    headers = _claim_headers(claimed)
+    first = asyncio.create_task(async_client.post(path, headers=headers, content=slow_body()))
+    await asyncio.wait_for(first_started.wait(), 2)
+    try:
+        winner = await async_client.post(path, headers=headers, content=MP4 + b"winner")
+        assert winner.status_code == 200
+    finally:
+        finish_first.set()
+    assert (await first).status_code == 409
+    output = await queue.wait(job, {}, 60)
+    assert output.read_bytes() == MP4 + b"winner"
+    assert list(spool.iterdir()) == [output]
+
+
 def test_local_engines_are_offered_when_only_a_worker_key_is_set(sync_client, monkeypatch):
     monkeypatch.setitem(video_router.API_KEYS, "comfyui", comfyui.WORKER_QUEUE)
     listed = {p["id"] for p in sync_client.get("/api/video/providers").json()}
     assert {"local-h3", "local-h3-vertical", "local-wan-t2v", "local-wan-i2v"} <= listed
+
+
+def test_waiting_local_generation_leaves_the_paid_permit_available(sync_client, monkeypatch):
+    monkeypatch.setattr(video_router, "_gen_semaphore", asyncio.Semaphore(1))
+    monkeypatch.setattr(video_router, "_local_gen_semaphore", asyncio.Semaphore(1))
+    monkeypatch.setitem(video_router.API_KEYS, "replicate", "test-key")
+    monkeypatch.setattr(video_router.generation_budget, "can_reserve_at", lambda *a, **k: True)
+    monkeypatch.setattr(video_router.generation_budget, "debit_generation_spend_at", lambda *a: True)
+    local_entered = threading.Event()
+    release_local = threading.Event()
+    paid_entered = threading.Event()
+
+    async def generate(job_id, index, provider, *args, **kwargs):
+        if provider == "local-h3-vertical":
+            local_entered.set()
+            while not release_local.is_set():
+                await asyncio.sleep(0.01)
+        else:
+            paid_entered.set()
+
+    monkeypatch.setattr(video_router, "generate_one", generate)
+    _start_local_job(sync_client, monkeypatch)
+    try:
+        assert local_entered.wait(2)
+        paid = sync_client.post("/api/video/generate", data={
+            "prompt": "a calm sea", "provider": "wan-t2v", "count": "1", "duration": "5",
+            "aspect_ratio": "9:16", "resolution": "480p", "project": "video-suite",
+        })
+        assert paid.status_code == 200, paid.text
+        assert paid_entered.wait(2)
+    finally:
+        release_local.set()
 
 
 # --- the worker script -----------------------------------------------------

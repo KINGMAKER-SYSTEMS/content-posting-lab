@@ -10,10 +10,12 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from providers import comfyui
 from providers.base import API_KEYS
 import routers.control_plane as cp
 import routers.control_plane_recipes as recipes
 from services.content_engine_registry import REGISTRY_PATH
+from services.content_format_contracts import CONTRACTS_PATH, _canonical_hash
 from tests.master_pages_fixtures import bind_current_intent, master_pages
 
 
@@ -190,6 +192,80 @@ def test_registered_dossier_is_advertised_and_queues_new_media_only(lab, monkeyp
     assert stored["promptCatalogHash"] == "e7c2a13a818da636bb32ea3027cd3d2be1a88fd8c9c74e87cf67206f3188ceff"
     assert len(stored["promptPlan"]) == 1
     assert set(stored["promptPlan"][0]) == {"combinationId", "promptHash"}
+
+
+@pytest.mark.parametrize("render_fails", [False, True])
+async def test_configured_local_recipe_runs_at_zero_paid_budget(lab, monkeypatch, render_fails):
+    client, tmp_path, started = lab
+    catalog = json.loads(cp.CATALOG_PATH.read_bytes())
+    catalog["families"]["truck"]["provider"] = "local-h3"
+    catalog["families"]["truck"]["extra"]["crop_mode"] = "contain"
+    catalog["families"]["truck"]["clips_per_gen"] = 1
+    catalog["providers"]["local-h3"] = {
+        "model": comfyui.H3_FL2VA,
+        "base_input": {"aspect_ratio": "9:16", "resolution": "768p", "duration": 6},
+        "cost_per_gen_usd": 0,
+    }
+    catalog_path = tmp_path / "catalog.json"
+    catalog_path.write_text(json.dumps(catalog))
+    executor_version = "sha256:" + hashlib.sha256(catalog_path.read_bytes()).hexdigest()
+    contracts = json.loads(CONTRACTS_PATH.read_bytes())
+    contract = contracts["contracts"]["truck-scenic"]
+    contract["creativeAuthority"]["version"] = executor_version
+    contracts_path = tmp_path / "contracts.json"
+    contracts_path.write_text(json.dumps(contracts))
+    registry = json.loads(REGISTRY_PATH.read_bytes())
+    registry["profiles"]["truck-scenic"].update(
+        executorVersion=executor_version,
+        formatContractVersion="sha256:" + _canonical_hash(contract),
+    )
+    registry_path = tmp_path / "registry.json"
+    registry_path.write_text(json.dumps(registry))
+    monkeypatch.setenv("CONTENT_LAB_PROMPT_CATALOG", str(catalog_path))
+    monkeypatch.setenv("CONTENT_LAB_FORMAT_CONTRACTS", str(contracts_path))
+    monkeypatch.setenv("CONTENT_LAB_ENGINE_REGISTRY", str(registry_path))
+    monkeypatch.setenv("LAB_GENERATION_DAILY_BUDGET_USD", "0")
+    monkeypatch.setitem(API_KEYS, "comfyui", comfyui.WORKER_QUEUE)
+
+    def reject_paid_path(*args, **kwargs):
+        pytest.fail("local generation touched the paid path")
+
+    for method in ("can_reserve_at", "debit_generation_spend_at", "bind_commission_job"):
+        monkeypatch.setattr(cp.generation_budget, method, reject_paid_path)
+    calls = []
+
+    async def generate(job_id, index, provider, prompt, ratio, resolution, duration,
+                       image_data_uri, jobs, output_dir, url_prefix, **extra):
+        calls.append((provider, extra["model_id"], extra["cost_usd"]))
+        entry = jobs[job_id]["videos"][index]
+        if render_fails:
+            entry.update(status="error", error="local render timed out")
+        else:
+            (output_dir / "local.mp4").write_bytes(b"synthetic local output")
+            entry.update(status="done", file="local.mp4", provider_request_id="local-request")
+
+    async def preserve_bytes(source, destination, *args, **kwargs):
+        shutil.copyfile(source, destination)
+
+    async def no_thumbnail(*args):
+        return None
+
+    monkeypatch.setattr(cp, "generate_one", generate)
+    monkeypatch.setattr(cp, "run_color_correct", preserve_bytes)
+    monkeypatch.setattr(cp, "_thumbnail_manifest", no_thumbnail)
+    response = client.post("/api/control-plane/v1/jobs", json=job_body(quantity=1), headers=HEADERS)
+    assert response.status_code == 200, response.text
+    job_id = response.json()["jobId"]
+    await cp._run_dossier_generation(job_id)
+
+    stored = cp._load_jobs()["jobs"][job_id]
+    assert calls == [("local-h3", comfyui.H3_FL2VA, 0.0)]
+    assert stored["providerModel"] == comfyui.H3_FL2VA
+    assert stored["status"] == ("failed" if render_fails else "completed")
+    assert len(stored["clips"]) == (0 if render_fails else 1)
+    replay = client.post("/api/control-plane/v1/jobs", json=job_body(quantity=1), headers=HEADERS)
+    assert replay.status_code == 200 and replay.json()["jobId"] == job_id
+    assert started == [job_id]
 
 
 def test_job_idempotency_rejects_a_different_validated_request(lab):
