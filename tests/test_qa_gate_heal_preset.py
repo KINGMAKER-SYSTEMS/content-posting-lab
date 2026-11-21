@@ -1,10 +1,12 @@
 """Enforce heals re-encode a Lab cut with its delivery preset at its own rate
 (control-plane-pad#327).
 
-A format or edge heal on a Lab cut used the gate's own h264 args: no -r and no
--minrate/-maxrate floor. Since Lab #414 every posting-path encode keeps the
-clip's own rate (services.ffmpeg.delivery_frame_rate / with_frame_rate), so the
-heal must too: a 25 fps cut is re-encoded at 25, not 30, with the preset's floor.
+A format or edge heal on a Lab cut used the gate's own h264 args, so both
+lacked the delivery preset's settings and its -minrate/-maxrate floor. The
+format heal also passed no -r (ffmpeg then kept the input rate); the edge heal
+already set -r to the clip's rate. Now both use the preset, and the format heal
+sets -r explicitly to the rate the cut's encode picks (Lab #414:
+services.ffmpeg.delivery_frame_rate / with_frame_rate): a 25 fps cut stays 25.
 """
 from __future__ import annotations
 
