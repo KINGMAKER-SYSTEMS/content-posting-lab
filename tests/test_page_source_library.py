@@ -47,6 +47,7 @@ from tests.source_dna_fixture import isolate_source_dna_registry
 LIBRARY_SHA = "f" * 64
 HISTORY_SHA = "d" * 64
 OTHER_PAGE_SHA = "a" * 64
+REENCODED_SHA = "b" * 64
 CAPABILITY_HEADERS = {"X-RT-Page-Id": PAGE_ID, "Authorization": f"Bearer {TOKEN}"}
 
 
@@ -321,3 +322,28 @@ async def test_runner_refuses_a_library_cut_whose_record_is_broken(lab, monkeypa
     job = cp._load_jobs()["jobs"][job_id]
     assert job["status"] == "failed"
     assert job["error"] == "source_recipe_cut_invalid"
+
+
+def test_a_second_encoding_of_the_bound_source_is_not_recycled(lab, monkeypatch, registry):
+    """Same original footage, new bytes: the ledger cannot compare spans, so it counts as used."""
+    client, _, _ = lab
+    bound = json.loads((registry / f"{LIBRARY_ID}.json").read_text())
+    bound_url = next(m["provenance"]["sourceUrl"] for m in bound["masters"] if m["sha256"] == MASTER_SHA)
+    row = _manifest_row(REENCODED_SHA, 60_000, PAGE_ID)
+    row["provenance"]["sourceUrl"] = bound_url
+    (registry / "pov-dirt-bike-fixture-v2.json").write_text(json.dumps({
+        "schema": "content-lab.source-dna-library.v2",
+        "libraryId": "pov-dirt-bike-fixture-v2",
+        "format": "pov-dirt-bike",
+        "pageId": PAGE_ID,
+        "masters": [row],
+    }, sort_keys=True, separators=(",", ":")))
+    _shrink_bound_master(monkeypatch)
+    _exhaust_bound_master(client)
+
+    assert _max_quantity(client) == 0
+    stopped = client.post(
+        "/api/control-plane/v1/jobs", json=job_body(1), headers=headers("same-source"),
+    )
+    assert stopped.status_code == 409
+    assert stopped.json() == {"detail": SOURCE_WINDOWS_EXHAUSTED}

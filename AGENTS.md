@@ -752,7 +752,9 @@
   manifest for the same page and format, plus every master the page's own
   completed source jobs cut from (`clips[].source.master`). Library masters
   plan as backups after the bound primaries, never retired SHAs, each with a
-  canonical source identity. The no-repeat rule is unchanged: the same cut
+  canonical source identity that no bound or kept master shares (a second
+  encoding of the same source is not fresh footage: the ledger is keyed by
+  bytes and cannot compare its spans, so it counts as used). The no-repeat rule is unchanged: the same cut
   ledger (`masterSha:startMs:durationMs`, any library, forward or mirrored)
   refuses any overlap, so a recycled body never shares a second with an
   earlier body. A master with any cut row of unknown bounds counts as fully

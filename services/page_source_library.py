@@ -205,26 +205,38 @@ def library_recipe(recipe: SourceRecipe, store: dict[str, Any]) -> SourceRecipe 
     """The recipe widened to the page's library, or None when there is none.
 
     The bound masters stay first and unchanged (library id and hash do not
-    move). Library masters come after, as backups, deduplicated by bytes,
-    never retired, each with a canonical source identity, and only when no
-    cut row on that master has unknown bounds.
+    move). Library masters come after, as backups, deduplicated by bytes and
+    by original source (a second encoding of a bound or kept source is not
+    fresh footage), never retired, each with a canonical source identity,
+    and only when no cut row on that master has unknown bounds.
     """
     page_id = recipe_page_id(recipe)
     if page_id is None:
         return None
     seen = {master.sha256 for master in recipe.masters}
+    # The cut ledger is keyed by master bytes. Two masters of the same
+    # original source (one re-encoded or re-trimmed, so a new sha) share
+    # footage the ledger cannot compare, so a same-source master counts as
+    # used (fail closed) rather than as fresh footage.
+    identities = {
+        canonical_source_identity(master.provenance.get("sourceUrl"))
+        for master in recipe.masters
+    }
     extra: list[MasterSource] = []
     for master in [
         *registered_masters(page_id, recipe.format_slug),
         *recorded_masters(store, page_id, recipe),
     ]:
+        identity = canonical_source_identity(master.provenance.get("sourceUrl"))
         if (
             master.sha256 in seen
             or master.sha256 in RETIRED_MASTER_SHAS
-            or canonical_source_identity(master.provenance.get("sourceUrl")) is None
+            or identity is None
+            or identity in identities
         ):
             continue
         seen.add(master.sha256)
+        identities.add(identity)
         extra.append(master)
     recyclable = recyclable_masters(extra, prior_cut_rows(store))
     if not recyclable:
