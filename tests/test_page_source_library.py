@@ -13,11 +13,14 @@ plainly that the page needs new footage and points at the fetcher (#227).
 from __future__ import annotations
 
 from dataclasses import replace
+from datetime import datetime, timezone
 import json
 
 import pytest
 
 import routers.control_plane as cp
+from services import job_store_compaction as compaction
+from services.source_dna_registry import parse_source_dna_manifest
 from services.control_plane_sources import (
     SOURCE_WINDOWS_EXHAUSTED,
     plan_source_cuts,
@@ -262,13 +265,16 @@ def test_a_page_with_no_library_stays_capped_and_names_new_footage(lab, monkeypa
 
 
 def test_execution_rebuilds_recycled_masters_only_from_a_whole_record():
-    row = _manifest_row(LIBRARY_SHA, 60_000, PAGE_ID)
+    manifest = _manifest_row(LIBRARY_SHA, 60_000, PAGE_ID)
+    row = {**manifest, "libraryId": "pov-dirt-bike-fixture-v2", "libraryVersion": "sha256:" + "2" * 64}
     rebuilt = masters_from_job({JOB_LIBRARY_MASTERS_KEY: [row]})
     assert [master.sha256 for master in rebuilt] == [LIBRARY_SHA]
     assert rebuilt[0].role == "backup"
-    assert master_row(rebuilt[0]) == row
+    assert master_row(rebuilt[0]) == manifest
     # Anything short of a whole, valid record rebuilds nothing (fail closed).
     assert masters_from_job({}) == ()
+    assert masters_from_job({JOB_LIBRARY_MASTERS_KEY: [manifest]}) == ()  # no manifest named
+    assert masters_from_job({JOB_LIBRARY_MASTERS_KEY: [{**row, "libraryVersion": ""}]}) == ()
     assert masters_from_job({JOB_LIBRARY_MASTERS_KEY: "not-a-list"}) == ()
     assert masters_from_job({JOB_LIBRARY_MASTERS_KEY: [{**row, "durationMs": "60000"}]}) == ()
     assert masters_from_job({JOB_LIBRARY_MASTERS_KEY: [{k: v for k, v in row.items() if k != "storageKey"}]}) == ()
@@ -304,7 +310,11 @@ async def test_runner_cuts_a_library_master_from_the_job_record(lab, monkeypatch
     assert job["status"] == "completed", job.get("error")
     assert served == [LIBRARY_SHA]
     assert job["clips"][0]["source"]["master"]["sha256"] == LIBRARY_SHA
-    assert job["clips"][0]["source"]["sourceLibraryId"] == LIBRARY_ID
+    # The receipt names the manifest the master really came from, not the bound one.
+    sibling = parse_source_dna_manifest((registry / "pov-dirt-bike-fixture-v2.json").read_bytes())
+    assert job["clips"][0]["source"]["sourceLibraryId"] == "pov-dirt-bike-fixture-v2"
+    assert job["clips"][0]["source"]["sourceLibraryVersion"] == f"sha256:{sibling.sha256}"
+    assert job["sourceLibraryId"] == LIBRARY_ID  # the binding itself did not move
 
 
 @pytest.mark.asyncio
@@ -396,3 +406,70 @@ def test_a_master_with_no_known_original_is_not_recycled(lab, monkeypatch):
     )
     assert library_recipe(cp._dossier_source_recipe(publication()), cp._load_jobs()) is None
     assert _max_quantity(client) == 0
+
+
+def test_footage_posted_under_another_format_blocks_its_recycled_copy(lab, monkeypatch, registry):
+    """A clip cut under another recipe still proves the page posted that footage."""
+    client, tmp_path, _ = lab
+    _shrink_bound_master(monkeypatch)
+    _exhaust_bound_master(client)
+    _register_sibling_library(registry, "pov-dirt-bike-fixture-v2", PAGE_ID, LIBRARY_SHA, 60_000)
+    sibling = json.loads((registry / "pov-dirt-bike-fixture-v2.json").read_text())
+    same_footage_url = sibling["masters"][0]["provenance"]["sourceUrl"]
+    _record_history_master(tmp_path / "jobs.json", HISTORY_SHA, 60_000, source_url=same_footage_url)
+    store = json.loads((tmp_path / "jobs.json").read_text())
+    store["jobs"]["history-job"]["clips"][0]["source"]["recipeId"] = "pov-other:master"
+    (tmp_path / "jobs.json").write_text(json.dumps(store))
+
+    assert library_recipe(cp._dossier_source_recipe(publication()), cp._load_jobs()) is None
+    assert _max_quantity(client) == 0
+    stopped = client.post(
+        "/api/control-plane/v1/jobs", json=job_body(1), headers=headers("other-format"),
+    )
+    assert stopped.status_code == 409
+    assert stopped.json() == {"detail": SOURCE_WINDOWS_EXHAUSTED}
+
+
+def test_an_unreadable_clip_record_counts_its_master_as_used(lab, monkeypatch, registry):
+    """A legacy clip record that no longer parses still names the master it cut."""
+    client, tmp_path, _ = lab
+    _shrink_bound_master(monkeypatch)
+    _exhaust_bound_master(client)
+    _register_sibling_library(registry, "pov-dirt-bike-fixture-v2", PAGE_ID, LIBRARY_SHA, 60_000)
+    _record_history_master(tmp_path / "jobs.json", LIBRARY_SHA, 60_000)
+    store = json.loads((tmp_path / "jobs.json").read_text())
+    del store["jobs"]["history-job"]["sourceCuts"]
+    del store["jobs"]["history-job"]["clips"][0]["source"]["master"]["bytes"]
+    (tmp_path / "jobs.json").write_text(json.dumps(store))
+
+    assert _max_quantity(client) == 0
+    stopped = client.post(
+        "/api/control-plane/v1/jobs", json=job_body(1), headers=headers("unreadable-record"),
+    )
+    assert stopped.status_code == 409
+    assert stopped.json() == {"detail": SOURCE_WINDOWS_EXHAUSTED}
+
+
+def test_a_compacted_job_without_cut_rows_keeps_its_page_from_recycling(lab, monkeypatch, registry):
+    """Once compacted, a rowless job leaves only its clips in the archive: no library."""
+    client, tmp_path, _ = lab
+    _shrink_bound_master(monkeypatch)
+    _exhaust_bound_master(client)
+    _register_sibling_library(registry, "pov-dirt-bike-fixture-v2", PAGE_ID, LIBRARY_SHA, 60_000)
+    _record_history_master(tmp_path / "jobs.json", LIBRARY_SHA, 60_000)
+    store = json.loads((tmp_path / "jobs.json").read_text())
+    del store["jobs"]["history-job"]["sourceCuts"]
+    # Old enough to archive the history job (2026-11-01) but not today's bound cut.
+    compacted, archived = compaction.compact_job_store(
+        store, datetime(2026, 12, 10, tzinfo=timezone.utc),
+    )
+    assert [job["jobId"] for job in archived] == ["history-job"]
+    (tmp_path / "jobs.json").write_text(json.dumps(compacted))
+
+    assert library_recipe(cp._dossier_source_recipe(publication()), cp._load_jobs()) is None
+    assert _max_quantity(client) == 0
+    stopped = client.post(
+        "/api/control-plane/v1/jobs", json=job_body(1), headers=headers("compacted-rowless"),
+    )
+    assert stopped.status_code == 409
+    assert stopped.json() == {"detail": SOURCE_WINDOWS_EXHAUSTED}

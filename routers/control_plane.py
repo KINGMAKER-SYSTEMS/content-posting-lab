@@ -5054,10 +5054,15 @@ async def _run_dossier_source_inner(job_id: str) -> None:
                 clip_crop=cut_crop,
                 filters=cut_filters,
             )
+            # A library master's receipt names the manifest it really came
+            # from (#407 part 7); the job's binding itself does not move.
+            receipt_library_id, receipt_library_version = page_source_library.receipt_library(
+                recipe, job, master,
+            )
             manifest["source"] = _source_provenance(job, {
                 "recipeId": recipe.recipe_id,
-                "sourceLibraryId": recipe.source_library_id,
-                "sourceLibraryVersion": f"sha256:{recipe.source_library_hash}",
+                "sourceLibraryId": receipt_library_id,
+                "sourceLibraryVersion": receipt_library_version,
                 "master": {
                     "sourceId": master.source_id,
                     "sha256": master.sha256,
@@ -6635,7 +6640,7 @@ async def _create_job_impl(
                     headers=response_headers,
                 )
             library_masters = page_source_library.library_masters_used(
-                bound_source_recipe, source_recipe, cuts,
+                bound_source_recipe, source_recipe, cuts, store,
             )
             if len(cuts) != quantity:
                 raise HTTPException(status_code=409, detail="insufficient_inventory")

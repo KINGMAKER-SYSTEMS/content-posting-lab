@@ -31,9 +31,18 @@ cannot be told apart from anything, so it counts as used. History with
 unknown bounds, or a completed job whose clips name a master its cut rows do
 not, fails closed the same way: that master counts as fully used.
 
+Evidence of posted footage is read from EVERY job of the page that has
+clips, whatever its recipe, format or status: the raw ``source.master``
+descriptor's sha and original keys count even when the descriptor no longer
+parses, and a master named without a well-formed cut row in its job counts as
+used. Once compaction has archived a page's jobs, the archive keeps the page's
+clip digests and its cut rows: more clips than attributable rows means footage
+was posted whose spans are gone, and the page gets no library at all.
+
 A job that cuts a library master records the whole master row on the job
-(``sourceLibraryMasters``) so execution rebuilds exactly the master it was
-planned on, never a re-derived one. The bound ``sourceLibraryId`` and hash do
+(``sourceLibraryMasters``), with the manifest it came from, so execution
+rebuilds exactly the master it was planned on, never a re-derived one, and the
+clip receipt names that manifest. The bound ``sourceLibraryId`` and hash do
 not move. When the library too is used up, the page stays exhausted and the
 answer says so in plain words (``NEEDS_NEW_FOOTAGE``, pointing at the footage
 fetcher, control-plane-pad #227).
@@ -41,7 +50,7 @@ fetcher, control-plane-pad #227).
 
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import dataclass, field, replace
 import json
 import logging
 from typing import Any, Iterable
@@ -56,6 +65,7 @@ from services.source_dna_registry import (
     RETIRED_MASTER_SHAS,
     MasterSource,
     SourceDnaError,
+    SourceDnaLibrary,
     parse_source_dna_manifest,
 )
 
@@ -98,14 +108,14 @@ def master_row(master: MasterSource) -> dict[str, Any]:
 
 def _parse_master(row: Any, page_id: str, format_slug: str) -> MasterSource | None:
     """One master row through the registry parser; None unless it passes whole."""
-    if not isinstance(row, dict) or set(row) - {"role", "gradeOverride", "origin"} != MASTER_FIELDS:
+    if not isinstance(row, dict) or set(row) - _ROW_EXTRAS != MASTER_FIELDS:
         return None
     document = {
         "schema": registry.SCHEMA,
         "libraryId": _SYNTHETIC_LIBRARY_ID,
         "format": format_slug,
         "pageId": page_id,
-        "masters": [{key: value for key, value in row.items() if key not in ("role", "gradeOverride")}],
+        "masters": [{key: value for key, value in row.items() if key not in _ROW_META}],
     }
     try:
         raw = json.dumps(document, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
@@ -118,62 +128,32 @@ def _parse_master(row: Any, page_id: str, format_slug: str) -> MasterSource | No
     return replace(master, role="backup", grade_override=None)
 
 
-def registered_masters(page_id: str, format_slug: str) -> list[MasterSource]:
-    """Masters of every registered manifest for this page and format, as backups."""
-    masters: list[MasterSource] = []
+# Keys a job's master row may carry beyond the registry's master fields.
+_ROW_META = frozenset({"role", "gradeOverride", "libraryId", "libraryVersion"})
+_ROW_EXTRAS = _ROW_META | {"origin"}
+
+
+def registered_libraries(page_id: str, format_slug: str) -> list[SourceDnaLibrary]:
+    """Every registered manifest for this page and format, by library id."""
+    libraries: list[SourceDnaLibrary] = []
     for path in sorted(registry.MANIFEST_DIR.glob("*.json")):
         try:
             library = parse_source_dna_manifest(path.read_bytes(), path.stem)
         except (OSError, SourceDnaError):
             continue
-        if library.page_id != page_id or library.format_slug != format_slug:
-            continue
-        masters.extend(
-            replace(master, role="backup")
-            for master in library.masters
-            if master.sha256 not in RETIRED_MASTER_SHAS
-        )
-    return masters
+        if library.page_id == page_id and library.format_slug == format_slug:
+            libraries.append(library)
+    return libraries
 
 
-def recorded_masters(
-    store: dict[str, Any], page_id: str, recipe: SourceRecipe,
-) -> tuple[list[MasterSource], set[str]]:
-    """Masters this page's completed source jobs cut from (clip descriptors).
-
-    Returns ``(masters, tainted)``: ``tainted`` holds the sha of every master
-    a job's clips name without a well-formed cut row for it in that same job
-    (a cut container that is not a list, a row that is not a mapping, or no
-    row for that master). The clips prove the footage was posted; the ledger
-    cannot say which span, so such a master counts as fully used.
-    """
-    found: dict[str, MasterSource] = {}
-    tainted: set[str] = set()
-    for job in store.get("jobs", {}).values():
-        if (
-            not isinstance(job, dict)
-            or job.get("pageId") != page_id
-            or job.get("sourceKind") != "dossier_source_dna"
-            or job.get("status") != "completed"
-        ):
-            continue
-        clips = job.get("clips")
-        if not isinstance(clips, list):
-            continue
-        cuts = job.get("sourceCuts")
-        rows_whole = isinstance(cuts, list) and all(isinstance(cut, dict) for cut in cuts)
-        recorded = {cut.get("masterSha256") for cut in cuts} if rows_whole else set()
-        for clip in clips:
-            source = clip.get("source") if isinstance(clip, dict) else None
-            if not isinstance(source, dict) or source.get("recipeId") != recipe.recipe_id:
-                continue
-            master = _parse_master(source.get("master"), page_id, recipe.format_slug)
-            if master is None:
-                continue
-            if master.sha256 not in recorded:
-                tainted.add(master.sha256)
-            found.setdefault(master.sha256, master)
-    return [found[sha] for sha in sorted(found)], tainted
+def registered_masters(page_id: str, format_slug: str) -> list[MasterSource]:
+    """Masters of every registered manifest for this page and format, as backups."""
+    return [
+        replace(master, role="backup")
+        for library in registered_libraries(page_id, format_slug)
+        for master in library.masters
+        if master.sha256 not in RETIRED_MASTER_SHAS
+    ]
 
 
 def _vault_asset_url(url: Any) -> bool:
@@ -189,6 +169,16 @@ def _vault_asset_url(url: Any) -> bool:
         return True  # cannot tell the vault apart: treat the address as the vault's
 
 
+def _keys_from(url: Any, origin_id: Any) -> frozenset[tuple[str, str]]:
+    keys: set[tuple[str, str]] = set()
+    identity = canonical_source_identity(url)
+    if identity is not None and not _vault_asset_url(url):
+        keys.add(("source", identity))
+    if isinstance(origin_id, str) and origin_id.strip():
+        keys.add(("origin", origin_id.strip()))
+    return frozenset(keys)
+
+
 def original_source_keys(master: MasterSource) -> frozenset[tuple[str, str]]:
     """The original footage a master was cut from, as comparable keys.
 
@@ -198,15 +188,98 @@ def original_source_keys(master: MasterSource) -> frozenset[tuple[str, str]]:
     the upstream ``origin.originSourceId`` when the master carries one. An
     empty set means the original is unknown.
     """
-    keys: set[tuple[str, str]] = set()
-    url = master.provenance.get("sourceUrl")
-    identity = canonical_source_identity(url)
-    if identity is not None and not _vault_asset_url(url):
-        keys.add(("source", identity))
-    origin_id = (master.origin or {}).get("originSourceId")
-    if isinstance(origin_id, str) and origin_id.strip():
-        keys.add(("origin", origin_id.strip()))
-    return frozenset(keys)
+    return _keys_from(master.provenance.get("sourceUrl"), (master.origin or {}).get("originSourceId"))
+
+
+def _raw_keys(descriptor: dict[str, Any]) -> frozenset[tuple[str, str]]:
+    """Original keys straight from a clip's master descriptor, parsed or not."""
+    provenance = descriptor.get("provenance")
+    origin = descriptor.get("origin")
+    return _keys_from(
+        provenance.get("sourceUrl") if isinstance(provenance, dict) else None,
+        origin.get("originSourceId") if isinstance(origin, dict) else None,
+    )
+
+
+@dataclass
+class PageEvidence:
+    """What the page's own jobs prove about footage it has posted."""
+
+    masters: list[MasterSource] = field(default_factory=list)  # recyclable candidates
+    tainted: set[str] = field(default_factory=set)             # shas that count as used
+    originals: dict[tuple[str, str], set[str]] = field(default_factory=dict)  # key -> shas
+    library_ids: set[str] = field(default_factory=set)
+    unknown: bool = False  # a source job posted clips whose master cannot be named
+
+
+def page_evidence(store: dict[str, Any], page_id: str, recipe: SourceRecipe) -> PageEvidence:
+    """Read every job of the page that has clips, whatever its recipe or status.
+
+    Each clip's raw ``source.master`` descriptor gives a sha and the keys of
+    its original footage, even when it no longer parses. A master is tainted
+    (counts as fully used) unless its descriptor parses whole AND the same job
+    holds a well-formed cut row for it. Only a parsed, untainted master cut
+    under this recipe by a completed job is a recycling candidate.
+    """
+    evidence = PageEvidence()
+    found: dict[str, MasterSource] = {}
+    for job in store.get("jobs", {}).values():
+        if not isinstance(job, dict) or job.get("pageId") != page_id:
+            continue
+        clips = job.get("clips")
+        source_job = job.get("sourceKind") == "dossier_source_dna"
+        if source_job and isinstance(job.get("sourceLibraryId"), str):
+            evidence.library_ids.add(job["sourceLibraryId"])
+        if not isinstance(clips, list):
+            if source_job and clips is not None:
+                evidence.unknown = True
+            continue
+        cuts = job.get("sourceCuts")
+        rows_whole = isinstance(cuts, list) and all(isinstance(cut, dict) for cut in cuts)
+        recorded = {cut.get("masterSha256") for cut in cuts} if rows_whole else set()
+        for clip in clips:
+            source = clip.get("source") if isinstance(clip, dict) else None
+            descriptor = source.get("master") if isinstance(source, dict) else None
+            if not isinstance(descriptor, dict):
+                if source_job:
+                    evidence.unknown = True
+                continue
+            if isinstance(source.get("sourceLibraryId"), str):
+                evidence.library_ids.add(source["sourceLibraryId"])
+            sha = descriptor.get("sha256")
+            if not isinstance(sha, str) or not sha:
+                evidence.unknown = True
+                continue
+            for key in _raw_keys(descriptor):
+                evidence.originals.setdefault(key, set()).add(sha)
+            master = _parse_master(descriptor, page_id, recipe.format_slug)
+            if master is None or master.sha256 != sha or sha not in recorded:
+                evidence.tainted.add(sha)
+                continue
+            if source.get("recipeId") == recipe.recipe_id and job.get("status") == "completed":
+                found.setdefault(sha, master)
+    evidence.masters = [found[sha] for sha in sorted(found)]
+    return evidence
+
+
+def archive_evidence_gap(store: dict[str, Any], page_id: str, library_ids: set[str]) -> bool:
+    """True when the archive holds more posted clips for the page than cut rows.
+
+    Compaction keeps a page's clip digests and the cut rows of its libraries;
+    a job archived without rows leaves clips with no spans behind, so the gap
+    means footage was posted whose spans no ledger can see any more.
+    """
+    index = compaction.read_archive_index(store)
+    digests = (index.get("usedClipSha256") or {}).get(page_id)
+    if digests is None:
+        return False
+    if not isinstance(digests, list):
+        return True
+    rows = [
+        row for row in index.get("sourceDnaCuts", [])
+        if isinstance(row, dict) and row.get("sourceLibraryId") in library_ids
+    ]
+    return len(digests) > len(rows)
 
 
 def prior_cut_rows(store: dict[str, Any]) -> list[dict[str, Any]]:
@@ -263,11 +336,12 @@ def library_recipe(recipe: SourceRecipe, store: dict[str, Any]) -> SourceRecipe 
 
     The bound masters stay first and unchanged (library id and hash do not
     move). Library masters come after, as backups, deduplicated by bytes and
-    by original footage (a second encoding of a bound or kept original is not
-    fresh footage; an unknown original counts as used), never retired, each
-    with a canonical source identity, never named by a completed job's clips
-    without a cut row, and only when no cut row on that master has unknown
-    bounds.
+    by original footage (a second encoding of a bound, kept or ever-posted
+    original is not fresh footage; an unknown original counts as used), never
+    retired, each with a canonical source identity, never tainted by the
+    page's clip evidence, and only when no cut row on that master has unknown
+    bounds. No library at all when a source job's clips cannot name their
+    master or the archive holds posted clips without their cut rows.
     """
     page_id = recipe_page_id(recipe)
     if page_id is None:
@@ -278,38 +352,51 @@ def library_recipe(recipe: SourceRecipe, store: dict[str, Any]) -> SourceRecipe 
     # footage the ledger cannot compare, so a same-original master counts as
     # used (fail closed) rather than as fresh footage. A bound master whose
     # original is unknown cannot be told apart from anything: no library.
-    originals: set[tuple[str, str]] = set()
+    # owners: every original key -> the shas of the masters cut from it.
+    owners: dict[tuple[str, str], set[str]] = {}
     for master in recipe.masters:
         keys = original_source_keys(master)
         if not keys:
             return None
-        originals |= keys
-    recorded, tainted = recorded_masters(store, page_id, recipe)
+        for key in keys:
+            owners.setdefault(key, set()).add(master.sha256)
+    evidence = page_evidence(store, page_id, recipe)
+    if evidence.unknown:
+        return None
+    libraries = registered_libraries(page_id, recipe.format_slug)
+    library_ids = {recipe.source_library_id, *evidence.library_ids, *(lib.library_id for lib in libraries)}
+    if archive_evidence_gap(store, page_id, library_ids):
+        return None
+    for key, shas in evidence.originals.items():
+        owners.setdefault(key, set()).update(shas)
     candidates: list[MasterSource] = []
-    for master in [*registered_masters(page_id, recipe.format_slug), *recorded]:
+    registered = [
+        replace(master, role="backup")
+        for library in libraries
+        for master in library.masters
+    ]
+    for master in [*registered, *evidence.masters]:
         if master.sha256 in seen:
             continue
         seen.add(master.sha256)
         candidates.append(master)
     # An original shared by two masters of different bytes cannot have its
     # spans compared between them, so every master of that original is out:
-    # neither the one sharing a bound master's original nor any pair among
-    # the candidates themselves.
-    shared = set(originals)
-    counted: set[tuple[str, str]] = set()
+    # one sharing a bound or posted master's original as much as any pair
+    # among the candidates themselves. A master's own key never counts
+    # against it (the ledger compares its spans by its sha).
     for master in candidates:
-        keys = original_source_keys(master)
-        shared |= keys & counted
-        counted |= keys
+        for key in original_source_keys(master):
+            owners.setdefault(key, set()).add(master.sha256)
     extra: list[MasterSource] = []
     for master in candidates:
         keys = original_source_keys(master)
         if (
             master.sha256 in RETIRED_MASTER_SHAS
-            or master.sha256 in tainted
+            or master.sha256 in evidence.tainted
             or canonical_source_identity(master.provenance.get("sourceUrl")) is None
             or not keys
-            or keys & shared
+            or any(owners[key] - {master.sha256} for key in keys)
         ):
             continue
         extra.append(master)
@@ -319,9 +406,37 @@ def library_recipe(recipe: SourceRecipe, store: dict[str, Any]) -> SourceRecipe 
     return replace(recipe, masters=(*recipe.masters, *recyclable))
 
 
-def library_masters_used(recipe: SourceRecipe, pooled: SourceRecipe, cuts: Iterable[Any]) -> list[dict[str, Any]]:
-    """The job record: every library master the plan's cuts use, once each."""
+def _library_of(
+    master: MasterSource, libraries: Iterable[SourceDnaLibrary], store: dict[str, Any], page_id: str,
+) -> tuple[str, str]:
+    """The manifest a library master came from: a registered one, else the clip's."""
+    for library in libraries:
+        if any(item.sha256 == master.sha256 for item in library.masters):
+            return library.library_id, f"sha256:{library.sha256}"
+    for job in store.get("jobs", {}).values():
+        if not isinstance(job, dict) or job.get("pageId") != page_id:
+            continue
+        for clip in job.get("clips") or []:
+            source = clip.get("source") if isinstance(clip, dict) else None
+            descriptor = source.get("master") if isinstance(source, dict) else None
+            if (
+                isinstance(descriptor, dict)
+                and descriptor.get("sha256") == master.sha256
+                and isinstance(source.get("sourceLibraryId"), str)
+                and isinstance(source.get("sourceLibraryVersion"), str)
+            ):
+                return source["sourceLibraryId"], source["sourceLibraryVersion"]
+    return _SYNTHETIC_LIBRARY_ID, f"sha256:{master.sha256}"
+
+
+def library_masters_used(
+    recipe: SourceRecipe, pooled: SourceRecipe, cuts: Iterable[Any], store: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """The job record: every library master the plan's cuts use, once each,
+    with the manifest it came from (``libraryId``, ``libraryVersion``)."""
     bound = {master.sha256 for master in recipe.masters}
+    page_id = recipe_page_id(pooled) or _SYNTHETIC_LIBRARY_ID
+    libraries = registered_libraries(page_id, pooled.format_slug)
     rows: list[dict[str, Any]] = []
     seen: set[str] = set()
     for cut in cuts:
@@ -329,8 +444,8 @@ def library_masters_used(recipe: SourceRecipe, pooled: SourceRecipe, cuts: Itera
         if master.sha256 in bound or master.sha256 in seen:
             continue
         seen.add(master.sha256)
-        rows.append(master_row(master))
-    del pooled  # the record is taken from the cuts themselves
+        library_id, library_version = _library_of(master, libraries, store, page_id)
+        rows.append({**master_row(master), "libraryId": library_id, "libraryVersion": library_version})
     return rows
 
 
@@ -345,7 +460,9 @@ def masters_from_job(job: dict[str, Any]) -> tuple[MasterSource, ...]:
     masters: list[MasterSource] = []
     for row in rows:
         master = _parse_master(row, page_id, _SYNTHETIC_LIBRARY_ID)
-        if master is None:
+        if master is None or not all(
+            isinstance(row.get(key), str) and row[key].strip() for key in ("libraryId", "libraryVersion")
+        ):
             return ()
         masters.append(master)
     if len({master.sha256 for master in masters}) != len(masters):
@@ -358,3 +475,12 @@ def with_job_masters(recipe: SourceRecipe, job: dict[str, Any]) -> SourceRecipe:
     bound = {master.sha256 for master in recipe.masters}
     extra = tuple(master for master in masters_from_job(job) if master.sha256 not in bound)
     return replace(recipe, masters=(*recipe.masters, *extra)) if extra else recipe
+
+
+def receipt_library(recipe: SourceRecipe, job: dict[str, Any], master: MasterSource) -> tuple[str, str]:
+    """The manifest a cut's receipt names: the bound one, or the recorded
+    library master's own (``masters_from_job`` already proved the record whole)."""
+    if master.sha256 not in {item.sha256 for item in masters_from_job(job)}:
+        return recipe.source_library_id, f"sha256:{recipe.source_library_hash}"
+    row = next(row for row in job[JOB_LIBRARY_MASTERS_KEY] if row["sha256"] == master.sha256)
+    return row["libraryId"], row["libraryVersion"]

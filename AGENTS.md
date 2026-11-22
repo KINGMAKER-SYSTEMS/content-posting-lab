@@ -758,8 +758,19 @@
   `origin.originSourceId`): a second encoding or extraction of a bound or
   kept original is not fresh footage, two library masters of one original
   are both out, and an unknown original (bound or library) counts as used.
-  A master a completed job's clips name without a well-formed cut row in
-  that job counts as used. The no-repeat rule is unchanged: the same cut
+  Evidence of posted footage comes from EVERY job of the page with clips,
+  whatever its recipe, format or status: the raw `source.master` sha and
+  original keys count even when the descriptor no longer parses, and a
+  master named without a well-formed cut row in its job counts as used. A
+  source job whose clips cannot name their master, or an archive holding
+  more of the page's clip digests than cut rows of its libraries
+  (`archive_evidence_gap`), means no library at all. The job record rows
+  carry `libraryId`/`libraryVersion`, and the clip receipt names that
+  manifest (`receipt_library`) while the job's own binding does not move.
+  Known limits: the same footage under two unrelated URLs and no origin id
+  gets two keys; the scrambler branch of job creation does not widen to
+  the library while the capability count does; failed/cancelled jobs
+  release spans as before. The no-repeat rule is unchanged: the same cut
   ledger (`masterSha:startMs:durationMs`, any library, forward or mirrored)
   refuses any overlap, so a recycled body never shares a second with an
   earlier body. A master with any cut row of unknown bounds counts as fully
