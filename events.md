@@ -1866,8 +1866,9 @@ HIGH): once a posted master's job was moved to the archive its footage keys
 were gone (the archive row kept only the cut-row count), so a same-video copy
 with other bytes pooled again; compaction and the rebuild from the month
 archives now keep the master's identities on each archived clip row, the
-library pass counts them as owners, and a row without them refuses the
-library until the rebuild fills them. And a master named only by a plain web
+library pass counts them as owners, a clip with no digest is archived as
+unknown history instead of being forgotten, and a row without keys refuses
+the library until the rebuild fills them. And a master named only by a plain web
 address (a mirror lone-id link, any non-YouTube non-Drive address) with no
 origin id now counts as unnamed: footage is named by an id only. Clip
 receipts of recycled cuts name the manifest the master came from. The job records the library masters it cuts

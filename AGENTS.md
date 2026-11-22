@@ -812,7 +812,8 @@
   row keeps its master's identities (`keys`, written by compaction and by
   the rebuild from the month archives) and `archived_clip_rows` adds them
   to the owners, so footage whose job left the live store stays spoken
-  for; a row without keys, or with no id among them, refuses the library
+  for; a clip with no digest is archived as a row with sha256 None
+  (unknown history, never forgotten); a row without keys, or with no id among them, refuses the library
   until the rebuild fills them (a record with no address and no origin id
   never does); plus ("sha", sha256) and ("storage", storageKey)); any shared
   identity between masters of different bytes puts every one of them out.

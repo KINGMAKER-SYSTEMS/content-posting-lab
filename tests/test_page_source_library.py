@@ -1037,6 +1037,12 @@ def test_footage_posted_by_an_archived_job_still_names_its_video(monkeypatch, re
 
     for keys in (None, [], [["source", "https://example.test/footage.mp4"]], [["sha", posted.sha256]]):
         assert library_recipe(_recipe([bound]), with_row(keys)) is None
+    # A posted clip that cannot name its bytes is archived as unknown history, not forgotten.
+    nameless = json.loads(json.dumps(store))
+    del nameless["jobs"]["posted-job"]["clips"][0]["sha256"]
+    forgotten, _ = compaction.compact_job_store(nameless, when)
+    assert [row["sha256"] for row in forgotten[compaction.ARCHIVE_INDEX_KEY]["sourceDnaClips"]["pg"]] == [None]
+    assert library_recipe(_recipe([bound]), forgotten) is None
     # The rebuild from the whole archived record writes the same keys, both for
     # an index without the record and for a row written before keys were kept.
     legacy = json.loads(json.dumps(compacted))

@@ -422,18 +422,18 @@ def archived_clip_rows(store: dict[str, Any], page_id: str) -> list[dict[str, An
     so the check is clip by clip: one job's rows never cover another's, and
     clips of other job kinds (renders, slideshows, truck recoveries) never
     count. A page whose clips were archived before that record existed (None,
-    or an index without the key), a row without its cut rows, and a row whose
-    master is not named by an id all mean history that cannot be compared,
-    which counts as used (None). The rows returned carry ``masterSha256`` (a
+    or an index without the key), a clip that could not name its bytes, a row
+    without its cut rows, and a row whose master is not named by an id all
+    mean history that cannot be compared, which counts as used (None). The rows returned carry ``masterSha256`` (a
     sha) and ``keys`` as a set of (kind, value) pairs.
     """
     index = compaction.read_archive_index(store)
     digests = (index.get("usedClipSha256") or {}).get(page_id)
-    if digests is None:
-        return []
-    if not isinstance(digests, list):
-        return None
     clips_by_page = index.get("sourceDnaClips")
+    if digests is None and not (isinstance(clips_by_page, dict) and page_id in clips_by_page):
+        return []  # nothing of this page was ever archived
+    if digests is not None and not isinstance(digests, list):
+        return None
     if not isinstance(clips_by_page, dict):
         return None
     clips = clips_by_page.get(page_id, [])
@@ -443,6 +443,7 @@ def archived_clip_rows(store: dict[str, Any], page_id: str) -> list[dict[str, An
     for clip in clips:
         if (
             not isinstance(clip, dict)
+            or not isinstance(clip.get("sha256"), str)  # a clip that could not name its bytes
             or type(clip.get("cutRows")) is not int
             or clip["cutRows"] < 1
             or not isinstance(clip.get("masterSha256"), str)

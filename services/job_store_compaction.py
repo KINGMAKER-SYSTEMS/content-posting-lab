@@ -180,12 +180,12 @@ def _clip_sha256s(job: dict[str, Any]) -> list[str]:
     return out
 
 
-def _source_clip_rows(job: dict[str, Any]) -> list[tuple[str, str | None, int, list[list[str]]]]:
-    """(clip digest, its master sha, cut rows of this job on that master, the
-    master's identities as sorted [kind, value] pairs) per clip. The identities
-    (footage keys, bytes, storage address) keep the footage named after the
-    job itself leaves the live store; a clip that cannot name its master has
-    none."""
+def _source_clip_rows(job: dict[str, Any]) -> list[tuple[str | None, str | None, int, list[list[str]]]]:
+    """(clip digest or None, its master sha, cut rows of this job on that
+    master, the master's identities as sorted [kind, value] pairs) per clip.
+    The identities (footage keys, bytes, storage address) keep the footage
+    named after the job itself leaves the live store; a clip that cannot name
+    its master has none."""
     from services.page_source_library import descriptor_identities  # the library owns the key space
 
     source_cuts = job.get("sourceCuts", [])
@@ -195,13 +195,16 @@ def _source_clip_rows(job: dict[str, Any]) -> list[tuple[str, str | None, int, l
             sha = cut.get("masterSha256") if isinstance(cut, dict) else None
             if isinstance(sha, str):
                 rows_by_master[sha] = rows_by_master.get(sha, 0) + 1
-    out: list[tuple[str, str | None, int, list[list[str]]]] = []
+    out: list[tuple[str | None, str | None, int, list[list[str]]]] = []
     for clip in job.get("clips", []):
         if not isinstance(clip, dict):
             continue
         digest = clip.get("sha256")
         if not isinstance(digest, str) or not _SHA256_RE.fullmatch(digest):
-            continue
+            # A clip that cannot name its bytes is still recorded (digest
+            # None), so the page's archived history reads as unknown rather
+            # than as if the clip had never been posted.
+            digest = None
         source = clip.get("source")
         master = source.get("master") if isinstance(source, dict) else None
         sha = master.get("sha256") if isinstance(master, dict) else None
