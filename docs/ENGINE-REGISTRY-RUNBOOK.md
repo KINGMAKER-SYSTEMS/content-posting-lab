@@ -59,19 +59,23 @@ vocabulary entry; a new engine for an existing niche does not.
    into `cp_pages` (INSERT) and the Dossier bootstrap locks its first recipe.
    Unknown Account Group labels are refused by name (`rosterReconcile.js`
    `GROUP_TO_OWNER`), never guessed.
-2. Lists that used to be committed Worker files are now `cp_pages` columns
-   (Worker migration `0127_page_curation.sql`). Set what applies, through the
-   D1 gate (reviewed operator SQL, never by hand on prod):
+2. Two lists that used to be committed Worker files are now `cp_pages`
+   columns (Worker migration `0127_page_curation.sql`). Set what applies,
+   through the D1 gate (reviewed operator SQL, never by hand on prod):
    ```sql
    UPDATE cp_pages SET caption_delivery = 'in_app' WHERE id = 'acct:<handle>' AND owner_id = 'automation';
    UPDATE cp_pages SET warner_operated = 1        WHERE id = 'acct:<handle>' AND owner_id = 'automation';
-   UPDATE cp_pages SET lyric_pool = 'lyric'       WHERE id = 'acct:<handle>' AND owner_id = 'automation';
    ```
    NULL = "the committed file decides" (no behaviour change). A row's value
    wins over the file for `caption_delivery` (a row saying `'burned'` beats
-   the file's `in_app`). For `warner_operated` and `lyric_pool` the file is
-   a floor: a row adds a page to the list; it cannot remove a page the file
-   names (that stays a file edit until the files are retired).
+   the file's `in_app`). For `warner_operated` the file is a floor: a row
+   adds a page to the exempt set; it cannot remove a page the file names.
+   Still a Worker file edit: the lyric-page list (`src/domain/lyricPages.js`,
+   read by a dozen gates from compile to claim; moving it half-way would admit
+   a clip at compile and refuse it at claim), the Josie/Leon in-app-only list
+   (`captionDelivery.js` `IN_APP_ONLY_PAGES`) and the owner holds
+   (`pagePolicy.js`). Named follow-up: one more migration per list, each
+   threaded through every reader before it is seeded.
 3. Phone side (poster phone, keyboard, atlas) stays the rail's chain
    (`zcode/PAGE-ONBOARDING-BIBLE.md`).
 
@@ -85,11 +89,6 @@ Where each column is read (Worker, after PR B):
 - `warner_operated`: in-app breaker exemption (`loadInAppTrippedPages`),
   retry-defer (`inAppRetryDeferApplies`). Not: allocator live-apply guard
   (`allocator/warnerPages.json`, allocator lane).
-- `lyric_pool = 'lyric'`: compile SQL arms, `eligibleAsset`,
-  `materializerRefreshReason`, claim fences, pool refill rule.
-  `'blank_only'`: compile SQL arms, `eligibleAsset`, edit door. Not:
-  inventory counts (`automationInventory.js`, `dashboard.js`) and
-  `staleSlotReplan.js`, which keep the committed list.
 
 A page-policy record (`PAGE_POLICY_MODE=live`) still wins over both.
 
@@ -111,7 +110,7 @@ length rule.
 - 0127 seeds write only `WHERE <column> IS NULL`; re-running is a no-op; a
   value a person set is kept.
 - Roster sync writes only the ontology columns (`rosterSync.js`
-  `ONTOLOGY_COLUMNS`); it never touches the three curation columns.
+  `ONTOLOGY_COLUMNS`); it never touches the two curation columns.
 - The engine list is read-only data; the Worker refuses a list whose hash
   does not match rather than guessing.
 
