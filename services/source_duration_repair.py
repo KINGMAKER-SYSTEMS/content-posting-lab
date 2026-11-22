@@ -52,6 +52,7 @@ from services.post_render import (
     RenderTools,
     _encode_final,
     _probe as post_render_probe,
+    _square_pixels,
 )
 
 SOURCE_DURATION_REPAIR_SCHEMA = "rt.source-duration-repair.v1"
@@ -552,7 +553,7 @@ def render_shorter(source_path: Path, output_directory: Path, command: Dict, *,
         source_probe = _post_probe(source_path, tools)
         target_width = source_probe.height * 9 / 16
         near_vertical = abs(source_probe.width - target_width) <= target_width * 0.03
-        if (source_probe.height < 768 or source_probe.sample_aspect_ratio not in {"1:1", "", "N/A", "0:1"}
+        if (source_probe.height < 768 or not _square_pixels(source_probe.sample_aspect_ratio)
                 or source_probe.rotation != 0 or not near_vertical):
             raise RepairError("regeneration_required",
                               "source must be upright square-pixel near-9:16 video at least 768 pixels high")

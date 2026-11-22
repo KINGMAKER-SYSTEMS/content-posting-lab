@@ -442,3 +442,46 @@ def test_near_vertical_source_is_scaled_by_real_encode_path(tmp_path):
     receipt = render_shorter(src, out, _command_for(src_sha, 3000))
     assert (receipt["width"], receipt["height"]) == (1080, 1920)
     assert (out / "final.mp4").exists()
+
+
+
+@pytest.mark.skipif(not _has_ffmpeg(), reason="ffmpeg/ffprobe not available")
+@pytest.mark.parametrize("sar", ["1216:1215", "1214:1215"])
+def test_near_square_pool_sar_passes_the_repair_gate_too(tmp_path, monkeypatch, sar):
+    """#410 let vault pool clips with a near-square SAR (under 0.1% off) through the
+    prepared-post gate (post_render._square_pixels). The duration repair re-checks
+    the SAME rule, so a pool clip that also needs a repair must pass here too, or
+    its render fails with regeneration_required after the first gate accepted it.
+    ffmpeg reduces an encoded SAR to 1:1 at this size, so the real clip is encoded
+    square and only the source probe reports the pool clip's SAR."""
+    import dataclasses
+    import services.source_duration_repair as repair
+    src = tmp_path / "pool.mp4"
+    _make_source(src, "30", seconds=4)
+    real_probe = repair._post_probe
+
+    def pool_probe(path, tools):
+        facts = real_probe(path, tools)
+        return dataclasses.replace(facts, sample_aspect_ratio=sar) if Path(path) == src.absolute() else facts
+
+    monkeypatch.setattr(repair, "_post_probe", pool_probe)
+    src_sha = hashlib.sha256(src.read_bytes()).hexdigest()
+    out = tmp_path / "out"
+    receipt = render_shorter(src, out, _command_for(src_sha, 3000))
+    assert (receipt["width"], receipt["height"]) == (1080, 1920)
+    assert (out / "final.mp4").exists()
+
+
+@pytest.mark.skipif(not _has_ffmpeg(), reason="ffmpeg/ffprobe not available")
+def test_clearly_non_square_sar_is_still_refused_by_the_repair_gate(tmp_path, monkeypatch):
+    import dataclasses
+    import services.source_duration_repair as repair
+    src = tmp_path / "wide.mp4"
+    _make_source(src, "30", seconds=4)
+    real_probe = repair._post_probe
+    monkeypatch.setattr(repair, "_post_probe",
+                        lambda path, tools: dataclasses.replace(real_probe(path, tools), sample_aspect_ratio="1250:1215"))
+    src_sha = hashlib.sha256(src.read_bytes()).hexdigest()
+    with pytest.raises(RepairError) as error:
+        render_shorter(src, tmp_path / "out", _command_for(src_sha, 3000))
+    assert error.value.code == "regeneration_required"
