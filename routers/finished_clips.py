@@ -58,6 +58,7 @@ BOOKED = {
 # JOY-CUT-SUNMON-G6-1120.tsv, raw per body from each RESULT.json), and the Sat
 # CFR-30 heal c5a992bf of 9d1e37d0. Each SHA was re-hashed from its file. Each
 # body maps to its Lab parent raw. No generation runs on this path.
+# Addendum D (board L59408): the Sun 11-22 18:35Z body is 7a3c65cd, replacing 5167df7f (same Lab raw 419d6d15, job cpl-18882c4ced3c15ba).
 JOY_PAGE = 'acct:joy-to-the-world709'
 JOY_SOURCE_JOB = 'cpl-18882c4ced3c15ba'
 JOY_AI_REUSE = {
@@ -65,7 +66,7 @@ JOY_AI_REUSE = {
     'd148b55469279ba82972b1cbbc2aaca079fedb079e293df15763627673e1450f': '13397af4c834eeda694d2234552c6e190324dc327fe2d205ba1e276864c78238',
     '311bfcc849367647cf635dc4bc1487a06e5a37cec93ce80233b83ab27278ae1c': '0de0437f74999a1c37964cd6d70b5baaab502c4e4019291aff75f3fd925a9618',
     '059039a46e895d9b11853eb1226c1f32279bed5e52571eb830aa93f61eac7750': '2fef2b38f75304575c85d93524101903a2bb55b0e31b54b51d7d4ea97b37d3e3',
-    '5167df7fd0b96c5a065fb1218b4d0ee2513dff57ce912735dcec98b839a43430': '419d6d15f1aa9d49b174fbe0e58c579357ff70a800cdbf246047bcf0debee550',
+    '7a3c65cdedb3291538bd1db525ca4e3075ef87f9fdf1158c63541b6ab6beb426': '419d6d15f1aa9d49b174fbe0e58c579357ff70a800cdbf246047bcf0debee550',
     '09bafd988b06d9c4091a4a69d5eb205d1e0a2d7f65f1495bc3ec4691cdc32115': 'd8bb2b81093eb3e7b1fb072ca80192254d1ff827ef9b6438b4351d52bdcc06ec',
     '9d1e37d0a77c51c460196f03777ab9838959fa436f8c843b05058a6a66aa2841': 'd635d3cbf7efb777bc6ef5e6c5adb99a078dabc70553a1050f118a729295dd51',
     '310034c0814394ce95fb4463d974882195d831ce4f71421881c123c97efa5f2a': 'f03b8acfee596d048342c9f0ad62b10165d3691e3747b6751f85456495633a42',

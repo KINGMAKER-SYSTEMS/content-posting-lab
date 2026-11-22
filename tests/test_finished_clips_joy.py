@@ -116,3 +116,8 @@ def test_joy_list_is_the_nine_verified_bodies_on_joy_only():
         assert finished_clips._booked(JOY, sha)
         assert not finished_clips._booked('acct:culture-core-1', sha)
         assert not finished_clips._booked('acct:burnt-mill-rd', sha)
+    # Addendum D (board L59408): the Sun 11-22 18:35Z body is 7a3c65cd, replacing 5167df7f (same Lab raw 419d6d15, job cpl-18882c4ced3c15ba):
+    # the new body keeps the parent raw, the old body is off the list, and Mon 9d1e37d0 stays.
+    assert joy['7a3c65cdedb3291538bd1db525ca4e3075ef87f9fdf1158c63541b6ab6beb426'] == '419d6d15f1aa9d49b174fbe0e58c579357ff70a800cdbf246047bcf0debee550'
+    assert '5167df7fd0b96c5a065fb1218b4d0ee2513dff57ce912735dcec98b839a43430' not in joy and not finished_clips._booked(JOY, '5167df7fd0b96c5a065fb1218b4d0ee2513dff57ce912735dcec98b839a43430')
+    assert joy['9d1e37d0a77c51c460196f03777ab9838959fa436f8c843b05058a6a66aa2841'] == PARENT
