@@ -1385,6 +1385,7 @@ from fastapi.responses import FileResponse
 from services.json_store import atomic_load, atomic_save
 from services.generation_recovery import PredictionCheckpoint, runner_lock, store_lock as lock_for
 from services import job_store_compaction as compaction
+from services import archived_media_retention
 from services import generated_media_retention
 
 JOBS_STORE_NAME = "control_plane_jobs.json"
@@ -2004,6 +2005,30 @@ def _media_retention_paused() -> bool:
     return os.environ.get(_MEDIA_RETENTION_ENV, "").strip().lower() == "off"
 
 
+_ARCHIVED_MEDIA_RETENTION = archived_media_retention.ArchivedMediaRetention()
+_ARCHIVED_MEDIA_RETENTION_ENV = "CONTENT_LAB_ARCHIVED_MEDIA_RETENTION"
+
+
+def run_archived_media_retention_once(*, dry_run: bool = False) -> dict[str, int]:
+    """One bounded pass over the files of jobs compaction moved out of the store.
+
+    Those jobs answer 404 on every download route, so their files can never be
+    fetched again. CONTENT_LAB_ARCHIVED_MEDIA_RETENTION=off skips the pass, and
+    so does the main CONTENT_LAB_MEDIA_RETENTION=off switch. "dry-run" logs what
+    a pass would free and deletes nothing.
+    """
+    mode = os.environ.get(_ARCHIVED_MEDIA_RETENTION_ENV, "").strip().lower()
+    if mode == "off":
+        return {}
+    dry_run = dry_run or mode == "dry-run"
+    store_path = _jobs_path()
+    if not any(store_path.parent.glob(f"{store_path.name}.archive-*.jsonl")):
+        return {}
+    return _ARCHIVED_MEDIA_RETENTION.sweep(
+        _read_jobs_snapshot_object().data, _generation_root(), store_path, dry_run=dry_run,
+    )
+
+
 def _media_retention_tick(last_run: float, now: float) -> float:
     """Run one pass if the current pressure's interval has elapsed; return the last-run time."""
     if _media_retention_paused():
@@ -2012,6 +2037,10 @@ def _media_retention_tick(last_run: float, now: float) -> float:
     if now - last_run < _MEDIA_RETENTION_INTERVAL_SECONDS[pressure]:
         return last_run
     run_generated_media_retention_once(pressure=pressure)
+    try:
+        run_archived_media_retention_once()
+    except Exception:  # an archived-media failure must not stop the confirmed-clip pass
+        log.exception("archived media retention pass failed")
     return now
 
 
