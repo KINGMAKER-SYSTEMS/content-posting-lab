@@ -1866,5 +1866,5 @@ receipts of recycled cuts name the manifest the master came from. The job record
 (`sourceLibraryMasters`) and execution rebuilds them only from a whole
 record. A page with no library is unchanged; a used-up library keeps the 409
 code and adds a plain `X-RT-Zero-Reason-Help` header naming new footage and
-the fetcher issue #227. `tests/test_page_source_library.py` (55 tests) fails
+the fetcher issue #227. `tests/test_page_source_library.py` (56 tests) fails
 on the previous head. No deployment; HENRY merges.
