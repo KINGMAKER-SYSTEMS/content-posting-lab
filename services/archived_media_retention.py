@@ -24,11 +24,14 @@ What is never touched:
 * a directory the archive index lists as a truck re-crop candidate
   (``truckCandidateJobs``), because ``_truck_master_candidates`` still reads
   those bytes;
-* everything, when the store or its archive index cannot be read;
+* everything, when the store cannot be read or its archive index is missing,
+  not version 1, or lists a malformed truck candidate;
 * anything that is not a regular file, and the job records themselves.
 
 Each pass is bounded by a directory count and a time budget and logs what it
-freed. ``dry_run=True`` counts without deleting.
+freed. ``dry_run=True`` counts without deleting. A job directory that still
+holds something after a pass (a symlink, a file that will not unlink) is left
+alone until the process restarts.
 """
 from __future__ import annotations
 
@@ -41,7 +44,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable
 
-from services.job_store_compaction import ArchiveIndexUnreadable, read_archive_index
+from services.job_store_compaction import ARCHIVE_INDEX_VERSION, ArchiveIndexUnreadable, read_archive_index
 
 log = logging.getLogger("content_lab.archived_media_retention")
 
@@ -69,16 +72,12 @@ def _job_directory(root: Path, job_id: str, value: Any) -> Path | None:
     return None
 
 
-def _related(a: Path, b: Path) -> bool:
-    return a == b or a in b.parents or b in a.parents
-
-
 class ArchivedMediaRetention:
     def __init__(self, *, monotonic: Callable[[], float] = time.monotonic):
         self.monotonic = monotonic
         self._offsets: dict[Path, int] = {}   # archive file -> bytes already read
         self._roots: dict[str, Any] = {}      # archived job id -> its artifactRoot
-        self._gone: set[str] = set()          # archived job ids with nothing left on disk
+        self._settled: set[str] = set()       # archived job ids this process has finished with
 
     def _read_archives(self, store_path: Path, expired: Callable[[], bool]) -> bool:
         """Read complete archive lines added since the last pass. False = ran out of time."""
@@ -107,6 +106,46 @@ class ArchivedMediaRetention:
                 continue
         return True
 
+    def _held(self, store: Any, jobs: dict[str, Any], expired: Callable[[], bool]) -> set[Path] | None:
+        """Every directory something can still read, or None when that cannot be known."""
+        try:
+            index = read_archive_index(store)
+        except ArchiveIndexUnreadable:
+            index = None
+        # This pass only runs once archive files exist, so a missing index is
+        # unknown history (a store restored from before compaction, or an
+        # empty stand-in), never "no truck candidates".
+        candidates = index.get("truckCandidateJobs") if isinstance(index, dict) else None
+        if index is None or index.get("version") != ARCHIVE_INDEX_VERSION or not isinstance(candidates, list):
+            log.error("archived media retention: archive index missing or unreadable; nothing deleted")
+            return None
+        pointers: list[Any] = []
+        for candidate in candidates:
+            if not isinstance(candidate, dict) or not isinstance(candidate.get("artifactRoot"), str) \
+                    or not candidate["artifactRoot"]:
+                log.error("archived media retention: malformed truck candidate; nothing deleted")
+                return None
+            pointers.append(candidate["artifactRoot"])
+        for job in jobs.values():
+            if expired() or not isinstance(job, dict):
+                return None
+            masters = job.get("recoveryMasters") or []
+            if not isinstance(masters, list):
+                return None
+            pointers.append(job.get("artifactRoot"))
+            pointers.extend(master.get("artifactRoot") if isinstance(master, dict) else 0 for master in masters)
+        held: set[Path] = set()
+        for value in pointers:
+            if value is None or value == "":
+                continue
+            if not isinstance(value, str):
+                return None
+            try:
+                held.add(Path(value).resolve())
+            except (OSError, RuntimeError, ValueError):
+                return None
+        return held
+
     def sweep(self, store: Any, root: Path, store_path: Path, *, dir_limit: int = DEFAULT_DIR_LIMIT,
               time_budget: float = DEFAULT_TIME_BUDGET_SECONDS, dry_run: bool = False) -> dict[str, int]:
         summary = {"dirs": 0, "files": 0, "bytes_freed": 0, "failed": 0, "held": 0}
@@ -115,54 +154,31 @@ class ArchivedMediaRetention:
         jobs = store.get("jobs") if isinstance(store, dict) else None
         if not isinstance(jobs, dict):
             return summary
-        try:
-            index = read_archive_index(store)
-        except ArchiveIndexUnreadable:
-            log.error("archived media retention: archive index unreadable; nothing deleted")
+        held = self._held(store, jobs, expired)
+        if held is None or expired() or not self._read_archives(store_path, expired):
             return summary
-        candidates = index.get("truckCandidateJobs", [])
-        if not isinstance(candidates, list):
-            return summary
-        # Every directory something can still read. One malformed pointer holds the pass.
-        held: set[Path] = set()
-        pointers = [job.get("artifactRoot") for job in candidates if isinstance(job, dict)]
-        for job in jobs.values():
-            if not isinstance(job, dict):
-                return summary
-            masters = job.get("recoveryMasters") or []
-            if not isinstance(masters, list):
-                return summary
-            pointers.append(job.get("artifactRoot"))
-            pointers.extend(master.get("artifactRoot") if isinstance(master, dict) else 0 for master in masters)
-        for value in pointers:
-            if value is None or value == "":
-                continue
-            if not isinstance(value, str):
-                return summary
-            try:
-                held.add(Path(value).resolve())
-            except (OSError, RuntimeError):
-                return summary
-        if expired() or not self._read_archives(store_path, expired):
-            return summary
+        # A directory is held when it is a held path, contains one, or sits inside one.
+        around = held | {parent for path in held for parent in path.parents}
         root = root.resolve()
         for job_id, value in self._roots.items():
             if summary["dirs"] >= dir_limit or expired():
                 break
-            if job_id in self._gone or job_id in jobs:
+            if job_id in self._settled or job_id in jobs:
                 continue
             directory = _job_directory(root, job_id, value)
-            if directory is None:
+            if directory is None or not directory.is_dir():
+                self._settled.add(job_id)  # nothing of this job is on disk, or the record cannot prove it
                 continue
-            if not directory.is_dir():
-                self._gone.add(job_id)
-                continue
-            if any(_related(directory, path) for path in held):
+            if directory in around or any(parent in held for parent in directory.parents):
                 summary["held"] += 1
                 continue
             summary["dirs"] += 1
+            finished = True
             for current, _subdirs, names in os.walk(directory, topdown=False):
                 for name in names:
+                    if expired():
+                        finished = False
+                        break
                     path = Path(current, name)
                     try:
                         info = path.lstat()
@@ -178,11 +194,17 @@ class ArchivedMediaRetention:
                         continue
                     summary["files"] += 1
                     summary["bytes_freed"] += info.st_size
+                if not finished:
+                    break
                 if not dry_run and len(Path(current).relative_to(root).parts) >= JOB_DIR_DEPTH:
                     try:
                         os.rmdir(current)  # only ever removes an EMPTY directory
                     except OSError:
                         pass
+            if finished and not dry_run:
+                # Gone, or holding something this pass will never delete (a symlink,
+                # an unlink that fails): either way it must not use up later passes.
+                self._settled.add(job_id)
         log.info("archived media retention dry_run=%s dirs=%d files=%d bytes_freed=%d failed=%d held=%d archived_jobs=%d",
                  dry_run, summary["dirs"], summary["files"], summary["bytes_freed"], summary["failed"],
                  summary["held"], len(self._roots))

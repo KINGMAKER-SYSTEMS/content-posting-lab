@@ -2014,10 +2014,13 @@ def run_archived_media_retention_once(*, dry_run: bool = False) -> dict[str, int
 
     Those jobs answer 404 on every download route, so their files can never be
     fetched again. CONTENT_LAB_ARCHIVED_MEDIA_RETENTION=off skips the pass, and
-    so does the main CONTENT_LAB_MEDIA_RETENTION=off switch.
+    so does the main CONTENT_LAB_MEDIA_RETENTION=off switch. "dry-run" logs what
+    a pass would free and deletes nothing.
     """
-    if os.environ.get(_ARCHIVED_MEDIA_RETENTION_ENV, "").strip().lower() == "off":
+    mode = os.environ.get(_ARCHIVED_MEDIA_RETENTION_ENV, "").strip().lower()
+    if mode == "off":
         return {}
+    dry_run = dry_run or mode == "dry-run"
     store_path = _jobs_path()
     if not any(store_path.parent.glob(f"{store_path.name}.archive-*.jsonl")):
         return {}
