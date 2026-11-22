@@ -176,7 +176,9 @@ from services.control_plane_source_imports import (
     validate_source_url,
 )
 from services.content_engine_registry import (
+    engines_in_family,
     job_profile_authority_matches,
+    load_content_engines,
     load_engine_registry,
     resolve_material_profile,
 )
@@ -502,7 +504,13 @@ _capabilities_cache: dict[
 _CAPABILITIES_CACHE_TTL_SECONDS = 2.0
 _CAPABILITIES_CACHE_MAX_ENTRIES = 4096
 
-_SLIDESHOW_ENGINES = frozenset({"sourced_slideshow", "lyrics_slideshows", "sourced_image"})
+# Engine families from recipes/content-engines.v1.json (B9): which engines
+# generate video from prompts, which recut a source library, and which render
+# slideshows. Read once at import; a new engine on an existing executor kind
+# joins its family with no edit here.
+_GENERATED_ENGINES = engines_in_family("generated")
+_SOURCED_ENGINES = engines_in_family("sourced")
+_SLIDESHOW_ENGINES = engines_in_family("slideshow")
 
 
 def _file_stat_signature(path: Path) -> tuple[str, int, int, int, int]:
@@ -592,7 +600,7 @@ def _capabilities_catalog_signature(
     that reads the prompt catalog) — no ai_video binding, no cost, same as
     the slideshow-only-when-present gate above."""
     if any(
-        publication.get("engine") == "ai_video"
+        publication.get("engine") in _GENERATED_ENGINES
         for _, publication in registered_bindings
     ):
         return _prompt_catalog_freshness_signature()
@@ -857,7 +865,7 @@ def capabilities(
             "maxQuantity": 0 if bootstrap_pool_supplied else bootstrap.max_quantity,
             **({"zeroReason": POOL_SUPPLIED} if bootstrap_pool_supplied else {}),
             **({"sourceIdentities": completed_import_identities}
-               if bootstrap.content_engine == "sourced_video" and completed_import_identities
+               if bootstrap.content_engine in _SOURCED_ENGINES and completed_import_identities
                else {}),
         })
     # Sourced-video capacity is consumable inventory, not a static executor
@@ -889,7 +897,7 @@ def capabilities(
             source_recipe = None
             slideshow_recipe = None
         else:
-            if publication_engine == "ai_video":
+            if publication_engine in _GENERATED_ENGINES:
                 generation_recipe, generation_unavailable_reason = (
                     resolve_generation_recipe_with_reason(publication)
                 )
@@ -1070,6 +1078,7 @@ def _format_contract_snapshot() -> dict[str, Any]:
     try:
         contracts, contracts_hash = load_format_contracts()
         profiles, registry_hash = load_engine_registry()
+        engines, engines_hash = load_content_engines()
     except (OSError, ValueError, json.JSONDecodeError) as error:
         raise HTTPException(
             status_code=503, detail="content format contracts are unavailable",
@@ -1116,6 +1125,19 @@ def _format_contract_snapshot() -> dict[str, Any]:
         "schema": "content-lab.format-contract-status.v1",
         "contractsRegistryVersion": "sha256:" + contracts_hash,
         "engineRegistryVersion": "sha256:" + registry_hash,
+        # THE ONE ENGINE LIST (B9). The Worker takes its engine names and
+        # labels from here, recomputes contentEnginesVersion over `engines`
+        # and fails closed when it differs (scheduler/formatAuthority.js).
+        "contentEnginesVersion": engines_hash,
+        "engines": [
+            {
+                "engine": engine.engine,
+                "label": engine.label,
+                "materialSource": engine.material_source,
+                "executorKind": engine.executor_kind,
+            }
+            for engine in sorted(engines.values(), key=lambda entry: entry.engine)
+        ],
         "formats": formats,
     }
 
@@ -6171,12 +6193,12 @@ async def _create_job_impl(
     publication_engine = publication.get("engine") if publication else None
     generation_recipe = (
         resolve_generation_recipe(publication)
-        if publication_engine == "ai_video"
+        if publication_engine in _GENERATED_ENGINES
         else None
     )
     source_recipe = (
         await asyncio.to_thread(_dossier_source_recipe, publication)
-        if publication_engine == "sourced_video"
+        if publication_engine in _SOURCED_ENGINES
         else None
     )
     slideshow_recipe = (

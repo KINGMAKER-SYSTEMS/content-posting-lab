@@ -1,0 +1,31 @@
+{
+  "schema": "content-lab.content-engines.v1",
+  "note": "The one list of content engines both the Lab and the Worker read. An engine is a name bound to a material source and an executor kind the Lab has code for (services/content_engine_registry.py KNOWN_EXECUTOR_KINDS). Add an engine here, then add its formats to content-format-contracts.v1.json and content-engine-registry.v1.json; the Worker reads this list through GET /v1/format-contracts (engines + contentEnginesVersion) and needs no code change. Runbook: docs/ENGINE-REGISTRY-RUNBOOK.md.",
+  "engines": {
+    "ai_video": {
+      "label": "Rising Tides AI video",
+      "materialSource": "generated_video",
+      "executorKind": "prompt_family"
+    },
+    "sourced_video": {
+      "label": "Rising Tides sourced video",
+      "materialSource": "source_library",
+      "executorKind": "source_dna_recut"
+    },
+    "sourced_slideshow": {
+      "label": "Syzygy slideshow",
+      "materialSource": "image_library",
+      "executorKind": "slideshow_renderer"
+    },
+    "sourced_image": {
+      "label": "Syzygy image video",
+      "materialSource": "image_library",
+      "executorKind": "slideshow_renderer"
+    },
+    "lyrics_slideshows": {
+      "label": "Syzygy lyric slideshow",
+      "materialSource": "lyric_image_library",
+      "executorKind": "slideshow_renderer"
+    }
+  }
+}

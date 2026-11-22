@@ -874,7 +874,8 @@ def _slideshow_ingredients(
     profile: MaterialProfile,
     master_pages: dict[str, Any] | None,
 ) -> list[dict[str, Any]]:
-    kind = "lyric_image_library" if profile.content_engine == "lyrics_slideshows" else "image_library"
+    # The profile's own material source (registry-validated per engine).
+    kind = profile.material_source
     address = (
         slideshow_library_address(profile, master_pages)
         if isinstance(master_pages, dict) else None
@@ -946,13 +947,13 @@ def _format_entry(
     shipstream_projection: ShipStreamSourceProjection | None = None,
     master_pages: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    if profile.content_engine == "ai_video":
+    if profile.family == "generated":
         if contract.format_slug == "pov-seasonal":
             catalog, _ = load_prompt_catalog(contract.format_slug)
             # The selected H3 portrait preset defines this route's provider settings.
             model_options = [dict(option, controls={}) for option in _model_options(catalog)]
         ingredients = _generated_ingredients(contract.format_slug, catalog, model_options)
-    elif profile.content_engine == "sourced_video":
+    elif profile.family == "sourced":
         ingredients = _sourced_ingredients(
             contract.format_slug, profile, page_id, shipstream_library,
             shipstream_status, shipstream_projection,
