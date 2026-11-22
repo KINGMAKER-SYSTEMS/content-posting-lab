@@ -208,7 +208,6 @@ class PageEvidence:
     masters: list[MasterSource] = field(default_factory=list)  # recyclable candidates
     tainted: set[str] = field(default_factory=set)             # shas that count as used
     originals: dict[tuple[str, str], set[str]] = field(default_factory=dict)  # key -> shas
-    library_ids: set[str] = field(default_factory=set)
     unknown: bool = False  # a source job posted clips whose master cannot be named
 
 
@@ -228,8 +227,6 @@ def page_evidence(store: dict[str, Any], page_id: str, recipe: SourceRecipe) -> 
             continue
         clips = job.get("clips")
         source_job = job.get("sourceKind") == "dossier_source_dna"
-        if source_job and isinstance(job.get("sourceLibraryId"), str):
-            evidence.library_ids.add(job["sourceLibraryId"])
         if not isinstance(clips, list):
             if source_job and clips is not None:
                 evidence.unknown = True
@@ -244,11 +241,16 @@ def page_evidence(store: dict[str, Any], page_id: str, recipe: SourceRecipe) -> 
                 if source_job:
                     evidence.unknown = True
                 continue
-            if isinstance(source.get("sourceLibraryId"), str):
-                evidence.library_ids.add(source["sourceLibraryId"])
             sha = descriptor.get("sha256")
             if not isinstance(sha, str) or not sha:
-                evidence.unknown = True
+                if source_job:
+                    evidence.unknown = True
+                else:
+                    # Another job kind posted footage it cannot name by bytes:
+                    # its original is spoken for (owned by no master), but it
+                    # cannot taint the whole library.
+                    for key in _raw_keys(descriptor):
+                        evidence.originals.setdefault(key, set()).add("")
                 continue
             for key in _raw_keys(descriptor):
                 evidence.originals.setdefault(key, set()).add(sha)
@@ -262,12 +264,15 @@ def page_evidence(store: dict[str, Any], page_id: str, recipe: SourceRecipe) -> 
     return evidence
 
 
-def archive_evidence_gap(store: dict[str, Any], page_id: str, library_ids: set[str]) -> bool:
-    """True when the archive holds more posted clips for the page than cut rows.
+def archive_evidence_gap(store: dict[str, Any], page_id: str) -> bool:
+    """True when an archived source clip of the page has no cut rows of its own job.
 
-    Compaction keeps a page's clip digests and the cut rows of its libraries;
-    a job archived without rows leaves clips with no spans behind, so the gap
-    means footage was posted whose spans no ledger can see any more.
+    Compaction keeps, per page, every source-job clip digest with the number
+    of cut rows ITS job carried (``sourceDnaClips``), so the check is clip by
+    clip: one job's rows never cover another's, and clips of other job kinds
+    (renders, slideshows, truck recoveries) never count. A page whose clips
+    were archived before that record existed (None, or an index without the
+    key) has unknown span history, which counts as used.
     """
     index = compaction.read_archive_index(store)
     digests = (index.get("usedClipSha256") or {}).get(page_id)
@@ -275,11 +280,18 @@ def archive_evidence_gap(store: dict[str, Any], page_id: str, library_ids: set[s
         return False
     if not isinstance(digests, list):
         return True
-    rows = [
-        row for row in index.get("sourceDnaCuts", [])
-        if isinstance(row, dict) and row.get("sourceLibraryId") in library_ids
-    ]
-    return len(digests) > len(rows)
+    clips_by_page = index.get("sourceDnaClips")
+    if not isinstance(clips_by_page, dict):
+        return True
+    clips = clips_by_page.get(page_id, [])
+    if not isinstance(clips, list):
+        return True
+    return any(
+        not isinstance(clip, dict)
+        or type(clip.get("cutRows")) is not int
+        or clip["cutRows"] < 1
+        for clip in clips
+    )
 
 
 def prior_cut_rows(store: dict[str, Any]) -> list[dict[str, Any]]:
@@ -363,10 +375,9 @@ def library_recipe(recipe: SourceRecipe, store: dict[str, Any]) -> SourceRecipe 
     evidence = page_evidence(store, page_id, recipe)
     if evidence.unknown:
         return None
-    libraries = registered_libraries(page_id, recipe.format_slug)
-    library_ids = {recipe.source_library_id, *evidence.library_ids, *(lib.library_id for lib in libraries)}
-    if archive_evidence_gap(store, page_id, library_ids):
+    if archive_evidence_gap(store, page_id):
         return None
+    libraries = registered_libraries(page_id, recipe.format_slug)
     for key, shas in evidence.originals.items():
         owners.setdefault(key, set()).update(shas)
     candidates: list[MasterSource] = []

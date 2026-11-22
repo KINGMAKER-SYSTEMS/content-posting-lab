@@ -762,15 +762,25 @@
   whatever its recipe, format or status: the raw `source.master` sha and
   original keys count even when the descriptor no longer parses, and a
   master named without a well-formed cut row in its job counts as used. A
-  source job whose clips cannot name their master, or an archive holding
-  more of the page's clip digests than cut rows of its libraries
-  (`archive_evidence_gap`), means no library at all. The job record rows
+  source job whose clips cannot name their master means no library at all,
+  and so does an archived source clip whose own job carried no cut row
+  (`archive_evidence_gap`): compaction keeps `sourceDnaClips`, per page,
+  every source-job clip digest with its job's cut-row count, clip by clip
+  (never totals), and marks pages whose clips were archived before that
+  record as unknown (`None`). Archived clips of other job kinds never count
+  toward that gap; a live clip of another kind that names an original
+  without a sha spends that original but taints nothing by bytes. The
+  capability count reads the page's jobs of every kind. The job record rows
   carry `libraryId`/`libraryVersion`, and the clip receipt names that
   manifest (`receipt_library`) while the job's own binding does not move.
   Known limits: the same footage under two unrelated URLs and no origin id
   gets two keys; the scrambler branch of job creation does not widen to
   the library while the capability count does; failed/cancelled jobs
-  release spans as before. The no-repeat rule is unchanged: the same cut
+  release spans as before; a page whose clips were archived before
+  `sourceDnaClips` existed stays on bound footage until its index is
+  rebuilt; the Worker's pageSourceLockstep compares storageKey, library id
+  and version with the bound publication, so a recycled body can fail
+  lockstep on the Worker side. The no-repeat rule is unchanged: the same cut
   ledger (`masterSha:startMs:durationMs`, any library, forward or mirrored)
   refuses any overlap, so a recycled body never shares a second with an
   earlier body. A master with any cut row of unknown bounds counts as fully

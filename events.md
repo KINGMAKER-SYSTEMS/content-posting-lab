@@ -1814,11 +1814,16 @@ Second review (Opus) found two more fail-open paths, both closed with a
 red-first test each: clips posted under another recipe or format were not
 read as evidence, and a clip record that no longer parsed tainted nothing.
 Evidence now comes from every job of the page with clips, raw descriptor
-first; a page whose archive holds more clip digests than cut rows of its
-libraries gets no library (compaction keeps no per-page master evidence).
-Clip receipts of recycled cuts name the manifest the master came from. The job records the library masters it cuts
+first. Third review (Opus, on the archive check) found that comparing clip
+totals with cut-row totals refused every page with an archived render clip
+forever and let one job's rows cover another's lost rows; compaction now
+keeps `sourceDnaClips` (per page, each source-job clip with its own job's
+cut-row count; pages archived before that record stay unknown), the gap is
+checked clip by clip, and the capability count reads the page's jobs of
+every kind. Clip receipts of recycled cuts name the manifest the master
+came from. The job records the library masters it cuts
 (`sourceLibraryMasters`) and execution rebuilds them only from a whole
 record. A page with no library is unchanged; a used-up library keeps the 409
 code and adds a plain `X-RT-Zero-Reason-Help` header naming new footage and
-the fetcher issue #227. `tests/test_page_source_library.py` (14 tests) fails
+the fetcher issue #227. `tests/test_page_source_library.py` (18 tests) fails
 on the previous head. No deployment; HENRY merges.

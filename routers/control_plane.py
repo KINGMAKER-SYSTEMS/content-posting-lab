@@ -1003,10 +1003,12 @@ def capabilities(
             if max_quantity == 0:
                 # The bound masters are used up (#407 part 7): the page's own
                 # library (services/page_source_library.py) may still hold
-                # unused spans. The ledger is re-read for the wider master
-                # set, so every earlier cut on those masters stays reserved.
+                # unused spans. Evidence of posted footage comes from every
+                # job of the page (page_jobs_view, any kind), the ledger is
+                # re-read for the wider master set, so every earlier cut on
+                # those masters stays reserved.
                 pooled = page_source_library.library_recipe(
-                    source_recipe, dossier_source_dna_view,
+                    source_recipe, page_jobs_view,
                 )
                 if pooled is not None:
                     source_recipe = pooled

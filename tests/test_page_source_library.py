@@ -473,3 +473,115 @@ def test_a_compacted_job_without_cut_rows_keeps_its_page_from_recycling(lab, mon
     )
     assert stopped.status_code == 409
     assert stopped.json() == {"detail": SOURCE_WINDOWS_EXHAUSTED}
+
+
+def _compact_history(tmp_path, store) -> list[str]:
+    """Archive every 2026-11 job in ``store`` (not today's bound cut) and persist it."""
+    compacted, archived = compaction.compact_job_store(
+        store, datetime(2026, 12, 10, tzinfo=timezone.utc),
+    )
+    (tmp_path / "jobs.json").write_text(json.dumps(compacted))
+    return sorted(job["jobId"] for job in archived)
+
+
+def test_an_archived_clip_from_another_job_kind_does_not_block_the_library(lab, monkeypatch, registry):
+    """Only source-job clips need cut rows; a compacted render's clip is not missing footage."""
+    client, tmp_path, _ = lab
+    _shrink_bound_master(monkeypatch)
+    _exhaust_bound_master(client)
+    _register_sibling_library(registry, "pov-dirt-bike-fixture-v2", PAGE_ID, LIBRARY_SHA, 60_000)
+    assert _max_quantity(client) >= 1  # the sibling library is on offer
+    store = json.loads((tmp_path / "jobs.json").read_text())
+    store["jobs"]["render-old"] = {
+        "jobId": "render-old",
+        "pageId": PAGE_ID,
+        "sourceKind": "generated",
+        "status": "completed",
+        "createdAt": "2026-11-01T11:00:00+00:00",
+        "completedAt": "2026-11-01T12:00:00+00:00",
+        "clips": [{"sha256": "2" * 64}],
+    }
+    assert _compact_history(tmp_path, store) == ["render-old"]
+    archive = compaction.read_archive_index(cp._load_jobs())
+    assert "2" * 64 in archive["usedClipSha256"][PAGE_ID]
+
+    assert library_recipe(cp._dossier_source_recipe(publication()), cp._load_jobs()) is not None
+    assert _max_quantity(client) >= 1
+
+
+def test_one_archived_job_cannot_lend_its_cut_rows_to_another(lab, monkeypatch, registry):
+    """Job A lost its rows (its clip is 10-17 s on the sibling), job B kept two: still a gap."""
+    client, tmp_path, _ = lab
+    _shrink_bound_master(monkeypatch)
+    _exhaust_bound_master(client)
+    _register_sibling_library(registry, "pov-dirt-bike-fixture-v2", PAGE_ID, LIBRARY_SHA, 60_000)
+    _record_history_master(tmp_path / "jobs.json", LIBRARY_SHA, 60_000, job_id="history-a")
+    _record_history_master(tmp_path / "jobs.json", LIBRARY_SHA, 60_000, job_id="history-b")
+    store = json.loads((tmp_path / "jobs.json").read_text())
+    del store["jobs"]["history-a"]["sourceCuts"]
+    job_b = store["jobs"]["history-b"]
+    job_b["clips"][0]["sha256"] = "3" * 64
+    job_b["sourceCuts"] = [
+        {"slotId": f"{LIBRARY_SHA}:{start}:7000", "masterSha256": LIBRARY_SHA,
+         "libraryStartMs": start, "startMs": start, "durationMs": 7_000}
+        for start in (20_000, 30_000)
+    ]
+    assert _compact_history(tmp_path, store) == ["history-a", "history-b"]
+
+    assert library_recipe(cp._dossier_source_recipe(publication()), cp._load_jobs()) is None
+    assert _max_quantity(client) == 0
+    stopped = client.post(
+        "/api/control-plane/v1/jobs", json=job_body(1), headers=headers("lent-rows"),
+    )
+    assert stopped.status_code == 409
+    assert stopped.json() == {"detail": SOURCE_WINDOWS_EXHAUSTED}
+
+
+def test_an_archive_written_before_per_clip_evidence_counts_as_unknown(lab, monkeypatch, registry):
+    """An index with the page's digests but no per-clip record predates this check: no library."""
+    client, tmp_path, _ = lab
+    _shrink_bound_master(monkeypatch)
+    _exhaust_bound_master(client)
+    _register_sibling_library(registry, "pov-dirt-bike-fixture-v2", PAGE_ID, LIBRARY_SHA, 60_000)
+    store = json.loads((tmp_path / "jobs.json").read_text())
+    legacy = compaction.empty_index()
+    legacy.pop("sourceDnaClips", None)
+    legacy["usedClipSha256"] = {PAGE_ID: ["4" * 64]}
+    store[compaction.ARCHIVE_INDEX_KEY] = legacy
+    (tmp_path / "jobs.json").write_text(json.dumps(store))
+    assert library_recipe(cp._dossier_source_recipe(publication()), cp._load_jobs()) is None
+
+    # Compaction carries that history forward as unknown rather than erasing it.
+    compacted, _ = compaction.compact_job_store(store, datetime(2026, 12, 10, tzinfo=timezone.utc))
+    (tmp_path / "jobs.json").write_text(json.dumps(compacted))
+    assert compacted[compaction.ARCHIVE_INDEX_KEY]["sourceDnaClips"] == {PAGE_ID: None}
+    assert library_recipe(cp._dossier_source_recipe(publication()), cp._load_jobs()) is None
+    assert _max_quantity(client) == 0
+
+
+def test_a_render_clip_naming_an_original_without_a_sha_only_blocks_that_original(lab, monkeypatch, registry):
+    """A non-source clip with no master sha cannot taint by bytes, but its original is spoken for."""
+    client, tmp_path, _ = lab
+    _shrink_bound_master(monkeypatch)
+    _exhaust_bound_master(client)
+    _register_sibling_library(registry, "pov-dirt-bike-fixture-v2", PAGE_ID, LIBRARY_SHA, 60_000)
+    sibling = json.loads((registry / "pov-dirt-bike-fixture-v2.json").read_text())
+    sibling_url = sibling["masters"][0]["provenance"]["sourceUrl"]
+    store = json.loads((tmp_path / "jobs.json").read_text())
+    store["jobs"]["render-live"] = {
+        "jobId": "render-live",
+        "pageId": PAGE_ID,
+        "sourceKind": "generated",
+        "status": "completed",
+        "createdAt": "2026-11-20T11:00:00+00:00",
+        "completedAt": "2026-11-20T12:00:00+00:00",
+        "clips": [{"sha256": "5" * 64, "source": {"master": {
+            "provenance": {"sourceUrl": "https://example.test/other-footage.mp4"},
+        }}}],
+    }
+    (tmp_path / "jobs.json").write_text(json.dumps(store))
+    assert _max_quantity(client) >= 1  # another original: the sibling stays on offer
+
+    store["jobs"]["render-live"]["clips"][0]["source"]["master"]["provenance"]["sourceUrl"] = sibling_url
+    (tmp_path / "jobs.json").write_text(json.dumps(store))
+    assert _max_quantity(client) == 0  # the sibling's own original was posted: out

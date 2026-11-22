@@ -147,6 +147,10 @@ def empty_index() -> dict[str, Any]:
         "truckRecoveryMasters": [],   # sha256 of recovered masters (permanent)
         "truckCandidateJobs": [],     # completed generated truck clips (re-crop)
         "usedClipSha256": {},         # pageId -> sorted list of clip sha256
+        # pageId -> [{sha256, jobId, cutRows}] for source-job clips, or None
+        # when the page's clips were archived before this record existed
+        # (unknown history; services/page_source_library.py reads it)
+        "sourceDnaClips": {},
         "providerHealth": {},         # key_id -> carried-forward streak/last-* state
     }
 
@@ -241,6 +245,7 @@ def extract_index_entries(job: dict[str, Any]) -> dict[str, Any]:
         "truckRecoveryMasters": [],
         "truckCandidateJobs": [],
         "usedClipSha256": [],         # (pageId, sha256)
+        "sourceDnaClips": [],         # (pageId, {sha256, jobId, cutRows})
         "providerAttempts": [],       # (key_id, engine, row)
     }
     page_id = job.get("pageId")
@@ -263,6 +268,8 @@ def extract_index_entries(job: dict[str, Any]) -> dict[str, Any]:
             if not isinstance(cut, dict):
                 continue
             entries["sourceDnaCuts"].append({
+                "pageId": page_id,
+                "jobId": job.get("jobId"),
                 "sourceLibraryId": job.get("sourceLibraryId"),
                 "sourceLibraryHash": job.get("sourceLibraryHash"),
                 "recipeVersion": job.get("recipeVersion"),
@@ -297,8 +304,23 @@ def extract_index_entries(job: dict[str, Any]) -> dict[str, Any]:
             slideshow_reserved_plans(job)  # refuse opaque malformed plans before archiving
         if kind == "truck_master_recovery" and job.get("clips"):
             truck_recovery_reserved_masters(job)
-        for digest in _clip_sha256s(job):
+        digests = _clip_sha256s(job)
+        for digest in digests:
             entries["usedClipSha256"].append((page_id, digest))
+        if kind == "dossier_source_dna":
+            # Each source clip remembers how many cut rows ITS job carried, so a
+            # page's library pass can tell a clip whose spans are lost from one
+            # whose rows were archived, clip by clip (never by totals, and never
+            # counting clips of other job kinds).
+            source_cuts = job.get("sourceCuts", [])
+            cut_rows = (
+                sum(1 for cut in source_cuts if isinstance(cut, dict))
+                if isinstance(source_cuts, list) else 0
+            )
+            for digest in digests:
+                entries["sourceDnaClips"].append((page_id, {
+                    "sha256": digest, "jobId": job.get("jobId"), "cutRows": cut_rows,
+                }))
 
     # Completed generated truck renders remain live re-crop candidates; keep the
     # full clip manifest the reader needs. Non-truck renders keep only dedupe.
@@ -388,6 +410,14 @@ def fold_into_index(index: dict[str, Any], job: dict[str, Any], *, entries: dict
         index["usedClipSha256"].setdefault(pid, [])
         if digest not in index["usedClipSha256"][pid]:
             index["usedClipSha256"][pid].append(digest)
+
+    clips_by_page = index.setdefault("sourceDnaClips", {})
+    for (pid, row) in e["sourceDnaClips"]:
+        if not isinstance(pid, str):
+            continue
+        if pid in clips_by_page and clips_by_page[pid] is None:
+            continue  # history archived before this record stays unknown
+        clips_by_page.setdefault(pid, []).append(row)
 
     for (key_id, engine, call_key, row) in e["providerAttempts"]:
         if key_id is None:
@@ -552,6 +582,12 @@ def compact_job_store(
                 f"version={current_index.get('version')!r}",
             )
         index = json.loads(json.dumps(current_index))
+        if "sourceDnaClips" not in index:
+            # Pages with clips archived before the per-clip source record
+            # existed keep unknown history (None), never an empty list.
+            index["sourceDnaClips"] = {
+                pid: None for pid in (index.get("usedClipSha256") or {})
+            }
 
     archived: list[dict[str, Any]] = []
     for job_id in archived_ids:
