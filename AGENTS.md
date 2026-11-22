@@ -745,6 +745,24 @@
   feeds, current origin mapping and canonical legacy alias reservations remain
   required for NETWORK-WIDE proof; this local-master repair alone does not
   certify those external inputs. Preserve the owner's 11-09 photo-sequence rule.
+- Per-page source library (owner 2026-11-21, pad #407 part 7). Before a
+  sourced page answers `source_windows_exhausted`, capability and job creation
+  widen the bound recipe to the page's whole library
+  (`services/page_source_library.py`): every registered `recipes/source-dna`
+  manifest for the same page and format, plus every master the page's own
+  completed source jobs cut from (`clips[].source.master`). Library masters
+  plan as backups after the bound primaries, never retired SHAs, each with a
+  canonical source identity. The no-repeat rule is unchanged: the same cut
+  ledger (`masterSha:startMs:durationMs`, any library, forward or mirrored)
+  refuses any overlap, so a recycled body never shares a second with an
+  earlier body. A master with any cut row of unknown bounds counts as fully
+  used. A job that cuts a library master records the full manifest rows on
+  `sourceLibraryMasters`; execution rebuilds masters only from a whole record
+  and otherwise fails `source_recipe_cut_invalid`. The bound `sourceLibraryId`
+  and hash never move; look recipes, text rules, order size and legal checks
+  are untouched. A page with no library behaves exactly as before. When the
+  library is used up too, the 409 keeps the code and adds
+  `X-RT-Zero-Reason-Help: needs new footage ... (control-plane-pad #227)`.
 - Job `constraints` accepts `sourceWindowExclusions` and `priority`
   (`"low_runway"`); unknown keys and values are ignored and kept on the job,
   never an error. The Lab starts every job at creation, so ordering by

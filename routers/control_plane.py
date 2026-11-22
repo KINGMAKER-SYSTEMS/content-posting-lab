@@ -37,6 +37,7 @@ should fail, and how it did.
 from __future__ import annotations
 
 from services.owned_import_process import create_import_subprocess
+from services import page_source_library
 from services import source_import_layout
 
 import asyncio
@@ -121,6 +122,7 @@ from services.control_plane_sources import (
     resolve_source_recipe,
     source_window_exclusions,
     SOURCE_SPEED_DURATION_UNSUPPORTED,
+    SOURCE_WINDOWS_EXHAUSTED,
 )
 from services.control_plane_image_video import (
     IMAGE_VIDEO_FORMATS,
@@ -223,6 +225,17 @@ from services.source_dna_registry import source_dna_master_hashes
 
 router = APIRouter()
 log = logging.getLogger("control_plane")
+# Pages told, once per process, that their whole library is used up.
+_needs_new_footage_logged: set[str] = set()
+
+
+def _log_needs_new_footage(page_id: str) -> None:
+    """Say in plain words, once per page, why the page stays exhausted."""
+    if page_id in _needs_new_footage_logged:
+        return
+    _needs_new_footage_logged.add(page_id)
+    log.warning("%s page=%s: %s", SOURCE_WINDOWS_EXHAUSTED, page_id,
+                page_source_library.NEEDS_NEW_FOOTAGE)
 
 RESPONSE_SCHEMA = "content-lab.response.v1"
 # Job constraints this Lab understands. Unknown keys and values are ignored,
@@ -987,6 +1000,24 @@ def capabilities(
                 history=cut_history,
                 shadow_page_id=page_id,
             ))
+            if max_quantity == 0:
+                # The bound masters are used up (#407 part 7): the page's own
+                # library (services/page_source_library.py) may still hold
+                # unused spans. The ledger is re-read for the wider master
+                # set, so every earlier cut on those masters stays reserved.
+                pooled = page_source_library.library_recipe(
+                    source_recipe, dossier_source_dna_view,
+                )
+                if pooled is not None:
+                    source_recipe = pooled
+                    unavailable_slots, cut_history = _source_dna_cut_ledger(
+                        dossier_source_dna_view, pooled, publication["recipeVersion"],
+                    )
+                    max_quantity = len(plan_source_cuts(
+                        pooled, pooled.max_quantity, unavailable_slots,
+                        history=cut_history,
+                        shadow_page_id=page_id,
+                    ))
         else:
             if generation_related_jobs_view is None:
                 generation_related_jobs_view = _generation_related_jobs_view(
@@ -1018,6 +1049,8 @@ def capabilities(
                 )
             elif source_recipe is not None:
                 zero_reason = explain_empty_source_plan(source_recipe, unavailable_slots, None)
+                if zero_reason == SOURCE_WINDOWS_EXHAUSTED:
+                    _log_needs_new_footage(page_id)
             else:
                 zero_reason = PROMPT_INVENTORY_EXHAUSTED
         registered_entry = {
@@ -4565,6 +4598,12 @@ async def _run_dossier_source_inner(job_id: str) -> None:
         )
         return
 
+    # A job planned on the page's library (#407 part 7) carries the whole
+    # rows of the library masters it cuts; execution rebuilds exactly those
+    # beside the bound masters. The bound library id and hash were checked
+    # above unchanged. A broken record rebuilds nothing, so such a cut fails
+    # source_recipe_cut_invalid below instead of guessing a master.
+    recipe = page_source_library.with_job_masters(recipe, job)
     job_root = Path(job["artifactRoot"]).resolve()
     treated_root = job_root / "treated"
     treated_root.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -6386,6 +6425,8 @@ async def _create_job_impl(
             served_slots, cut_history = _source_dna_cut_ledger(
                 store, source_recipe, publication["recipeVersion"],
             )
+            # The recipe as bound; a library pass below may widen the masters.
+            bound_source_recipe = source_recipe
             # A per-job seed varies the time frames each run cuts; it is
             # recorded so the plan is reproducible. Capability counted with
             # the capability seed, so fall back to it rather than refuse a
@@ -6534,6 +6575,7 @@ async def _create_job_impl(
                     # same paths as OFF below.
                     release_job_reservations(page_id, job_id, reason="source_plan_short")
             else:
+                job_plan_seed = cut_plan_seed
                 cuts = plan_source_cuts(
                     source_recipe, quantity, served_slots, excluded_windows,
                     seed=cut_plan_seed, history=cut_history,
@@ -6546,6 +6588,29 @@ async def _create_job_impl(
                         seed=cut_plan_seed, history=cut_history,
                         shadow_page_id=page_id, shadow_job_id=job_id,
                     )
+                if not cuts:
+                    # The bound masters are used up (#407 part 7): plan again
+                    # on the page's own library, with the ledger re-read for
+                    # the wider master set (services/page_source_library.py).
+                    pooled = page_source_library.library_recipe(source_recipe, store)
+                    if pooled is not None:
+                        source_recipe = pooled
+                        served_slots, cut_history = _source_dna_cut_ledger(
+                            store, pooled, publication["recipeVersion"],
+                        )
+                        cut_plan_seed = job_plan_seed
+                        cuts = plan_source_cuts(
+                            pooled, quantity, served_slots, excluded_windows,
+                            seed=cut_plan_seed, history=cut_history,
+                            shadow_page_id=page_id, shadow_job_id=job_id,
+                        )
+                        if len(cuts) != quantity:
+                            cut_plan_seed = CAPABILITY_PLAN_SEED
+                            cuts = plan_source_cuts(
+                                pooled, quantity, served_slots, excluded_windows,
+                                seed=cut_plan_seed, history=cut_history,
+                                shadow_page_id=page_id, shadow_job_id=job_id,
+                            )
             if not cuts:
                 # source_master_too_short, source_windows_exhausted (every
                 # window already cut: the page needs new footage) or
@@ -6556,11 +6621,22 @@ async def _create_job_impl(
                     else explain_empty_source_plan(
                         source_recipe, served_slots, excluded_windows)
                 )
+                response_headers = {"X-RT-Zero-Reason": reason}
+                if reason == SOURCE_WINDOWS_EXHAUSTED:
+                    # Every span of every library source is used too: say so
+                    # in plain words beside the unchanged code.
+                    _log_needs_new_footage(page_id)
+                    response_headers[page_source_library.ZERO_REASON_HELP_HEADER] = (
+                        page_source_library.NEEDS_NEW_FOOTAGE
+                    )
                 raise HTTPException(
                     status_code=409,
                     detail=reason,
-                    headers={"X-RT-Zero-Reason": reason},
+                    headers=response_headers,
                 )
+            library_masters = page_source_library.library_masters_used(
+                bound_source_recipe, source_recipe, cuts,
+            )
             if len(cuts) != quantity:
                 raise HTTPException(status_code=409, detail="insufficient_inventory")
             job_root = (
@@ -6648,6 +6724,11 @@ async def _create_job_impl(
                 "dossierRevision": publication["dossierRevision"],
                 "recipeSpecHash": publication["recipeSpecHash"],
                 "runtimeId": _GENERATION_RUNTIME_ID,
+                # Library masters this job cuts (whole manifest rows), so the
+                # executor rebuilds exactly what was planned. Absent for a
+                # job cut from the bound library alone.
+                **({page_source_library.JOB_LIBRARY_MASTERS_KEY: library_masters}
+                   if library_masters else {}),
             }
             start_source = True
         elif slideshow_recipe is not None:

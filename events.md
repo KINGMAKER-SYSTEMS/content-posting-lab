@@ -1794,3 +1794,21 @@ at the token lookup, logs it, keeps the file's bytes and skips the bot; the
 rest of the app serves and `/api/telegram/*` still answers 503. New
 `tests/test_telegram_startup_unavailable.py` (truncated, non-mapping and
 undecodable bytes) fails on main and passes with the fix. No deployment.
+
+### 2026-11-21 — Exhausted pages recycle their own source library
+
+worktree: claude/source-library-recycle (pad #407 part 7; symptoms #295 #330
+#362 #367 #227). A sourced page bound to one source library stopped at
+`source_windows_exhausted` as soon as that batch was cut, even when the Lab
+held other footage for the same page (an older registered manifest revision,
+or a ShipStream master a later master replaced). Capability and job creation
+now widen the bound recipe to the page's whole library before answering zero
+(`services/page_source_library.py`), as backups behind the bound primaries,
+under the same cut ledger, so a recycled body never overlaps an earlier body
+of the page by any amount (a 1.0 s overlap is refused, tested). Unknown span
+history counts as used. The job records the library masters it cuts
+(`sourceLibraryMasters`) and execution rebuilds them only from a whole
+record. A page with no library is unchanged; a used-up library keeps the 409
+code and adds a plain `X-RT-Zero-Reason-Help` header naming new footage and
+the fetcher issue #227. `tests/test_page_source_library.py` (8 tests) fails
+on the previous head. No deployment; HENRY merges.
