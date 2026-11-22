@@ -429,3 +429,10 @@ async def test_jobs_for_one_server_render_one_at_a_time(monkeypatch):
             comfyui.generate("x", {"entry": entry, "model_id": comfyui.WAN_T2V}, client)
             for entry in entries))
     assert events == ["start p-1", "end p-1", "start p-2", "end p-2"]
+
+
+def test_local_h3_duration_ranges_carry_a_step_for_the_worker_catalog():
+    # The posting Worker's catalog check needs min/max/step/default on a range.
+    for provider in ("local-h3", "local-h3-vertical"):
+        duration = video_router.PROVIDER_SCHEMAS[provider]["duration"]
+        assert {"min", "max", "step", "default"} <= set(duration)

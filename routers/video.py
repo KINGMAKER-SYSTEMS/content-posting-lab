@@ -421,7 +421,7 @@ PROVIDER_SCHEMAS: dict[str, dict] = {
         "optimize_prompt": {"type": "toggle", "default": True, "label": "Prompt Optimizer"},
     },
     "local-h3": {
-        "duration": {"type": "range", "min": 2, "max": 15, "default": 6, "label": "Duration (seconds)"},
+        "duration": {"type": "range", "min": 2, "max": 15, "default": 6, "step": 1, "label": "Duration (seconds)"},
         "crop_mode": {"type": "select", "options": ["none", "dual", "triptych", "both"], "default": "both", "label": "Multi-Crop", "note": "dual=2, triptych=3, both=5 crops from one 16:9"},
         "last_image_supported": True,
         "_advanced": {
@@ -430,7 +430,7 @@ PROVIDER_SCHEMAS: dict[str, dict] = {
         },
     },
     "local-h3-vertical": {
-        "duration": {"type": "range", "min": 2, "max": 15, "default": 6, "label": "Duration (seconds)", "note": "With a start image, output keeps the image's shape"},
+        "duration": {"type": "range", "min": 2, "max": 15, "default": 6, "step": 1, "label": "Duration (seconds)", "note": "With a start image, output keeps the image's shape"},
         "last_image_supported": True,
         "_advanced": {
             "go_fast": {"type": "toggle", "default": True, "label": "Go Fast (8-step LoRA)"},
