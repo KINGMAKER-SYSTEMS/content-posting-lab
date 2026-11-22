@@ -1843,10 +1843,14 @@ so both were pooled and footage already posted (video 620-627 s) could be cut
 again. Every master now resolves to all its identities (YouTube video id also
 as an origin key, origin id, sha256, storage key) and any shared identity
 between masters of different bytes puts them out of the library, both
-directions tested. Clip
+directions tested. Seventh review (coordinator, with the lab-train probe):
+music.youtube.com and youtube-nocookie.com still got a generic URL key;
+the identity parser now knows those hosts (`YOUTUBE_HOSTS`), any other
+YouTube-looking address yields no key at all (fail closed), and a Drive
+file address meets its bare file id. Main c72caae6 merged in clean. Clip
 receipts of recycled cuts name the manifest the master came from. The job records the library masters it cuts
 (`sourceLibraryMasters`) and execution rebuilds them only from a whole
 record. A page with no library is unchanged; a used-up library keeps the 409
 code and adds a plain `X-RT-Zero-Reason-Help` header naming new footage and
-the fetcher issue #227. `tests/test_page_source_library.py` (29 tests) fails
+the fetcher issue #227. `tests/test_page_source_library.py` (41 tests) fails
 on the previous head. No deployment; HENRY merges.

@@ -53,8 +53,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 import json
 import logging
+import re
 from typing import Any, Iterable
-from urllib.parse import urlsplit
+from urllib.parse import parse_qsl, urlsplit
 
 from services import job_store_compaction as compaction
 from services import source_dna_registry as registry
@@ -170,11 +171,47 @@ def _vault_asset_url(url: Any) -> bool:
 
 
 _YOUTUBE_WATCH = "https://www.youtube.com/watch?v="
+_DRIVE_HOSTS = frozenset({"drive.google.com", "docs.google.com"})
+_DRIVE_FILE_PATH = re.compile(r"^/file/d/([\w-]{10,})(?:/|$)")
+_DRIVE_FILE_ID = re.compile(r"^[\w-]{10,}$")
+
+
+def _youtube_like(url: Any) -> bool:
+    """True for any address whose host names YouTube, recognised or not."""
+    if not isinstance(url, str):
+        return False
+    try:
+        host = (urlsplit(url).hostname or "").lower()
+    except ValueError:
+        return False
+    return "youtube" in host or "youtu.be" in host
+
+
+def _drive_file_id(url: Any) -> str | None:
+    """The file id of a Google Drive file address, or None."""
+    try:
+        parsed = urlsplit(url)
+    except (TypeError, ValueError):
+        return None
+    if (parsed.hostname or "").lower() not in _DRIVE_HOSTS:
+        return None
+    match = _DRIVE_FILE_PATH.match(parsed.path)
+    if match:
+        return match.group(1)
+    for key, value in parse_qsl(parsed.query):
+        if key == "id" and _DRIVE_FILE_ID.match(value):
+            return value
+    return None
 
 
 def _keys_from(url: Any, origin_id: Any) -> frozenset[tuple[str, str]]:
     keys: set[tuple[str, str]] = set()
     identity = canonical_source_identity(url)
+    if _youtube_like(url) and (identity is None or not identity.startswith(_YOUTUBE_WATCH)):
+        # A YouTube-looking address the parser does not resolve to a video id
+        # (unknown host, a channel or playlist path) cannot be named: no key
+        # at all, whatever else the master carries, so it fails closed.
+        return frozenset()
     if identity is not None and not _vault_asset_url(url):
         keys.add(("source", identity))
         if identity.startswith(_YOUTUBE_WATCH):
@@ -183,6 +220,10 @@ def _keys_from(url: Any, origin_id: Any) -> frozenset[tuple[str, str]]:
             # so a YouTube-keyed master and an origin-id-keyed master of the
             # same video meet on ("origin", <video id>).
             keys.add(("origin", identity[len(_YOUTUBE_WATCH):]))
+        drive_id = _drive_file_id(url)
+        if drive_id is not None:
+            # The same for a Drive file: its address and its bare file id meet.
+            keys.add(("origin", drive_id))
     if isinstance(origin_id, str) and origin_id.strip():
         keys.add(("origin", origin_id.strip()))
     return frozenset(keys)

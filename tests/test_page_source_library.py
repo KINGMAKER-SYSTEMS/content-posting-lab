@@ -905,3 +905,65 @@ def test_two_masters_at_one_storage_address_are_one_video(monkeypatch, registry)
     )
     store = {"jobs": {"bound-job": _page_job(bound, 20_000), "history-job": _page_job(same_address, 0)}}
     assert library_recipe(_recipe([bound]), store) is None
+
+
+THIRD_VIDEO_ID = "Qq8Qq8Qq8Qq"
+
+
+@pytest.mark.parametrize("url", [
+    f"https://music.youtube.com/watch?v={VIDEO_ID}",
+    f"https://www.music.youtube.com/watch?v={VIDEO_ID}",
+    f"https://m.music.youtube.com/watch?v={VIDEO_ID}&list=RD{VIDEO_ID}",
+    f"https://www.youtube-nocookie.com/embed/{VIDEO_ID}",
+    f"https://youtube-nocookie.com/embed/{VIDEO_ID}?rel=0",
+    f"https://m.youtube-nocookie.com/embed/{VIDEO_ID}",
+])
+def test_every_youtube_host_shape_meets_the_bare_video_id(monkeypatch, registry, url):
+    """Music and no-cookie YouTube hosts key to the video id too, so the same
+    video recorded by origin id is never pooled next to them."""
+    monkeypatch.setenv(SHIPSTREAM_VAULT_ORIGIN_ENV, "https://shipstream.test")
+    by_url = _master("a" * 64, url)
+    by_origin = _master("b" * 64, _vault_url("b" * 64), origin=_origin(VIDEO_ID))
+    assert ("origin", VIDEO_ID) in original_source_keys(by_url)
+    store = {"jobs": {"bound-job": _page_job(by_url, 20_000), "history-job": _page_job(by_origin, 100_000)}}
+    assert library_recipe(_recipe([by_url]), store) is None
+
+
+@pytest.mark.parametrize("url", [
+    f"https://youtube.example-mirror.net/watch?v={VIDEO_ID}",   # unknown YouTube-like host
+    f"https://youtu.be.proxy.test/{VIDEO_ID}",                  # unknown YouTube-like host
+    "https://www.youtube.com/channel/UCabcdefghijklmnopqrstuv",  # known host, no video id
+])
+def test_an_unrecognised_youtube_like_address_names_no_footage(monkeypatch, registry, url):
+    """A YouTube-looking address the parser cannot resolve to a video id names
+    nothing, even with an origin id beside it: bound, it means no library;
+    as a candidate it is left out while a different video still pools."""
+    monkeypatch.setenv(SHIPSTREAM_VAULT_ORIGIN_ENV, "https://shipstream.test")
+    odd = _master("a" * 64, url, origin=_origin(VIDEO_ID))
+    assert original_source_keys(odd) == frozenset()
+    other_video = _master("c" * 64, _vault_url("c" * 64), origin=_origin(OTHER_VIDEO_ID))
+    store = {"jobs": {"bound-job": _page_job(odd, 20_000), "other-job": _page_job(other_video, 0)}}
+    assert library_recipe(_recipe([odd]), store) is None
+    bound = _master("d" * 64, f"https://www.youtube.com/watch?v={THIRD_VIDEO_ID}")
+    store = {"jobs": {
+        "bound-job": _page_job(bound, 20_000), "odd-job": _page_job(odd, 0), "other-job": _page_job(other_video, 0),
+    }}
+    pooled = library_recipe(_recipe([bound]), store)
+    assert pooled is not None
+    assert [master.sha256 for master in pooled.masters] == [bound.sha256, other_video.sha256]
+
+
+@pytest.mark.parametrize("url", [
+    "https://drive.google.com/file/d/1AbCdEfGhIjKlMnOpQrStUv/view?usp=sharing",
+    "https://drive.google.com/open?id=1AbCdEfGhIjKlMnOpQrStUv",
+    "https://drive.google.com/uc?export=download&id=1AbCdEfGhIjKlMnOpQrStUv",
+])
+def test_a_drive_file_address_meets_its_bare_file_id(monkeypatch, registry, url):
+    """A Drive file recorded by address on one master and by bare file id on
+    another is one file: the second copy is never pooled."""
+    monkeypatch.setenv(SHIPSTREAM_VAULT_ORIGIN_ENV, "https://shipstream.test")
+    by_url = _master("a" * 64, url)
+    by_id = _master("b" * 64, _vault_url("b" * 64), origin=_origin("1AbCdEfGhIjKlMnOpQrStUv"))
+    assert ("origin", "1AbCdEfGhIjKlMnOpQrStUv") in original_source_keys(by_url)
+    store = {"jobs": {"bound-job": _page_job(by_url, 20_000), "history-job": _page_job(by_id, 100_000)}}
+    assert library_recipe(_recipe([by_url]), store) is None

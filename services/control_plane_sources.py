@@ -422,6 +422,16 @@ def resolve_source_recipe(
     )
 
 
+# Every YouTube host the identity parser resolves to a bare video id. A
+# YouTube-looking host that is not here gets a generic URL key here, and the
+# page library (services/page_source_library.py) refuses it outright.
+YOUTUBE_HOSTS = frozenset({
+    "youtu.be", "www.youtube.com", "youtube.com", "m.youtube.com",
+    "music.youtube.com", "www.music.youtube.com", "m.music.youtube.com",
+    "youtube-nocookie.com", "www.youtube-nocookie.com", "m.youtube-nocookie.com",
+})
+
+
 def canonical_source_identity(value: Any) -> str | None:
     if not isinstance(value, str) or len(value) > 2048:
         return None
@@ -430,7 +440,7 @@ def canonical_source_identity(value: Any) -> str | None:
         if url.scheme != "https" or not url.hostname or url.username or url.password:
             return None
         host = url.hostname.lower()
-        if host in {"youtu.be", "www.youtube.com", "youtube.com", "m.youtube.com"}:
+        if host in YOUTUBE_HOSTS:
             video_id = url.path[1:] if host == "youtu.be" else next((val for key, val in parse_qsl(url.query) if key == "v"), None) if url.path == "/watch" else url.path.split("/")[2] if re.match(r"^/(shorts|embed)/", url.path) else None
             return f"https://www.youtube.com/watch?v={video_id}" if isinstance(video_id, str) and re.fullmatch(r"[\w-]{11}", video_id, re.ASCII) else None
         query = [(key, val) for key, val in parse_qsl(url.query, keep_blank_values=True) if not key.startswith("utm_") and key not in {"fbclid", "gclid"}]
