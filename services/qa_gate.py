@@ -193,6 +193,14 @@ class QaPolicy:
     freeze_noise_db: float = -60.0
     montage_min_cuts: int = 4
     montage_max_median_s: float = 0.5
+    # The delivery preset's encode args (services.ffmpeg.delivery_encode_args)
+    # for a Lab cut. Only the enforce heals read them: a format or edge heal
+    # re-encodes with the preset's video settings (crf, profile, level and its
+    # -maxrate/-bufsize cap) at the clip's own rate. The preset's -minrate is
+    # passed too, but libx264 ignores it in CRF mode, so it is not a real floor.
+    # Empty (a provider clip): the gate's own h264 args. No check reads this,
+    # so shadow verdicts do not change.
+    encode_args: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -742,15 +750,50 @@ def _ffmpeg_heal(args: list[str], what: str) -> None:
 
 
 _X264 = ["-c:v", "libx264", "-preset", "medium", "-crf", "17", "-pix_fmt", "yuv420p"]
+# Preset options a heal sets itself: audio is copied or dropped, never
+# re-encoded, and each heal adds its own -movflags +faststart.
+_HEAL_OWN_OPTIONS = frozenset({"-c:a", "-b:a", "-movflags"})
+
+
+def _heal_video_args(policy: QaPolicy, rate: Fraction | None) -> list[str]:
+    """Video encode args for a format or edge heal. With a delivery preset on
+    the policy: the preset's video args (its -maxrate/-bufsize cap too; libx264
+    ignores the preset's -minrate in CRF mode) with
+    -r set to ``rate`` by services.ffmpeg.with_frame_rate; ``rate`` None keeps
+    the preset's -r as given, like the cut's own encode when a rate cannot be
+    read. Without a preset: the gate's own h264 args, plus -r ``rate`` when given."""
+    if not policy.encode_args:
+        return list(_X264) + ([] if rate is None else ["-r", f"{rate.numerator}/{rate.denominator}"])
+    from services.ffmpeg import with_frame_rate
+
+    preset = list(policy.encode_args)
+    args: list[str] = []
+    index = 0
+    while index < len(preset):
+        if preset[index] in _HEAL_OWN_OPTIONS:
+            index += 2
+            continue
+        args.append(preset[index])
+        index += 1
+    return args if rate is None else with_frame_rate(args, rate)
 
 
 def heal_format(source: Path | str, destination: Path | str, policy: QaPolicy) -> None:
     """Re-encode to h264 8-bit 4:2:0 with square pixels. ffmpeg's autorotate
     turns rotate-tagged frames upright and writes no tag. Audio is copied,
-    or dropped on a video-only recipe."""
+    or dropped on a video-only recipe. A Lab cut (a delivery preset on the
+    policy) is encoded with the preset at its own rate, the rate the cut's
+    encode picks (services.ffmpeg.delivery_frame_rate); a provider clip keeps
+    its rate with the gate's own h264 args."""
+    rate = None
+    if policy.encode_args:
+        from services.ffmpeg import delivery_frame_rate, probe_frame_rate
+
+        native = probe_frame_rate(source)
+        rate = delivery_frame_rate(native) if native is not None else None
     audio = ["-an"] if policy.audio == AUDIO_FORBIDDEN else ["-map", "0:a?", "-c:a", "copy"]
-    _ffmpeg_heal(["-i", str(source), "-map", "0:v:0", *audio, "-vf", "setsar=1", *_X264,
-                  "-movflags", "+faststart", str(destination)], "format")
+    _ffmpeg_heal(["-i", str(source), "-map", "0:v:0", *audio, "-vf", "setsar=1",
+                  *_heal_video_args(policy, rate), "-movflags", "+faststart", str(destination)], "format")
 
 
 def edge_plan(verdict: QaVerdict, policy: QaPolicy) -> tuple[int, int, int] | None:
@@ -785,14 +828,15 @@ def edge_plan(verdict: QaVerdict, policy: QaPolicy) -> tuple[int, int, int] | No
 def heal_edges(source: Path | str, destination: Path | str, plan: tuple[int, int, int], fps: float,
                policy: QaPolicy) -> None:
     """Keep frames [head, tail) and hold the first/last kept frame over the
-    rest: same frame count, same duration, same rate."""
+    rest: same frame count, same duration, same rate (with the delivery
+    preset's video args when the policy carries one)."""
     head, tail, total = plan
     rate = Fraction(fps).limit_denominator(1001)
     graph = (f"trim=start_frame={head}:end_frame={tail},setpts=PTS-STARTPTS,"
              f"tpad=start_mode=clone:start={head}:stop_mode=clone:stop={total - tail},setsar=1")
     audio = ["-an"] if policy.audio == AUDIO_FORBIDDEN else ["-map", "0:a?", "-c:a", "copy"]
     _ffmpeg_heal(["-i", str(source), "-map", "0:v:0", *audio, "-vf", graph,
-                  "-r", f"{rate.numerator}/{rate.denominator}", "-frames:v", str(total), *_X264,
+                  *_heal_video_args(policy, rate), "-frames:v", str(total),
                   "-movflags", "+faststart", str(destination)], "edges")
 
 
@@ -945,6 +989,7 @@ def policy_for_source_cut(recipe: Any, render_duration_ms: int, render_speed: fl
         still=bool(declared.get("still")) or getattr(recipe, "format_slug", None) in STILL_FORMAT_SLUGS,
         fade=bool(declared.get("fade")),
         sound_id=str(sound_id) if sound_id else None,
+        encode_args=tuple(encode_args or ()),
     )
 
 
