@@ -40,6 +40,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
@@ -151,6 +152,9 @@ def empty_index() -> dict[str, Any]:
         # when the page's clips were archived before this record existed
         # (unknown history; services/page_source_library.py reads it)
         "sourceDnaClips": {},
+        # pageId -> archive fingerprint (name -> [size, mtime_ns]) at the last
+        # rebuild attempt that left the page unknown; retried on a change only
+        "sourceDnaClipsTried": {},
         "providerHealth": {},         # key_id -> carried-forward streak/last-* state
     }
 
@@ -198,27 +202,87 @@ def _source_clip_rows(job: dict[str, Any]) -> list[tuple[str, str | None, int]]:
     return out
 
 
-def read_archived_jobs(store_path: Path) -> list[dict[str, Any]]:
-    """Every whole job record in the store's month archives (complete lines only)."""
-    out: list[dict[str, Any]] = []
-    for archive in sorted(store_path.parent.glob(f"{store_path.name}.archive-*.jsonl")):
-        if not archive.is_file():
-            continue
+@dataclass
+class ArchiveScan:
+    """Whole job records read from the month archives, with what was read.
+
+    ``files`` is the archives' fingerprint (name -> [size, mtime_ns]) at the
+    read; a page that could not be rebuilt remembers it, so the archives are
+    read again only once a file changed or a new one appeared. ``bad_lines``
+    counts lines skipped as undecodable or incomplete.
+    """
+
+    records: list[dict[str, Any]] = field(default_factory=list)
+    bad_lines: int = 0
+    files: dict[str, list[int]] = field(default_factory=dict)
+
+    def __iter__(self):
+        return iter(self.records)
+
+
+def _archive_files(store_path: Path) -> list[Path]:
+    return sorted(
+        candidate for candidate in store_path.parent.glob(f"{store_path.name}.archive-*.jsonl")
+        if candidate.is_file()
+    )
+
+
+def archive_fingerprint(store_path: Path) -> dict[str, list[int]]:
+    """name -> [size, mtime_ns] of every month archive (a stat, no read)."""
+    out: dict[str, list[int]] = {}
+    for archive in _archive_files(store_path):
         try:
-            with archive.open("r", encoding="utf-8") as handle:
-                for line in handle:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        record = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    if isinstance(record, dict):
-                        out.append(record)
+            stat = archive.stat()
         except OSError:
             continue
+        out[archive.name] = [stat.st_size, stat.st_mtime_ns]
     return out
+
+
+def read_archived_jobs(store_path: Path) -> ArchiveScan:
+    """Every whole job record in the store's month archives.
+
+    Lines are read as bytes and decoded one at a time: archives are written
+    with ``ensure_ascii=False`` and only the current month's tail is repaired,
+    so a cut-off multi-byte character in an older file is one skipped (and
+    counted) line, never a failed pass.
+    """
+    scan = ArchiveScan(files=archive_fingerprint(store_path))
+    for archive in _archive_files(store_path):
+        try:
+            with archive.open("rb") as handle:
+                for raw in handle:
+                    raw = raw.strip()
+                    if not raw:
+                        continue
+                    try:
+                        record = json.loads(raw.decode("utf-8"))
+                    except (UnicodeDecodeError, json.JSONDecodeError):
+                        scan.bad_lines += 1
+                        continue
+                    if isinstance(record, dict):
+                        scan.records.append(record)
+                    else:
+                        scan.bad_lines += 1
+        except OSError:
+            continue
+    return scan
+
+
+def rebuild_wanted(index: dict[str, Any], fingerprint: dict[str, list[int]]) -> bool:
+    """True when a compaction pass would read the archives to rebuild per-clip
+    source evidence: the index lacks the record, or an unknown page was last
+    tried against different archive files (changed, or new) than ``fingerprint``."""
+    if not index:
+        return False
+    clips_by_page = index.get("sourceDnaClips")
+    if not isinstance(clips_by_page, dict):
+        return True
+    tried = index.get("sourceDnaClipsTried") or {}
+    return any(
+        entry is None and tried.get(pid) != fingerprint
+        for pid, entry in clips_by_page.items()
+    )
 
 
 def derive_source_dna_clips(
@@ -276,6 +340,7 @@ def rebuild_source_dna_clips(
     entry = derive_source_dna_clips(index, records, [page_id])[page_id]
     if entry is not None:
         clips_by_page[page_id] = entry
+        (index.get("sourceDnaClipsTried") or {}).pop(page_id, None)
     else:
         clips_by_page.setdefault(page_id, None)
     return entry
@@ -660,14 +725,16 @@ def compact_job_store(
     *,
     retention_days: int = DEFAULT_RETENTION_DAYS,
     batch_size: int = DEFAULT_BATCH_SIZE,
-    archived_jobs: Iterable[dict[str, Any]] | None = None,
+    archive_scan: ArchiveScan | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """Return (new_store, archived_jobs). Pure; the caller persists both.
 
-    ``archived_jobs`` (whole records from the month archives, see
+    ``archive_scan`` (whole records from the month archives, see
     read_archived_jobs) lets this pass rebuild the per-clip source record of
     pages whose entry is unknown (None): an index written before that record
-    existed, or a page an earlier pass could not attribute.
+    existed, or a page an earlier pass could not attribute. A page still
+    unknown after the attempt remembers the scan's file fingerprint and is
+    tried again only against changed or new archive files.
 
     ``new_store`` shares no mutable containers with ``store``: it is a shallow
     copy with fresh ``jobs`` / ``byIdempotency`` / ``archiveIndex``. Archived
@@ -699,13 +766,21 @@ def compact_job_store(
             index["sourceDnaClips"] = {
                 pid: None for pid in (index.get("usedClipSha256") or {})
             }
-        unknown_pages = [pid for pid, entry in index["sourceDnaClips"].items() if entry is None]
-        if unknown_pages and archived_jobs is not None:
+        tried = index.setdefault("sourceDnaClipsTried", {})
+        if archive_scan is not None:
+            retry = [
+                pid for pid, entry in index["sourceDnaClips"].items()
+                if entry is None and tried.get(pid) != archive_scan.files
+            ]
             # Rebuild from the whole archived records; a page stays None when
-            # any of its archived clips has no readable record.
-            index["sourceDnaClips"].update(
-                derive_source_dna_clips(index, archived_jobs, unknown_pages),
-            )
+            # any of its archived clips has no readable record, and remembers
+            # which archive files it was tried against.
+            for pid, entry in derive_source_dna_clips(index, archive_scan.records, retry).items():
+                if entry is None:
+                    tried[pid] = json.loads(json.dumps(archive_scan.files))
+                else:
+                    index["sourceDnaClips"][pid] = entry
+                    tried.pop(pid, None)
 
     archived: list[dict[str, Any]] = []
     for job_id in archived_ids:

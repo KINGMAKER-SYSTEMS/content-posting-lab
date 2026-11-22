@@ -626,9 +626,9 @@ def test_migration_rebuilds_per_clip_evidence_from_the_archive_records(lab, monk
     (tmp_path / "jobs.json").write_text(json.dumps(compacted))
     assert library_recipe(cp._dossier_source_recipe(publication()), cp._load_jobs()) is None
 
-    records = compaction.read_archived_jobs(tmp_path / "jobs.json")
-    assert [job["jobId"] for job in records] == ["history-job"]
-    migrated, _ = compaction.compact_job_store(cp._load_jobs(), when, archived_jobs=records)
+    scan = compaction.read_archived_jobs(tmp_path / "jobs.json")
+    assert [job["jobId"] for job in scan] == ["history-job"] and scan.bad_lines == 0
+    migrated, _ = compaction.compact_job_store(cp._load_jobs(), when, archive_scan=scan)
     assert migrated[compaction.ARCHIVE_INDEX_KEY]["sourceDnaClips"] == {PAGE_ID: [
         {"sha256": "1" * 64, "jobId": "history-job", "masterSha256": LIBRARY_SHA, "cutRows": 1},
     ]}
@@ -649,9 +649,10 @@ def test_a_page_whose_archive_record_is_missing_stays_unknown_until_rebuilt(lab,
     compacted, archived = compaction.compact_job_store(store, when)
     del compacted[compaction.ARCHIVE_INDEX_KEY]["sourceDnaClips"]
 
-    # Archive files lost: migration keeps the page unknown.
-    migrated, _ = compaction.compact_job_store(compacted, when, archived_jobs=[])
+    # Archive files lost: migration keeps the page unknown, and remembers the attempt.
+    migrated, _ = compaction.compact_job_store(compacted, when, archive_scan=compaction.ArchiveScan())
     assert migrated[compaction.ARCHIVE_INDEX_KEY]["sourceDnaClips"] == {PAGE_ID: None}
+    assert migrated[compaction.ARCHIVE_INDEX_KEY]["sourceDnaClipsTried"] == {PAGE_ID: {}}
     # A record for a different job never covers this page's clip.
     other = json.loads(json.dumps(archived[0]))
     other["jobId"], other["clips"][0]["sha256"] = "other-job", "8" * 64
@@ -664,6 +665,7 @@ def test_a_page_whose_archive_record_is_missing_stays_unknown_until_rebuilt(lab,
     assert compaction.rebuild_source_dna_clips(migrated, PAGE_ID, archived) == [
         {"sha256": "1" * 64, "jobId": "history-job", "masterSha256": LIBRARY_SHA, "cutRows": 1},
     ]
+    assert migrated[compaction.ARCHIVE_INDEX_KEY]["sourceDnaClipsTried"] == {}
     (tmp_path / "jobs.json").write_text(json.dumps(migrated))
     assert library_recipe(cp._dossier_source_recipe(publication()), cp._load_jobs()) is not None
 
@@ -698,3 +700,100 @@ def test_another_pages_unknown_bounds_row_is_seen_by_the_capability_count(lab, m
     )
     assert stopped.status_code == 409
     assert stopped.json() == {"detail": SOURCE_WINDOWS_EXHAUSTED}
+
+
+def _legacy_archived_store(client, tmp_path, monkeypatch, registry, *, keep_record: bool = True):
+    """A small store whose index predates the per-clip record, with the page's
+    history job in a month archive file (kept or lost). Returns the archive path."""
+    _shrink_bound_master(monkeypatch)
+    _exhaust_bound_master(client)
+    _register_sibling_library(registry, "pov-dirt-bike-fixture-v2", PAGE_ID, LIBRARY_SHA, 60_000)
+    _record_history_master(tmp_path / "jobs.json", LIBRARY_SHA, 60_000)
+    store = json.loads((tmp_path / "jobs.json").read_text())
+    when = datetime(2026, 12, 10, tzinfo=timezone.utc)
+    compacted, archived = compaction.compact_job_store(store, when)
+    assert [job["jobId"] for job in archived] == ["history-job"]
+    if keep_record:
+        compaction.append_archive_records(tmp_path / "jobs.json", archived, when)
+    else:
+        compaction.append_archive_records(tmp_path / "jobs.json", [{"jobId": "unrelated"}], when)
+    del compacted[compaction.ARCHIVE_INDEX_KEY]["sourceDnaClips"]  # the legacy shape
+    (tmp_path / "jobs.json").write_text(json.dumps(compacted))
+    return compaction.archive_path_for(tmp_path / "jobs.json", when)
+
+
+def test_a_cut_off_character_in_an_old_archive_skips_one_line_not_the_pass(lab):
+    """Archives are written with non-ASCII intact; a truncated multi-byte character
+    in an old month file is one counted bad line, and the other records still load."""
+    _, tmp_path, _ = lab
+    path = tmp_path / "jobs.json"
+    path.write_text(json.dumps(cp._empty_jobs()))
+    archive = compaction.archive_path_for(path, datetime(2026, 10, 1, tzinfo=timezone.utc))
+    archive.write_bytes(
+        json.dumps({"jobId": "whole", "note": "café"}, ensure_ascii=False).encode("utf-8")
+        + b"\n" + b'{"jobId":"cut","note":"\xe2\x82'  # the file ended mid-character
+    )
+    scan = compaction.read_archived_jobs(path)
+    assert [job["jobId"] for job in scan] == ["whole"]
+    assert scan.bad_lines == 1
+    assert list(scan.files) == [archive.name]
+
+
+def test_a_small_store_rebuilds_its_legacy_record_without_waiting_to_grow(lab, monkeypatch, registry):
+    """Below the size threshold and with nothing to archive, the pass still rebuilds
+    the per-clip record from the archive files and writes the index."""
+    client, tmp_path, _ = lab
+    _legacy_archived_store(client, tmp_path, monkeypatch, registry)
+    assert (tmp_path / "jobs.json").stat().st_size < compaction.DEFAULT_SIZE_THRESHOLD_BYTES
+    assert library_recipe(cp._dossier_source_recipe(publication()), cp._load_jobs()) is None
+
+    result = cp.maybe_compact_jobs(datetime(2026, 12, 10, tzinfo=timezone.utc))
+    assert result["archived"] == 0
+    index = compaction.read_archive_index(cp._load_jobs())
+    assert index["sourceDnaClips"] == {PAGE_ID: [
+        {"sha256": "1" * 64, "jobId": "history-job", "masterSha256": LIBRARY_SHA, "cutRows": 1},
+    ]}
+    assert library_recipe(cp._dossier_source_recipe(publication()), cp._load_jobs()) is not None
+    assert _max_quantity(client) >= 1
+
+
+def test_a_page_that_cannot_be_lifted_is_retried_only_when_an_archive_file_changes(lab, monkeypatch, registry):
+    """A lost record is tried once per archive state: no re-read on the next pass,
+    one re-read (and the lift) once the record appears in a changed file."""
+    client, tmp_path, _ = lab
+    archive = _legacy_archived_store(client, tmp_path, monkeypatch, registry, keep_record=False)
+    reads: list[int] = []
+    real_read = compaction.read_archived_jobs
+
+    def counted_read(store_path):
+        reads.append(1)
+        return real_read(store_path)
+
+    monkeypatch.setattr(compaction, "read_archived_jobs", counted_read)
+    when = datetime(2026, 12, 10, tzinfo=timezone.utc)
+
+    cp.run_compaction_once(tmp_path / "jobs.json", when)
+    index = compaction.read_archive_index(cp._load_jobs())
+    assert index["sourceDnaClips"] == {PAGE_ID: None}
+    assert index["sourceDnaClipsTried"] == {PAGE_ID: compaction.archive_fingerprint(tmp_path / "jobs.json")}
+    assert len(reads) == 1
+
+    cp.run_compaction_once(tmp_path / "jobs.json", when)  # same files: no archive read
+    assert len(reads) == 1
+    assert compaction.read_archive_index(cp._load_jobs())["sourceDnaClips"] == {PAGE_ID: None}
+
+    store = json.loads((tmp_path / "jobs.json").read_text())
+    # The record turns up (restored by hand): the file changed, so the pass reads again and lifts.
+    (tmp_path / "history-only.json").write_text(json.dumps(cp._empty_jobs()))
+    _record_history_master(tmp_path / "history-only.json", LIBRARY_SHA, 60_000)
+    history = json.loads((tmp_path / "history-only.json").read_text())["jobs"]
+    compaction.append_archive_records(tmp_path / "jobs.json", list(history.values()), when)
+    assert archive.stat().st_size > 0
+    cp.run_compaction_once(tmp_path / "jobs.json", when)
+    assert len(reads) == 2
+    index = compaction.read_archive_index(cp._load_jobs())
+    assert index["sourceDnaClips"] == {PAGE_ID: [
+        {"sha256": "1" * 64, "jobId": "history-job", "masterSha256": LIBRARY_SHA, "cutRows": 1},
+    ]}
+    assert index["sourceDnaClipsTried"] == {}
+    assert store["jobs"].keys() == cp._load_jobs()["jobs"].keys()  # the pass archived nothing

@@ -1825,10 +1825,21 @@ good; compaction now rebuilds unknown pages from the whole archived records
 in the month `.jsonl` files (`read_archived_jobs`, `derive_source_dna_clips`,
 one-shot `rebuild_source_dna_clips`), a page staying unknown only while an
 archived clip of it has no readable record; cut-row counts are per master;
-the capability count reads every page's source jobs for row bounds. Clip
+the capability count reads every page's source jobs for row bounds. Fifth
+review (Opus) found the rebuilt index was written only by a pass that
+archived something, above the size threshold, so legacy pages could stay
+unknown for weeks; that a page that can never be lifted made every pass
+re-read every month archive under the jobs writer lock; and that one
+cut-off multi-byte character in an old archive (written with non-ASCII
+intact, only the current month's tail repaired) failed every pass forever.
+Now a small store runs an index-only pass while a rebuild is wanted, a
+changed index is written with nothing archived, the archives are read
+outside the lock as bytes with bad lines skipped and counted, and an
+unlifted page remembers the archive fingerprint it was tried against and
+is retried only on a change. Clip
 receipts of recycled cuts name the manifest the master came from. The job records the library masters it cuts
 (`sourceLibraryMasters`) and execution rebuilds them only from a whole
 record. A page with no library is unchanged; a used-up library keeps the 409
 code and adds a plain `X-RT-Zero-Reason-Help` header naming new footage and
-the fetcher issue #227. `tests/test_page_source_library.py` (20 tests) fails
+the fetcher issue #227. `tests/test_page_source_library.py` (23 tests) fails
 on the previous head. No deployment; HENRY merges.

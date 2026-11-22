@@ -1918,6 +1918,19 @@ def run_compaction_once(
     expected_path = _jobs_path()
     assert path == expected_path, "compaction path must be the canonical jobs store"
     now = now or datetime.now(timezone.utc)
+    # Pages whose per-clip source record is unknown get it rebuilt from the
+    # whole archived records. The archives are read OUTSIDE the writer lock
+    # (a read-only pass over the month files), and only when the index asks
+    # for it: the record is missing, or an unknown page was last tried against
+    # different archive files. The lock then covers only fold + write.
+    archive_scan = None
+    try:
+        if compaction.rebuild_wanted(
+            compaction.read_archive_index(_load_jobs()), compaction.archive_fingerprint(path),
+        ):
+            archive_scan = compaction.read_archived_jobs(path)
+    except compaction.ArchiveIndexUnreadable:
+        pass  # the locked pass below raises and alarms on the same store
     with lock_for(path):
         store = _load_jobs()
         before = len(store.get("jobs", {}))
@@ -1932,18 +1945,9 @@ def run_compaction_once(
                     raise compaction.ArchiveIndexUnreadable(
                         f"missing_with_archives count={len(archives)}",
                     )
-            archived_jobs = None
-            current_index = compaction.read_archive_index(store)
-            if current_index and (
-                "sourceDnaClips" not in current_index
-                or None in (current_index.get("sourceDnaClips") or {}).values()
-            ):
-                # Pages whose per-clip source record is unknown get it rebuilt
-                # from the whole archived records (one-shot per page).
-                archived_jobs = compaction.read_archived_jobs(path)
             new_store, archived = compaction.compact_job_store(
                 store, now, retention_days=retention_days, batch_size=batch_size,
-                archived_jobs=archived_jobs,
+                archive_scan=archive_scan,
             )
         except compaction.ArchiveIndexUnreadable as error:
             log.error(
@@ -1953,7 +1957,16 @@ def run_compaction_once(
             raise
         if not archived:
             # Persist scan-only progress without publishing a synthetic empty
-            # archive index or appending an empty archive batch.
+            # archive index or appending an empty archive batch. An EXISTING
+            # index that this pass changed (per-clip source record added or
+            # rebuilt, or a rebuild attempt remembered) is written now rather
+            # than waiting for a pass that archives something.
+            if compaction.read_archive_index(store) and (
+                compaction.read_archive_index(new_store) != compaction.read_archive_index(store)
+            ):
+                _save_jobs(new_store)
+                return {"archived": 0, "jobs_before": before, "jobs_after": before,
+                        "index_updated": True, "tmp_swept": _sweep_stale_compaction_tmps(path)}
             cursor_key = compaction.COMPACTION_SCAN_NEXT_KEY
             if (cursor_key in store) != (cursor_key in new_store) or store.get(cursor_key) != new_store.get(cursor_key):
                 cursor_only = dict(store)
@@ -1983,6 +1996,17 @@ def maybe_compact_jobs(now: datetime | None = None, *, force: bool = False) -> d
     except OSError:
         return {"archived": 0, "jobs_before": 0, "jobs_after": 0, "tmp_swept": 0}
     if not force and size < compaction.DEFAULT_SIZE_THRESHOLD_BYTES:
+        # A small store still gets its per-clip source record rebuilt (index
+        # only, batch_size=0 archives nothing; once per pass, and only while
+        # the index asks for it), so legacy pages do not wait for growth.
+        try:
+            wanted = compaction.rebuild_wanted(
+                compaction.read_archive_index(_load_jobs()), compaction.archive_fingerprint(path),
+            )
+        except compaction.ArchiveIndexUnreadable:
+            wanted = False
+        if wanted:
+            return run_compaction_once(path, now, batch_size=0)
         # Keep the tmp sidecars tidy even when the store is small.
         return {"archived": 0, "jobs_before": 0, "jobs_after": 0,
                 "tmp_swept": _sweep_stale_compaction_tmps(path)}

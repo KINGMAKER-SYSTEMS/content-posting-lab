@@ -773,7 +773,17 @@
   on the month `.jsonl` files, `derive_source_dna_clips`); a page stays
   unknown while any archived clip of it has no readable record, and
   `rebuild_source_dna_clips(store, page_id, records)` lifts it by hand.
-  Unknown is never read as empty. Archived clips of other job kinds never
+  Unknown is never read as empty. The rebuild does not wait for the store
+  to grow or for a pass that archives something: `maybe_compact_jobs` runs
+  an index-only pass (`batch_size=0`) below the size threshold while the
+  index asks for one (`rebuild_wanted`), and `run_compaction_once` writes
+  an existing index it changed even when nothing was archived. The month
+  archives are read OUTSIDE the jobs writer lock, as bytes, one line
+  decoded at a time (a cut-off multi-byte character is one skipped,
+  counted line, `ArchiveScan.bad_lines`), and only when wanted: a page
+  that could not be lifted remembers the archive fingerprint it was tried
+  against (`sourceDnaClipsTried`, name -> [size, mtime_ns]) and is tried
+  again only when an archive file changed or a new one appeared. Archived clips of other job kinds never
   count toward that gap; a live clip of another kind that names an original
   without a sha spends that original but taints nothing by bytes. The
   capability count reads the page's jobs of every kind for evidence and
@@ -786,7 +796,10 @@
   release spans as before; a page whose archived clip has no readable
   archive record (file lost or truncated, or a record the extractor now
   refuses) stays on bound footage until that record is restored and the
-  next compaction or a hand rebuild runs; the Worker's pageSourceLockstep
+  next compaction or a hand rebuild runs; two clips of one job cut from one
+  master with one cut row both pass the per-clip check (the row count is
+  per master, not per clip; a live weakness that predates this record);
+  the Worker's pageSourceLockstep
   compares storageKey, library id
   and version with the bound publication, so a recycled body can fail
   lockstep on the Worker side. The no-repeat rule is unchanged: the same cut
