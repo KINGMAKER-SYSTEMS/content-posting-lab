@@ -745,6 +745,120 @@
   feeds, current origin mapping and canonical legacy alias reservations remain
   required for NETWORK-WIDE proof; this local-master repair alone does not
   certify those external inputs. Preserve the owner's 11-09 photo-sequence rule.
+- Per-page source library (owner 2026-11-21, pad #407 part 7). Before a
+  sourced page answers `source_windows_exhausted`, capability and job creation
+  widen the bound recipe to the page's whole library
+  (`services/page_source_library.py`): every registered `recipes/source-dna`
+  manifest for the same page and format, plus every master the page's own
+  completed source jobs cut from (`clips[].source.master`). Library masters
+  plan as backups after the bound primaries, never retired SHAs, each with a
+  canonical source identity. The ledger is keyed by bytes, so masters are
+  also compared by ORIGINAL footage (`original_source_keys`: the sourceUrl
+  identity unless it is only the vault's `/assets/` address, plus
+  `origin.originSourceId`): a second encoding or extraction of a bound or
+  kept original is not fresh footage, two library masters of one original
+  are both out, and an unknown original (bound or library) counts as used.
+  Evidence of posted footage comes from EVERY job of the page with clips,
+  whatever its recipe, format or status: the raw `source.master` sha and
+  original keys count even when the descriptor no longer parses, and a
+  master named without a well-formed cut row in its job counts as used. A
+  source job whose clips cannot name their master means no library at all,
+  and so does an archived source clip whose own job carried no cut row
+  (`archive_evidence_gap`): compaction keeps `sourceDnaClips`, per page,
+  every source-job clip digest with the count of its own job's cut rows ON
+  THAT CLIP'S MASTER, clip by clip (never totals, never another master's
+  rows). An index written before that record starts every page with
+  archived clips as unknown (`None`), and each compaction pass rebuilds
+  unknown pages from the whole archived job records (`read_archived_jobs`
+  on the month `.jsonl` files, `derive_source_dna_clips`); a page stays
+  unknown while any archived clip of it has no readable record, and
+  `rebuild_source_dna_clips(store, page_id, records)` lifts it by hand.
+  Unknown is never read as empty. The rebuild does not wait for the store
+  to grow or for a pass that archives something: `maybe_compact_jobs` runs
+  an index-only pass (`batch_size=0`) below the size threshold while the
+  index asks for one (`rebuild_wanted`), and `run_compaction_once` writes
+  an existing index it changed even when nothing was archived. The month
+  archives are read OUTSIDE the jobs writer lock, as bytes, one line
+  decoded at a time (a cut-off multi-byte character is one skipped,
+  counted line, `ArchiveScan.bad_lines`), and only when wanted: a page
+  that could not be lifted remembers the archive fingerprint it was tried
+  against (`sourceDnaClipsTried`, name -> [size, mtime_ns]) and is tried
+  again only when an archive file changed or a new one appeared; a quiet
+  small store (same jobs file, same archive files as the last "no") is not
+  loaded at all (`_REBUILD_QUIET`). Residual: while any page stays unknown,
+  every archiving pass changes an archive file and so re-reads the archives
+  (outside the lock). Archived clips of other job kinds never
+  count toward that gap; a live clip of another kind that names an original
+  without a sha spends that original but taints nothing by bytes. The
+  capability count reads the page's jobs of every kind for evidence and
+  every page's source jobs for cut-row bounds. The job record rows
+  carry `libraryId`/`libraryVersion`, and the clip receipt names that
+  manifest (`receipt_library`) while the job's own binding does not move.
+  Masters are matched on every identity they carry (`master_identities`:
+  original footage keys, where the ADDRESS SHAPE yields ("origin", <video
+  id>) for any host or scheme (`v=` query, `/shorts|embed|live|v/<id>`,
+  a lone id on youtu.be only, since `youtube.com/<name>` is a channel;
+  `_video_id_by_shape`) and ("origin",
+  <file id>) for `/d/<id>` or `id=` on Google hosts (`_drive_file_id`), so
+  an address-keyed master and an id-keyed master of one video meet; the
+  recorded `originSourceId` is never dropped; a YouTube-looking address
+  with no video id gets no generic key; footage is NAMED only by an id
+  key (`footage_named`: origin id, video id or Drive id, all ("origin",
+  <id>)), so a master with none (vault-only address, unresolvable address,
+  a plain web address, or no address, and no origin id) names nothing
+  (candidate out, bound -> no library, posted -> `PageEvidence.unknown`,
+  `_footage_unnamed`), and a page with such a posted master gets no
+  library until that master carries an origin id; an archived source clip
+  row keeps its master's identities (`keys`, written by compaction and by
+  the rebuild from the month archives) and `archived_clip_rows` adds them
+  to the owners, so footage whose job left the live store stays spoken
+  for; a clip with no digest is archived as a row with sha256 None
+  (unknown history, never forgotten); a row without keys, or with no id among them, refuses the library
+  until the rebuild fills them (a record with no address and no origin id
+  never does); plus ("sha", sha256) and ("storage", storageKey)); any shared
+  identity between masters of different bytes puts every one of them out.
+  Known limits: a page whose posted history is only non-YouTube,
+  non-Drive web addresses without an origin id gets no library; two BOUND masters that are one video are not
+  compared with each other (main behaviour, untouched); the scrambler branch of job creation does not widen to
+  the library while the capability count does; failed/cancelled jobs
+  release spans as before; a page whose archived clip has no readable
+  archive record (file lost or truncated, or a record the extractor now
+  refuses) stays on bound footage until that record is restored and the
+  next compaction or a hand rebuild runs; two clips of one job cut from one
+  master with one cut row both pass the per-clip check (the row count is
+  per master, not per clip; a live weakness that predates this record);
+  the Worker's pageSourceLockstep
+  compares storageKey, library id
+  and version with the bound publication, so a recycled body can fail
+  lockstep on the Worker side. The no-repeat rule is unchanged: the same cut
+  ledger (`masterSha:startMs:durationMs`, any library, forward or mirrored)
+  refuses any overlap, so a recycled body never shares a second with an
+  earlier body. A master with any cut row of unknown bounds counts as fully
+  used. Archive rows exist only for completed `dossier_source_dna` jobs,
+  while live evidence reads every job kind: a render clip naming an original
+  is read while live, and the source-repair lane
+  (`services/slot_source_regeneration.py:527` builds the command `master`)
+  posts no clip to the control-plane job store at all; it lives in the
+  render queue (`services/post_render_jobs.py:654`, `jobs.sqlite`), re-cuts
+  the master and span of a `sourceCuts` row the parent source job already
+  carries (`slot_source_regeneration.py:474-486`) and finishes into that
+  queue row (`post_render_jobs.py:973`), so the parent's own clip, live or
+  archived, already blocks that footage. MAINTENANCE: the `keys` on an
+  archived clip row are frozen at archive time by the `_keys_from` rules of
+  that day. Any change to those rules (a new host shape, a new id kind, a
+  changed canonical form) that must also apply to history needs a bump of
+  `ARCHIVE_INDEX_VERSION` (`services/job_store_compaction.py:53`) with a
+  migration that re-keys every row from the whole archived records (the
+  `derive_source_dna_clips` rebuild path, same as the keyless-row
+  migration), or the old rows keep the old names and a copy named the new
+  way would not meet them. Until re-keyed, treat old rows as fail-closed
+  by setting the pages back to None, never as current. A job that cuts a library master records the full manifest rows on
+  `sourceLibraryMasters`; execution rebuilds masters only from a whole record
+  and otherwise fails `source_recipe_cut_invalid`. The bound `sourceLibraryId`
+  and hash never move; look recipes, text rules, order size and legal checks
+  are untouched. A page with no library behaves exactly as before. When the
+  library is used up too, the 409 keeps the code and adds
+  `X-RT-Zero-Reason-Help: needs new footage ... (control-plane-pad #227)`.
 - Job `constraints` accepts `sourceWindowExclusions` and `priority`
   (`"low_runway"`); unknown keys and values are ignored and kept on the job,
   never an error. The Lab starts every job at creation, so ordering by

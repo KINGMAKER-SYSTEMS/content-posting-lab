@@ -40,6 +40,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
@@ -147,6 +148,15 @@ def empty_index() -> dict[str, Any]:
         "truckRecoveryMasters": [],   # sha256 of recovered masters (permanent)
         "truckCandidateJobs": [],     # completed generated truck clips (re-crop)
         "usedClipSha256": {},         # pageId -> sorted list of clip sha256
+        # pageId -> [{sha256, jobId, masterSha256, cutRows, keys}] for
+        # source-job clips (keys: the master's identities as [kind, value]
+        # pairs), or None when the page's clips were archived before this
+        # record existed (unknown history; services/page_source_library.py
+        # reads it)
+        "sourceDnaClips": {},
+        # pageId -> archive fingerprint (name -> [size, mtime_ns]) at the last
+        # rebuild attempt that left the page unknown; retried on a change only
+        "sourceDnaClipsTried": {},
         "providerHealth": {},         # key_id -> carried-forward streak/last-* state
     }
 
@@ -168,6 +178,184 @@ def _clip_sha256s(job: dict[str, Any]) -> list[str]:
         if isinstance(digest, str) and _SHA256_RE.fullmatch(digest):
             out.append(digest)
     return out
+
+
+def _source_clip_rows(job: dict[str, Any]) -> list[tuple[str | None, str | None, int, list[list[str]]]]:
+    """(clip digest or None, its master sha, cut rows of this job on that
+    master, the master's identities as sorted [kind, value] pairs) per clip.
+    The identities (footage keys, bytes, storage address) keep the footage
+    named after the job itself leaves the live store; a clip that cannot name
+    its master has none."""
+    from services.page_source_library import descriptor_identities  # the library owns the key space
+
+    source_cuts = job.get("sourceCuts", [])
+    rows_by_master: dict[str, int] = {}
+    if isinstance(source_cuts, list):
+        for cut in source_cuts:
+            sha = cut.get("masterSha256") if isinstance(cut, dict) else None
+            if isinstance(sha, str):
+                rows_by_master[sha] = rows_by_master.get(sha, 0) + 1
+    out: list[tuple[str | None, str | None, int, list[list[str]]]] = []
+    for clip in job.get("clips", []):
+        if not isinstance(clip, dict):
+            continue
+        digest = clip.get("sha256")
+        if not isinstance(digest, str) or not _SHA256_RE.fullmatch(digest):
+            # A clip that cannot name its bytes is still recorded (digest
+            # None), so the page's archived history reads as unknown rather
+            # than as if the clip had never been posted.
+            digest = None
+        source = clip.get("source")
+        master = source.get("master") if isinstance(source, dict) else None
+        sha = master.get("sha256") if isinstance(master, dict) else None
+        master_sha = sha if isinstance(sha, str) and sha else None
+        keys = sorted(list(pair) for pair in descriptor_identities(master)) if isinstance(master, dict) else []
+        out.append((digest, master_sha, rows_by_master.get(master_sha, 0) if master_sha else 0, keys))
+    return out
+
+
+@dataclass
+class ArchiveScan:
+    """Whole job records read from the month archives, with what was read.
+
+    ``files`` is the archives' fingerprint (name -> [size, mtime_ns]) at the
+    read; a page that could not be rebuilt remembers it, so the archives are
+    read again only once a file changed or a new one appeared. ``bad_lines``
+    counts lines skipped as undecodable or incomplete.
+    """
+
+    records: list[dict[str, Any]] = field(default_factory=list)
+    bad_lines: int = 0
+    files: dict[str, list[int]] = field(default_factory=dict)
+
+    def __iter__(self):
+        return iter(self.records)
+
+
+def _archive_files(store_path: Path) -> list[Path]:
+    return sorted(
+        candidate for candidate in store_path.parent.glob(f"{store_path.name}.archive-*.jsonl")
+        if candidate.is_file()
+    )
+
+
+def archive_fingerprint(store_path: Path) -> dict[str, list[int]]:
+    """name -> [size, mtime_ns] of every month archive (a stat, no read)."""
+    out: dict[str, list[int]] = {}
+    for archive in _archive_files(store_path):
+        try:
+            stat = archive.stat()
+        except OSError:
+            continue
+        out[archive.name] = [stat.st_size, stat.st_mtime_ns]
+    return out
+
+
+def read_archived_jobs(store_path: Path) -> ArchiveScan:
+    """Every whole job record in the store's month archives.
+
+    Lines are read as bytes and decoded one at a time: archives are written
+    with ``ensure_ascii=False`` and only the current month's tail is repaired,
+    so a cut-off multi-byte character in an older file is one skipped (and
+    counted) line, never a failed pass.
+    """
+    scan = ArchiveScan(files=archive_fingerprint(store_path))
+    for archive in _archive_files(store_path):
+        try:
+            with archive.open("rb") as handle:
+                for raw in handle:
+                    raw = raw.strip()
+                    if not raw:
+                        continue
+                    try:
+                        record = json.loads(raw.decode("utf-8"))
+                    except (UnicodeDecodeError, json.JSONDecodeError):
+                        scan.bad_lines += 1
+                        continue
+                    if isinstance(record, dict):
+                        scan.records.append(record)
+                    else:
+                        scan.bad_lines += 1
+        except OSError:
+            continue
+    return scan
+
+
+def rebuild_wanted(index: dict[str, Any], fingerprint: dict[str, list[int]]) -> bool:
+    """True when a compaction pass would read the archives to rebuild per-clip
+    source evidence: the index lacks the record, or an unknown page was last
+    tried against different archive files (changed, or new) than ``fingerprint``."""
+    if not index:
+        return False
+    clips_by_page = index.get("sourceDnaClips")
+    if not isinstance(clips_by_page, dict):
+        return True
+    tried = index.get("sourceDnaClipsTried") or {}
+    return any(
+        entry is None and tried.get(pid) != fingerprint
+        for pid, entry in clips_by_page.items()
+    )
+
+
+def derive_source_dna_clips(
+    index: dict[str, Any], jobs: Iterable[dict[str, Any]], page_ids: Iterable[str],
+) -> dict[str, list[dict[str, Any]] | None]:
+    """Per-clip source evidence for ``page_ids`` rebuilt from whole job records.
+
+    A page's entry is a list only when every clip digest the index holds for
+    it (``usedClipSha256``) is found again on a job record that the extractor
+    reads whole; then the list is exactly what archiving those records would
+    have written. Otherwise the page stays None (unknown): a record missing,
+    unreadable or malformed means footage whose spans cannot be attributed.
+    """
+    wanted = set(page_ids)
+    found: dict[str, set[str]] = {pid: set() for pid in wanted}
+    rows: dict[str, list[dict[str, Any]]] = {pid: [] for pid in wanted}
+    broken: set[str] = set()
+    for job in jobs:
+        if not isinstance(job, dict):
+            continue
+        pid = job.get("pageId")
+        if pid not in wanted:
+            continue
+        try:
+            entries = extract_index_entries(job)
+        except ValueError:
+            broken.add(pid)
+            continue
+        for (_, digest) in entries["usedClipSha256"]:
+            found[pid].add(digest)
+        rows[pid].extend(row for (_, row) in entries["sourceDnaClips"])
+    out: dict[str, list[dict[str, Any]] | None] = {}
+    known = index.get("usedClipSha256") or {}
+    for pid in wanted:
+        digests = known.get(pid)
+        if pid in broken or not isinstance(digests, list) or not set(digests) <= found[pid]:
+            out[pid] = None
+        else:
+            out[pid] = rows[pid]
+    return out
+
+
+def rebuild_source_dna_clips(
+    store: dict[str, Any], page_id: str, archived_jobs: Iterable[dict[str, Any]],
+) -> list[dict[str, Any]] | None:
+    """One-shot: replace a page's unknown (None) per-clip record from whole job
+    records (the month archives, plus the live store in case the job is still
+    there). Mutates the store's index and returns the new entry, None when the
+    page still cannot be attributed. Never turns unknown into empty."""
+    index = read_archive_index(store)
+    if not index:
+        return None
+    clips_by_page = index.setdefault("sourceDnaClips", {})
+    records = [*archived_jobs, *store.get("jobs", {}).values()]
+    entry = derive_source_dna_clips(index, records, [page_id])[page_id]
+    if entry is not None:
+        clips_by_page[page_id] = entry
+        (index.get("sourceDnaClipsTried") or {}).pop(page_id, None)
+    else:
+        clips_by_page.setdefault(page_id, None)
+    return entry
 
 
 def truck_recovery_reserved_masters(job: dict[str, Any]) -> list[str]:
@@ -241,6 +429,7 @@ def extract_index_entries(job: dict[str, Any]) -> dict[str, Any]:
         "truckRecoveryMasters": [],
         "truckCandidateJobs": [],
         "usedClipSha256": [],         # (pageId, sha256)
+        "sourceDnaClips": [],         # (pageId, {sha256, jobId, masterSha256, cutRows, keys})
         "providerAttempts": [],       # (key_id, engine, row)
     }
     page_id = job.get("pageId")
@@ -263,6 +452,8 @@ def extract_index_entries(job: dict[str, Any]) -> dict[str, Any]:
             if not isinstance(cut, dict):
                 continue
             entries["sourceDnaCuts"].append({
+                "pageId": page_id,
+                "jobId": job.get("jobId"),
                 "sourceLibraryId": job.get("sourceLibraryId"),
                 "sourceLibraryHash": job.get("sourceLibraryHash"),
                 "recipeVersion": job.get("recipeVersion"),
@@ -297,8 +488,22 @@ def extract_index_entries(job: dict[str, Any]) -> dict[str, Any]:
             slideshow_reserved_plans(job)  # refuse opaque malformed plans before archiving
         if kind == "truck_master_recovery" and job.get("clips"):
             truck_recovery_reserved_masters(job)
-        for digest in _clip_sha256s(job):
+        digests = _clip_sha256s(job)
+        for digest in digests:
             entries["usedClipSha256"].append((page_id, digest))
+        if kind == "dossier_source_dna":
+            # Each source clip remembers how many cut rows ITS job carried for
+            # ITS master, so a page's library pass can tell a clip whose spans
+            # are lost from one whose rows were archived, clip by clip (never
+            # by totals, never by another master's rows, and never counting
+            # clips of other job kinds). A clip that cannot name its master
+            # has no rows. The master's identities ride along so the footage
+            # the clip came from stays named once this job is archived.
+            for digest, master_sha, cut_rows, keys in _source_clip_rows(job):
+                entries["sourceDnaClips"].append((page_id, {
+                    "sha256": digest, "jobId": job.get("jobId"),
+                    "masterSha256": master_sha, "cutRows": cut_rows, "keys": keys,
+                }))
 
     # Completed generated truck renders remain live re-crop candidates; keep the
     # full clip manifest the reader needs. Non-truck renders keep only dedupe.
@@ -388,6 +593,14 @@ def fold_into_index(index: dict[str, Any], job: dict[str, Any], *, entries: dict
         index["usedClipSha256"].setdefault(pid, [])
         if digest not in index["usedClipSha256"][pid]:
             index["usedClipSha256"][pid].append(digest)
+
+    clips_by_page = index.setdefault("sourceDnaClips", {})
+    for (pid, row) in e["sourceDnaClips"]:
+        if not isinstance(pid, str):
+            continue
+        if pid in clips_by_page and clips_by_page[pid] is None:
+            continue  # history archived before this record stays unknown
+        clips_by_page.setdefault(pid, []).append(row)
 
     for (key_id, engine, call_key, row) in e["providerAttempts"]:
         if key_id is None:
@@ -525,8 +738,16 @@ def compact_job_store(
     *,
     retention_days: int = DEFAULT_RETENTION_DAYS,
     batch_size: int = DEFAULT_BATCH_SIZE,
+    archive_scan: ArchiveScan | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """Return (new_store, archived_jobs). Pure; the caller persists both.
+
+    ``archive_scan`` (whole records from the month archives, see
+    read_archived_jobs) lets this pass rebuild the per-clip source record of
+    pages whose entry is unknown (None): an index written before that record
+    existed, or a page an earlier pass could not attribute. A page still
+    unknown after the attempt remembers the scan's file fingerprint and is
+    tried again only against changed or new archive files.
 
     ``new_store`` shares no mutable containers with ``store``: it is a shallow
     copy with fresh ``jobs`` / ``byIdempotency`` / ``archiveIndex``. Archived
@@ -552,6 +773,35 @@ def compact_job_store(
                 f"version={current_index.get('version')!r}",
             )
         index = json.loads(json.dumps(current_index))
+        if "sourceDnaClips" not in index:
+            # Pages with clips archived before the per-clip source record
+            # existed start as unknown history (None), never an empty list.
+            index["sourceDnaClips"] = {
+                pid: None for pid in (index.get("usedClipSha256") or {})
+            }
+        for pid, entry in index["sourceDnaClips"].items():
+            # A row written before the master's keys were kept names no
+            # footage: the page goes back to unknown and is rebuilt from the
+            # whole archived records, like the record itself was.
+            if isinstance(entry, list) and any(
+                not isinstance(row, dict) or "keys" not in row for row in entry
+            ):
+                index["sourceDnaClips"][pid] = None
+        tried = index.setdefault("sourceDnaClipsTried", {})
+        if archive_scan is not None:
+            retry = [
+                pid for pid, entry in index["sourceDnaClips"].items()
+                if entry is None and tried.get(pid) != archive_scan.files
+            ]
+            # Rebuild from the whole archived records; a page stays None when
+            # any of its archived clips has no readable record, and remembers
+            # which archive files it was tried against.
+            for pid, entry in derive_source_dna_clips(index, archive_scan.records, retry).items():
+                if entry is None:
+                    tried[pid] = json.loads(json.dumps(archive_scan.files))
+                else:
+                    index["sourceDnaClips"][pid] = entry
+                    tried.pop(pid, None)
 
     archived: list[dict[str, Any]] = []
     for job_id in archived_ids:

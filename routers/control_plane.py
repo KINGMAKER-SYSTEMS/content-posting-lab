@@ -37,6 +37,7 @@ should fail, and how it did.
 from __future__ import annotations
 
 from services.owned_import_process import create_import_subprocess
+from services import page_source_library
 from services import source_import_layout
 
 import asyncio
@@ -121,6 +122,7 @@ from services.control_plane_sources import (
     resolve_source_recipe,
     source_window_exclusions,
     SOURCE_SPEED_DURATION_UNSUPPORTED,
+    SOURCE_WINDOWS_EXHAUSTED,
 )
 from services.control_plane_image_video import (
     IMAGE_VIDEO_FORMATS,
@@ -223,6 +225,17 @@ from services.source_dna_registry import source_dna_master_hashes
 
 router = APIRouter()
 log = logging.getLogger("control_plane")
+# Pages told, once per process, that their whole library is used up.
+_needs_new_footage_logged: set[str] = set()
+
+
+def _log_needs_new_footage(page_id: str) -> None:
+    """Say in plain words, once per page, why the page stays exhausted."""
+    if page_id in _needs_new_footage_logged:
+        return
+    _needs_new_footage_logged.add(page_id)
+    log.warning("%s page=%s: %s", SOURCE_WINDOWS_EXHAUSTED, page_id,
+                page_source_library.NEEDS_NEW_FOOTAGE)
 
 RESPONSE_SCHEMA = "content-lab.response.v1"
 # Job constraints this Lab understands. Unknown keys and values are ignored,
@@ -987,6 +1000,26 @@ def capabilities(
                 history=cut_history,
                 shadow_page_id=page_id,
             ))
+            if max_quantity == 0:
+                # The bound masters are used up (#407 part 7): the page's own
+                # library (services/page_source_library.py) may still hold
+                # unused spans. Evidence of posted footage comes from every
+                # job of the page (page_jobs_view, any kind), the ledger is
+                # re-read for the wider master set, so every earlier cut on
+                # those masters stays reserved.
+                pooled = page_source_library.library_recipe(
+                    source_recipe, page_jobs_view, cut_rows_store=dossier_source_dna_view,
+                )
+                if pooled is not None:
+                    source_recipe = pooled
+                    unavailable_slots, cut_history = _source_dna_cut_ledger(
+                        dossier_source_dna_view, pooled, publication["recipeVersion"],
+                    )
+                    max_quantity = len(plan_source_cuts(
+                        pooled, pooled.max_quantity, unavailable_slots,
+                        history=cut_history,
+                        shadow_page_id=page_id,
+                    ))
         else:
             if generation_related_jobs_view is None:
                 generation_related_jobs_view = _generation_related_jobs_view(
@@ -1018,6 +1051,8 @@ def capabilities(
                 )
             elif source_recipe is not None:
                 zero_reason = explain_empty_source_plan(source_recipe, unavailable_slots, None)
+                if zero_reason == SOURCE_WINDOWS_EXHAUSTED:
+                    _log_needs_new_footage(page_id)
             else:
                 zero_reason = PROMPT_INVENTORY_EXHAUSTED
         registered_entry = {
@@ -1884,6 +1919,19 @@ def run_compaction_once(
     expected_path = _jobs_path()
     assert path == expected_path, "compaction path must be the canonical jobs store"
     now = now or datetime.now(timezone.utc)
+    # Pages whose per-clip source record is unknown get it rebuilt from the
+    # whole archived records. The archives are read OUTSIDE the writer lock
+    # (a read-only pass over the month files), and only when the index asks
+    # for it: the record is missing, or an unknown page was last tried against
+    # different archive files. The lock then covers only fold + write.
+    archive_scan = None
+    try:
+        if compaction.rebuild_wanted(
+            compaction.read_archive_index(_load_jobs()), compaction.archive_fingerprint(path),
+        ):
+            archive_scan = compaction.read_archived_jobs(path)
+    except compaction.ArchiveIndexUnreadable:
+        pass  # the locked pass below raises and alarms on the same store
     with lock_for(path):
         store = _load_jobs()
         before = len(store.get("jobs", {}))
@@ -1900,6 +1948,7 @@ def run_compaction_once(
                     )
             new_store, archived = compaction.compact_job_store(
                 store, now, retention_days=retention_days, batch_size=batch_size,
+                archive_scan=archive_scan,
             )
         except compaction.ArchiveIndexUnreadable as error:
             log.error(
@@ -1909,7 +1958,16 @@ def run_compaction_once(
             raise
         if not archived:
             # Persist scan-only progress without publishing a synthetic empty
-            # archive index or appending an empty archive batch.
+            # archive index or appending an empty archive batch. An EXISTING
+            # index that this pass changed (per-clip source record added or
+            # rebuilt, or a rebuild attempt remembered) is written now rather
+            # than waiting for a pass that archives something.
+            if compaction.read_archive_index(store) and (
+                compaction.read_archive_index(new_store) != compaction.read_archive_index(store)
+            ):
+                _save_jobs(new_store)
+                return {"archived": 0, "jobs_before": before, "jobs_after": before,
+                        "index_updated": True, "tmp_swept": _sweep_stale_compaction_tmps(path)}
             cursor_key = compaction.COMPACTION_SCAN_NEXT_KEY
             if (cursor_key in store) != (cursor_key in new_store) or store.get(cursor_key) != new_store.get(cursor_key):
                 cursor_only = dict(store)
@@ -1930,15 +1988,43 @@ def run_compaction_once(
         }
 
 
+# (path, jobs-file size, jobs-file mtime_ns, archive fingerprint) the last time
+# a small store answered "no rebuild wanted": a quiet pass with the same files
+# reads nothing (process memory; a restart asks once more).
+_REBUILD_QUIET: tuple[Path, int, int, tuple[tuple[str, tuple[int, ...]], ...]] | None = None
+
+
 def maybe_compact_jobs(now: datetime | None = None, *, force: bool = False) -> dict[str, Any]:
     """Run compaction when the file exceeds the size bound (or when forced)."""
+    global _REBUILD_QUIET
     now = now or datetime.now(timezone.utc)
     path = _jobs_path()
     try:
-        size = path.stat().st_size
+        stat = path.stat()
     except OSError:
         return {"archived": 0, "jobs_before": 0, "jobs_after": 0, "tmp_swept": 0}
-    if not force and size < compaction.DEFAULT_SIZE_THRESHOLD_BYTES:
+    if not force and stat.st_size < compaction.DEFAULT_SIZE_THRESHOLD_BYTES:
+        # A small store still gets its per-clip source record rebuilt (index
+        # only, batch_size=0 archives nothing; once per pass, and only while
+        # the index asks for it), so legacy pages do not wait for growth. The
+        # store is loaded to ask only when the jobs file or an archive file
+        # changed since the last "no" (stats only on a quiet pass).
+        fingerprint = compaction.archive_fingerprint(path)
+        quiet_key = (path, stat.st_size, stat.st_mtime_ns,
+                     tuple(sorted((name, tuple(fp)) for name, fp in fingerprint.items())))
+        if _REBUILD_QUIET == quiet_key:
+            wanted = False
+        else:
+            try:
+                wanted = compaction.rebuild_wanted(
+                    compaction.read_archive_index(_load_jobs()), fingerprint,
+                )
+            except compaction.ArchiveIndexUnreadable:
+                wanted = False
+            if not wanted:
+                _REBUILD_QUIET = quiet_key
+        if wanted:
+            return run_compaction_once(path, now, batch_size=0)
         # Keep the tmp sidecars tidy even when the store is small.
         return {"archived": 0, "jobs_before": 0, "jobs_after": 0,
                 "tmp_swept": _sweep_stale_compaction_tmps(path)}
@@ -1947,8 +2033,10 @@ def maybe_compact_jobs(now: datetime | None = None, *, force: bool = False) -> d
 
 def _compaction_loop() -> None:
     # First pass is forced so an interrupted prior compaction self-heals even
-    # when the file is already under the threshold; later passes only fire on
-    # size, so a healthy small store does no extra decode work.
+    # when the file is already under the threshold. Later passes fire on size,
+    # or run index-only while the per-clip source record asks for a rebuild
+    # (maybe_compact_jobs); a quiet small store, same jobs file and same
+    # archive files as the last "no", is not even loaded.
     first = True
     while True:
         try:
@@ -4594,6 +4682,12 @@ async def _run_dossier_source_inner(job_id: str) -> None:
         )
         return
 
+    # A job planned on the page's library (#407 part 7) carries the whole
+    # rows of the library masters it cuts; execution rebuilds exactly those
+    # beside the bound masters. The bound library id and hash were checked
+    # above unchanged. A broken record rebuilds nothing, so such a cut fails
+    # source_recipe_cut_invalid below instead of guessing a master.
+    recipe = page_source_library.with_job_masters(recipe, job)
     job_root = Path(job["artifactRoot"]).resolve()
     treated_root = job_root / "treated"
     treated_root.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -5047,10 +5141,15 @@ async def _run_dossier_source_inner(job_id: str) -> None:
                 clip_crop=cut_crop,
                 filters=cut_filters,
             )
+            # A library master's receipt names the manifest it really came
+            # from (#407 part 7); the job's binding itself does not move.
+            receipt_library_id, receipt_library_version = page_source_library.receipt_library(
+                recipe, job, master,
+            )
             manifest["source"] = _source_provenance(job, {
                 "recipeId": recipe.recipe_id,
-                "sourceLibraryId": recipe.source_library_id,
-                "sourceLibraryVersion": f"sha256:{recipe.source_library_hash}",
+                "sourceLibraryId": receipt_library_id,
+                "sourceLibraryVersion": receipt_library_version,
                 "master": {
                     "sourceId": master.source_id,
                     "sha256": master.sha256,
@@ -6418,6 +6517,8 @@ async def _create_job_impl(
             served_slots, cut_history = _source_dna_cut_ledger(
                 store, source_recipe, publication["recipeVersion"],
             )
+            # The recipe as bound; a library pass below may widen the masters.
+            bound_source_recipe = source_recipe
             # A per-job seed varies the time frames each run cuts; it is
             # recorded so the plan is reproducible. Capability counted with
             # the capability seed, so fall back to it rather than refuse a
@@ -6566,6 +6667,7 @@ async def _create_job_impl(
                     # same paths as OFF below.
                     release_job_reservations(page_id, job_id, reason="source_plan_short")
             else:
+                job_plan_seed = cut_plan_seed
                 cuts = plan_source_cuts(
                     source_recipe, quantity, served_slots, excluded_windows,
                     seed=cut_plan_seed, history=cut_history,
@@ -6578,6 +6680,29 @@ async def _create_job_impl(
                         seed=cut_plan_seed, history=cut_history,
                         shadow_page_id=page_id, shadow_job_id=job_id,
                     )
+                if not cuts:
+                    # The bound masters are used up (#407 part 7): plan again
+                    # on the page's own library, with the ledger re-read for
+                    # the wider master set (services/page_source_library.py).
+                    pooled = page_source_library.library_recipe(source_recipe, store)
+                    if pooled is not None:
+                        source_recipe = pooled
+                        served_slots, cut_history = _source_dna_cut_ledger(
+                            store, pooled, publication["recipeVersion"],
+                        )
+                        cut_plan_seed = job_plan_seed
+                        cuts = plan_source_cuts(
+                            pooled, quantity, served_slots, excluded_windows,
+                            seed=cut_plan_seed, history=cut_history,
+                            shadow_page_id=page_id, shadow_job_id=job_id,
+                        )
+                        if len(cuts) != quantity:
+                            cut_plan_seed = CAPABILITY_PLAN_SEED
+                            cuts = plan_source_cuts(
+                                pooled, quantity, served_slots, excluded_windows,
+                                seed=cut_plan_seed, history=cut_history,
+                                shadow_page_id=page_id, shadow_job_id=job_id,
+                            )
             if not cuts:
                 # source_master_too_short, source_windows_exhausted (every
                 # window already cut: the page needs new footage) or
@@ -6588,11 +6713,22 @@ async def _create_job_impl(
                     else explain_empty_source_plan(
                         source_recipe, served_slots, excluded_windows)
                 )
+                response_headers = {"X-RT-Zero-Reason": reason}
+                if reason == SOURCE_WINDOWS_EXHAUSTED:
+                    # Every span of every library source is used too: say so
+                    # in plain words beside the unchanged code.
+                    _log_needs_new_footage(page_id)
+                    response_headers[page_source_library.ZERO_REASON_HELP_HEADER] = (
+                        page_source_library.NEEDS_NEW_FOOTAGE
+                    )
                 raise HTTPException(
                     status_code=409,
                     detail=reason,
-                    headers={"X-RT-Zero-Reason": reason},
+                    headers=response_headers,
                 )
+            library_masters = page_source_library.library_masters_used(
+                bound_source_recipe, source_recipe, cuts, store,
+            )
             if len(cuts) != quantity:
                 raise HTTPException(status_code=409, detail="insufficient_inventory")
             job_root = (
@@ -6680,6 +6816,11 @@ async def _create_job_impl(
                 "dossierRevision": publication["dossierRevision"],
                 "recipeSpecHash": publication["recipeSpecHash"],
                 "runtimeId": _GENERATION_RUNTIME_ID,
+                # Library masters this job cuts (whole manifest rows), so the
+                # executor rebuilds exactly what was planned. Absent for a
+                # job cut from the bound library alone.
+                **({page_source_library.JOB_LIBRARY_MASTERS_KEY: library_masters}
+                   if library_masters else {}),
             }
             start_source = True
         elif slideshow_recipe is not None:

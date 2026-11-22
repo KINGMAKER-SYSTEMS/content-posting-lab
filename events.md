@@ -1794,3 +1794,86 @@ at the token lookup, logs it, keeps the file's bytes and skips the bot; the
 rest of the app serves and `/api/telegram/*` still answers 503. New
 `tests/test_telegram_startup_unavailable.py` (truncated, non-mapping and
 undecodable bytes) fails on main and passes with the fix. No deployment.
+
+### 2026-11-21 — Exhausted pages recycle their own source library
+
+worktree: claude/source-library-recycle (pad #407 part 7; symptoms #295 #330
+#362 #367 #227). A sourced page bound to one source library stopped at
+`source_windows_exhausted` as soon as that batch was cut, even when the Lab
+held other footage for the same page (an older registered manifest revision,
+or a ShipStream master a later master replaced). Capability and job creation
+now widen the bound recipe to the page's whole library before answering zero
+(`services/page_source_library.py`), as backups behind the bound primaries,
+under the same cut ledger, so a recycled body never overlaps an earlier body
+of the page by any amount (a 1.0 s overlap is refused, tested). Unknown span
+history counts as used, and so does a master whose original footage is
+unknown or shared with another master of different bytes (the ledger is
+keyed by bytes and cannot compare their spans; found by the GLM review and
+fixed before merge), or one a completed job's clips name without a cut row.
+Second review (Opus) found two more fail-open paths, both closed with a
+red-first test each: clips posted under another recipe or format were not
+read as evidence, and a clip record that no longer parsed tainted nothing.
+Evidence now comes from every job of the page with clips, raw descriptor
+first. Third review (Opus, on the archive check) found that comparing clip
+totals with cut-row totals refused every page with an archived render clip
+forever and let one job's rows cover another's lost rows; compaction now
+keeps `sourceDnaClips` (per page, each source-job clip with its own job's
+cut-row count on that clip's master), the gap is checked clip by clip, and
+the capability count reads the page's jobs of every kind. Fourth review
+(Opus) found the migration left every page with archived clips unknown for
+good; compaction now rebuilds unknown pages from the whole archived records
+in the month `.jsonl` files (`read_archived_jobs`, `derive_source_dna_clips`,
+one-shot `rebuild_source_dna_clips`), a page staying unknown only while an
+archived clip of it has no readable record; cut-row counts are per master;
+the capability count reads every page's source jobs for row bounds. Fifth
+review (Opus) found the rebuilt index was written only by a pass that
+archived something, above the size threshold, so legacy pages could stay
+unknown for weeks; that a page that can never be lifted made every pass
+re-read every month archive under the jobs writer lock; and that one
+cut-off multi-byte character in an old archive (written with non-ASCII
+intact, only the current month's tail repaired) failed every pass forever.
+Now a small store runs an index-only pass while a rebuild is wanted, a
+changed index is written with nothing archived, the archives are read
+outside the lock as bytes with bad lines skipped and counted, and an
+unlifted page remembers the archive fingerprint it was tried against and
+is retried only on a change; a quiet small store is not loaded to ask. Sixth
+review (Studio lab-train lane, HIGH): a YouTube-keyed bound master and an
+origin-id-keyed history master of the SAME video never met in the key space,
+so both were pooled and footage already posted (video 620-627 s) could be cut
+again. Every master now resolves to all its identities (YouTube video id also
+as an origin key, origin id, sha256, storage key) and any shared identity
+between masters of different bytes puts them out of the library, both
+directions tested. Seventh review (coordinator, with the lab-train probe):
+music.youtube.com and youtube-nocookie.com still got a generic URL key;
+the identity parser now knows those hosts (`YOUTUBE_HOSTS`), any other
+YouTube-looking address yields no key at all (fail closed), and a Drive
+file address meets its bare file id. Main c72caae6 merged in clean. Eighth
+review (coordinator probes with positive controls): the round-8 guard also
+threw away a posted master's origin id, so a same-video candidate pooled
+again under odd addresses (http, trailing slash, /live/, a handle page), and
+mirror hosts and other Drive address shapes still missed the bare id. Ids are
+now read from the address SHAPE whatever the host (`_video_id_by_shape`,
+`_drive_file_id`), the origin id is never dropped, and a posted master whose
+only address is unresolvable refuses the library. Ninth review (coordinator
+re-check 3, two edge cases): a posted master with only the vault address and no
+origin id (what ShipStream writes when the upstream URL is unknown) was not
+caught by the unnamed check, so a same-video candidate with other bytes pooled;
+now ANY posted master with no footage key refuses the library. And a lone
+11-character path on youtube.com (a legacy channel name) was read as a video
+id; the lone-id rule now applies on youtu.be only, so that address names
+nothing and fails closed. Tenth review (coordinator closing re-check, one
+HIGH): once a posted master's job was moved to the archive its footage keys
+were gone (the archive row kept only the cut-row count), so a same-video copy
+with other bytes pooled again; compaction and the rebuild from the month
+archives now keep the master's identities on each archived clip row, the
+library pass counts them as owners, a clip with no digest is archived as
+unknown history instead of being forgotten, and a row without keys refuses
+the library until the rebuild fills them. And a master named only by a plain web
+address (a mirror lone-id link, any non-YouTube non-Drive address) with no
+origin id now counts as unnamed: footage is named by an id only. Clip
+receipts of recycled cuts name the manifest the master came from. The job records the library masters it cuts
+(`sourceLibraryMasters`) and execution rebuilds them only from a whole
+record. A page with no library is unchanged; a used-up library keeps the 409
+code and adds a plain `X-RT-Zero-Reason-Help` header naming new footage and
+the fetcher issue #227. `tests/test_page_source_library.py` (59 tests) fails
+on the previous head. No deployment; HENRY merges.
