@@ -424,6 +424,19 @@ PROVIDER_SCHEMAS: dict[str, dict] = {
             "sample_steps": {"type": "range", "min": 2, "max": 50, "default": 20, "step": 2, "label": "Sample Steps", "note": "Used when Go Fast is off"},
         },
     },
+    "local-ltx": {
+        "duration": {"type": "range", "min": 2, "max": 15, "default": 6, "label": "Duration (seconds)"},
+        "crop_mode": {"type": "select", "options": ["none", "dual", "triptych", "both"], "default": "both", "label": "Multi-Crop", "note": "dual=2, triptych=3, both=5 crops from one 16:9"},
+        "_advanced": {
+            "negative_prompt": {"type": "text", "default": "", "label": "Negative Prompt", "placeholder": "cartoon, video game..."},
+        },
+    },
+    "local-ltx-vertical": {
+        "duration": {"type": "range", "min": 2, "max": 15, "default": 8, "label": "Duration (seconds)", "note": "With a start image, output keeps the image's shape"},
+        "_advanced": {
+            "negative_prompt": {"type": "text", "default": "", "label": "Negative Prompt", "placeholder": "cartoon, video game..."},
+        },
+    },
     "local-wan-t2v": {
         "aspect_ratio": {"type": "select", "options": ["9:16", "16:9", "1:1"], "default": "9:16", "label": "Aspect Ratio"},
         "resolution": {"type": "select", "options": ["480p", "720p"], "default": "480p", "label": "Resolution"},

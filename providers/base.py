@@ -118,7 +118,7 @@ API_KEYS = {
 }
 
 # Providers that always output 16:9 regardless of aspect_ratio setting
-FORCE_LANDSCAPE = {"hailuo", "pruna-pvideo", "local-h3"}
+FORCE_LANDSCAPE = {"hailuo", "pruna-pvideo", "local-h3", "local-ltx"}
 
 
 async def still_to_video(image: Path, dest: Path, duration: int) -> None:

@@ -1,0 +1,52 @@
+{
+ "name": "boat-lake-h3",
+ "format": "boat-lake",
+ "family": "boat",
+ "base": {
+  "model_id": "comfyui/minimax-h3-fl2va",
+  "variant": "landscape",
+  "duration": 3,
+  "go_fast": true
+ },
+ "combinations": [
+  0,
+  1,
+  2,
+  3,
+  4,
+  5
+ ],
+ "seed": 2000,
+ "targets": {
+  "motion": [
+   0.5,
+   30.0
+  ]
+ },
+ "vision": {
+  "question": "You are inspecting one frame of a video filmed from a moving boat. Reply with one line of JSON and nothing else, using exactly these keys: {\"readable_text_or_logos\": true or false, \"where\": \"short phrase, or empty\", \"people_visible\": true or false, \"on_water\": true or false, \"overlay_graphics\": true or false}. readable_text_or_logos is true if any legible words, brand names or logos appear anywhere, including on building signs or the boat. people_visible is true if any person, face or body part is visible. on_water is true if the frame clearly shows open water seen from a boat. overlay_graphics is true if there are subtitles, watermarks, app interface elements or other graphics drawn over the picture.",
+  "must_be_false": {
+   "no_text_or_logos": "readable_text_or_logos",
+   "no_people": "people_visible",
+   "no_overlays": "overlay_graphics"
+  },
+  "must_be_true": {
+   "on_water": "on_water"
+  }
+ },
+ "variants": [
+  {
+   "name": "baseline-turbo8"
+  },
+  {
+   "name": "h3-rewrite",
+   "rewrite": "h3"
+  },
+  {
+   "name": "h3-rewrite-steps12",
+   "rewrite": "h3",
+   "steps": 12
+  }
+ ],
+ "crops": "both"
+}
