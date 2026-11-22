@@ -534,3 +534,51 @@ def test_predispatch_422_logs_typed_code(timed, code, monkeypatch, caplog):
     assert seen == []
     messages = [record.getMessage() for record in caplog.records]
     assert f"post render submit refused page={body['request']['page_id']} code={code}" in messages
+
+
+# --------------------------------------------------------------------------- #
+# control-plane-pad #328: an in-app pair through a length repair shares one
+# frame-rate reading. ``readings`` are the answers probe_frame_rate gives in
+# turn (None is a read that failed); before the fix each twin read on its own.
+# --------------------------------------------------------------------------- #
+def _stream_rate(path: Path) -> str:
+    raw = subprocess.run([FFPROBE, "-v", "error", "-select_streams", "v:0", "-show_entries",
+                          "stream=r_frame_rate", "-of", "json", str(path)],
+                         check=True, timeout=30, capture_output=True, text=True).stdout
+    return json.loads(raw)["streams"][0]["r_frame_rate"]
+
+
+@pytest.mark.parametrize("fps,readings,expected", [
+    ("25", (None, 25, 25), "30/1"),  # the shared read fails: both twins 30
+    ("25", (25, None, None), "25/1"),  # only later reads fail: both keep 25
+    ("60", (None, 60, 60), "30/1"),  # the shared read fails: both twins 30
+    ("60", (60, None, None), "30/1"),  # only later reads fail: both keep 60's delivery rate, 30
+])
+def test_repaired_in_app_twins_share_one_frame_rate_reading(tmp_path, monkeypatch, fps, readings, expected):
+    from fractions import Fraction
+
+    monkeypatch.setenv(ENV, "on")
+    src = tmp_path / "source.mp4"
+    _make_source(src, fps=fps)
+    src_sha = sha256(src.read_bytes())
+    answers, calls = iter(readings), []
+
+    def probe(*_args, **_kwargs):
+        calls.append(1)
+        answer = next(answers)
+        return None if answer is None else Fraction(answer)
+
+    monkeypatch.setattr(v1, "probe_frame_rate", probe)
+    output = tmp_path / "dual"
+    v1.render_post(src, output, v1_request(source_sha=src_sha, caption_delivery="in_app",
+                                           source_duration_repair=_repair_command(src_sha)),
+                   clock_ms=lambda: NOW)
+    assert len(calls) == 1  # one reading for the whole pair
+    # Both twins went through the repair (each trims its own copy).
+    assert (output / "repair" / "trimmed.mp4").exists() and (output / "burned" / "repair" / "trimmed.mp4").exists()
+    clean, burned = output / "final.mp4", output / "burned" / "final.mp4"
+    assert json.loads((output / "receipt.json").read_text())["source_duration_repair_sha256"]
+    assert _stream_rate(clean) == _stream_rate(burned) == expected
+    clean_decode = json.loads((output / "decode.json").read_text())
+    burned_decode = json.loads((output / "burned" / "decode.json").read_text())
+    assert clean_decode["decoded_video_frames"] == burned_decode["decoded_video_frames"]

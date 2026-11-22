@@ -478,7 +478,8 @@ def encode_shorter_final(source: Path, out: Path, *,
                          normalize_pair_timing: bool = False,
                          ffmpeg_bin: Optional[str] = None,
                          ffprobe_bin: Optional[str] = None,
-                         end_seconds: Optional[Fraction] = None) -> Dict:
+                         end_seconds: Optional[Fraction] = None,
+                         pair_timing: Optional[dict] = None) -> Dict:
     """Delivery-encode the trimmed source through the REAL `_encode_final`.
 
     ``end_seconds`` (the commanded cut's length) ends the final there, sound
@@ -490,7 +491,8 @@ def encode_shorter_final(source: Path, out: Path, *,
     `normalize_pair_timing` fps step, the letterbox, the caption overlay and
     the two-attempt bitrate-budget fallback — nothing here re-implements page
     look. With no overlay the source is delivery-only (in_app/lyric); its own
-    audio is still mapped through.
+    audio is still mapped through. ``pair_timing`` is the paired final's one
+    shared frame-rate reading (see ``_final_frame_rate``).
     """
     tools = RenderTools(ffmpeg=ffmpeg_bin or FFMPEG, ffprobe=ffprobe_bin or FFPROBE)
     source_probe = _post_probe(source, tools)
@@ -511,7 +513,8 @@ def encode_shorter_final(source: Path, out: Path, *,
     try:
         _encode_final(source, overlay_path, out, source_probe, tools, frame_height,
                       in_app=in_app, normalize_pair_timing=normalize_pair_timing,
-                      max_frame_rate=Fraction(SOURCE_DURATION_REPAIR_DELIVERY_FPS), end_seconds=end_seconds)
+                      max_frame_rate=Fraction(SOURCE_DURATION_REPAIR_DELIVERY_FPS), end_seconds=end_seconds,
+                      pair_timing=pair_timing)
     except PostRenderError as error:
         raise RepairError(error.code, str(error)) from error
     if out.stat().st_size > MAX_FINAL_BYTES:
@@ -526,7 +529,8 @@ def render_shorter(source_path: Path, output_directory: Path, command: Dict, *,
                    overlay_path: Optional[Path] = None,
                    frame_height: Optional[int] = None,
                    normalize_pair_timing: bool = False,
-                   ffmpeg_bin: Optional[str] = None, ffprobe_bin: Optional[str] = None) -> Dict:
+                   ffmpeg_bin: Optional[str] = None, ffprobe_bin: Optional[str] = None,
+                   pair_timing: Optional[dict] = None) -> Dict:
     """Validate the command, verify the source, trim it and encode a shorter final.
 
     Returns the receipt dict. The source must be upright square-pixel near-9:16
@@ -578,6 +582,7 @@ def render_shorter(source_path: Path, output_directory: Path, command: Dict, *,
                                            overlay_path=overlay_path, frame_height=frame_height,
                                            normalize_pair_timing=normalize_pair_timing,
                                            ffmpeg_bin=ffmpeg_bin, ffprobe_bin=ffprobe_bin,
+                                           pair_timing=pair_timing,
                                            end_seconds=Fraction(command["source_trim_end_ms"]
                                                                 - command["source_trim_start_ms"], 1000))
         final_sha, final_length = file_hash(final_path, MAX_FINAL_BYTES)

@@ -1386,6 +1386,50 @@ def test_in_app_pair_matches_when_source_ends_on_half_a_delivery_frame(tmp_path)
     assert clean["final_probe"]["duration_ms"] == burned["final_probe"]["duration_ms"] == 9417
 
 
+def _final_rate(path):
+    raw = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
+                          "stream=r_frame_rate", "-of", "json", str(path)],
+                         check=True, timeout=30, capture_output=True, text=True).stdout
+    return json.loads(raw)["streams"][0]["r_frame_rate"]
+
+
+# control-plane-pad #328: the twins of an in-app pair share one frame-rate
+# reading. The reading is (first, second, ...) answers of probe_frame_rate;
+# None is a read that failed.
+@pytest.mark.parametrize("readings,expected", [
+    ((None, None, None), "30/1"),  # every read fails: both twins use 30, no refusal
+    ((None, 25, 25), "30/1"),      # the shared read fails: both 30, even if a later read would work
+    ((25, None, None), "25/1"),    # the shared read works: both 25, even if a later read would fail
+])
+def test_in_app_twins_share_one_frame_rate_reading(tmp_path, monkeypatch, readings, expected):
+    if not shutil.which("ffmpeg") or not shutil.which("ffprobe"):
+        pytest.skip("ffmpeg/ffprobe are required for actual render proof")
+    from fractions import Fraction
+
+    source = tmp_path / "source.mp4"
+    subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-f", "lavfi", "-i",
+                    "testsrc2=s=432x768:r=25", "-frames:v", "25", "-an",
+                    "-c:v", "libx264", "-preset", "ultrafast", "-threads", "2", str(source)],
+                   check=True, timeout=30, capture_output=True)
+    answers = iter(readings)
+    calls = []
+
+    def probe(*_args, **_kwargs):
+        calls.append(1)
+        answer = next(answers)
+        return None if answer is None else Fraction(answer)
+
+    monkeypatch.setattr(render, "probe_frame_rate", probe)
+    output = tmp_path / "dual"
+    render.render_post(source, output, request(render.sha256(source.read_bytes()),
+                       caption_delivery="in_app"), clock_ms=lambda: NOW)
+    assert len(calls) == 1  # one reading for the whole pair
+    assert _final_rate(output / "final.mp4") == _final_rate(output / "burned" / "final.mp4") == expected
+    clean = json.loads((output / "decode.json").read_text())
+    burned = json.loads((output / "burned" / "decode.json").read_text())
+    assert clean["decoded_video_frames"] == burned["decoded_video_frames"]
+
+
 def test_dual_render_fallback_failure_removes_clean_artifact(actual_source, tmp_path, monkeypatch):
     original = render._render_post_single
     def fail_fallback(*args, **kwargs):
