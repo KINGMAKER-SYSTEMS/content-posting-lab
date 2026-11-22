@@ -795,12 +795,15 @@
   carry `libraryId`/`libraryVersion`, and the clip receipt names that
   manifest (`receipt_library`) while the job's own binding does not move.
   Masters are matched on every identity they carry (`master_identities`:
-  original footage keys, where a YouTube URL of any recognised host
-  (`YOUTUBE_HOSTS` in services/control_plane_sources.py, music and
-  no-cookie included) also yields ("origin", <video id>) and a Drive file
-  URL yields ("origin", <file id>), so an address-keyed master and an
-  id-keyed master of one video meet; a YouTube-looking address the parser
-  cannot resolve to a video id yields NO key (fail closed); plus ("sha", sha256) and ("storage", storageKey)); any shared
+  original footage keys, where the ADDRESS SHAPE yields ("origin", <video
+  id>) for any host or scheme (`v=` query, `/shorts|embed|live|v/<id>`,
+  a lone id on a YouTube-like host; `_video_id_by_shape`) and ("origin",
+  <file id>) for `/d/<id>` or `id=` on Google hosts (`_drive_file_id`), so
+  an address-keyed master and an id-keyed master of one video meet; the
+  recorded `originSourceId` is never dropped; a YouTube-looking address
+  with no video id gets no generic key, and with no origin id either the
+  master names nothing (candidate out, bound -> no library, posted ->
+  `PageEvidence.unknown`, `_footage_unnamed`); plus ("sha", sha256) and ("storage", storageKey)); any shared
   identity between masters of different bytes puts every one of them out.
   Known limits: the same footage under two unrelated non-YouTube URLs and
   no origin id gets two keys; two BOUND masters that are one video are not

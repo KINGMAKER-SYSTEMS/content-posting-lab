@@ -171,31 +171,59 @@ def _vault_asset_url(url: Any) -> bool:
 
 
 _YOUTUBE_WATCH = "https://www.youtube.com/watch?v="
-_DRIVE_HOSTS = frozenset({"drive.google.com", "docs.google.com"})
-_DRIVE_FILE_PATH = re.compile(r"^/file/d/([\w-]{10,})(?:/|$)")
-_DRIVE_FILE_ID = re.compile(r"^[\w-]{10,}$")
+_YOUTUBE_ID = re.compile(r"^[\w-]{11}$", re.ASCII)
+_YOUTUBE_PATH_ID = re.compile(r"^/(?:shorts|embed|live|v)/([\w-]{11})(?:/|$)", re.ASCII)
+_GOOGLE_HOST = re.compile(r"(^|\.)(google\.com|googleusercontent\.com)$|usercontent")
+_DRIVE_PATH_ID = re.compile(r"/d/([\w-]{10,})(?:/|$)", re.ASCII)
+_DRIVE_FILE_ID = re.compile(r"^[\w-]{10,}$", re.ASCII)
+
+
+def _split(url: Any):
+    if not isinstance(url, str):
+        return None
+    try:
+        return urlsplit(url)
+    except ValueError:
+        return None
 
 
 def _youtube_like(url: Any) -> bool:
     """True for any address whose host names YouTube, recognised or not."""
-    if not isinstance(url, str):
-        return False
-    try:
-        host = (urlsplit(url).hostname or "").lower()
-    except ValueError:
-        return False
+    parsed = _split(url)
+    host = (parsed.hostname or "").lower() if parsed else ""
     return "youtube" in host or "youtu.be" in host
 
 
+def _video_id_by_shape(url: Any) -> str | None:
+    """The YouTube video id an address carries, by SHAPE, whatever the host and
+    scheme: ``v=<id>`` in the query, ``/shorts|embed|live|v/<id>`` in the path,
+    or a lone ``/<id>`` path on a YouTube-like host (youtu.be, trailing slash
+    or not). Mirror hosts and plain http resolve too; a false match can only
+    exclude a master, never pool one."""
+    parsed = _split(url)
+    if parsed is None:
+        return None
+    for key, value in parse_qsl(parsed.query):
+        if key == "v" and _YOUTUBE_ID.match(value):
+            return value
+    match = _YOUTUBE_PATH_ID.match(parsed.path)
+    if match:
+        return match.group(1)
+    if _youtube_like(url):
+        segments = [part for part in parsed.path.split("/") if part]
+        if len(segments) == 1 and _YOUTUBE_ID.match(segments[0]):
+            return segments[0]
+    return None
+
+
 def _drive_file_id(url: Any) -> str | None:
-    """The file id of a Google Drive file address, or None."""
-    try:
-        parsed = urlsplit(url)
-    except (TypeError, ValueError):
+    """The file id of a Google Drive file address, by shape: ``/d/<id>`` anywhere
+    in the path or ``id=<id>`` in the query, on any google.com, googleusercontent
+    or usercontent host (drive, docs, drive.usercontent download links)."""
+    parsed = _split(url)
+    if parsed is None or not _GOOGLE_HOST.search((parsed.hostname or "").lower()):
         return None
-    if (parsed.hostname or "").lower() not in _DRIVE_HOSTS:
-        return None
-    match = _DRIVE_FILE_PATH.match(parsed.path)
+    match = _DRIVE_PATH_ID.search(parsed.path)
     if match:
         return match.group(1)
     for key, value in parse_qsl(parsed.query):
@@ -205,28 +233,43 @@ def _drive_file_id(url: Any) -> str | None:
 
 
 def _keys_from(url: Any, origin_id: Any) -> frozenset[tuple[str, str]]:
+    """The footage keys of one master: the upstream origin id when recorded
+    (NEVER dropped, whatever the address looks like), the video or file id the
+    address carries by shape, and the canonical address itself unless it is
+    the vault's own asset address or a YouTube-looking address the Lab could
+    not resolve to a video id (a channel, a playlist: no generic key for it).
+    An empty set means the footage cannot be named: fail closed."""
     keys: set[tuple[str, str]] = set()
-    identity = canonical_source_identity(url)
-    if _youtube_like(url) and (identity is None or not identity.startswith(_YOUTUBE_WATCH)):
-        # A YouTube-looking address the parser does not resolve to a video id
-        # (unknown host, a channel or playlist path) cannot be named: no key
-        # at all, whatever else the master carries, so it fails closed.
-        return frozenset()
-    if identity is not None and not _vault_asset_url(url):
-        keys.add(("source", identity))
-        if identity.startswith(_YOUTUBE_WATCH):
-            # One key space for one video: ShipStream records the video id as
-            # the upstream origin of a master it extracted from that video,
-            # so a YouTube-keyed master and an origin-id-keyed master of the
-            # same video meet on ("origin", <video id>).
-            keys.add(("origin", identity[len(_YOUTUBE_WATCH):]))
-        drive_id = _drive_file_id(url)
-        if drive_id is not None:
-            # The same for a Drive file: its address and its bare file id meet.
-            keys.add(("origin", drive_id))
     if isinstance(origin_id, str) and origin_id.strip():
         keys.add(("origin", origin_id.strip()))
+    video_id = _video_id_by_shape(url)
+    if video_id is not None:
+        # One key space for one video: ShipStream records the video id as the
+        # upstream origin of a master it extracted from that video, so an
+        # address-keyed master and an origin-id-keyed master of the same
+        # video meet on ("origin", <video id>).
+        keys.add(("origin", video_id))
+    drive_id = _drive_file_id(url)
+    if drive_id is not None:
+        keys.add(("origin", drive_id))  # the same for a Drive file and its bare id
+    identity = canonical_source_identity(url)
+    if (
+        identity is not None
+        and not _vault_asset_url(url)
+        and not (_youtube_like(url) and video_id is None)
+    ):
+        keys.add(("source", identity))
     return frozenset(keys)
+
+
+def _footage_unnamed(descriptor: dict[str, Any]) -> bool:
+    """True when a clip's master descriptor names NO footage although it names
+    an address (its keys are empty): an unresolvable YouTube-looking address
+    with no origin id. Such a posted master cannot be compared with anything,
+    so the page gets no library (fail closed)."""
+    provenance = descriptor.get("provenance")
+    url = provenance.get("sourceUrl") if isinstance(provenance, dict) else None
+    return _youtube_like(url) and not _raw_keys(descriptor)
 
 
 def _stored_keys(sha256: Any, storage_key: Any) -> frozenset[tuple[str, str]]:
@@ -280,7 +323,7 @@ class PageEvidence:
     masters: list[MasterSource] = field(default_factory=list)  # recyclable candidates
     tainted: set[str] = field(default_factory=set)             # shas that count as used
     originals: dict[tuple[str, str], set[str]] = field(default_factory=dict)  # key -> shas
-    unknown: bool = False  # a source job posted clips whose master cannot be named
+    unknown: bool = False  # a posted clip's master, or its footage, cannot be named
 
 
 def page_evidence(store: dict[str, Any], page_id: str, recipe: SourceRecipe) -> PageEvidence:
@@ -313,6 +356,8 @@ def page_evidence(store: dict[str, Any], page_id: str, recipe: SourceRecipe) -> 
                 if source_job:
                     evidence.unknown = True
                 continue
+            if _footage_unnamed(descriptor):
+                evidence.unknown = True
             sha = descriptor.get("sha256")
             if not isinstance(sha, str) or not sha:
                 if source_job:

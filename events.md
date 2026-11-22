@@ -1847,10 +1847,17 @@ directions tested. Seventh review (coordinator, with the lab-train probe):
 music.youtube.com and youtube-nocookie.com still got a generic URL key;
 the identity parser now knows those hosts (`YOUTUBE_HOSTS`), any other
 YouTube-looking address yields no key at all (fail closed), and a Drive
-file address meets its bare file id. Main c72caae6 merged in clean. Clip
+file address meets its bare file id. Main c72caae6 merged in clean. Eighth
+review (coordinator probes with positive controls): the round-8 guard also
+threw away a posted master's origin id, so a same-video candidate pooled
+again under odd addresses (http, trailing slash, /live/, a handle page), and
+mirror hosts and other Drive address shapes still missed the bare id. Ids are
+now read from the address SHAPE whatever the host (`_video_id_by_shape`,
+`_drive_file_id`), the origin id is never dropped, and a posted master whose
+only address is unresolvable refuses the library. Clip
 receipts of recycled cuts name the manifest the master came from. The job records the library masters it cuts
 (`sourceLibraryMasters`) and execution rebuilds them only from a whole
 record. A page with no library is unchanged; a used-up library keeps the 409
 code and adds a plain `X-RT-Zero-Reason-Help` header naming new footage and
-the fetcher issue #227. `tests/test_page_source_library.py` (41 tests) fails
+the fetcher issue #227. `tests/test_page_source_library.py` (52 tests) fails
 on the previous head. No deployment; HENRY merges.

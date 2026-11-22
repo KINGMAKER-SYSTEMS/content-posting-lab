@@ -917,6 +917,11 @@ THIRD_VIDEO_ID = "Qq8Qq8Qq8Qq"
     f"https://www.youtube-nocookie.com/embed/{VIDEO_ID}",
     f"https://youtube-nocookie.com/embed/{VIDEO_ID}?rel=0",
     f"https://m.youtube-nocookie.com/embed/{VIDEO_ID}",
+    f"https://yewtu.be/watch?v={VIDEO_ID}",                 # mirror host, by shape
+    f"https://invidious.example.net/embed/{VIDEO_ID}",      # mirror host, by shape
+    f"http://www.youtube.com/watch?v={VIDEO_ID}",           # plain http
+    f"https://youtu.be/{VIDEO_ID}/",                        # trailing slash
+    f"https://www.youtube.com/live/{VIDEO_ID}",             # live path
 ])
 def test_every_youtube_host_shape_meets_the_bare_video_id(monkeypatch, registry, url):
     """Music and no-cookie YouTube hosts key to the video id too, so the same
@@ -929,24 +934,62 @@ def test_every_youtube_host_shape_meets_the_bare_video_id(monkeypatch, registry,
     assert library_recipe(_recipe([by_url]), store) is None
 
 
-@pytest.mark.parametrize("url", [
-    f"https://youtube.example-mirror.net/watch?v={VIDEO_ID}",   # unknown YouTube-like host
-    f"https://youtu.be.proxy.test/{VIDEO_ID}",                  # unknown YouTube-like host
+UNRESOLVABLE_YOUTUBE_URLS = [
     "https://www.youtube.com/channel/UCabcdefghijklmnopqrstuv",  # known host, no video id
-])
-def test_an_unrecognised_youtube_like_address_names_no_footage(monkeypatch, registry, url):
-    """A YouTube-looking address the parser cannot resolve to a video id names
-    nothing, even with an origin id beside it: bound, it means no library;
-    as a candidate it is left out while a different video still pools."""
+    "https://www.youtube.com/@somechannel",                      # handle page
+    "https://youtube.example-mirror.net/playlist?list=PLabcdefgh",  # unknown host, no video id
+]
+
+
+@pytest.mark.parametrize("url", UNRESOLVABLE_YOUTUBE_URLS)
+def test_a_master_whose_only_address_is_unresolvable_fails_closed(monkeypatch, registry, url):
+    """A YouTube-looking address with no video id and no origin id names nothing:
+    bound, it means no library; posted, it refuses the library; as a candidate it
+    is left out while a different video still pools."""
     monkeypatch.setenv(SHIPSTREAM_VAULT_ORIGIN_ENV, "https://shipstream.test")
-    odd = _master("a" * 64, url, origin=_origin(VIDEO_ID))
+    odd = _master("a" * 64, url)
     assert original_source_keys(odd) == frozenset()
     other_video = _master("c" * 64, _vault_url("c" * 64), origin=_origin(OTHER_VIDEO_ID))
+    bound = _master("d" * 64, f"https://www.youtube.com/watch?v={THIRD_VIDEO_ID}")
+    # Bound: no library at all.
     store = {"jobs": {"bound-job": _page_job(odd, 20_000), "other-job": _page_job(other_video, 0)}}
     assert library_recipe(_recipe([odd]), store) is None
-    bound = _master("d" * 64, f"https://www.youtube.com/watch?v={THIRD_VIDEO_ID}")
+    # Posted by this page: the library is refused, a different video notwithstanding.
     store = {"jobs": {
         "bound-job": _page_job(bound, 20_000), "odd-job": _page_job(odd, 0), "other-job": _page_job(other_video, 0),
+    }}
+    assert library_recipe(_recipe([bound]), store) is None
+    # Candidate only (registered, never posted): left out, the other video pools.
+    _register_sibling_library(registry, "odd-lib", "pg", "a" * 64, 600_000)
+    odd_row = json.loads((registry / "odd-lib.json").read_text())
+    odd_row["format"] = "pov-night-core"
+    odd_row["masters"][0]["provenance"]["sourceUrl"] = url
+    (registry / "odd-lib.json").write_text(json.dumps(odd_row, sort_keys=True, separators=(",", ":")))
+    store = {"jobs": {"bound-job": _page_job(bound, 20_000), "other-job": _page_job(other_video, 0)}}
+    pooled = library_recipe(_recipe([bound]), store)
+    assert pooled is not None
+    assert [master.sha256 for master in pooled.masters] == [bound.sha256, other_video.sha256]
+
+
+@pytest.mark.parametrize("url", [
+    f"http://www.youtube.com/watch?v={VIDEO_ID}",
+    f"https://youtu.be/{VIDEO_ID}/",
+    f"https://www.youtube.com/live/{VIDEO_ID}",
+    "https://www.youtube.com/@somechannel",
+])
+def test_posted_evidence_keeps_the_origin_id_whatever_its_address_looks_like(monkeypatch, registry, url):
+    """A posted master with an odd address AND an origin id still names its video
+    by the origin id, so a same-video candidate with other bytes is never pooled;
+    a different video still is (positive control)."""
+    monkeypatch.setenv(SHIPSTREAM_VAULT_ORIGIN_ENV, "https://shipstream.test")
+    posted = _master("b" * 64, url, origin=_origin(VIDEO_ID))
+    assert ("origin", VIDEO_ID) in original_source_keys(posted)
+    same_video = _master("c" * 64, _vault_url("c" * 64), origin=_origin(VIDEO_ID))
+    other_video = _master("e" * 64, _vault_url("e" * 64), origin=_origin(OTHER_VIDEO_ID))
+    bound = _master("d" * 64, f"https://www.youtube.com/watch?v={THIRD_VIDEO_ID}")
+    store = {"jobs": {
+        "bound-job": _page_job(bound, 20_000), "posted-job": _page_job(posted, 0),
+        "same-job": _page_job(same_video, 0), "other-job": _page_job(other_video, 0),
     }}
     pooled = library_recipe(_recipe([bound]), store)
     assert pooled is not None
@@ -957,6 +1000,8 @@ def test_an_unrecognised_youtube_like_address_names_no_footage(monkeypatch, regi
     "https://drive.google.com/file/d/1AbCdEfGhIjKlMnOpQrStUv/view?usp=sharing",
     "https://drive.google.com/open?id=1AbCdEfGhIjKlMnOpQrStUv",
     "https://drive.google.com/uc?export=download&id=1AbCdEfGhIjKlMnOpQrStUv",
+    "https://drive.google.com/file/u/0/d/1AbCdEfGhIjKlMnOpQrStUv/view",
+    "https://drive.usercontent.google.com/download?id=1AbCdEfGhIjKlMnOpQrStUv&export=download",
 ])
 def test_a_drive_file_address_meets_its_bare_file_id(monkeypatch, registry, url):
     """A Drive file recorded by address on one master and by bare file id on
