@@ -17,7 +17,7 @@ from typing import Any
 
 from providers import PROVIDERS
 from routers.video import PROVIDER_SCHEMAS
-from services.content_engine_registry import MaterialProfile, load_engine_registry
+from services.content_engine_registry import MaterialProfile, engine_family, load_engine_registry
 from services.control_plane_image_video import IMAGE_VIDEO_FORMATS, image_video_plan_for_format
 from services.content_format_contracts import FormatContract, format_page_admits, load_format_contracts
 from services.control_plane_generation import (
@@ -1089,7 +1089,7 @@ def build_dossier_ingredient_catalog(
     expected_source_format = (
         current_source_formats[0] if len(current_source_formats) == 1 else None
     )
-    if intent["contentEngine"] == "sourced_video":
+    if engine_family(intent["contentEngine"]) == "sourced":
         try:
             shipstream_projection = load_shipstream_source_projection(
                 intent, page_id=page_id, expected_format=expected_source_format,
@@ -1163,7 +1163,7 @@ def selected_dossier_catalog_version(
     ):
         return None
     prompt_catalog, _ = load_prompt_catalog()
-    if intent["contentEngine"] == "sourced_video" and load_shipstream:
+    if engine_family(intent["contentEngine"]) == "sourced" and load_shipstream:
         try:
             shipstream_library = load_shipstream_source_dna_library(
                 intent, page_id=page_id, expected_format=format_id,

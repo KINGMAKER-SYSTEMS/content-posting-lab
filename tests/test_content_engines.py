@@ -11,6 +11,10 @@ import json
 
 import pytest
 
+# Imported at module level ON PURPOSE: the router reads the engines file once at
+# import, so a test that sets CONTENT_LAB_CONTENT_ENGINES must not be the first
+# importer (its tmp engine would leak into the import-time family sets).
+import routers.control_plane as control_plane
 from services import content_engine_registry as registry
 from services.content_engine_registry import (
     ENGINES_PATH,
@@ -81,14 +85,14 @@ def _write(tmp_path, name, value):
 
 
 def _with_test_engine(tmp_path, monkeypatch, *, engine="test_engine_x", executor_kind="slideshow_renderer",
-                      material_source="image_library", fields=None):
+                      material_source="image_library", fields=None, tag=""):
     """Add engine + one commissioned format for it, purely in config files."""
     engines_file = json.loads(ENGINES_PATH.read_text())
     entry = {"label": "Test engine X", "materialSource": material_source, "executorKind": executor_kind}
     if fields is not None:
         entry = fields
     engines_file["engines"][engine] = entry
-    monkeypatch.setenv("CONTENT_LAB_CONTENT_ENGINES", str(_write(tmp_path, "engines.json", engines_file)))
+    monkeypatch.setenv("CONTENT_LAB_CONTENT_ENGINES", str(_write(tmp_path, f"engines{tag}.json", engines_file)))
 
     contracts = json.loads(CONTRACTS_PATH.read_text())
     contract = copy.deepcopy(contracts["contracts"]["meme-slideshow"])
@@ -96,7 +100,7 @@ def _with_test_engine(tmp_path, monkeypatch, *, engine="test_engine_x", executor
     contract["contentEngine"] = engine
     contract["materialSource"] = material_source
     contracts["contracts"]["test-format-x"] = contract
-    monkeypatch.setenv("CONTENT_LAB_FORMAT_CONTRACTS", str(_write(tmp_path, "contracts.json", contracts)))
+    monkeypatch.setenv("CONTENT_LAB_FORMAT_CONTRACTS", str(_write(tmp_path, f"contracts{tag}.json", contracts)))
 
     registry_file = json.loads(REGISTRY_PATH.read_text())
     profile = copy.deepcopy(registry_file["profiles"]["meme-slideshow"])
@@ -105,10 +109,10 @@ def _with_test_engine(tmp_path, monkeypatch, *, engine="test_engine_x", executor
     profile["materialSource"] = material_source
     profile["formatContractVersion"] = "sha256:" + _entry_hash(contract)
     registry_file["profiles"]["test-format-x"] = profile
-    monkeypatch.setenv("CONTENT_LAB_ENGINE_REGISTRY", str(_write(tmp_path, "registry.json", registry_file)))
+    monkeypatch.setenv("CONTENT_LAB_ENGINE_REGISTRY", str(_write(tmp_path, f"registry{tag}.json", registry_file)))
 
 
-def test_a_new_engine_on_an_existing_executor_kind_is_config_only(tmp_path, monkeypatch):
+def test_a_new_engine_on_an_existing_executor_kind_loads_and_is_served(tmp_path, monkeypatch):
     _with_test_engine(tmp_path, monkeypatch)
     engines, version = load_content_engines()
     assert engines["test_engine_x"].label == "Test engine X"
@@ -120,7 +124,6 @@ def test_a_new_engine_on_an_existing_executor_kind_is_config_only(tmp_path, monk
     assert profile.executor_kind == "slideshow_renderer"
 
     # Served to the Worker: the list, its version, and the format on it.
-    import routers.control_plane as control_plane
     snapshot = control_plane._format_contract_snapshot()
     assert snapshot["contentEnginesVersion"] == version
     served = {entry["engine"]: entry for entry in snapshot["engines"]}
@@ -180,15 +183,69 @@ def test_unknown_fields_and_empty_lists_fail_closed(tmp_path, monkeypatch):
 
 
 def test_dispatch_asks_the_family_not_the_name(tmp_path, monkeypatch):
+    """Each family's recipe resolver admits a NEW engine of its family by the
+    engines file alone, and refuses an engine of another family before it
+    reads any spec. The spec reader is replaced by a sentinel so "passed the
+    engine gate" is observable without building a whole publication."""
+    import services.control_plane_generation as generation
+    import services.control_plane_slideshows as slideshows
+    import services.control_plane_sources as sources
+
+    class PassedTheEngineGate(Exception):
+        pass
+
+    def sentinel(_publication):
+        raise PassedTheEngineGate()
+
+    # Generated family.
     _with_test_engine(tmp_path, monkeypatch, engine="test_gen", executor_kind="prompt_family",
-                      material_source="generated_video")
-    from services.control_plane_generation import _resolve_generation_recipe
-    # A publication on the new generated engine takes the generation path: it
-    # is refused later on its recipe identity, never with reason content_engine.
-    with pytest.raises(Exception) as refused:
-        _resolve_generation_recipe({"recipeId": "x:master", "engine": "test_gen"}, require_runtime=False)
-    assert "content_engine" not in str(refused.value)
-    with pytest.raises(Exception) as refused:
-        _resolve_generation_recipe({"recipeId": "x:master", "engine": "sourced_video"}, require_runtime=False)
-    assert "content_engine" in str(refused.value)
+                      material_source="generated_video", tag="gen")
     assert engine_family("test_gen") == "generated"
+    monkeypatch.setattr(generation, "_typed_recipe_spec", sentinel)
+    with pytest.raises(PassedTheEngineGate):
+        generation._resolve_generation_recipe({"recipeId": "x:master", "engine": "test_gen"}, require_runtime=False)
+    with pytest.raises(generation._GenerationUnavailable, match="content_engine"):
+        generation._resolve_generation_recipe({"recipeId": "x:master", "engine": "sourced_video"}, require_runtime=False)
+
+    # Sourced family.
+    _with_test_engine(tmp_path, monkeypatch, engine="test_src", executor_kind="source_dna_recut",
+                      material_source="source_library", tag="src")
+    assert engine_family("test_src") == "sourced"
+    monkeypatch.setattr(sources, "typed_recipe_spec", sentinel)
+    with pytest.raises(PassedTheEngineGate):
+        sources.resolve_source_recipe({"recipeId": "x:master", "engine": "test_src"})
+    assert sources.resolve_source_recipe({"recipeId": "x:master", "engine": "ai_video"}) is None
+
+    # Slideshow family.
+    _with_test_engine(tmp_path, monkeypatch, engine="test_sl", tag="sl")
+    assert engine_family("test_sl") == "slideshow"
+    monkeypatch.setattr(slideshows, "typed_recipe_spec", sentinel)
+    with pytest.raises(PassedTheEngineGate):
+        slideshows.resolve_slideshow_recipe({"recipeId": "x:master", "engine": "test_sl"})
+    assert slideshows.resolve_slideshow_recipe({"recipeId": "x:master", "engine": "ai_video"}) is None
+    # An engine no file names belongs to no family.
+    assert slideshows.resolve_slideshow_recipe({"recipeId": "x:master", "engine": "never_listed"}) is None
+
+
+def test_the_router_reads_the_engines_file_once_at_import_and_loudly():
+    """The import-time family sets are the committed five, by family, and a
+    broken file is a boot failure, not three empty sets."""
+    assert control_plane._GENERATED_ENGINES == frozenset({"ai_video"})
+    assert control_plane._SOURCED_ENGINES == frozenset({"sourced_video"})
+    assert control_plane._SLIDESHOW_ENGINES == frozenset({"sourced_slideshow", "sourced_image", "lyrics_slideshows"})
+    import importlib
+    import pytest as _pytest
+    import routers.control_plane as module
+    import os
+    before = os.environ.get("CONTENT_LAB_CONTENT_ENGINES")
+    os.environ["CONTENT_LAB_CONTENT_ENGINES"] = "/nonexistent/engines.json"
+    try:
+        with _pytest.raises(OSError):
+            importlib.reload(module)
+    finally:
+        if before is None:
+            os.environ.pop("CONTENT_LAB_CONTENT_ENGINES", None)
+        else:
+            os.environ["CONTENT_LAB_CONTENT_ENGINES"] = before
+        importlib.reload(module)
+    assert module._SOURCED_ENGINES == frozenset({"sourced_video"})

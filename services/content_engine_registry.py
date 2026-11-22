@@ -171,7 +171,10 @@ def engine_family(engine: Any) -> str | None:
 
     Dispatch branches ask this instead of comparing engine names, so an
     engine added to the file dispatches like its siblings with no code edit.
-    An unknown engine (or an unreadable file) is None: no branch claims it.
+    An unknown engine is None: no branch claims it. An unreadable file is
+    also None here, but it cannot hide for long: routers/control_plane.py
+    loads the file at import (the Lab does not start on a broken file) and
+    /v1/format-contracts answers 503 on it.
     """
     if not isinstance(engine, str):
         return None

@@ -176,7 +176,6 @@ from services.control_plane_source_imports import (
     validate_source_url,
 )
 from services.content_engine_registry import (
-    engines_in_family,
     job_profile_authority_matches,
     load_content_engines,
     load_engine_registry,
@@ -506,11 +505,15 @@ _CAPABILITIES_CACHE_MAX_ENTRIES = 4096
 
 # Engine families from recipes/content-engines.v1.json (B9): which engines
 # generate video from prompts, which recut a source library, and which render
-# slideshows. Read once at import; a new engine on an existing executor kind
-# joins its family with no edit here.
-_GENERATED_ENGINES = engines_in_family("generated")
-_SOURCED_ENGINES = engines_in_family("sourced")
-_SLIDESHOW_ENGINES = engines_in_family("slideshow")
+# slideshows. Read ONCE at import and loudly: a Lab whose engines file is
+# missing or invalid does not start (fail closed, visible in the deploy log)
+# rather than running with empty families that refuse every dispatch. A new
+# engine on an existing executor kind joins its family on the next Lab start
+# (every deploy is one) with no edit here.
+_ENGINES_AT_IMPORT, _ = load_content_engines()
+_GENERATED_ENGINES = frozenset(e for e, v in _ENGINES_AT_IMPORT.items() if v.family == "generated")
+_SOURCED_ENGINES = frozenset(e for e, v in _ENGINES_AT_IMPORT.items() if v.family == "sourced")
+_SLIDESHOW_ENGINES = frozenset(e for e, v in _ENGINES_AT_IMPORT.items() if v.family == "slideshow")
 
 
 def _file_stat_signature(path: Path) -> tuple[str, int, int, int, int]:
@@ -596,9 +599,9 @@ def _capabilities_catalog_signature(
     registered_bindings: list[tuple[Any, dict[str, Any]]],
 ) -> tuple[tuple[str, int, int, int, int], ...]:
     """The prompt-catalog freshness signature, included in the cache key
-    only when at least one registered binding is ai_video (the only engine
-    that reads the prompt catalog) — no ai_video binding, no cost, same as
-    the slideshow-only-when-present gate above."""
+    only when at least one registered binding is a generated-video engine
+    (the only family that reads the prompt catalog) — no such binding, no
+    cost, same as the slideshow-only-when-present gate above."""
     if any(
         publication.get("engine") in _GENERATED_ENGINES
         for _, publication in registered_bindings
@@ -907,7 +910,7 @@ def capabilities(
             source_refusal_reasons: list[str] = []
             source_recipe = (
                 _dossier_source_recipe(publication, source_refusal_reasons)
-                if publication_engine == "sourced_video"
+                if publication_engine in _SOURCED_ENGINES
                 else None
             )
             slideshow_recipe = (
@@ -6203,7 +6206,7 @@ async def _create_job_impl(
     )
     slideshow_recipe = (
         resolve_slideshow_recipe(publication)
-        if publication_engine in {"sourced_slideshow", "lyrics_slideshows", "sourced_image"}
+        if publication_engine in _SLIDESHOW_ENGINES
         else None
     )
     if (
