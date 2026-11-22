@@ -938,6 +938,7 @@ UNRESOLVABLE_YOUTUBE_URLS = [
     "https://www.youtube.com/channel/UCabcdefghijklmnopqrstuv",  # known host, no video id
     "https://www.youtube.com/@somechannel",                      # handle page
     "https://youtube.example-mirror.net/playlist?list=PLabcdefgh",  # unknown host, no video id
+    "https://www.youtube.com/MrBeast6000",                       # legacy channel name, 11 chars, not a video
 ]
 
 
@@ -969,6 +970,41 @@ def test_a_master_whose_only_address_is_unresolvable_fails_closed(monkeypatch, r
     pooled = library_recipe(_recipe([bound]), store)
     assert pooled is not None
     assert [master.sha256 for master in pooled.masters] == [bound.sha256, other_video.sha256]
+
+
+@pytest.mark.parametrize("url", [
+    f"https://youtu.be/{VIDEO_ID}",
+    f"https://www.youtu.be/{VIDEO_ID}/",
+])
+def test_a_lone_path_id_is_a_video_only_on_the_short_link_host(monkeypatch, registry, url):
+    """``youtu.be/<id>`` is a video; ``youtube.com/<11 chars>`` is a channel name
+    and must not be mistaken for one, or the real video would never meet it."""
+    monkeypatch.setenv(SHIPSTREAM_VAULT_ORIGIN_ENV, "https://shipstream.test")
+    assert original_source_keys(_master("a" * 64, url)) == {("origin", VIDEO_ID)}
+    for host in ("www.youtube.com", "m.youtube.com", "youtube.com", "yewtu.be"):
+        assert original_source_keys(_master("a" * 64, f"https://{host}/{VIDEO_ID}")) == frozenset()
+
+
+def test_a_vault_only_posted_master_without_an_origin_id_refuses_the_library(monkeypatch, registry):
+    """ShipStream writes only the vault address when the upstream URL is unknown.
+    Such a posted master names no footage, so a same-video candidate with other
+    bytes could never be told apart from it: the page gets no library. Without
+    that master the same candidates pool (positive control)."""
+    monkeypatch.setenv(SHIPSTREAM_VAULT_ORIGIN_ENV, "https://shipstream.test")
+    posted = _master("b" * 64, _vault_url("b" * 64))
+    assert original_source_keys(posted) == frozenset()
+    same_video = _master("c" * 64, _vault_url("c" * 64), origin=_origin(VIDEO_ID))
+    other_video = _master("e" * 64, _vault_url("e" * 64), origin=_origin(OTHER_VIDEO_ID))
+    bound = _master("d" * 64, f"https://www.youtube.com/watch?v={THIRD_VIDEO_ID}")
+    jobs = {
+        "bound-job": _page_job(bound, 20_000), "same-job": _page_job(same_video, 0),
+        "other-job": _page_job(other_video, 0),
+    }
+    pooled = library_recipe(_recipe([bound]), {"jobs": dict(jobs)})
+    assert pooled is not None
+    assert [master.sha256 for master in pooled.masters] == [bound.sha256, same_video.sha256, other_video.sha256]
+    jobs["posted-job"] = _page_job(posted, 0)
+    assert library_recipe(_recipe([bound]), {"jobs": jobs}) is None
 
 
 @pytest.mark.parametrize("url", [

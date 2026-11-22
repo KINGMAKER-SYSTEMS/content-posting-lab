@@ -797,13 +797,16 @@
   Masters are matched on every identity they carry (`master_identities`:
   original footage keys, where the ADDRESS SHAPE yields ("origin", <video
   id>) for any host or scheme (`v=` query, `/shorts|embed|live|v/<id>`,
-  a lone id on a YouTube-like host; `_video_id_by_shape`) and ("origin",
+  a lone id on youtu.be only, since `youtube.com/<name>` is a channel;
+  `_video_id_by_shape`) and ("origin",
   <file id>) for `/d/<id>` or `id=` on Google hosts (`_drive_file_id`), so
   an address-keyed master and an id-keyed master of one video meet; the
   recorded `originSourceId` is never dropped; a YouTube-looking address
-  with no video id gets no generic key, and with no origin id either the
-  master names nothing (candidate out, bound -> no library, posted ->
-  `PageEvidence.unknown`, `_footage_unnamed`); plus ("sha", sha256) and ("storage", storageKey)); any shared
+  with no video id gets no generic key; a master with NO footage key at
+  all (vault-only address, unresolvable address or no address, and no
+  origin id) names nothing (candidate out, bound -> no library, posted ->
+  `PageEvidence.unknown`, `_footage_unnamed`), so a page with such a posted
+  master gets no library until that master carries an origin id; plus ("sha", sha256) and ("storage", storageKey)); any shared
   identity between masters of different bytes puts every one of them out.
   Known limits: the same footage under two unrelated non-YouTube URLs and
   no origin id gets two keys; two BOUND masters that are one video are not

@@ -173,6 +173,7 @@ def _vault_asset_url(url: Any) -> bool:
 _YOUTUBE_WATCH = "https://www.youtube.com/watch?v="
 _YOUTUBE_ID = re.compile(r"^[\w-]{11}$", re.ASCII)
 _YOUTUBE_PATH_ID = re.compile(r"^/(?:shorts|embed|live|v)/([\w-]{11})(?:/|$)", re.ASCII)
+_SHORT_LINK_HOST = re.compile(r"^(?:www\.)?youtu\.be$")
 _GOOGLE_HOST = re.compile(r"(^|\.)(google\.com|googleusercontent\.com)$|usercontent")
 _DRIVE_PATH_ID = re.compile(r"/d/([\w-]{10,})(?:/|$)", re.ASCII)
 _DRIVE_FILE_ID = re.compile(r"^[\w-]{10,}$", re.ASCII)
@@ -197,9 +198,10 @@ def _youtube_like(url: Any) -> bool:
 def _video_id_by_shape(url: Any) -> str | None:
     """The YouTube video id an address carries, by SHAPE, whatever the host and
     scheme: ``v=<id>`` in the query, ``/shorts|embed|live|v/<id>`` in the path,
-    or a lone ``/<id>`` path on a YouTube-like host (youtu.be, trailing slash
-    or not). Mirror hosts and plain http resolve too; a false match can only
-    exclude a master, never pool one."""
+    or a lone ``/<id>`` path on the youtu.be short-link host ONLY (trailing
+    slash or not): on youtube.com a lone path segment is a legacy channel name
+    (``/MrBeast6000``), not a video. Mirror hosts and plain http resolve too; a
+    false match can only exclude a master, never pool one."""
     parsed = _split(url)
     if parsed is None:
         return None
@@ -209,7 +211,7 @@ def _video_id_by_shape(url: Any) -> str | None:
     match = _YOUTUBE_PATH_ID.match(parsed.path)
     if match:
         return match.group(1)
-    if _youtube_like(url):
+    if _SHORT_LINK_HOST.match((parsed.hostname or "").lower()):
         segments = [part for part in parsed.path.split("/") if part]
         if len(segments) == 1 and _YOUTUBE_ID.match(segments[0]):
             return segments[0]
@@ -263,13 +265,12 @@ def _keys_from(url: Any, origin_id: Any) -> frozenset[tuple[str, str]]:
 
 
 def _footage_unnamed(descriptor: dict[str, Any]) -> bool:
-    """True when a clip's master descriptor names NO footage although it names
-    an address (its keys are empty): an unresolvable YouTube-looking address
-    with no origin id. Such a posted master cannot be compared with anything,
-    so the page gets no library (fail closed)."""
-    provenance = descriptor.get("provenance")
-    url = provenance.get("sourceUrl") if isinstance(provenance, dict) else None
-    return _youtube_like(url) and not _raw_keys(descriptor)
+    """True when a clip's master descriptor names NO footage (its keys are
+    empty): only the vault's own asset address, an unresolvable YouTube-looking
+    address, or no address at all, and no origin id. ShipStream writes exactly
+    that when the upstream URL is unknown. Such a posted master cannot be
+    compared with anything, so the page gets no library (fail closed)."""
+    return not _raw_keys(descriptor)
 
 
 def _stored_keys(sha256: Any, storage_key: Any) -> frozenset[tuple[str, str]]:

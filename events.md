@@ -1854,10 +1854,17 @@ again under odd addresses (http, trailing slash, /live/, a handle page), and
 mirror hosts and other Drive address shapes still missed the bare id. Ids are
 now read from the address SHAPE whatever the host (`_video_id_by_shape`,
 `_drive_file_id`), the origin id is never dropped, and a posted master whose
-only address is unresolvable refuses the library. Clip
+only address is unresolvable refuses the library. Ninth review (coordinator
+re-check 3, two edge cases): a posted master with only the vault address and no
+origin id (what ShipStream writes when the upstream URL is unknown) was not
+caught by the unnamed check, so a same-video candidate with other bytes pooled;
+now ANY posted master with no footage key refuses the library. And a lone
+11-character path on youtube.com (a legacy channel name) was read as a video
+id; the lone-id rule now applies on youtu.be only, so that address names
+nothing and fails closed. Clip
 receipts of recycled cuts name the manifest the master came from. The job records the library masters it cuts
 (`sourceLibraryMasters`) and execution rebuilds them only from a whole
 record. A page with no library is unchanged; a used-up library keeps the 409
 code and adds a plain `X-RT-Zero-Reason-Help` header naming new footage and
-the fetcher issue #227. `tests/test_page_source_library.py` (52 tests) fails
+the fetcher issue #227. `tests/test_page_source_library.py` (55 tests) fails
 on the previous head. No deployment; HENRY merges.
