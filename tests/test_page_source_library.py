@@ -585,3 +585,116 @@ def test_a_render_clip_naming_an_original_without_a_sha_only_blocks_that_origina
     store["jobs"]["render-live"]["clips"][0]["source"]["master"]["provenance"]["sourceUrl"] = sibling_url
     (tmp_path / "jobs.json").write_text(json.dumps(store))
     assert _max_quantity(client) == 0  # the sibling's own original was posted: out
+
+
+def test_a_clip_whose_master_has_no_row_counts_as_lost_when_another_master_has_rows(lab, monkeypatch, registry):
+    """One job, two masters: a row for the first never stands in for a clip on the second."""
+    client, tmp_path, _ = lab
+    _shrink_bound_master(monkeypatch)
+    _exhaust_bound_master(client)
+    _register_sibling_library(registry, "pov-dirt-bike-fixture-v2", PAGE_ID, LIBRARY_SHA, 60_000)
+    _record_history_master(tmp_path / "jobs.json", HISTORY_SHA, 60_000)  # one row, on HISTORY_SHA
+    store = json.loads((tmp_path / "jobs.json").read_text())
+    first = store["jobs"]["history-job"]["clips"][0]
+    second = json.loads(json.dumps(first))
+    second["sha256"] = "7" * 64
+    second["source"]["master"] = _manifest_row(LIBRARY_SHA, 60_000, PAGE_ID)
+    store["jobs"]["history-job"]["clips"].append(second)  # cut on the sibling, no row for it
+    assert _compact_history(tmp_path, store) == ["history-job"]
+    archive = compaction.read_archive_index(cp._load_jobs())
+    assert [(c["masterSha256"], c["cutRows"]) for c in archive["sourceDnaClips"][PAGE_ID]] == [
+        (HISTORY_SHA, 1), (LIBRARY_SHA, 0),
+    ]
+
+    assert library_recipe(cp._dossier_source_recipe(publication()), cp._load_jobs()) is None
+    assert _max_quantity(client) == 0
+
+
+def test_migration_rebuilds_per_clip_evidence_from_the_archive_records(lab, monkeypatch, registry):
+    """An index written before the per-clip record is rebuilt from the whole archived jobs."""
+    client, tmp_path, _ = lab
+    _shrink_bound_master(monkeypatch)
+    _exhaust_bound_master(client)
+    _register_sibling_library(registry, "pov-dirt-bike-fixture-v2", PAGE_ID, LIBRARY_SHA, 60_000)
+    _record_history_master(tmp_path / "jobs.json", LIBRARY_SHA, 60_000)  # 10-17 s, with its row
+    store = json.loads((tmp_path / "jobs.json").read_text())
+    when = datetime(2026, 12, 10, tzinfo=timezone.utc)
+    compacted, archived = compaction.compact_job_store(store, when)
+    assert [job["jobId"] for job in archived] == ["history-job"]
+    compaction.append_archive_records(tmp_path / "jobs.json", archived, when)
+    del compacted[compaction.ARCHIVE_INDEX_KEY]["sourceDnaClips"]  # the legacy shape
+    (tmp_path / "jobs.json").write_text(json.dumps(compacted))
+    assert library_recipe(cp._dossier_source_recipe(publication()), cp._load_jobs()) is None
+
+    records = compaction.read_archived_jobs(tmp_path / "jobs.json")
+    assert [job["jobId"] for job in records] == ["history-job"]
+    migrated, _ = compaction.compact_job_store(cp._load_jobs(), when, archived_jobs=records)
+    assert migrated[compaction.ARCHIVE_INDEX_KEY]["sourceDnaClips"] == {PAGE_ID: [
+        {"sha256": "1" * 64, "jobId": "history-job", "masterSha256": LIBRARY_SHA, "cutRows": 1},
+    ]}
+    (tmp_path / "jobs.json").write_text(json.dumps(migrated))
+    assert library_recipe(cp._dossier_source_recipe(publication()), cp._load_jobs()) is not None
+    assert _max_quantity(client) >= 1  # the sibling's unused spans are back on offer
+
+
+def test_a_page_whose_archive_record_is_missing_stays_unknown_until_rebuilt(lab, monkeypatch, registry):
+    """No record for one of the page's archived clips: unknown, never empty; a rebuild lifts it."""
+    client, tmp_path, _ = lab
+    _shrink_bound_master(monkeypatch)
+    _exhaust_bound_master(client)
+    _register_sibling_library(registry, "pov-dirt-bike-fixture-v2", PAGE_ID, LIBRARY_SHA, 60_000)
+    _record_history_master(tmp_path / "jobs.json", LIBRARY_SHA, 60_000)
+    store = json.loads((tmp_path / "jobs.json").read_text())
+    when = datetime(2026, 12, 10, tzinfo=timezone.utc)
+    compacted, archived = compaction.compact_job_store(store, when)
+    del compacted[compaction.ARCHIVE_INDEX_KEY]["sourceDnaClips"]
+
+    # Archive files lost: migration keeps the page unknown.
+    migrated, _ = compaction.compact_job_store(compacted, when, archived_jobs=[])
+    assert migrated[compaction.ARCHIVE_INDEX_KEY]["sourceDnaClips"] == {PAGE_ID: None}
+    # A record for a different job never covers this page's clip.
+    other = json.loads(json.dumps(archived[0]))
+    other["jobId"], other["clips"][0]["sha256"] = "other-job", "8" * 64
+    assert compaction.rebuild_source_dna_clips(migrated, PAGE_ID, [other]) is None
+    assert migrated[compaction.ARCHIVE_INDEX_KEY]["sourceDnaClips"] == {PAGE_ID: None}
+    (tmp_path / "jobs.json").write_text(json.dumps(migrated))
+    assert library_recipe(cp._dossier_source_recipe(publication()), cp._load_jobs()) is None
+
+    # The whole record found again (restored archive, or by hand): the page is lifted.
+    assert compaction.rebuild_source_dna_clips(migrated, PAGE_ID, archived) == [
+        {"sha256": "1" * 64, "jobId": "history-job", "masterSha256": LIBRARY_SHA, "cutRows": 1},
+    ]
+    (tmp_path / "jobs.json").write_text(json.dumps(migrated))
+    assert library_recipe(cp._dossier_source_recipe(publication()), cp._load_jobs()) is not None
+
+
+def test_another_pages_unknown_bounds_row_is_seen_by_the_capability_count(lab, monkeypatch, registry):
+    """The capability count reads every page's cut rows on a library master, as job creation does."""
+    client, tmp_path, _ = lab
+    _shrink_bound_master(monkeypatch)
+    _exhaust_bound_master(client)
+    _register_sibling_library(registry, "pov-dirt-bike-fixture-v2", PAGE_ID, LIBRARY_SHA, 60_000)
+    assert _max_quantity(client) >= 1
+    store = json.loads((tmp_path / "jobs.json").read_text())
+    store["jobs"]["other-page-job"] = {
+        "jobId": "other-page-job",
+        "pageId": "tt-other-page",
+        "sourceKind": "dossier_source_dna",
+        "status": "completed",
+        "createdAt": "2026-11-20T11:00:00+00:00",
+        "completedAt": "2026-11-20T12:00:00+00:00",
+        "sourceLibraryId": "shipstream-other",
+        "sourceCuts": [{  # runs past the master's end: unknown bounds
+            "slotId": f"{LIBRARY_SHA}:59000:7000", "masterSha256": LIBRARY_SHA,
+            "libraryStartMs": 59_000, "startMs": 59_000, "durationMs": 7_000,
+        }],
+        "clips": [{"sha256": "9" * 64}],
+    }
+    (tmp_path / "jobs.json").write_text(json.dumps(store))
+
+    assert _max_quantity(client) == 0
+    stopped = client.post(
+        "/api/control-plane/v1/jobs", json=job_body(1), headers=headers("other-page-bounds"),
+    )
+    assert stopped.status_code == 409
+    assert stopped.json() == {"detail": SOURCE_WINDOWS_EXHAUSTED}

@@ -343,8 +343,15 @@ def recyclable_masters(
     return tuple(kept)
 
 
-def library_recipe(recipe: SourceRecipe, store: dict[str, Any]) -> SourceRecipe | None:
+def library_recipe(
+    recipe: SourceRecipe, store: dict[str, Any], *, cut_rows_store: dict[str, Any] | None = None,
+) -> SourceRecipe | None:
     """The recipe widened to the page's library, or None when there is none.
+
+    ``store`` gives the page's own jobs (evidence of posted footage) and the
+    archive index; ``cut_rows_store`` (default ``store``) gives every page's
+    source jobs, whose cut rows on a library master must all have known
+    bounds. A caller holding a page-only view passes the all-pages view here.
 
     The bound masters stay first and unchanged (library id and hash do not
     move). Library masters come after, as backups, deduplicated by bytes and
@@ -411,7 +418,7 @@ def library_recipe(recipe: SourceRecipe, store: dict[str, Any]) -> SourceRecipe 
         ):
             continue
         extra.append(master)
-    recyclable = recyclable_masters(extra, prior_cut_rows(store))
+    recyclable = recyclable_masters(extra, prior_cut_rows(cut_rows_store if cut_rows_store is not None else store))
     if not recyclable:
         return None
     return replace(recipe, masters=(*recipe.masters, *recyclable))

@@ -174,6 +174,113 @@ def _clip_sha256s(job: dict[str, Any]) -> list[str]:
     return out
 
 
+def _source_clip_rows(job: dict[str, Any]) -> list[tuple[str, str | None, int]]:
+    """(clip digest, its master sha, cut rows of this job on that master) per clip."""
+    source_cuts = job.get("sourceCuts", [])
+    rows_by_master: dict[str, int] = {}
+    if isinstance(source_cuts, list):
+        for cut in source_cuts:
+            sha = cut.get("masterSha256") if isinstance(cut, dict) else None
+            if isinstance(sha, str):
+                rows_by_master[sha] = rows_by_master.get(sha, 0) + 1
+    out: list[tuple[str, str | None, int]] = []
+    for clip in job.get("clips", []):
+        if not isinstance(clip, dict):
+            continue
+        digest = clip.get("sha256")
+        if not isinstance(digest, str) or not _SHA256_RE.fullmatch(digest):
+            continue
+        source = clip.get("source")
+        master = source.get("master") if isinstance(source, dict) else None
+        sha = master.get("sha256") if isinstance(master, dict) else None
+        master_sha = sha if isinstance(sha, str) and sha else None
+        out.append((digest, master_sha, rows_by_master.get(master_sha, 0) if master_sha else 0))
+    return out
+
+
+def read_archived_jobs(store_path: Path) -> list[dict[str, Any]]:
+    """Every whole job record in the store's month archives (complete lines only)."""
+    out: list[dict[str, Any]] = []
+    for archive in sorted(store_path.parent.glob(f"{store_path.name}.archive-*.jsonl")):
+        if not archive.is_file():
+            continue
+        try:
+            with archive.open("r", encoding="utf-8") as handle:
+                for line in handle:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        record = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if isinstance(record, dict):
+                        out.append(record)
+        except OSError:
+            continue
+    return out
+
+
+def derive_source_dna_clips(
+    index: dict[str, Any], jobs: Iterable[dict[str, Any]], page_ids: Iterable[str],
+) -> dict[str, list[dict[str, Any]] | None]:
+    """Per-clip source evidence for ``page_ids`` rebuilt from whole job records.
+
+    A page's entry is a list only when every clip digest the index holds for
+    it (``usedClipSha256``) is found again on a job record that the extractor
+    reads whole; then the list is exactly what archiving those records would
+    have written. Otherwise the page stays None (unknown): a record missing,
+    unreadable or malformed means footage whose spans cannot be attributed.
+    """
+    wanted = set(page_ids)
+    found: dict[str, set[str]] = {pid: set() for pid in wanted}
+    rows: dict[str, list[dict[str, Any]]] = {pid: [] for pid in wanted}
+    broken: set[str] = set()
+    for job in jobs:
+        if not isinstance(job, dict):
+            continue
+        pid = job.get("pageId")
+        if pid not in wanted:
+            continue
+        try:
+            entries = extract_index_entries(job)
+        except ValueError:
+            broken.add(pid)
+            continue
+        for (_, digest) in entries["usedClipSha256"]:
+            found[pid].add(digest)
+        rows[pid].extend(row for (_, row) in entries["sourceDnaClips"])
+    out: dict[str, list[dict[str, Any]] | None] = {}
+    known = index.get("usedClipSha256") or {}
+    for pid in wanted:
+        digests = known.get(pid)
+        if pid in broken or not isinstance(digests, list) or not set(digests) <= found[pid]:
+            out[pid] = None
+        else:
+            out[pid] = rows[pid]
+    return out
+
+
+def rebuild_source_dna_clips(
+    store: dict[str, Any], page_id: str, archived_jobs: Iterable[dict[str, Any]],
+) -> list[dict[str, Any]] | None:
+    """One-shot: replace a page's unknown (None) per-clip record from whole job
+    records (the month archives, plus the live store in case the job is still
+    there). Mutates the store's index and returns the new entry, None when the
+    page still cannot be attributed. Never turns unknown into empty."""
+    index = read_archive_index(store)
+    if not index:
+        return None
+    clips_by_page = index.setdefault("sourceDnaClips", {})
+    records = [*archived_jobs, *store.get("jobs", {}).values()]
+    entry = derive_source_dna_clips(index, records, [page_id])[page_id]
+    if entry is not None:
+        clips_by_page[page_id] = entry
+    else:
+        clips_by_page.setdefault(page_id, None)
+    return entry
+
+
 def truck_recovery_reserved_masters(job: dict[str, Any]) -> list[str]:
     """Keep every master whose recovery is active or may have exposed clips."""
     if job.get("sourceKind") != "truck_master_recovery":
@@ -308,18 +415,16 @@ def extract_index_entries(job: dict[str, Any]) -> dict[str, Any]:
         for digest in digests:
             entries["usedClipSha256"].append((page_id, digest))
         if kind == "dossier_source_dna":
-            # Each source clip remembers how many cut rows ITS job carried, so a
-            # page's library pass can tell a clip whose spans are lost from one
-            # whose rows were archived, clip by clip (never by totals, and never
-            # counting clips of other job kinds).
-            source_cuts = job.get("sourceCuts", [])
-            cut_rows = (
-                sum(1 for cut in source_cuts if isinstance(cut, dict))
-                if isinstance(source_cuts, list) else 0
-            )
-            for digest in digests:
+            # Each source clip remembers how many cut rows ITS job carried for
+            # ITS master, so a page's library pass can tell a clip whose spans
+            # are lost from one whose rows were archived, clip by clip (never
+            # by totals, never by another master's rows, and never counting
+            # clips of other job kinds). A clip that cannot name its master
+            # has no rows.
+            for digest, master_sha, cut_rows in _source_clip_rows(job):
                 entries["sourceDnaClips"].append((page_id, {
-                    "sha256": digest, "jobId": job.get("jobId"), "cutRows": cut_rows,
+                    "sha256": digest, "jobId": job.get("jobId"),
+                    "masterSha256": master_sha, "cutRows": cut_rows,
                 }))
 
     # Completed generated truck renders remain live re-crop candidates; keep the
@@ -555,8 +660,14 @@ def compact_job_store(
     *,
     retention_days: int = DEFAULT_RETENTION_DAYS,
     batch_size: int = DEFAULT_BATCH_SIZE,
+    archived_jobs: Iterable[dict[str, Any]] | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """Return (new_store, archived_jobs). Pure; the caller persists both.
+
+    ``archived_jobs`` (whole records from the month archives, see
+    read_archived_jobs) lets this pass rebuild the per-clip source record of
+    pages whose entry is unknown (None): an index written before that record
+    existed, or a page an earlier pass could not attribute.
 
     ``new_store`` shares no mutable containers with ``store``: it is a shallow
     copy with fresh ``jobs`` / ``byIdempotency`` / ``archiveIndex``. Archived
@@ -584,10 +695,17 @@ def compact_job_store(
         index = json.loads(json.dumps(current_index))
         if "sourceDnaClips" not in index:
             # Pages with clips archived before the per-clip source record
-            # existed keep unknown history (None), never an empty list.
+            # existed start as unknown history (None), never an empty list.
             index["sourceDnaClips"] = {
                 pid: None for pid in (index.get("usedClipSha256") or {})
             }
+        unknown_pages = [pid for pid, entry in index["sourceDnaClips"].items() if entry is None]
+        if unknown_pages and archived_jobs is not None:
+            # Rebuild from the whole archived records; a page stays None when
+            # any of its archived clips has no readable record.
+            index["sourceDnaClips"].update(
+                derive_source_dna_clips(index, archived_jobs, unknown_pages),
+            )
 
     archived: list[dict[str, Any]] = []
     for job_id in archived_ids:

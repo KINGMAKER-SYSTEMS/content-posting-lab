@@ -765,20 +765,29 @@
   source job whose clips cannot name their master means no library at all,
   and so does an archived source clip whose own job carried no cut row
   (`archive_evidence_gap`): compaction keeps `sourceDnaClips`, per page,
-  every source-job clip digest with its job's cut-row count, clip by clip
-  (never totals), and marks pages whose clips were archived before that
-  record as unknown (`None`). Archived clips of other job kinds never count
-  toward that gap; a live clip of another kind that names an original
+  every source-job clip digest with the count of its own job's cut rows ON
+  THAT CLIP'S MASTER, clip by clip (never totals, never another master's
+  rows). An index written before that record starts every page with
+  archived clips as unknown (`None`), and each compaction pass rebuilds
+  unknown pages from the whole archived job records (`read_archived_jobs`
+  on the month `.jsonl` files, `derive_source_dna_clips`); a page stays
+  unknown while any archived clip of it has no readable record, and
+  `rebuild_source_dna_clips(store, page_id, records)` lifts it by hand.
+  Unknown is never read as empty. Archived clips of other job kinds never
+  count toward that gap; a live clip of another kind that names an original
   without a sha spends that original but taints nothing by bytes. The
-  capability count reads the page's jobs of every kind. The job record rows
+  capability count reads the page's jobs of every kind for evidence and
+  every page's source jobs for cut-row bounds. The job record rows
   carry `libraryId`/`libraryVersion`, and the clip receipt names that
   manifest (`receipt_library`) while the job's own binding does not move.
   Known limits: the same footage under two unrelated URLs and no origin id
   gets two keys; the scrambler branch of job creation does not widen to
   the library while the capability count does; failed/cancelled jobs
-  release spans as before; a page whose clips were archived before
-  `sourceDnaClips` existed stays on bound footage until its index is
-  rebuilt; the Worker's pageSourceLockstep compares storageKey, library id
+  release spans as before; a page whose archived clip has no readable
+  archive record (file lost or truncated, or a record the extractor now
+  refuses) stays on bound footage until that record is restored and the
+  next compaction or a hand rebuild runs; the Worker's pageSourceLockstep
+  compares storageKey, library id
   and version with the bound publication, so a recycled body can fail
   lockstep on the Worker side. The no-repeat rule is unchanged: the same cut
   ledger (`masterSha:startMs:durationMs`, any library, forward or mirrored)

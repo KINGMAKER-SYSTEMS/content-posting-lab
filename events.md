@@ -1818,12 +1818,17 @@ first. Third review (Opus, on the archive check) found that comparing clip
 totals with cut-row totals refused every page with an archived render clip
 forever and let one job's rows cover another's lost rows; compaction now
 keeps `sourceDnaClips` (per page, each source-job clip with its own job's
-cut-row count; pages archived before that record stay unknown), the gap is
-checked clip by clip, and the capability count reads the page's jobs of
-every kind. Clip receipts of recycled cuts name the manifest the master
-came from. The job records the library masters it cuts
+cut-row count on that clip's master), the gap is checked clip by clip, and
+the capability count reads the page's jobs of every kind. Fourth review
+(Opus) found the migration left every page with archived clips unknown for
+good; compaction now rebuilds unknown pages from the whole archived records
+in the month `.jsonl` files (`read_archived_jobs`, `derive_source_dna_clips`,
+one-shot `rebuild_source_dna_clips`), a page staying unknown only while an
+archived clip of it has no readable record; cut-row counts are per master;
+the capability count reads every page's source jobs for row bounds. Clip
+receipts of recycled cuts name the manifest the master came from. The job records the library masters it cuts
 (`sourceLibraryMasters`) and execution rebuilds them only from a whole
 record. A page with no library is unchanged; a used-up library keeps the 409
 code and adds a plain `X-RT-Zero-Reason-Help` header naming new footage and
-the fetcher issue #227. `tests/test_page_source_library.py` (18 tests) fails
+the fetcher issue #227. `tests/test_page_source_library.py` (20 tests) fails
 on the previous head. No deployment; HENRY merges.

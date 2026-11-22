@@ -1008,7 +1008,7 @@ def capabilities(
                 # re-read for the wider master set, so every earlier cut on
                 # those masters stays reserved.
                 pooled = page_source_library.library_recipe(
-                    source_recipe, page_jobs_view,
+                    source_recipe, page_jobs_view, cut_rows_store=dossier_source_dna_view,
                 )
                 if pooled is not None:
                     source_recipe = pooled
@@ -1932,8 +1932,18 @@ def run_compaction_once(
                     raise compaction.ArchiveIndexUnreadable(
                         f"missing_with_archives count={len(archives)}",
                     )
+            archived_jobs = None
+            current_index = compaction.read_archive_index(store)
+            if current_index and (
+                "sourceDnaClips" not in current_index
+                or None in (current_index.get("sourceDnaClips") or {}).values()
+            ):
+                # Pages whose per-clip source record is unknown get it rebuilt
+                # from the whole archived records (one-shot per page).
+                archived_jobs = compaction.read_archived_jobs(path)
             new_store, archived = compaction.compact_job_store(
                 store, now, retention_days=retention_days, batch_size=batch_size,
+                archived_jobs=archived_jobs,
             )
         except compaction.ArchiveIndexUnreadable as error:
             log.error(
