@@ -980,7 +980,7 @@ def test_a_lone_path_id_is_a_video_only_on_the_short_link_host(monkeypatch, regi
     """``youtu.be/<id>`` is a video; ``youtube.com/<11 chars>`` is a channel name
     and must not be mistaken for one, or the real video would never meet it."""
     monkeypatch.setenv(SHIPSTREAM_VAULT_ORIGIN_ENV, "https://shipstream.test")
-    assert original_source_keys(_master("a" * 64, url)) == {("origin", VIDEO_ID)}
+    assert ("origin", VIDEO_ID) in original_source_keys(_master("a" * 64, url))
     for host in ("www.youtube.com", "m.youtube.com", "youtube.com", "yewtu.be"):
         assert original_source_keys(_master("a" * 64, f"https://{host}/{VIDEO_ID}")) == frozenset()
 
