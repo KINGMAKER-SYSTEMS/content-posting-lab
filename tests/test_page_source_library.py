@@ -981,8 +981,10 @@ def test_a_lone_path_id_is_a_video_only_on_the_short_link_host(monkeypatch, regi
     and must not be mistaken for one, or the real video would never meet it."""
     monkeypatch.setenv(SHIPSTREAM_VAULT_ORIGIN_ENV, "https://shipstream.test")
     assert ("origin", VIDEO_ID) in original_source_keys(_master("a" * 64, url))
-    for host in ("www.youtube.com", "m.youtube.com", "youtube.com", "yewtu.be"):
+    for host in ("www.youtube.com", "m.youtube.com", "youtube.com"):
         assert original_source_keys(_master("a" * 64, f"https://{host}/{VIDEO_ID}")) == frozenset()
+    # A mirror host keeps its plain address key, but a lone id is not a video there either.
+    assert ("origin", VIDEO_ID) not in original_source_keys(_master("a" * 64, f"https://yewtu.be/{VIDEO_ID}"))
 
 
 def test_a_vault_only_posted_master_without_an_origin_id_refuses_the_library(monkeypatch, registry):
