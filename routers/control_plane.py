@@ -4946,9 +4946,12 @@ async def _run_dossier_source_inner(job_id: str) -> None:
             # scored and recorded on the manifest; they never block.
             qa_manifest = None
             if qa_mode != qa_gate.MODE_OFF:
-                qa_policy = qa_gate.policy_for_source_cut(
-                    recipe, render_duration_ms, render_speed, job=job,
-                    encode_args=delivery_encode_args(recipe.encode_preset))
+                # The policy probes the cut's own rate (ffprobe) to count its
+                # frames, so it runs off the event loop like the gate itself.
+                qa_policy = await _settle_source_call(
+                    qa_gate.policy_for_source_cut, recipe, render_duration_ms, render_speed,
+                    job=job, encode_args=delivery_encode_args(recipe.encode_preset),
+                    cut_path=destination)
                 # run_gate never raises (a tool outage passes the cut as in
                 # shadow) and repairs only under enforce.
                 verdict = await _settle_source_call(
