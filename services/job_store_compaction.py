@@ -148,9 +148,11 @@ def empty_index() -> dict[str, Any]:
         "truckRecoveryMasters": [],   # sha256 of recovered masters (permanent)
         "truckCandidateJobs": [],     # completed generated truck clips (re-crop)
         "usedClipSha256": {},         # pageId -> sorted list of clip sha256
-        # pageId -> [{sha256, jobId, cutRows}] for source-job clips, or None
-        # when the page's clips were archived before this record existed
-        # (unknown history; services/page_source_library.py reads it)
+        # pageId -> [{sha256, jobId, masterSha256, cutRows, keys}] for
+        # source-job clips (keys: the master's identities as [kind, value]
+        # pairs), or None when the page's clips were archived before this
+        # record existed (unknown history; services/page_source_library.py
+        # reads it)
         "sourceDnaClips": {},
         # pageId -> archive fingerprint (name -> [size, mtime_ns]) at the last
         # rebuild attempt that left the page unknown; retried on a change only
@@ -178,8 +180,14 @@ def _clip_sha256s(job: dict[str, Any]) -> list[str]:
     return out
 
 
-def _source_clip_rows(job: dict[str, Any]) -> list[tuple[str, str | None, int]]:
-    """(clip digest, its master sha, cut rows of this job on that master) per clip."""
+def _source_clip_rows(job: dict[str, Any]) -> list[tuple[str, str | None, int, list[list[str]]]]:
+    """(clip digest, its master sha, cut rows of this job on that master, the
+    master's identities as sorted [kind, value] pairs) per clip. The identities
+    (footage keys, bytes, storage address) keep the footage named after the
+    job itself leaves the live store; a clip that cannot name its master has
+    none."""
+    from services.page_source_library import descriptor_identities  # the library owns the key space
+
     source_cuts = job.get("sourceCuts", [])
     rows_by_master: dict[str, int] = {}
     if isinstance(source_cuts, list):
@@ -187,7 +195,7 @@ def _source_clip_rows(job: dict[str, Any]) -> list[tuple[str, str | None, int]]:
             sha = cut.get("masterSha256") if isinstance(cut, dict) else None
             if isinstance(sha, str):
                 rows_by_master[sha] = rows_by_master.get(sha, 0) + 1
-    out: list[tuple[str, str | None, int]] = []
+    out: list[tuple[str, str | None, int, list[list[str]]]] = []
     for clip in job.get("clips", []):
         if not isinstance(clip, dict):
             continue
@@ -198,7 +206,8 @@ def _source_clip_rows(job: dict[str, Any]) -> list[tuple[str, str | None, int]]:
         master = source.get("master") if isinstance(source, dict) else None
         sha = master.get("sha256") if isinstance(master, dict) else None
         master_sha = sha if isinstance(sha, str) and sha else None
-        out.append((digest, master_sha, rows_by_master.get(master_sha, 0) if master_sha else 0))
+        keys = sorted(list(pair) for pair in descriptor_identities(master)) if isinstance(master, dict) else []
+        out.append((digest, master_sha, rows_by_master.get(master_sha, 0) if master_sha else 0, keys))
     return out
 
 
@@ -417,7 +426,7 @@ def extract_index_entries(job: dict[str, Any]) -> dict[str, Any]:
         "truckRecoveryMasters": [],
         "truckCandidateJobs": [],
         "usedClipSha256": [],         # (pageId, sha256)
-        "sourceDnaClips": [],         # (pageId, {sha256, jobId, cutRows})
+        "sourceDnaClips": [],         # (pageId, {sha256, jobId, masterSha256, cutRows, keys})
         "providerAttempts": [],       # (key_id, engine, row)
     }
     page_id = job.get("pageId")
@@ -485,11 +494,12 @@ def extract_index_entries(job: dict[str, Any]) -> dict[str, Any]:
             # are lost from one whose rows were archived, clip by clip (never
             # by totals, never by another master's rows, and never counting
             # clips of other job kinds). A clip that cannot name its master
-            # has no rows.
-            for digest, master_sha, cut_rows in _source_clip_rows(job):
+            # has no rows. The master's identities ride along so the footage
+            # the clip came from stays named once this job is archived.
+            for digest, master_sha, cut_rows, keys in _source_clip_rows(job):
                 entries["sourceDnaClips"].append((page_id, {
                     "sha256": digest, "jobId": job.get("jobId"),
-                    "masterSha256": master_sha, "cutRows": cut_rows,
+                    "masterSha256": master_sha, "cutRows": cut_rows, "keys": keys,
                 }))
 
     # Completed generated truck renders remain live re-crop candidates; keep the
@@ -766,6 +776,14 @@ def compact_job_store(
             index["sourceDnaClips"] = {
                 pid: None for pid in (index.get("usedClipSha256") or {})
             }
+        for pid, entry in index["sourceDnaClips"].items():
+            # A row written before the master's keys were kept names no
+            # footage: the page goes back to unknown and is rebuilt from the
+            # whole archived records, like the record itself was.
+            if isinstance(entry, list) and any(
+                not isinstance(row, dict) or "keys" not in row for row in entry
+            ):
+                index["sourceDnaClips"][pid] = None
         tried = index.setdefault("sourceDnaClipsTried", {})
         if archive_scan is not None:
             retry = [

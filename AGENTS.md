@@ -802,14 +802,22 @@
   <file id>) for `/d/<id>` or `id=` on Google hosts (`_drive_file_id`), so
   an address-keyed master and an id-keyed master of one video meet; the
   recorded `originSourceId` is never dropped; a YouTube-looking address
-  with no video id gets no generic key; a master with NO footage key at
-  all (vault-only address, unresolvable address or no address, and no
-  origin id) names nothing (candidate out, bound -> no library, posted ->
-  `PageEvidence.unknown`, `_footage_unnamed`), so a page with such a posted
-  master gets no library until that master carries an origin id; plus ("sha", sha256) and ("storage", storageKey)); any shared
+  with no video id gets no generic key; footage is NAMED only by an id
+  key (`footage_named`: origin id, video id or Drive id, all ("origin",
+  <id>)), so a master with none (vault-only address, unresolvable address,
+  a plain web address, or no address, and no origin id) names nothing
+  (candidate out, bound -> no library, posted -> `PageEvidence.unknown`,
+  `_footage_unnamed`), and a page with such a posted master gets no
+  library until that master carries an origin id; an archived source clip
+  row keeps its master's identities (`keys`, written by compaction and by
+  the rebuild from the month archives) and `archived_clip_rows` adds them
+  to the owners, so footage whose job left the live store stays spoken
+  for; a row without keys, or with no id among them, refuses the library
+  until the rebuild fills them (a record with no address and no origin id
+  never does); plus ("sha", sha256) and ("storage", storageKey)); any shared
   identity between masters of different bytes puts every one of them out.
-  Known limits: the same footage under two unrelated non-YouTube URLs and
-  no origin id gets two keys; two BOUND masters that are one video are not
+  Known limits: a page whose posted history is only non-YouTube,
+  non-Drive web addresses without an origin id gets no library; two BOUND masters that are one video are not
   compared with each other (main behaviour, untouched); the scrambler branch of job creation does not widen to
   the library while the capability count does; failed/cancelled jobs
   release spans as before; a page whose archived clip has no readable

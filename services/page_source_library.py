@@ -264,13 +264,23 @@ def _keys_from(url: Any, origin_id: Any) -> frozenset[tuple[str, str]]:
     return frozenset(keys)
 
 
+def footage_named(keys: Iterable[tuple[str, str]]) -> bool:
+    """True when a key set names footage by an ID: an upstream origin id, a
+    YouTube video id or a Drive file id (all ("origin", <id>) keys). A plain
+    web address alone (("source", <url>)) is not a name: the same footage can
+    sit at any number of addresses, so a master known only by one cannot be
+    told apart from a second copy of its video. Fail closed on it."""
+    return any(kind == "origin" for kind, _ in keys)
+
+
 def _footage_unnamed(descriptor: dict[str, Any]) -> bool:
-    """True when a clip's master descriptor names NO footage (its keys are
-    empty): only the vault's own asset address, an unresolvable YouTube-looking
-    address, or no address at all, and no origin id. ShipStream writes exactly
-    that when the upstream URL is unknown. Such a posted master cannot be
-    compared with anything, so the page gets no library (fail closed)."""
-    return not _raw_keys(descriptor)
+    """True when a clip's master descriptor names NO footage by id: only the
+    vault's own asset address, an unresolvable YouTube-looking address, a plain
+    web address, or no address at all, and no origin id. ShipStream writes
+    exactly the vault-only shape when the upstream URL is unknown. Such a
+    posted master cannot be compared with anything, so the page gets no
+    library (fail closed)."""
+    return not footage_named(_raw_keys(descriptor))
 
 
 def _stored_keys(sha256: Any, storage_key: Any) -> frozenset[tuple[str, str]]:
@@ -289,8 +299,9 @@ def original_source_keys(master: MasterSource) -> frozenset[tuple[str, str]]:
     only the vault's own asset address (ShipStream writes one when the
     upstream URL is unknown, so it names the bytes, not the footage); for a
     YouTube URL also the video id as an origin key; plus the upstream
-    ``origin.originSourceId`` when the master carries one. An empty set
-    means the original is unknown.
+    ``origin.originSourceId`` when the master carries one. The footage is
+    NAMED only when an ("origin", <id>) key is among them (``footage_named``);
+    a plain web address alone, or an empty set, means the original is unknown.
     """
     return _keys_from(master.provenance.get("sourceUrl"), (master.origin or {}).get("originSourceId"))
 
@@ -312,8 +323,10 @@ def _raw_keys(descriptor: dict[str, Any]) -> frozenset[tuple[str, str]]:
     )
 
 
-def _raw_identities(descriptor: dict[str, Any]) -> frozenset[tuple[str, str]]:
-    """Every identity straight from a clip's master descriptor, parsed or not."""
+def descriptor_identities(descriptor: dict[str, Any]) -> frozenset[tuple[str, str]]:
+    """Every identity straight from a clip's master descriptor, parsed or not:
+    footage keys, bytes and storage address. Compaction stores them on the
+    archived clip's row so the footage stays named after the job is gone."""
     return _raw_keys(descriptor) | _stored_keys(descriptor.get("sha256"), descriptor.get("storageKey"))
 
 
@@ -367,10 +380,10 @@ def page_evidence(store: dict[str, Any], page_id: str, recipe: SourceRecipe) -> 
                     # Another job kind posted footage it cannot name by bytes:
                     # its original is spoken for (owned by no master), but it
                     # cannot taint the whole library.
-                    for key in _raw_identities(descriptor):
+                    for key in descriptor_identities(descriptor):
                         evidence.originals.setdefault(key, set()).add("")
                 continue
-            for key in _raw_identities(descriptor):
+            for key in descriptor_identities(descriptor):
                 evidence.originals.setdefault(key, set()).add(sha)
             master = _parse_master(descriptor, page_id, recipe.format_slug)
             if master is None or master.sha256 != sha or sha not in recorded:
@@ -382,34 +395,70 @@ def page_evidence(store: dict[str, Any], page_id: str, recipe: SourceRecipe) -> 
     return evidence
 
 
-def archive_evidence_gap(store: dict[str, Any], page_id: str) -> bool:
-    """True when an archived source clip of the page has no cut rows of its own job.
+def _row_keys(row: dict[str, Any]) -> frozenset[tuple[str, str]] | None:
+    """The identities an archived clip row carries, or None when the row has
+    none it can be trusted on: no ``keys`` list, a malformed pair, or no id
+    kind among them (footage not named)."""
+    keys = row.get("keys")
+    if not isinstance(keys, list):
+        return None
+    out: set[tuple[str, str]] = set()
+    for pair in keys:
+        if (
+            not isinstance(pair, list) or len(pair) != 2
+            or not all(isinstance(part, str) and part for part in pair)
+        ):
+            return None
+        out.add((pair[0], pair[1]))
+    return frozenset(out) if footage_named(out) else None
+
+
+def archived_clip_rows(store: dict[str, Any], page_id: str) -> list[dict[str, Any]] | None:
+    """The page's archived source clips, each with its master sha and the
+    identities of its footage, or None when the archive cannot vouch for one.
 
     Compaction keeps, per page, every source-job clip digest with the number
-    of cut rows ITS job carried (``sourceDnaClips``), so the check is clip by
-    clip: one job's rows never cover another's, and clips of other job kinds
-    (renders, slideshows, truck recoveries) never count. A page whose clips
-    were archived before that record existed (None, or an index without the
-    key) has unknown span history, which counts as used.
+    of cut rows ITS job carried and the keys of its master (``sourceDnaClips``),
+    so the check is clip by clip: one job's rows never cover another's, and
+    clips of other job kinds (renders, slideshows, truck recoveries) never
+    count. A page whose clips were archived before that record existed (None,
+    or an index without the key), a row without its cut rows, and a row whose
+    master is not named by an id all mean history that cannot be compared,
+    which counts as used (None). The rows returned carry ``masterSha256`` (a
+    sha) and ``keys`` as a set of (kind, value) pairs.
     """
     index = compaction.read_archive_index(store)
     digests = (index.get("usedClipSha256") or {}).get(page_id)
     if digests is None:
-        return False
+        return []
     if not isinstance(digests, list):
-        return True
+        return None
     clips_by_page = index.get("sourceDnaClips")
     if not isinstance(clips_by_page, dict):
-        return True
+        return None
     clips = clips_by_page.get(page_id, [])
     if not isinstance(clips, list):
-        return True
-    return any(
-        not isinstance(clip, dict)
-        or type(clip.get("cutRows")) is not int
-        or clip["cutRows"] < 1
-        for clip in clips
-    )
+        return None
+    rows: list[dict[str, Any]] = []
+    for clip in clips:
+        if (
+            not isinstance(clip, dict)
+            or type(clip.get("cutRows")) is not int
+            or clip["cutRows"] < 1
+            or not isinstance(clip.get("masterSha256"), str)
+            or not clip["masterSha256"]
+        ):
+            return None
+        keys = _row_keys(clip)
+        if keys is None:
+            return None
+        rows.append({"masterSha256": clip["masterSha256"], "keys": keys})
+    return rows
+
+
+def archive_evidence_gap(store: dict[str, Any], page_id: str) -> bool:
+    """True when the archive cannot vouch for one of the page's source clips."""
+    return archived_clip_rows(store, page_id) is None
 
 
 def prior_cut_rows(store: dict[str, Any]) -> list[dict[str, Any]]:
@@ -493,18 +542,25 @@ def library_recipe(
     # -> the shas of the masters that carry it.
     owners: dict[tuple[str, str], set[str]] = {}
     for master in recipe.masters:
-        if not original_source_keys(master):
+        if not footage_named(original_source_keys(master)):
             return None
         for key in master_identities(master):
             owners.setdefault(key, set()).add(master.sha256)
     evidence = page_evidence(store, page_id, recipe)
     if evidence.unknown:
         return None
-    if archive_evidence_gap(store, page_id):
+    archived = archived_clip_rows(store, page_id)
+    if archived is None:
         return None
     libraries = registered_libraries(page_id, recipe.format_slug)
     for key, shas in evidence.originals.items():
         owners.setdefault(key, set()).update(shas)
+    # Footage posted by a job that compaction has already moved out of the
+    # live store stays spoken for: its archived clip row names the master and
+    # every identity of its footage.
+    for row in archived:
+        for key in row["keys"]:
+            owners.setdefault(key, set()).add(row["masterSha256"])
     candidates: list[MasterSource] = []
     registered = [
         replace(master, role="backup")
@@ -531,7 +587,7 @@ def library_recipe(
             master.sha256 in RETIRED_MASTER_SHAS
             or master.sha256 in evidence.tainted
             or canonical_source_identity(master.provenance.get("sourceUrl")) is None
-            or not original_source_keys(master)
+            or not footage_named(original_source_keys(master))
             or any(owners[key] - {master.sha256} for key in master_identities(master))
         ):
             continue

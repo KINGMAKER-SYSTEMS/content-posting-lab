@@ -1861,10 +1861,18 @@ caught by the unnamed check, so a same-video candidate with other bytes pooled;
 now ANY posted master with no footage key refuses the library. And a lone
 11-character path on youtube.com (a legacy channel name) was read as a video
 id; the lone-id rule now applies on youtu.be only, so that address names
-nothing and fails closed. Clip
+nothing and fails closed. Tenth review (coordinator closing re-check, one
+HIGH): once a posted master's job was moved to the archive its footage keys
+were gone (the archive row kept only the cut-row count), so a same-video copy
+with other bytes pooled again; compaction and the rebuild from the month
+archives now keep the master's identities on each archived clip row, the
+library pass counts them as owners, and a row without them refuses the
+library until the rebuild fills them. And a master named only by a plain web
+address (a mirror lone-id link, any non-YouTube non-Drive address) with no
+origin id now counts as unnamed: footage is named by an id only. Clip
 receipts of recycled cuts name the manifest the master came from. The job records the library masters it cuts
 (`sourceLibraryMasters`) and execution rebuilds them only from a whole
 record. A page with no library is unchanged; a used-up library keeps the 409
 code and adds a plain `X-RT-Zero-Reason-Help` header naming new footage and
-the fetcher issue #227. `tests/test_page_source_library.py` (56 tests) fails
+the fetcher issue #227. `tests/test_page_source_library.py` (59 tests) fails
 on the previous head. No deployment; HENRY merges.

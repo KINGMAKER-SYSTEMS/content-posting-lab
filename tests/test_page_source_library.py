@@ -488,6 +488,16 @@ def _compact_history(tmp_path, store) -> list[str]:
     return sorted(job["jobId"] for job in archived)
 
 
+def _row_keys(sha256: str) -> list[list[str]]:
+    """The identities compaction keeps on the archived clip row of a `_manifest_row` master."""
+    return sorted([
+        ["origin", sha256[:11]],
+        ["sha", sha256],
+        ["source", f"https://www.youtube.com/watch?v={sha256[:11]}"],
+        ["storage", f"source-dna/pov-dirt-bike/{PAGE_ID}/{sha256}.mp4"],
+    ])
+
+
 def test_an_archived_clip_from_another_job_kind_does_not_block_the_library(lab, monkeypatch, registry):
     """Only source-job clips need cut rows; a compacted render's clip is not missing footage."""
     client, tmp_path, _ = lab
@@ -580,7 +590,7 @@ def test_a_render_clip_naming_an_original_without_a_sha_only_blocks_that_origina
         "createdAt": "2026-11-20T11:00:00+00:00",
         "completedAt": "2026-11-20T12:00:00+00:00",
         "clips": [{"sha256": "5" * 64, "source": {"master": {
-            "provenance": {"sourceUrl": "https://example.test/other-footage.mp4"},
+            "provenance": {"sourceUrl": "https://www.youtube.com/watch?v=OtherVid001"},
         }}}],
     }
     (tmp_path / "jobs.json").write_text(json.dumps(store))
@@ -634,7 +644,7 @@ def test_migration_rebuilds_per_clip_evidence_from_the_archive_records(lab, monk
     assert [job["jobId"] for job in scan] == ["history-job"] and scan.bad_lines == 0
     migrated, _ = compaction.compact_job_store(cp._load_jobs(), when, archive_scan=scan)
     assert migrated[compaction.ARCHIVE_INDEX_KEY]["sourceDnaClips"] == {PAGE_ID: [
-        {"sha256": "1" * 64, "jobId": "history-job", "masterSha256": LIBRARY_SHA, "cutRows": 1},
+        {"sha256": "1" * 64, "jobId": "history-job", "masterSha256": LIBRARY_SHA, "cutRows": 1, "keys": _row_keys(LIBRARY_SHA)},
     ]}
     (tmp_path / "jobs.json").write_text(json.dumps(migrated))
     assert library_recipe(cp._dossier_source_recipe(publication()), cp._load_jobs()) is not None
@@ -667,7 +677,7 @@ def test_a_page_whose_archive_record_is_missing_stays_unknown_until_rebuilt(lab,
 
     # The whole record found again (restored archive, or by hand): the page is lifted.
     assert compaction.rebuild_source_dna_clips(migrated, PAGE_ID, archived) == [
-        {"sha256": "1" * 64, "jobId": "history-job", "masterSha256": LIBRARY_SHA, "cutRows": 1},
+        {"sha256": "1" * 64, "jobId": "history-job", "masterSha256": LIBRARY_SHA, "cutRows": 1, "keys": _row_keys(LIBRARY_SHA)},
     ]
     assert migrated[compaction.ARCHIVE_INDEX_KEY]["sourceDnaClipsTried"] == {}
     (tmp_path / "jobs.json").write_text(json.dumps(migrated))
@@ -755,7 +765,7 @@ def test_a_small_store_rebuilds_its_legacy_record_without_waiting_to_grow(lab, m
     assert result["archived"] == 0
     index = compaction.read_archive_index(cp._load_jobs())
     assert index["sourceDnaClips"] == {PAGE_ID: [
-        {"sha256": "1" * 64, "jobId": "history-job", "masterSha256": LIBRARY_SHA, "cutRows": 1},
+        {"sha256": "1" * 64, "jobId": "history-job", "masterSha256": LIBRARY_SHA, "cutRows": 1, "keys": _row_keys(LIBRARY_SHA)},
     ]}
     assert library_recipe(cp._dossier_source_recipe(publication()), cp._load_jobs()) is not None
     assert _max_quantity(client) >= 1
@@ -797,7 +807,7 @@ def test_a_page_that_cannot_be_lifted_is_retried_only_when_an_archive_file_chang
     assert len(reads) == 2
     index = compaction.read_archive_index(cp._load_jobs())
     assert index["sourceDnaClips"] == {PAGE_ID: [
-        {"sha256": "1" * 64, "jobId": "history-job", "masterSha256": LIBRARY_SHA, "cutRows": 1},
+        {"sha256": "1" * 64, "jobId": "history-job", "masterSha256": LIBRARY_SHA, "cutRows": 1, "keys": _row_keys(LIBRARY_SHA)},
     ]}
     assert index["sourceDnaClipsTried"] == {}
     assert store["jobs"].keys() == cp._load_jobs()["jobs"].keys()  # the pass archived nothing
@@ -939,17 +949,20 @@ UNRESOLVABLE_YOUTUBE_URLS = [
     "https://www.youtube.com/@somechannel",                      # handle page
     "https://youtube.example-mirror.net/playlist?list=PLabcdefgh",  # unknown host, no video id
     "https://www.youtube.com/MrBeast6000",                       # legacy channel name, 11 chars, not a video
+    f"https://yewtu.be/{VIDEO_ID}",                              # mirror lone-id link: a plain address only
+    "https://example.test/footage.mp4",                          # any other web address: a plain address only
 ]
 
 
 @pytest.mark.parametrize("url", UNRESOLVABLE_YOUTUBE_URLS)
 def test_a_master_whose_only_address_is_unresolvable_fails_closed(monkeypatch, registry, url):
-    """A YouTube-looking address with no video id and no origin id names nothing:
-    bound, it means no library; posted, it refuses the library; as a candidate it
-    is left out while a different video still pools."""
+    """An address that yields no id (a YouTube-looking page with no video id, or
+    any plain web address) and no origin id names no footage: bound, it means no
+    library; posted, it refuses the library; as a candidate it is left out while
+    a different video still pools."""
     monkeypatch.setenv(SHIPSTREAM_VAULT_ORIGIN_ENV, "https://shipstream.test")
     odd = _master("a" * 64, url)
-    assert original_source_keys(odd) == frozenset()
+    assert not any(kind == "origin" for kind, _ in original_source_keys(odd))
     other_video = _master("c" * 64, _vault_url("c" * 64), origin=_origin(OTHER_VIDEO_ID))
     bound = _master("d" * 64, f"https://www.youtube.com/watch?v={THIRD_VIDEO_ID}")
     # Bound: no library at all.
@@ -985,6 +998,53 @@ def test_a_lone_path_id_is_a_video_only_on_the_short_link_host(monkeypatch, regi
         assert original_source_keys(_master("a" * 64, f"https://{host}/{VIDEO_ID}")) == frozenset()
     # A mirror host keeps its plain address key, but a lone id is not a video there either.
     assert ("origin", VIDEO_ID) not in original_source_keys(_master("a" * 64, f"https://yewtu.be/{VIDEO_ID}"))
+
+
+def test_footage_posted_by_an_archived_job_still_names_its_video(monkeypatch, registry):
+    """Once compaction moves a posted master's job to the archive, the clip row
+    keeps the master's keys: a same-video candidate with other bytes is still
+    refused and a different video still pools. A row without keys, or with no
+    id among them, is history that cannot be compared: no library. A row written
+    before keys were kept goes back to unknown and is rebuilt from the record."""
+    monkeypatch.setenv(SHIPSTREAM_VAULT_ORIGIN_ENV, "https://shipstream.test")
+    posted = _master("b" * 64, _vault_url("b" * 64), origin=_origin(VIDEO_ID))
+    same_video = _master("c" * 64, _vault_url("c" * 64), origin=_origin(VIDEO_ID))
+    other_video = _master("e" * 64, _vault_url("e" * 64), origin=_origin(OTHER_VIDEO_ID))
+    bound = _master("d" * 64, f"https://www.youtube.com/watch?v={THIRD_VIDEO_ID}")
+    old_job = {**_page_job(posted, 0), "jobId": "posted-job", "completedAt": "2026-11-01T12:00:00+00:00"}
+    store = {"jobs": {
+        "bound-job": _page_job(bound, 20_000), "posted-job": old_job,
+        "same-job": _page_job(same_video, 0), "other-job": _page_job(other_video, 0),
+    }}
+    when = datetime(2026, 12, 10, tzinfo=timezone.utc)
+    compacted, archived = compaction.compact_job_store(store, when)
+    assert [job["jobId"] for job in archived] == ["posted-job"]
+    rows = compacted[compaction.ARCHIVE_INDEX_KEY]["sourceDnaClips"]["pg"]
+    assert [row["masterSha256"] for row in rows] == [posted.sha256]
+    assert ["origin", VIDEO_ID] in rows[0]["keys"]
+    pooled = library_recipe(_recipe([bound]), compacted)
+    assert pooled is not None
+    assert [master.sha256 for master in pooled.masters] == [bound.sha256, other_video.sha256]
+
+    def with_row(keys):
+        broken = json.loads(json.dumps(compacted))
+        row = broken[compaction.ARCHIVE_INDEX_KEY]["sourceDnaClips"]["pg"][0]
+        if keys is None:
+            del row["keys"]
+        else:
+            row["keys"] = keys
+        return broken
+
+    for keys in (None, [], [["source", "https://example.test/footage.mp4"]], [["sha", posted.sha256]]):
+        assert library_recipe(_recipe([bound]), with_row(keys)) is None
+    # The rebuild from the whole archived record writes the same keys, both for
+    # an index without the record and for a row written before keys were kept.
+    legacy = json.loads(json.dumps(compacted))
+    del legacy[compaction.ARCHIVE_INDEX_KEY]["sourceDnaClips"]
+    for stale in (legacy, with_row(None)):
+        rebuilt, _ = compaction.compact_job_store(stale, when, archive_scan=compaction.ArchiveScan(records=archived))
+        assert rebuilt[compaction.ARCHIVE_INDEX_KEY]["sourceDnaClips"]["pg"] == rows
+        assert library_recipe(_recipe([bound]), rebuilt) is not None
 
 
 def test_a_vault_only_posted_master_without_an_origin_id_refuses_the_library(monkeypatch, registry):
