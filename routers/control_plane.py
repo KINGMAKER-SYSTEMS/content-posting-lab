@@ -1987,24 +1987,41 @@ def run_compaction_once(
         }
 
 
+# (path, jobs-file size, jobs-file mtime_ns, archive fingerprint) the last time
+# a small store answered "no rebuild wanted": a quiet pass with the same files
+# reads nothing (process memory; a restart asks once more).
+_REBUILD_QUIET: tuple[Path, int, int, tuple[tuple[str, tuple[int, ...]], ...]] | None = None
+
+
 def maybe_compact_jobs(now: datetime | None = None, *, force: bool = False) -> dict[str, Any]:
     """Run compaction when the file exceeds the size bound (or when forced)."""
+    global _REBUILD_QUIET
     now = now or datetime.now(timezone.utc)
     path = _jobs_path()
     try:
-        size = path.stat().st_size
+        stat = path.stat()
     except OSError:
         return {"archived": 0, "jobs_before": 0, "jobs_after": 0, "tmp_swept": 0}
-    if not force and size < compaction.DEFAULT_SIZE_THRESHOLD_BYTES:
+    if not force and stat.st_size < compaction.DEFAULT_SIZE_THRESHOLD_BYTES:
         # A small store still gets its per-clip source record rebuilt (index
         # only, batch_size=0 archives nothing; once per pass, and only while
-        # the index asks for it), so legacy pages do not wait for growth.
-        try:
-            wanted = compaction.rebuild_wanted(
-                compaction.read_archive_index(_load_jobs()), compaction.archive_fingerprint(path),
-            )
-        except compaction.ArchiveIndexUnreadable:
+        # the index asks for it), so legacy pages do not wait for growth. The
+        # store is loaded to ask only when the jobs file or an archive file
+        # changed since the last "no" (stats only on a quiet pass).
+        fingerprint = compaction.archive_fingerprint(path)
+        quiet_key = (path, stat.st_size, stat.st_mtime_ns,
+                     tuple(sorted((name, tuple(fp)) for name, fp in fingerprint.items())))
+        if _REBUILD_QUIET == quiet_key:
             wanted = False
+        else:
+            try:
+                wanted = compaction.rebuild_wanted(
+                    compaction.read_archive_index(_load_jobs()), fingerprint,
+                )
+            except compaction.ArchiveIndexUnreadable:
+                wanted = False
+            if not wanted:
+                _REBUILD_QUIET = quiet_key
         if wanted:
             return run_compaction_once(path, now, batch_size=0)
         # Keep the tmp sidecars tidy even when the store is small.
@@ -2015,8 +2032,10 @@ def maybe_compact_jobs(now: datetime | None = None, *, force: bool = False) -> d
 
 def _compaction_loop() -> None:
     # First pass is forced so an interrupted prior compaction self-heals even
-    # when the file is already under the threshold; later passes only fire on
-    # size, so a healthy small store does no extra decode work.
+    # when the file is already under the threshold. Later passes fire on size,
+    # or run index-only while the per-clip source record asks for a rebuild
+    # (maybe_compact_jobs); a quiet small store, same jobs file and same
+    # archive files as the last "no", is not even loaded.
     first = True
     while True:
         try:

@@ -783,7 +783,11 @@
   counted line, `ArchiveScan.bad_lines`), and only when wanted: a page
   that could not be lifted remembers the archive fingerprint it was tried
   against (`sourceDnaClipsTried`, name -> [size, mtime_ns]) and is tried
-  again only when an archive file changed or a new one appeared. Archived clips of other job kinds never
+  again only when an archive file changed or a new one appeared; a quiet
+  small store (same jobs file, same archive files as the last "no") is not
+  loaded at all (`_REBUILD_QUIET`). Residual: while any page stays unknown,
+  every archiving pass changes an archive file and so re-reads the archives
+  (outside the lock). Archived clips of other job kinds never
   count toward that gap; a live clip of another kind that names an original
   without a sha spends that original but taints nothing by bytes. The
   capability count reads the page's jobs of every kind for evidence and

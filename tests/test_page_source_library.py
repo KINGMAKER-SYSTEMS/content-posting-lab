@@ -797,3 +797,30 @@ def test_a_page_that_cannot_be_lifted_is_retried_only_when_an_archive_file_chang
     ]}
     assert index["sourceDnaClipsTried"] == {}
     assert store["jobs"].keys() == cp._load_jobs()["jobs"].keys()  # the pass archived nothing
+
+
+def test_a_quiet_small_store_is_not_loaded_again_to_ask_about_a_rebuild(lab, monkeypatch, registry):
+    """Once a small store answers "no rebuild wanted", later passes with the same
+    jobs file and archive files read nothing; a changed jobs file is asked again."""
+    client, tmp_path, _ = lab
+    _legacy_archived_store(client, tmp_path, monkeypatch, registry)
+    when = datetime(2026, 12, 10, tzinfo=timezone.utc)
+    cp.maybe_compact_jobs(when)  # rebuilds the record and saves the index
+    loads: list[int] = []
+    real_load = cp._load_jobs
+
+    def counted_load():
+        loads.append(1)
+        return real_load()
+
+    monkeypatch.setattr(cp, "_load_jobs", counted_load)
+    cp.maybe_compact_jobs(when)
+    assert len(loads) == 1  # asked once: no rebuild wanted
+    cp.maybe_compact_jobs(when)
+    cp.maybe_compact_jobs(when)
+    assert len(loads) == 1  # quiet passes: nothing loaded
+    path = tmp_path / "jobs.json"
+    path.write_text(path.read_text() + "\n")  # the jobs file changed (one more byte)
+    cp.maybe_compact_jobs(when)
+    assert len(loads) == 2
+    assert library_recipe(cp._dossier_source_recipe(publication()), cp._load_jobs()) is not None
