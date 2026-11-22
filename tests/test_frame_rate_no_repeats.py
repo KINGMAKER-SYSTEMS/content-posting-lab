@@ -298,16 +298,16 @@ def test_a_shown_twice_cut_keeps_its_pattern_through_the_final(tmp_path):
     _assert_clean(tmp_path / "final.mp4", Fraction(33), "0.55x cut + final", shown=2)
 
 
-def test_a_paired_final_fails_closed_when_its_rate_cannot_be_read(tmp_path, monkeypatch):
-    # The clean and captioned twins must come out at one rate; a twin that
-    # cannot read the rate must not quietly fall back to 30.
+def test_a_paired_final_whose_rate_cannot_be_read_uses_30_fps(tmp_path, monkeypatch):
+    # A paired final no longer refuses an unreadable rate (control-plane-pad
+    # #328): it uses 30 fps, the same as a lone final. That both twins of one
+    # pair get the same rate is checked end to end in test_post_render.py.
     source = _moving_source(tmp_path, "25", seconds=1)
     monkeypatch.setattr(post_render, "probe_frame_rate", lambda *_a, **_k: None)
-    with pytest.raises(post_render.PostRenderError) as error:
-        _final(source, tmp_path / "final.mp4", paired=True)
-    assert error.value.code == "frame_rate_unreadable"
+    _final(source, tmp_path / "paired.mp4", paired=True)
+    assert all(abs(gap - 1 / 30) < 0.001 for gap in _frame_gaps(tmp_path / "paired.mp4"))
     _final(source, tmp_path / "lone.mp4", paired=False)  # a lone final keeps 30 as before
-    assert _frame_gaps(tmp_path / "lone.mp4")[0] == pytest.approx(1 / 30, abs=0.001)
+    assert all(abs(gap - 1 / 30) < 0.001 for gap in _frame_gaps(tmp_path / "lone.mp4"))
 
 
 # -- the final: rate changes and duration repairs (#209 step 2) -------------

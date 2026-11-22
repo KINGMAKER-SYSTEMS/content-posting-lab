@@ -8,7 +8,7 @@ route through ``services.timed_render_math`` at the production call sites, and
 that no compiled-in ``TARGET_DURATION_MS`` constant remains.
 
 Re-hard-coding the 20s/600 shape at those call sites (re-adding
-``TARGET_DURATION_MS = 20_000`` and inlining ``/1000``, the 0.90 bitrate budget,
+``TARGET_DURATION_MS = 20_000`` and inlining ``/1000``, the 0.85 bitrate budget,
 and ``*30//1000``) makes every assertion here go RED on the reduced host.
 """
 from __future__ import annotations

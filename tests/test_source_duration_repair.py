@@ -198,6 +198,60 @@ def test_render_shorter_real_clip(tmp_path):
     assert (out / "receipt.json").exists()
 
 
+def _decoded_audio_samples(path: Path) -> tuple[int, int]:
+    """(decoded samples per channel, sample rate) of the first audio stream."""
+    rate = int(subprocess.run(
+        [FFPROBE, "-v", "error", "-select_streams", "a:0", "-show_entries",
+         "stream=sample_rate", "-of", "csv=p=0", str(path)],
+        capture_output=True, text=True, check=True, timeout=60).stdout.strip())
+    pcm = subprocess.run(
+        [FFMPEG, "-nostdin", "-v", "error", "-i", str(path), "-map", "0:a:0",
+         "-ac", "1", "-f", "s16le", "-acodec", "pcm_s16le", "pipe:1"],
+        capture_output=True, check=True, timeout=60).stdout
+    return len(pcm) // 2, rate
+
+
+@pytest.mark.skipif(not _has_ffmpeg(), reason="ffmpeg/ffprobe not available")
+@pytest.mark.parametrize("sample_rate", [44100, 48000])
+def test_repair_audio_ends_on_whole_aac_frame(tmp_path, sample_rate):
+    """ffmpeg 5.1 (the server) ignores the AAC end padding the mp4 edit list
+    marks, so it decodes the whole last 1024-sample frame and the repair
+    overshoots the cut (pad issue #329). Newer ffmpeg (9.0 checked) drops that
+    padding, so the overshoot tests pass there even without the fix. This
+    checks the fix on either version: the decoded sound of the trimmed clip
+    and of the final is a whole number of AAC frames and ends less than one
+    frame before the 2000 ms cut (88200 / 96000 samples are not whole frames).
+    Without the fix, 9.0 decodes exactly the cut (not whole frames) and 5.1
+    decodes past it."""
+    src = tmp_path / "source.mp4"
+    subprocess.run([
+        FFMPEG, "-nostdin", "-v", "error", "-f", "lavfi",
+        "-i", "testsrc2=size=1080x1920:rate=30:duration=3",
+        "-f", "lavfi", "-i", f"sine=frequency=440:duration=3:sample_rate={sample_rate}",
+        "-c:v", "libx264", "-preset", "ultrafast", "-crf", "18",
+        "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", str(src),
+    ], check=True, timeout=60)
+    src_sha = hashlib.sha256(src.read_bytes()).hexdigest()
+    command = good_command({
+        "source_sha256": src_sha,
+        "source_trim_start_ms": 0,
+        "source_trim_end_ms": 2000,
+        "official_end_ms": 2000,
+        "tail_evidence_end_ms": 2000,
+        "expected_output_duration_ms": 2000,
+        "expected_output_frames": 60,
+    })
+    out = tmp_path / "out"
+    render_shorter(src, out, command)
+    cut_samples = 2 * sample_rate
+    assert cut_samples % 1024
+    for name in ("trimmed.mp4", "final.mp4"):
+        end, rate = _decoded_audio_samples(out / name)
+        assert rate == sample_rate
+        assert end % 1024 == 0, f"{name} sound ends mid AAC frame ({end} samples)"
+        assert 0 < cut_samples - end < 1024, f"{name} sound ends at {end}, cut is {cut_samples}"
+
+
 @pytest.mark.skipif(not _has_ffmpeg(), reason="ffmpeg/ffprobe not available")
 def test_render_shorter_refuses_mismatched_source_sha(tmp_path):
     """The hash-bound source control: the source bytes must equal the immutable
@@ -442,3 +496,46 @@ def test_near_vertical_source_is_scaled_by_real_encode_path(tmp_path):
     receipt = render_shorter(src, out, _command_for(src_sha, 3000))
     assert (receipt["width"], receipt["height"]) == (1080, 1920)
     assert (out / "final.mp4").exists()
+
+
+
+@pytest.mark.skipif(not _has_ffmpeg(), reason="ffmpeg/ffprobe not available")
+@pytest.mark.parametrize("sar", ["1216:1215", "1214:1215"])
+def test_near_square_pool_sar_passes_the_repair_gate_too(tmp_path, monkeypatch, sar):
+    """#410 let vault pool clips with a near-square SAR (under 0.1% off) through the
+    prepared-post gate (post_render._square_pixels). The duration repair re-checks
+    the SAME rule, so a pool clip that also needs a repair must pass here too, or
+    its render fails with regeneration_required after the first gate accepted it.
+    ffmpeg reduces an encoded SAR to 1:1 at this size, so the real clip is encoded
+    square and only the source probe reports the pool clip's SAR."""
+    import dataclasses
+    import services.source_duration_repair as repair
+    src = tmp_path / "pool.mp4"
+    _make_source(src, "30", seconds=4)
+    real_probe = repair._post_probe
+
+    def pool_probe(path, tools):
+        facts = real_probe(path, tools)
+        return dataclasses.replace(facts, sample_aspect_ratio=sar) if Path(path) == src.absolute() else facts
+
+    monkeypatch.setattr(repair, "_post_probe", pool_probe)
+    src_sha = hashlib.sha256(src.read_bytes()).hexdigest()
+    out = tmp_path / "out"
+    receipt = render_shorter(src, out, _command_for(src_sha, 3000))
+    assert (receipt["width"], receipt["height"]) == (1080, 1920)
+    assert (out / "final.mp4").exists()
+
+
+@pytest.mark.skipif(not _has_ffmpeg(), reason="ffmpeg/ffprobe not available")
+def test_clearly_non_square_sar_is_still_refused_by_the_repair_gate(tmp_path, monkeypatch):
+    import dataclasses
+    import services.source_duration_repair as repair
+    src = tmp_path / "wide.mp4"
+    _make_source(src, "30", seconds=4)
+    real_probe = repair._post_probe
+    monkeypatch.setattr(repair, "_post_probe",
+                        lambda path, tools: dataclasses.replace(real_probe(path, tools), sample_aspect_ratio="1250:1215"))
+    src_sha = hashlib.sha256(src.read_bytes()).hexdigest()
+    with pytest.raises(RepairError) as error:
+        render_shorter(src, tmp_path / "out", _command_for(src_sha, 3000))
+    assert error.value.code == "regeneration_required"

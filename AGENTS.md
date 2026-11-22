@@ -968,7 +968,8 @@
   In-app caption pairs share a 30 fps filter clock before the clean and burned
   paths diverge, so the same fractional source tail yields the same frames.
 - Prepared delivery caps final video at 22 MiB and QA JPEG at 2 MiB. One automatic
-  bitrate retry may fit the video budget without changing content or treatment.
+  bitrate retry, aimed at 85% of the cap, may fit the video budget without changing
+  content or treatment.
   Persistent overflow or failed decode yields no artifact result. Subprocesses
   have bounded output and process-group lifetime and cannot use network protocols.
 
@@ -1033,6 +1034,12 @@
   reopen the identical job only when it exhausted all attempts with
   `source_response_rejected`; replaying that recovery key only observes the
   current job.
+- The fresh-source-copy render (`services/slot_source_regeneration.py`) waits
+  for its dispatched render at most the cut's ffmpeg encode timeout plus
+  `RENDER_WAIT_GRACE_S`. A render still running then is cancelled on the loop,
+  the process-wide render lock is released, and the attempt fails as the
+  retryable `source_regeneration_render_timeout`, so one hung render cannot
+  hold its job `running` or block later copies.
 
 - Replicate video generation (`providers/replicate.py`) makes at most four
   create attempts on HTTP 429 (honouring capped `retry_after`), 500/503 or

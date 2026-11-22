@@ -3,6 +3,7 @@
 import json
 import shutil
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -1057,6 +1058,123 @@ def test_two_source_repairs_share_one_loop_and_serialize_on_the_gate(monkeypatch
     assert all(result["schema"] == regen.ENVELOPE_SCHEMA for result in results)
     assert loops_seen == [source_loop, source_loop]
     assert max_active == 1
+
+
+RENDER_TIMEOUT = "source_regeneration_render_timeout"
+
+
+class _RenderReached(regen.SourceRegenerationError):
+    pass
+
+
+def _hung_then_reached_render(monkeypatch):
+    """First dispatched render never returns; later ones prove they got in.
+
+    Each test gets its own _RENDER_LOCK so a hang (the pre-fix behaviour) can
+    never leak a held lock into other tests. The wait bound is shrunk to half a
+    second; raising=False keeps the hang observable on code without the bound.
+    """
+    monkeypatch.setattr(regen, "_RENDER_LOCK", threading.Lock())
+    monkeypatch.setattr(regen, "_render_wait_timeout_s", lambda _command: 0.5, raising=False)
+    monkeypatch.setattr(regen, "fetch_master",
+                        lambda master, destination, *, page_id: destination.write_bytes(b"m" * 10) or destination)
+    calls = []
+    cancelled = threading.Event()
+
+    async def render(command, master_path, output_path):
+        calls.append(output_path)
+        if len(calls) == 1:
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                cancelled.set()
+                raise
+        raise _RenderReached("render_reached")
+
+    monkeypatch.setattr(regen, "_render", render)
+    return calls, cancelled
+
+
+def _in_thread(target, timeout=10):
+    """Run target in a daemon thread; return (finished, exception, seconds)."""
+    outcome = {}
+
+    def run():
+        try:
+            target()
+        except BaseException as error:  # noqa: BLE001 - reported to the test
+            outcome["error"] = error
+    started = time.monotonic()
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    thread.join(timeout=timeout)
+    return not thread.is_alive(), outcome.get("error"), time.monotonic() - started
+
+
+def test_render_wait_bound_is_the_cut_encode_timeout_plus_grace():
+    from services import ffmpeg
+
+    command = _minimal_command()  # a 6 s cut: the encode timeout is its 600 s floor
+    assert regen._render_wait_timeout_s(command) == (
+        ffmpeg._encode_timeout_seconds(6.0) + regen.RENDER_WAIT_GRACE_S
+    ) == 900.0
+    assert jobs.RETRY_CODES >= {RENDER_TIMEOUT}
+
+
+def test_hung_source_render_fails_by_name_and_frees_the_lock_for_the_next_repair(
+    monkeypatch, tmp_path, source_loop,
+):
+    calls, cancelled = _hung_then_reached_render(monkeypatch)
+
+    finished, error, seconds = _in_thread(lambda: regen.regenerate(
+        _minimal_command(), tmp_path / "hung", job_id="render_hung",
+        attempt_id="0" * 32, loop=source_loop,
+    ))
+    assert finished, "regenerate is still blocked on a render that never returns"
+    assert isinstance(error, regen.SourceRegenerationError)
+    assert error.code == RENDER_TIMEOUT
+    assert seconds < 5
+    assert cancelled.wait(timeout=5), "the hung render was not cancelled on the loop"
+    assert not regen._RENDER_LOCK.locked()
+
+    # A later, different repair is not stuck behind the hung one.
+    finished, error, _ = _in_thread(lambda: regen.regenerate(
+        _minimal_command(), tmp_path / "next", job_id="render_next",
+        attempt_id="1" * 32, loop=source_loop,
+    ))
+    assert finished, "the next repair is blocked on _RENDER_LOCK"
+    assert isinstance(error, _RenderReached)
+    assert len(calls) == 2
+
+
+def test_hung_source_render_requeues_the_job_and_the_retry_reaches_the_renderer(
+    source_parent, tmp_path, monkeypatch, source_loop,
+):
+    calls, _cancelled = _hung_then_reached_render(monkeypatch)
+    worker, _client, prepared, _headers, _body = _queued_worker(
+        tmp_path, monkeypatch, source_parent, regenerator=None,
+    )
+    worker.set_source_loop(source_loop)
+
+    finished, error, seconds = _in_thread(worker.run_one)
+    assert finished, "the job worker is still blocked on a render that never returns"
+    assert error is None
+    assert seconds < 5
+    job = worker.status(prepared["id"])
+    assert (job["state"], job["error_code"], job["attempts"]) == ("queued", RENDER_TIMEOUT, 1)
+    with worker._db() as db:
+        attempt = db.execute("SELECT state,error_code,ended_at_ms FROM attempts WHERE job_id=?",
+                             (prepared["id"],)).fetchone()
+    assert (attempt["state"], attempt["error_code"]) == ("failed", RENDER_TIMEOUT)
+    assert attempt["ended_at_ms"] is not None
+
+    # Past the retry backoff the same job runs again and gets into the renderer.
+    worker.clock_ms = lambda: NOW + 60_000
+    finished, error, _ = _in_thread(worker.run_one)
+    assert finished and error is None
+    assert len(calls) == 2
+    job = worker.status(prepared["id"])
+    assert (job["state"], job["error_code"], job["attempts"]) == ("failed", "render_reached", 2)
 
 
 

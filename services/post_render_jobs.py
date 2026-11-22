@@ -78,7 +78,8 @@ log = logging.getLogger("content_lab.post_render_jobs")
 JOB_SCHEMA = "content-lab.post-render-job.v1"
 OUTPUT_AUTHORITY_SCHEMA = "content-lab.post-render-output-authority.v1"
 MAX_ATTEMPTS = 3
-RETRY_CODES = {"source_unavailable", "source_timeout", "process_timeout", "process_unavailable"}
+RETRY_CODES = {"source_unavailable", "source_timeout", "process_timeout", "process_unavailable",
+               slot_source.RENDER_TIMEOUT_CODE}
 DEFAULT_WORKER_COUNT = 2
 MIN_WORKER_COUNT = 1
 MAX_WORKER_COUNT = 4
