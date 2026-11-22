@@ -834,7 +834,25 @@
   ledger (`masterSha:startMs:durationMs`, any library, forward or mirrored)
   refuses any overlap, so a recycled body never shares a second with an
   earlier body. A master with any cut row of unknown bounds counts as fully
-  used. A job that cuts a library master records the full manifest rows on
+  used. Archive rows exist only for completed `dossier_source_dna` jobs,
+  while live evidence reads every job kind: a render clip naming an original
+  is read while live, and the source-repair lane
+  (`services/slot_source_regeneration.py:527` builds the command `master`)
+  posts no clip to the control-plane job store at all; it lives in the
+  render queue (`services/post_render_jobs.py:654`, `jobs.sqlite`), re-cuts
+  the master and span of a `sourceCuts` row the parent source job already
+  carries (`slot_source_regeneration.py:474-486`) and finishes into that
+  queue row (`post_render_jobs.py:973`), so the parent's own clip, live or
+  archived, already blocks that footage. MAINTENANCE: the `keys` on an
+  archived clip row are frozen at archive time by the `_keys_from` rules of
+  that day. Any change to those rules (a new host shape, a new id kind, a
+  changed canonical form) that must also apply to history needs a bump of
+  `ARCHIVE_INDEX_VERSION` (`services/job_store_compaction.py:53`) with a
+  migration that re-keys every row from the whole archived records (the
+  `derive_source_dna_clips` rebuild path, same as the keyless-row
+  migration), or the old rows keep the old names and a copy named the new
+  way would not meet them. Until re-keyed, treat old rows as fail-closed
+  by setting the pages back to None, never as current. A job that cuts a library master records the full manifest rows on
   `sourceLibraryMasters`; execution rebuilds masters only from a whole record
   and otherwise fails `source_recipe_cut_invalid`. The bound `sourceLibraryId`
   and hash never move; look recipes, text rules, order size and legal checks
