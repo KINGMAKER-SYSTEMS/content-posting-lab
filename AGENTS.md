@@ -752,9 +752,14 @@
   manifest for the same page and format, plus every master the page's own
   completed source jobs cut from (`clips[].source.master`). Library masters
   plan as backups after the bound primaries, never retired SHAs, each with a
-  canonical source identity that no bound or kept master shares (a second
-  encoding of the same source is not fresh footage: the ledger is keyed by
-  bytes and cannot compare its spans, so it counts as used). The no-repeat rule is unchanged: the same cut
+  canonical source identity. The ledger is keyed by bytes, so masters are
+  also compared by ORIGINAL footage (`original_source_keys`: the sourceUrl
+  identity unless it is only the vault's `/assets/` address, plus
+  `origin.originSourceId`): a second encoding or extraction of a bound or
+  kept original is not fresh footage, two library masters of one original
+  are both out, and an unknown original (bound or library) counts as used.
+  A master a completed job's clips name without a well-formed cut row in
+  that job counts as used. The no-repeat rule is unchanged: the same cut
   ledger (`masterSha:startMs:durationMs`, any library, forward or mirrored)
   refuses any overlap, so a recycled body never shares a second with an
   earlier body. A master with any cut row of unknown bounds counts as fully

@@ -1806,9 +1806,12 @@ now widen the bound recipe to the page's whole library before answering zero
 (`services/page_source_library.py`), as backups behind the bound primaries,
 under the same cut ledger, so a recycled body never overlaps an earlier body
 of the page by any amount (a 1.0 s overlap is refused, tested). Unknown span
-history counts as used. The job records the library masters it cuts
+history counts as used, and so does a master whose original footage is
+unknown or shared with another master of different bytes (the ledger is
+keyed by bytes and cannot compare their spans; found by the GLM review and
+fixed before merge), or one a completed job's clips name without a cut row. The job records the library masters it cuts
 (`sourceLibraryMasters`) and execution rebuilds them only from a whole
 record. A page with no library is unchanged; a used-up library keeps the 409
 code and adds a plain `X-RT-Zero-Reason-Help` header naming new footage and
-the fetcher issue #227. `tests/test_page_source_library.py` (8 tests) fails
+the fetcher issue #227. `tests/test_page_source_library.py` (11 tests) fails
 on the previous head. No deployment; HENRY merges.

@@ -120,12 +120,19 @@ def _max_quantity(client) -> int:
     return capability[0]["maxQuantity"]
 
 
-def _record_history_master(store_path, sha256: str, duration_ms: int, *, library_id="shipstream-old") -> None:
+def _record_history_master(
+    store_path, sha256: str, duration_ms: int, *, library_id="shipstream-old",
+    job_id="history-job", source_url=None, origin=None,
+) -> None:
     """A completed job this page cut earlier from a master no longer bound."""
     store = json.loads(store_path.read_text())
     row = _manifest_row(sha256, duration_ms, PAGE_ID)
-    store["jobs"]["history-job"] = {
-        "jobId": "history-job",
+    if source_url is not None:
+        row["provenance"]["sourceUrl"] = source_url
+    if origin is not None:
+        row["origin"] = origin
+    store["jobs"][job_id] = {
+        "jobId": job_id,
         "pageId": PAGE_ID,
         "sourceKind": "dossier_source_dna",
         "status": "completed",
@@ -347,3 +354,45 @@ def test_a_second_encoding_of_the_bound_source_is_not_recycled(lab, monkeypatch,
     )
     assert stopped.status_code == 409
     assert stopped.json() == {"detail": SOURCE_WINDOWS_EXHAUSTED}
+
+
+def test_a_master_whose_job_lost_its_cut_rows_counts_as_used(lab, monkeypatch):
+    """Clips prove footage was posted from the master; without its cut rows no span is known."""
+    client, tmp_path, _ = lab
+    _shrink_bound_master(monkeypatch)
+    _exhaust_bound_master(client)
+    _record_history_master(tmp_path / "jobs.json", HISTORY_SHA, 60_000)
+    store_path = tmp_path / "jobs.json"
+    store = json.loads(store_path.read_text())
+    store["jobs"]["history-job"]["sourceCuts"] = {}
+    store_path.write_text(json.dumps(store))
+
+    assert _max_quantity(client) == 0
+    stopped = client.post(
+        "/api/control-plane/v1/jobs", json=job_body(1), headers=headers("lost-rows"),
+    )
+    assert stopped.status_code == 409
+    assert stopped.json() == {"detail": SOURCE_WINDOWS_EXHAUSTED}
+
+
+def test_a_master_with_no_known_original_is_not_recycled(lab, monkeypatch):
+    """A vault asset address names bytes, not footage: unknown original counts as used."""
+    client, tmp_path, _ = lab
+    _shrink_bound_master(monkeypatch)
+    _exhaust_bound_master(client)
+    vault_url = "https://shipstream.test/assets/vault%2Fpage%2Fmasters%2F" + HISTORY_SHA + ".mp4"
+    _record_history_master(tmp_path / "jobs.json", HISTORY_SHA, 60_000, source_url=vault_url)
+    assert _max_quantity(client) == 0
+
+    # The same master with its upstream origin recorded is comparable, so it recycles.
+    origin = {"originSourceId": "yt-original-1", "originStartMs": 120_000, "originEndMs": 180_000}
+    _record_history_master(tmp_path / "jobs.json", HISTORY_SHA, 60_000, source_url=vault_url, origin=origin)
+    assert _max_quantity(client) >= 1
+    # A second extraction of that same origin (new bytes) is not fresh footage,
+    # and the two cannot be compared with each other either: both are out.
+    _record_history_master(
+        tmp_path / "jobs.json", REENCODED_SHA, 60_000, job_id="history-job-2",
+        source_url=vault_url.replace(HISTORY_SHA, REENCODED_SHA), origin=origin,
+    )
+    assert library_recipe(cp._dossier_source_recipe(publication()), cp._load_jobs()) is None
+    assert _max_quantity(client) == 0

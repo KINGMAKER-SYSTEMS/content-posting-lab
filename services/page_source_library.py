@@ -22,8 +22,14 @@ not a failed job. The no-repeat rule is the planner's own span bookkeeping
 (``masterSha:startMs:durationMs`` on every queued, running, completed or
 archived cut, whatever library it came from): any overlap is refused, so a
 recycled body never shares footage with an earlier body of the page, forward
-or mirrored (a transform never changes the recorded span). History with
-unknown bounds fails closed: that master counts as fully used.
+or mirrored (a transform never changes the recorded span). That ledger is
+keyed by master bytes, so the library also compares masters by the ORIGINAL
+footage they were cut from (``original_source_keys``): a second encoding or
+extraction of a bound or kept original is not fresh footage, and a master
+whose original is unknown (only the vault's own asset address, no origin id)
+cannot be told apart from anything, so it counts as used. History with
+unknown bounds, or a completed job whose clips name a master its cut rows do
+not, fails closed the same way: that master counts as fully used.
 
 A job that cuts a library master records the whole master row on the job
 (``sourceLibraryMasters``) so execution rebuilds exactly the master it was
@@ -39,10 +45,12 @@ from dataclasses import replace
 import json
 import logging
 from typing import Any, Iterable
+from urllib.parse import urlsplit
 
 from services import job_store_compaction as compaction
 from services import source_dna_registry as registry
 from services.control_plane_sources import SourceRecipe, canonical_source_identity
+from services.shipstream_source_manifest import ShipStreamNotConfigured, shipstream_origin
 from services.source_dna_registry import (
     MASTER_FIELDS,
     RETIRED_MASTER_SHAS,
@@ -128,9 +136,19 @@ def registered_masters(page_id: str, format_slug: str) -> list[MasterSource]:
     return masters
 
 
-def recorded_masters(store: dict[str, Any], page_id: str, recipe: SourceRecipe) -> list[MasterSource]:
-    """Masters this page's completed source jobs cut from (clip descriptors)."""
+def recorded_masters(
+    store: dict[str, Any], page_id: str, recipe: SourceRecipe,
+) -> tuple[list[MasterSource], set[str]]:
+    """Masters this page's completed source jobs cut from (clip descriptors).
+
+    Returns ``(masters, tainted)``: ``tainted`` holds the sha of every master
+    a job's clips name without a well-formed cut row for it in that same job
+    (a cut container that is not a list, a row that is not a mapping, or no
+    row for that master). The clips prove the footage was posted; the ledger
+    cannot say which span, so such a master counts as fully used.
+    """
     found: dict[str, MasterSource] = {}
+    tainted: set[str] = set()
     for job in store.get("jobs", {}).values():
         if (
             not isinstance(job, dict)
@@ -142,14 +160,53 @@ def recorded_masters(store: dict[str, Any], page_id: str, recipe: SourceRecipe) 
         clips = job.get("clips")
         if not isinstance(clips, list):
             continue
+        cuts = job.get("sourceCuts")
+        rows_whole = isinstance(cuts, list) and all(isinstance(cut, dict) for cut in cuts)
+        recorded = {cut.get("masterSha256") for cut in cuts} if rows_whole else set()
         for clip in clips:
             source = clip.get("source") if isinstance(clip, dict) else None
             if not isinstance(source, dict) or source.get("recipeId") != recipe.recipe_id:
                 continue
             master = _parse_master(source.get("master"), page_id, recipe.format_slug)
-            if master is not None and master.sha256 not in found:
-                found[master.sha256] = master
-    return [found[sha] for sha in sorted(found)]
+            if master is None:
+                continue
+            if master.sha256 not in recorded:
+                tainted.add(master.sha256)
+            found.setdefault(master.sha256, master)
+    return [found[sha] for sha in sorted(found)], tainted
+
+
+def _vault_asset_url(url: Any) -> bool:
+    """True when a source URL is only the ShipStream vault's address for the bytes."""
+    if not isinstance(url, str):
+        return True
+    parsed = urlsplit(url)
+    if not parsed.path.startswith("/assets/"):
+        return False
+    try:
+        return f"{parsed.scheme}://{parsed.netloc}".lower() == shipstream_origin()
+    except ShipStreamNotConfigured:
+        return True  # cannot tell the vault apart: treat the address as the vault's
+
+
+def original_source_keys(master: MasterSource) -> frozenset[tuple[str, str]]:
+    """The original footage a master was cut from, as comparable keys.
+
+    The canonical source identity of its ``sourceUrl``, unless that URL is
+    only the vault's own asset address (ShipStream writes one when the
+    upstream URL is unknown, so it names the bytes, not the footage), plus
+    the upstream ``origin.originSourceId`` when the master carries one. An
+    empty set means the original is unknown.
+    """
+    keys: set[tuple[str, str]] = set()
+    url = master.provenance.get("sourceUrl")
+    identity = canonical_source_identity(url)
+    if identity is not None and not _vault_asset_url(url):
+        keys.add(("source", identity))
+    origin_id = (master.origin or {}).get("originSourceId")
+    if isinstance(origin_id, str) and origin_id.strip():
+        keys.add(("origin", origin_id.strip()))
+    return frozenset(keys)
 
 
 def prior_cut_rows(store: dict[str, Any]) -> list[dict[str, Any]]:
@@ -206,37 +263,55 @@ def library_recipe(recipe: SourceRecipe, store: dict[str, Any]) -> SourceRecipe 
 
     The bound masters stay first and unchanged (library id and hash do not
     move). Library masters come after, as backups, deduplicated by bytes and
-    by original source (a second encoding of a bound or kept source is not
-    fresh footage), never retired, each with a canonical source identity,
-    and only when no cut row on that master has unknown bounds.
+    by original footage (a second encoding of a bound or kept original is not
+    fresh footage; an unknown original counts as used), never retired, each
+    with a canonical source identity, never named by a completed job's clips
+    without a cut row, and only when no cut row on that master has unknown
+    bounds.
     """
     page_id = recipe_page_id(recipe)
     if page_id is None:
         return None
     seen = {master.sha256 for master in recipe.masters}
     # The cut ledger is keyed by master bytes. Two masters of the same
-    # original source (one re-encoded or re-trimmed, so a new sha) share
-    # footage the ledger cannot compare, so a same-source master counts as
-    # used (fail closed) rather than as fresh footage.
-    identities = {
-        canonical_source_identity(master.provenance.get("sourceUrl"))
-        for master in recipe.masters
-    }
-    extra: list[MasterSource] = []
-    for master in [
-        *registered_masters(page_id, recipe.format_slug),
-        *recorded_masters(store, page_id, recipe),
-    ]:
-        identity = canonical_source_identity(master.provenance.get("sourceUrl"))
-        if (
-            master.sha256 in seen
-            or master.sha256 in RETIRED_MASTER_SHAS
-            or identity is None
-            or identity in identities
-        ):
+    # original footage (one re-encoded or re-extracted, so a new sha) share
+    # footage the ledger cannot compare, so a same-original master counts as
+    # used (fail closed) rather than as fresh footage. A bound master whose
+    # original is unknown cannot be told apart from anything: no library.
+    originals: set[tuple[str, str]] = set()
+    for master in recipe.masters:
+        keys = original_source_keys(master)
+        if not keys:
+            return None
+        originals |= keys
+    recorded, tainted = recorded_masters(store, page_id, recipe)
+    candidates: list[MasterSource] = []
+    for master in [*registered_masters(page_id, recipe.format_slug), *recorded]:
+        if master.sha256 in seen:
             continue
         seen.add(master.sha256)
-        identities.add(identity)
+        candidates.append(master)
+    # An original shared by two masters of different bytes cannot have its
+    # spans compared between them, so every master of that original is out:
+    # neither the one sharing a bound master's original nor any pair among
+    # the candidates themselves.
+    shared = set(originals)
+    counted: set[tuple[str, str]] = set()
+    for master in candidates:
+        keys = original_source_keys(master)
+        shared |= keys & counted
+        counted |= keys
+    extra: list[MasterSource] = []
+    for master in candidates:
+        keys = original_source_keys(master)
+        if (
+            master.sha256 in RETIRED_MASTER_SHAS
+            or master.sha256 in tainted
+            or canonical_source_identity(master.provenance.get("sourceUrl")) is None
+            or not keys
+            or keys & shared
+        ):
+            continue
         extra.append(master)
     recyclable = recyclable_masters(extra, prior_cut_rows(store))
     if not recyclable:
