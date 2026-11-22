@@ -1836,10 +1836,17 @@ Now a small store runs an index-only pass while a rebuild is wanted, a
 changed index is written with nothing archived, the archives are read
 outside the lock as bytes with bad lines skipped and counted, and an
 unlifted page remembers the archive fingerprint it was tried against and
-is retried only on a change; a quiet small store is not loaded to ask. Clip
+is retried only on a change; a quiet small store is not loaded to ask. Sixth
+review (Studio lab-train lane, HIGH): a YouTube-keyed bound master and an
+origin-id-keyed history master of the SAME video never met in the key space,
+so both were pooled and footage already posted (video 620-627 s) could be cut
+again. Every master now resolves to all its identities (YouTube video id also
+as an origin key, origin id, sha256, storage key) and any shared identity
+between masters of different bytes puts them out of the library, both
+directions tested. Clip
 receipts of recycled cuts name the manifest the master came from. The job records the library masters it cuts
 (`sourceLibraryMasters`) and execution rebuilds them only from a whole
 record. A page with no library is unchanged; a used-up library keeps the 409
 code and adds a plain `X-RT-Zero-Reason-Help` header naming new footage and
-the fetcher issue #227. `tests/test_page_source_library.py` (26 tests) fails
+the fetcher issue #227. `tests/test_page_source_library.py` (29 tests) fails
 on the previous head. No deployment; HENRY merges.

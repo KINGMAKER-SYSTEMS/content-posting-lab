@@ -794,8 +794,14 @@
   every page's source jobs for cut-row bounds. The job record rows
   carry `libraryId`/`libraryVersion`, and the clip receipt names that
   manifest (`receipt_library`) while the job's own binding does not move.
-  Known limits: the same footage under two unrelated URLs and no origin id
-  gets two keys; the scrambler branch of job creation does not widen to
+  Masters are matched on every identity they carry (`master_identities`:
+  original footage keys, where a YouTube URL also yields ("origin", <video
+  id>) so a YouTube-keyed master and an origin-id-keyed master of one video
+  meet; plus ("sha", sha256) and ("storage", storageKey)); any shared
+  identity between masters of different bytes puts every one of them out.
+  Known limits: the same footage under two unrelated non-YouTube URLs and
+  no origin id gets two keys; two BOUND masters that are one video are not
+  compared with each other (main behaviour, untouched); the scrambler branch of job creation does not widen to
   the library while the capability count does; failed/cancelled jobs
   release spans as before; a page whose archived clip has no readable
   archive record (file lost or truncated, or a record the extractor now

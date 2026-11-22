@@ -46,6 +46,10 @@ from tests.test_control_plane_source_execution import (  # noqa: F401 (fixtures)
     publication,
 )
 from tests.source_dna_fixture import isolate_source_dna_registry
+from services.control_plane_sources import SourceRecipe
+from services.page_source_library import original_source_keys
+from services.shipstream_source_manifest import SHIPSTREAM_VAULT_ORIGIN_ENV
+from services.source_dna_registry import MasterSource
 
 LIBRARY_SHA = "f" * 64
 HISTORY_SHA = "d" * 64
@@ -824,3 +828,80 @@ def test_a_quiet_small_store_is_not_loaded_again_to_ask_about_a_rebuild(lab, mon
     cp.maybe_compact_jobs(when)
     assert len(loads) == 2
     assert library_recipe(cp._dossier_source_recipe(publication()), cp._load_jobs()) is not None
+
+
+# ── one video under two key kinds (lab-train review, head e7b20de5) ──────────
+VIDEO_ID = "oKw0bu2qFVU"
+OTHER_VIDEO_ID = "Zz9Zz9Zz9Zz"
+
+
+def _master(sha256: str, url: str, *, origin: dict | None = None) -> MasterSource:
+    return MasterSource(
+        source_id="s-" + sha256[:6], sha256=sha256, bytes=1, filename=sha256[:8] + ".mp4",
+        mime_type="video/mp4", storage_key=f"vault/x/masters/{sha256}.mp4",
+        duration_ms=600_000, source_offset_ms=600_000,
+        provenance={"sourceUrl": url, "acquiredAt": "2026-01-01T00:00:00Z", "authority": "t"},
+        origin=origin,
+    )
+
+
+def _vault_url(sha256: str) -> str:
+    return f"https://shipstream.test/assets/vault%2Fx%2Fmasters%2F{sha256}.mp4"
+
+
+def _origin(video_id: str) -> dict:
+    return {"originSourceId": video_id, "originStartMs": 600_000, "originEndMs": 1_200_000}
+
+
+def _recipe(masters: list[MasterSource]) -> SourceRecipe:
+    return SourceRecipe(
+        recipe_id="pov-night-core:master", format_slug="pov-night-core", engine="sourced_video",
+        max_quantity=5, engine_registry_hash="", format_contract_version="", executor_id="",
+        executor_version="", source_library_id="lib", source_library_hash="h",
+        masters=tuple(masters), cut_duration_ms=7_000, minimum_source_start_ms=0,
+        output_width=1, output_height=1, encode_preset="", material_source="", asset_type="",
+        recipe_spec={"masterPages": {"pageId": "pg"}},
+    )
+
+
+def _page_job(master: MasterSource, start_ms: int) -> dict:
+    return {
+        "pageId": "pg", "sourceKind": "dossier_source_dna", "status": "completed",
+        "sourceCuts": [{
+            "slotId": f"{master.sha256}:{start_ms}:7000", "masterSha256": master.sha256,
+            "startMs": start_ms, "durationMs": 7_000,
+        }],
+        "clips": [{"sha256": "2" * 64, "source": {"recipeId": "pov-night-core:master", "master": master_row(master)}}],
+    }
+
+
+@pytest.mark.parametrize("bound_kind", ["youtube_url", "origin_id"])
+def test_two_masters_of_one_video_match_whatever_key_kind_each_carries(monkeypatch, registry, bound_kind):
+    """A YouTube-keyed master and an origin-id-keyed master of the same video are
+    one video: the history master is never pooled (its spans cannot be compared
+    with the bound master's), in either direction. A different video still is."""
+    monkeypatch.setenv(SHIPSTREAM_VAULT_ORIGIN_ENV, "https://shipstream.test")
+    by_url = _master("a" * 64, f"https://www.youtube.com/watch?v={VIDEO_ID}")
+    by_origin = _master("b" * 64, _vault_url("b" * 64), origin=_origin(VIDEO_ID))
+    other_video = _master("c" * 64, _vault_url("c" * 64), origin=_origin(OTHER_VIDEO_ID))
+    assert original_source_keys(by_url) & original_source_keys(by_origin) == {("origin", VIDEO_ID)}
+    bound, history = (by_url, by_origin) if bound_kind == "youtube_url" else (by_origin, by_url)
+    store = {"jobs": {
+        "bound-job": _page_job(bound, 20_000),      # posted video 620-627 s
+        "history-job": _page_job(history, 100_000),  # the same video, other bytes
+        "other-job": _page_job(other_video, 0),
+    }}
+    pooled = library_recipe(_recipe([bound]), store)
+    assert pooled is not None
+    assert [master.sha256 for master in pooled.masters] == [bound.sha256, other_video.sha256]
+
+
+def test_two_masters_at_one_storage_address_are_one_video(monkeypatch, registry):
+    """Different bytes recorded at the same storage key share an identity: fail closed."""
+    monkeypatch.setenv(SHIPSTREAM_VAULT_ORIGIN_ENV, "https://shipstream.test")
+    bound = _master("a" * 64, f"https://www.youtube.com/watch?v={VIDEO_ID}")
+    same_address = replace(
+        _master("b" * 64, f"https://www.youtube.com/watch?v={OTHER_VIDEO_ID}"), storage_key=bound.storage_key,
+    )
+    store = {"jobs": {"bound-job": _page_job(bound, 20_000), "history-job": _page_job(same_address, 0)}}
+    assert library_recipe(_recipe([bound]), store) is None

@@ -169,13 +169,31 @@ def _vault_asset_url(url: Any) -> bool:
         return True  # cannot tell the vault apart: treat the address as the vault's
 
 
+_YOUTUBE_WATCH = "https://www.youtube.com/watch?v="
+
+
 def _keys_from(url: Any, origin_id: Any) -> frozenset[tuple[str, str]]:
     keys: set[tuple[str, str]] = set()
     identity = canonical_source_identity(url)
     if identity is not None and not _vault_asset_url(url):
         keys.add(("source", identity))
+        if identity.startswith(_YOUTUBE_WATCH):
+            # One key space for one video: ShipStream records the video id as
+            # the upstream origin of a master it extracted from that video,
+            # so a YouTube-keyed master and an origin-id-keyed master of the
+            # same video meet on ("origin", <video id>).
+            keys.add(("origin", identity[len(_YOUTUBE_WATCH):]))
     if isinstance(origin_id, str) and origin_id.strip():
         keys.add(("origin", origin_id.strip()))
+    return frozenset(keys)
+
+
+def _stored_keys(sha256: Any, storage_key: Any) -> frozenset[tuple[str, str]]:
+    keys: set[tuple[str, str]] = set()
+    if isinstance(sha256, str) and sha256:
+        keys.add(("sha", sha256))
+    if isinstance(storage_key, str) and storage_key.strip():
+        keys.add(("storage", storage_key.strip()))
     return frozenset(keys)
 
 
@@ -184,11 +202,19 @@ def original_source_keys(master: MasterSource) -> frozenset[tuple[str, str]]:
 
     The canonical source identity of its ``sourceUrl``, unless that URL is
     only the vault's own asset address (ShipStream writes one when the
-    upstream URL is unknown, so it names the bytes, not the footage), plus
-    the upstream ``origin.originSourceId`` when the master carries one. An
-    empty set means the original is unknown.
+    upstream URL is unknown, so it names the bytes, not the footage); for a
+    YouTube URL also the video id as an origin key; plus the upstream
+    ``origin.originSourceId`` when the master carries one. An empty set
+    means the original is unknown.
     """
     return _keys_from(master.provenance.get("sourceUrl"), (master.origin or {}).get("originSourceId"))
+
+
+def master_identities(master: MasterSource) -> frozenset[tuple[str, str]]:
+    """Every identity a master carries: its original footage keys, its bytes
+    (sha256) and its storage address. Two masters that meet on ANY of these
+    are one video to the library (fail closed)."""
+    return original_source_keys(master) | _stored_keys(master.sha256, master.storage_key)
 
 
 def _raw_keys(descriptor: dict[str, Any]) -> frozenset[tuple[str, str]]:
@@ -199,6 +225,11 @@ def _raw_keys(descriptor: dict[str, Any]) -> frozenset[tuple[str, str]]:
         provenance.get("sourceUrl") if isinstance(provenance, dict) else None,
         origin.get("originSourceId") if isinstance(origin, dict) else None,
     )
+
+
+def _raw_identities(descriptor: dict[str, Any]) -> frozenset[tuple[str, str]]:
+    """Every identity straight from a clip's master descriptor, parsed or not."""
+    return _raw_keys(descriptor) | _stored_keys(descriptor.get("sha256"), descriptor.get("storageKey"))
 
 
 @dataclass
@@ -249,10 +280,10 @@ def page_evidence(store: dict[str, Any], page_id: str, recipe: SourceRecipe) -> 
                     # Another job kind posted footage it cannot name by bytes:
                     # its original is spoken for (owned by no master), but it
                     # cannot taint the whole library.
-                    for key in _raw_keys(descriptor):
+                    for key in _raw_identities(descriptor):
                         evidence.originals.setdefault(key, set()).add("")
                 continue
-            for key in _raw_keys(descriptor):
+            for key in _raw_identities(descriptor):
                 evidence.originals.setdefault(key, set()).add(sha)
             master = _parse_master(descriptor, page_id, recipe.format_slug)
             if master is None or master.sha256 != sha or sha not in recorded:
@@ -371,13 +402,13 @@ def library_recipe(
     # footage the ledger cannot compare, so a same-original master counts as
     # used (fail closed) rather than as fresh footage. A bound master whose
     # original is unknown cannot be told apart from anything: no library.
-    # owners: every original key -> the shas of the masters cut from it.
+    # owners: every identity (original footage key, bytes, storage address)
+    # -> the shas of the masters that carry it.
     owners: dict[tuple[str, str], set[str]] = {}
     for master in recipe.masters:
-        keys = original_source_keys(master)
-        if not keys:
+        if not original_source_keys(master):
             return None
-        for key in keys:
+        for key in master_identities(master):
             owners.setdefault(key, set()).add(master.sha256)
     evidence = page_evidence(store, page_id, recipe)
     if evidence.unknown:
@@ -398,23 +429,23 @@ def library_recipe(
             continue
         seen.add(master.sha256)
         candidates.append(master)
-    # An original shared by two masters of different bytes cannot have its
-    # spans compared between them, so every master of that original is out:
-    # one sharing a bound or posted master's original as much as any pair
+    # An identity shared by two masters of different bytes (the same original
+    # footage under any key kind, the same storage address) cannot have its
+    # spans compared between them, so every master of that identity is out:
+    # one sharing a bound or posted master's identity as much as any pair
     # among the candidates themselves. A master's own key never counts
     # against it (the ledger compares its spans by its sha).
     for master in candidates:
-        for key in original_source_keys(master):
+        for key in master_identities(master):
             owners.setdefault(key, set()).add(master.sha256)
     extra: list[MasterSource] = []
     for master in candidates:
-        keys = original_source_keys(master)
         if (
             master.sha256 in RETIRED_MASTER_SHAS
             or master.sha256 in evidence.tainted
             or canonical_source_identity(master.provenance.get("sourceUrl")) is None
-            or not keys
-            or any(owners[key] - {master.sha256} for key in keys)
+            or not original_source_keys(master)
+            or any(owners[key] - {master.sha256} for key in master_identities(master))
         ):
             continue
         extra.append(master)
