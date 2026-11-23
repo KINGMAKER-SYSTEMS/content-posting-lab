@@ -233,6 +233,48 @@ async def test_flag_off_master_with_origin_still_keeps_the_base_master_keys(
 
 
 @pytest.mark.asyncio
+async def test_flag_turned_off_after_render_serves_only_the_base_keys(lab, monkeypatch):
+    """A job rendered with the flag on keeps recipe/origin in its stored
+    manifest. Once the flag is off, the artifacts read must not serve them:
+    the Worker's exact allow-list would refuse the whole response and the
+    page's refill would stall (11-23). Flag back on serves them again."""
+    client, tmp_path, _ = lab
+    monkeypatch.setenv(cp.ADVERTISE_ORIGIN_ENV, "1")
+    job = await _run_one_cut_job(
+        client, tmp_path, monkeypatch,
+        publication(clip_speed=0.5, recipe_version="dossier-halfspeed"),
+    )
+    job_id = job["jobId"]
+    stored = cp._load_jobs()["jobs"][job_id]["clips"][0]["source"]
+    stored["master"]["origin"] = {
+        "originSourceId": "vt5im2TRAKw", "originStartMs": 0, "originEndMs": 60_000,
+    }
+    store = cp._load_jobs()
+    store["jobs"][job_id]["clips"][0]["source"] = stored
+    cp._save_jobs(store)
+    assert "recipe" in stored
+
+    def served():
+        response = client.get(f"/api/control-plane/v1/jobs/{job_id}/artifacts",
+                              headers=headers("recipe-artifacts-read"))
+        assert response.status_code == 200, response.text
+        return response.json()["artifacts"][0]["source"]
+
+    monkeypatch.delenv(cp.ADVERTISE_ORIGIN_ENV, raising=False)
+    source = served()
+    assert "recipe" not in source
+    assert set(source["master"]) == WORKER_MASTER_FIELDS
+    assert set(source["cutWindow"]) == WORKER_CUT_FIELDS
+    kept = cp._load_jobs()["jobs"][job_id]["clips"][0]["source"]
+    assert "recipe" in kept and "origin" in kept["master"]  # the store is untouched
+
+    monkeypatch.setenv(cp.ADVERTISE_ORIGIN_ENV, "1")
+    source = served()
+    assert set(source["recipe"]) == set(RECIPE_FIELDS)
+    assert source["master"]["origin"]["originSourceId"] == "vt5im2TRAKw"
+
+
+@pytest.mark.asyncio
 async def test_flag_on_a_half_speed_cut_advertises_the_actual_recipe(
     lab, monkeypatch,
 ):

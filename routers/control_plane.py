@@ -283,6 +283,30 @@ def advertise_origin() -> bool:
     return _env_flag(ADVERTISE_ORIGIN_ENV)
 
 
+def _artifact_source_for_wire(source: Any) -> Any:
+    """Serialize a stored artifact source for the Worker's artifacts read.
+
+    The recipe/origin legs are written into the stored manifest at render
+    time. A job rendered while CONTENT_LAB_ADVERTISE_ORIGIN was on keeps them
+    after the flag is turned off, and a Worker without those keys in its exact
+    allow-list refuses the whole response (CONTENT_LAB_SCHEMA_MISMATCH), so
+    the job is polled until its deadline and never delivers (11-23 04:44Z).
+    With the flag off, serve only the base keys; the stored job is unchanged.
+    """
+    wire = image_video_source_for_wire(source)
+    if advertise_origin() or not isinstance(wire, dict):
+        return wire
+    master = wire.get("master")
+    has_origin = isinstance(master, dict) and "origin" in master
+    if "recipe" not in wire and not has_origin:
+        return wire
+    wire = dict(wire)
+    wire.pop("recipe", None)
+    if has_origin:
+        wire["master"] = {key: value for key, value in master.items() if key != "origin"}
+    return wire
+
+
 # The live Worker's capability entry allow-list
 # (control-plane-worker/src/adapters/contentLabClient.js,
 # CAPABILITY_ENTRY_ALLOWED_FIELDS). Every entry is projected onto it, so a new
@@ -7592,7 +7616,7 @@ def job_artifacts(
             # supply under provenance that no longer matches its bytes.
             "sha256": clip["sha256"],
             "bytes": clip["bytes"],
-            "source": image_video_source_for_wire(clip["source"]),
+            "source": _artifact_source_for_wire(clip["source"]),
             "thumbnail": {
                 "url": f"{base}/api/control-plane/v1/jobs/{job_id}/thumbnail/{index}?token={job['token']}",
                 "type": "image/jpeg",
