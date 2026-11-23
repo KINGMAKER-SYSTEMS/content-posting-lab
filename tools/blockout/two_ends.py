@@ -35,6 +35,9 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--strength", type=float, default=1.0, help="how hard the depth video is held")
     parser.add_argument("--end-strength", type=float, default=1.0, help="how hard the last-frame picture is held")
+    parser.add_argument("--mid", help="optional picture pinned inside the clip, e.g. a frame of an earlier render")
+    parser.add_argument("--mid-frame", type=int, default=0, help="frame number the --mid picture is pinned on")
+    parser.add_argument("--mid-strength", type=float, default=1.0)
     parser.add_argument("--distill", type=float, default=0.5)
     parser.add_argument("--name")
     parser.add_argument("--dry-run", action="store_true")
@@ -49,13 +52,28 @@ def main() -> None:
     ref = rs.stage(a.ref, tag, live)
     end = rs.stage(a.end, tag + "-end", live)
 
+    mid = rs.stage(a.mid, tag + "-mid", live) if a.mid else None
+
     g = rs.ltx_graph(SimpleNamespace(prompt=a.prompt, seed=a.seed, strength=a.strength, distill=a.distill), m, depth, ref)
+    before = "guide"
+    if mid:
+        # A picture inside the clip. With only the two ends pinned, something that is in neither
+        # end picture is drawn afresh: the lit yard tree the camera passes mid-clip came back
+        # dark in both relit drives (Victorian y1e, lake y2e, 2026-11-23).
+        g["mid"] = ("LoadImage", {"image": mid})
+        g["mid_fit"] = ("ImageScale", {"image": ["mid", 0], "upscale_method": "lanczos",
+                                       "width": m["width"], "height": m["height"], "crop": "center"})
+        g["mid_guide"] = ("LTXVAddGuide", {"positive": [before, 0], "negative": [before, 1], "vae": ["ckpt", 2],
+                                           "latent": [before, 2], "image": ["mid_fit", 0],
+                                           "frame_idx": a.mid_frame or m["frames"] // 2,
+                                           "strength": a.mid_strength})
+        before = "mid_guide"
     # the extra guide: one picture on the last frame, after the depth guide in the chain
     g["end"] = ("LoadImage", {"image": end})
     g["end_fit"] = ("ImageScale", {"image": ["end", 0], "upscale_method": "lanczos",
                                    "width": m["width"], "height": m["height"], "crop": "center"})
-    g["end_guide"] = ("LTXVAddGuide", {"positive": ["guide", 0], "negative": ["guide", 1], "vae": ["ckpt", 2],
-                                       "latent": ["guide", 2], "image": ["end_fit", 0], "frame_idx": -1,
+    g["end_guide"] = ("LTXVAddGuide", {"positive": [before, 0], "negative": [before, 1], "vae": ["ckpt", 2],
+                                       "latent": [before, 2], "image": ["end_fit", 0], "frame_idx": -1,
                                        "strength": a.end_strength})
     g["av"][1]["video_latent"] = ["end_guide", 2]
     for node in ("sample", "crop"):

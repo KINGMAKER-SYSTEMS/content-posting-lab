@@ -479,6 +479,19 @@ def harbor_dusk_rev(scene, frames):
     harbor(scene, frames, towers_seed=9, speed=6.0, reverse=True)
 
 
+# The other three cities in the Lab's boat catalog: the same reversed move, a different skyline each.
+def harbor_newyork_rev(scene, frames):
+    harbor(scene, frames, towers_seed=13, speed=6.0, reverse=True)
+
+
+def harbor_dubai_rev(scene, frames):
+    harbor(scene, frames, towers_seed=21, speed=6.0, reverse=True)
+
+
+def harbor_hongkong_rev(scene, frames):
+    harbor(scene, frames, towers_seed=34, speed=6.0, reverse=True)
+
+
 # --- Christmas POV format (the Lab's pov-seasonal: an eight-second portrait walk at eye level) ----
 
 def walk(scene, frames, length, look_at, eye=1.62, lens=24):
@@ -743,6 +756,8 @@ SCENES = {"lakeside": lakeside, "mountain-pullout": mountain_pullout,
           # boat format
           "harbor-night": harbor, "harbor-dusk": harbor_dusk,
           "harbor-night-rev": harbor_night_rev, "harbor-dusk-rev": harbor_dusk_rev,
+          "harbor-newyork-rev": harbor_newyork_rev, "harbor-dubai-rev": harbor_dubai_rev,
+          "harbor-hongkong-rev": harbor_hongkong_rev,
           # Christmas POV format
           "xmas-lane": xmas_lane, "xmas-market": xmas_market, "xmas-bridge": xmas_bridge,
           "xmas-bakery": xmas_bakery, "xmas-chapel": xmas_chapel, "xmas-mews": xmas_mews,

@@ -385,14 +385,19 @@ async def prepare_server(client: httpx.AsyncClient, graph: dict) -> None:
     """
     url = comfy_url()
     mine = graph_family(graph)
+    # The wait is bounded: when another session keeps a job or two queued all the time, an
+    # unbounded wait never ends (a one-minute edit sat 32 minutes behind someone's batch on
+    # 2026-11-23). After the limit this job simply joins the queue; the server's own
+    # one_model_guard unloads the previous family before a different one loads.
+    give_up = time.monotonic() + float(os.environ.get("RECIPE_LAB_MAX_WAIT", "180"))
     while True:
         queue = (await patient_get(client, f"{url}/queue")).json()
         active = [graph_family(item[2]) for key in ("queue_running", "queue_pending") for item in queue.get(key) or []]
-        if all(family == mine for family in active):
+        if all(family == mine for family in active) or time.monotonic() > give_up:
             break
         await asyncio.sleep(5)
     if active:
-        return                                    # same family already loaded or loading
+        return                                    # same family loaded or loading, or joining the line
     history = (await patient_get(client, f"{url}/history", params={"max_items": 1})).json()
     last = next((graph_family(entry["prompt"][2]) for entry in history.values()), None)
     if last is not None and last != mine:

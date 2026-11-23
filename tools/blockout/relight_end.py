@@ -50,6 +50,9 @@ def main() -> None:
     parser.add_argument("--seed", type=int, required=True)
     parser.add_argument("--instruction", required=True)
     parser.add_argument("--new-tag", default="", help="tag for the new clip (default: <tag>e)")
+    parser.add_argument("--keep-frame", type=int, default=0,
+                        help="also pin this frame of the rendered clip, so what it shows mid-clip is kept")
+    parser.add_argument("--reuse-end", action="store_true", help="use the end picture already drawn for this tag")
     args = parser.parse_args()
     scene, cfg = args.scene, pipeline.SCENES[args.scene]
     shot = pipeline.ROOT / scene
@@ -61,14 +64,25 @@ def main() -> None:
     subprocess.run(["ffmpeg", "-v", "error", "-y", "-sseof", "-0.2", "-i", str(rendered), "-frames:v", "1",
                     "-update", "1", str(last)], check=True)
     end = shot / "hero" / f"{new}_end.png"
-    pipeline.say(f"{scene}: redrawing the last frame to the instruction")
-    with pipeline.warm("clean"):
-        asyncio.run(edit(last, end, args.instruction, args.seed))
+    drawn = [p for p in (end, shot / "hero" / f"{args.tag}e-{scene}_end.png") if p.exists()]
+    if args.reuse_end and drawn:
+        end = drawn[0]
+        pipeline.say(f"{scene}: reusing {end.name}")
+    else:
+        pipeline.say(f"{scene}: redrawing the last frame to the instruction")
+        with pipeline.warm("clean"):
+            asyncio.run(edit(last, end, args.instruction, args.seed))
+    keep = []
+    if args.keep_frame:
+        mid = shot / "hero" / f"{name}_f{args.keep_frame}.png"
+        subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", str(rendered), "-vf", f"select=eq(n\\,{args.keep_frame})",
+                        "-frames:v", "1", "-update", "1", str(mid)], check=True)
+        keep = ["--mid", str(mid), "--mid-frame", str(args.keep_frame)]
     pipeline.say(f"{scene}: video with both ends pinned")
     guide = ["--strength", str(cfg["guide"])] if cfg.get("guide") else []
     with pipeline.warm("video"):
         out = pipeline.sh(["python3", str(HERE / "two_ends.py"), str(shot), "--ref", state["frame"], "--end", str(end),
-                           "--name", new, "--seed", str(args.seed + 100), "--prompt", cfg["video"], *guide])
+                           "--name", new, "--seed", str(args.seed + 100), "--prompt", cfg["video"], *guide, *keep])
     clip = Path(re.search(r"^output (.+\.mp4)\s*$", out, re.M).group(1))
     for flag, tool, suffix in (("hold_exposure", "hold_exposure.py", "_held"), ("trim_dash", "trim_dash.py", "_trim")):
         if cfg.get(flag):

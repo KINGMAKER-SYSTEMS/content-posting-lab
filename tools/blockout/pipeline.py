@@ -365,6 +365,32 @@ SCENES = {
 }
 
 
+# The other three cities in the Lab's boat catalog (combinations 3, 4, 5), by the recipe that
+# worked for the two above: move blocked backwards, skyline still pinned first, sharp water still
+# pinned last, depth guide 0.6, clip reversed afterwards.
+def _harbor_city(place: str, skyline: str) -> dict:
+    # end_still: each city's own opening water picture, drawn by tools/blockout/city_water.py
+    return {
+        "still": f"Photograph taken from onboard a fast speedboat at dusk in {place}, the plain white bow low in "
+                 f"frame, moody open harbor water reflecting {skyline}, glowing window lights under a pastel dusk "
+                 "sky, raw handheld look, photorealistic",
+        "video": f"POV TikTok-style video from onboard a fast speedboat at dusk in {place}, a semi-shaky handheld "
+                 f"view of {skyline}, glowing high-rise tower lights and pastel dusk sky reflecting on the moody "
+                 "harbor water, raw nightlife energy, then the camera does a quick whip-tilt down to dark choppy "
+                 "open water and white wake foam rushing past the side of the boat, neon and sunset reflections "
+                 "streaking across the waves, spray, intense speed, cinematic but realistic",
+        "strength": 0.55, "guide": 0.6, "reverse": True, "end_still": "water_end_city.png", "spec": "boat",
+        "clean": False}
+
+
+SCENES["harbor-newyork-rev"] = _harbor_city(
+    "New York Harbor", "the Lower Manhattan skyline of tall glass and stone skyscrapers")
+SCENES["harbor-dubai-rev"] = _harbor_city(
+    "Dubai Marina", "the Dubai Marina skyline of very tall slender residential towers standing close together")
+SCENES["harbor-hongkong-rev"] = _harbor_city(
+    "Hong Kong Victoria Harbour", "the Hong Kong Island skyline of dense high-rise towers below dark green hills")
+
+
 # Model files each stage loads. ComfyUI maps them into memory, and from the external drive a
 # mapped file that is not already in the Mac's file cache pages in at tens of MB/s: one look-still
 # load took 33 minutes on 2026-11-22 while a plain read of the same drive ran at about 6 GB/s.
