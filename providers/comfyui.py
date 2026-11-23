@@ -136,6 +136,9 @@ class _ServerGate:
 
 
 _server_gates: dict[str, _ServerGate] = {}
+# Entry states that mean the job was stopped (e.g. swept as stuck) while it
+# waited in line. Such a job is not started (Lab #426).
+STOPPED_STATUSES = frozenset({"error", "cancelled"})
 
 # ``API_KEYS["comfyui"]`` holds this instead of a URL when jobs go to a worker.
 WORKER_QUEUE = "worker-queue"
@@ -518,6 +521,8 @@ async def run_on_server(url: str, prompt: str, params: dict, client: httpx.Async
         entry["status"] = "queued"
     await gate.acquire(params.get("model_id"))
     try:
+        if entry.get("status") in STOPPED_STATUSES:
+            raise RuntimeError("local job was stopped while waiting in line; not started")
         entry["status"] = "generating"
         await _release_other_models(client, url, params.get("model_id"))
         return await _render(url, prompt, params, client)

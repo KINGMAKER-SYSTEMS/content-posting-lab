@@ -167,6 +167,9 @@ async def wait(job: Job, entry: dict, render_timeout: float) -> Path:
                 pass
             now = time.monotonic()
             if job.claimed_at is None:
+                if entry.get("status") in ("error", "cancelled"):
+                    # Stopped (e.g. swept as stuck) while waiting: never hand it out (#426).
+                    raise LocalWorkerError("the job was stopped before a worker claimed it")
                 if not worker_online() and now - job.created >= WORKER_STALE_SECONDS:
                     raise LocalWorkerError("no local worker is online to render this job")
                 continue
