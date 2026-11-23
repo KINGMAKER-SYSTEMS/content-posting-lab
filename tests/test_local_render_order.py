@@ -170,6 +170,47 @@ async def test_gate_passes_on_a_turn_handed_to_a_cancelled_waiter():
     assert not gate.locked()
 
 
+# --- a job stopped while waiting in line is not started (#426) --------------
+
+async def test_direct_job_stopped_while_waiting_in_line_is_not_started(monkeypatch):
+    """With many local jobs admitted, the line is the gate: a job the stuck-job
+    sweep marked failed while it waited must not render, nor come back to life."""
+    events: list[str] = []
+    monkeypatch.setitem(comfyui.API_KEYS, "comfyui", SERVER)
+    monkeypatch.setattr(comfyui, "_POLL_SECONDS", 0.001)
+    entry: dict = {}
+    async with httpx.AsyncClient(transport=httpx.MockTransport(_recording_server(events))) as client:
+        gate = comfyui._server_gates.setdefault(SERVER, comfyui._ServerGate(SERVER))
+        await gate.acquire(WAN)  # the server is busy with an earlier render
+        waiting = asyncio.create_task(
+            comfyui.generate("x", {"entry": entry, "model_id": WAN, "aspect_ratio": "9:16"}, client))
+        await asyncio.sleep(0.01)
+        assert entry["status"] == "queued"
+        entry["status"] = "error"  # what routers.video._sweep_stuck_entries does
+        gate.release()
+        with pytest.raises(RuntimeError):
+            await asyncio.wait_for(waiting, 2)
+    assert events == []
+    assert entry["status"] == "error"
+    assert not gate.locked()
+
+
+async def test_worker_job_stopped_before_a_claim_is_never_handed_out(monkeypatch):
+    monkeypatch.setitem(comfyui.API_KEYS, "comfyui", comfyui.WORKER_QUEUE)
+    monkeypatch.setattr(queue, "_WAIT_SLICE_SECONDS", 0.01)
+    queue.touch()  # a worker is online, busy with an earlier render
+    entry: dict = {}
+    waiting = asyncio.create_task(
+        comfyui.generate("x", {"entry": entry, "model_id": WAN, "aspect_ratio": "9:16"}, None))
+    await asyncio.sleep(0.05)
+    assert entry["status"] == "queued"
+    entry["status"] = "error"  # swept as stuck while it waited for the worker
+    with pytest.raises(queue.LocalWorkerError):
+        await asyncio.wait_for(waiting, 2)
+    assert queue.claim() is None
+    assert entry["status"] == "error"
+
+
 # --- admission -------------------------------------------------------------
 
 def test_local_jobs_do_not_take_the_paid_providers_slots(sync_client, monkeypatch):
