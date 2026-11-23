@@ -429,3 +429,106 @@ async def test_jobs_for_one_server_render_one_at_a_time(monkeypatch):
             comfyui.generate("x", {"entry": entry, "model_id": comfyui.WAN_T2V}, client)
             for entry in entries))
     assert events == ["start p-1", "end p-1", "start p-2", "end p-2"]
+
+
+def _ltx(**params) -> dict:
+    return comfyui.build_workflow("a calm sea", {"model_id": comfyui.LTX_23, **params})
+
+
+def test_ltx_text_to_video_runs_two_passes_at_half_then_full_size():
+    graph = _ltx(aspect_ratio="9:16", duration=5)
+    # First pass at half size on LTX's x32 grid, 8n + 1 frames at 24 fps.
+    first = graph["latent"]["inputs"]
+    assert (first["width"], first["height"], first["length"]) == (384, 672, 121)
+    assert first["width"] % 32 == 0 and first["height"] % 32 == 0 and (first["length"] - 1) % 8 == 0
+    assert graph["positive"]["inputs"]["text"] == "a calm sea"
+    # The second pass refines the enlarged latent, not a fresh one.
+    assert graph["av2"]["inputs"]["video_latent"] == ["upsample", 0]
+    assert graph["sample2"]["inputs"]["latent_image"] == ["av2", 0]
+    assert graph["decode"]["inputs"]["samples"] == ["split2", 0]
+    assert "first_frame" not in graph
+    # Picture only: the lab posts with campaign sounds.
+    assert "audio" not in graph["video"]["inputs"]
+
+
+@pytest.mark.parametrize("duration,frames", [(2, 49), (3, 73), (8, 193), (15, 361)])
+def test_ltx_frame_counts_sit_on_the_8n_plus_1_grid(duration, frames):
+    length = _ltx(duration=duration)["latent"]["inputs"]["length"]
+    assert length == frames and length % 8 == 1
+
+
+def test_ltx_start_image_conditions_both_passes_and_sets_the_shape():
+    graph = _ltx(aspect_ratio="16:9", image_data_uri=_image_data_uri(900, 1600), image_name="first.png")
+    first = graph["latent"]["inputs"]
+    # A start image sets the shape; the aspect-ratio control does not.
+    assert first["width"] < first["height"] and first["width"] % 32 == 0 and first["height"] % 32 == 0
+    assert graph["first_frame"]["inputs"]["image"] == "first.png"
+    fit = graph["first_fit"]["inputs"]
+    assert (fit["width"], fit["height"]) == (first["width"] * 2, first["height"] * 2) and fit["crop"] == "center"
+    assert graph["av1"]["inputs"]["video_latent"] == ["i2v1", 0]
+    assert graph["av2"]["inputs"]["video_latent"] == ["i2v2", 0]
+    assert graph["i2v2"]["inputs"]["latent"] == ["upsample", 0]
+
+
+def test_ltx_landscape_variant_always_renders_16x9_for_the_crop_pipeline():
+    from providers import base
+
+    assert "local-ltx" in base.FORCE_LANDSCAPE and "local-ltx-vertical" not in base.FORCE_LANDSCAPE
+    assert PROVIDERS["local-ltx"]["variant"] == "landscape"
+    for params in ({"aspect_ratio": "9:16"}, {"image_data_uri": _image_data_uri(900, 1600)}):
+        first = _ltx(variant="landscape", **params)["latent"]["inputs"]
+        assert (first["width"] * 2, first["height"] * 2) == (1344, 768)
+
+
+def test_ltx_vertical_variant_is_native_9x16_unless_an_image_sets_the_shape():
+    assert PROVIDERS["local-ltx-vertical"]["variant"] == "vertical"
+    first = _ltx(variant="vertical", aspect_ratio="16:9")["latent"]["inputs"]
+    assert (first["width"] * 2, first["height"] * 2) == (768, 1344)
+    first = _ltx(variant="vertical", image_data_uri=_image_data_uri(1600, 900))["latent"]["inputs"]
+    assert first["width"] > first["height"]
+
+
+def test_ltx_negative_prompt_and_bad_requests():
+    assert _ltx()["negative"]["inputs"]["text"] == comfyui._LTX_NEGATIVE
+    assert _ltx(negative_prompt="  watermark ")["negative"]["inputs"]["text"] == "watermark"
+    with pytest.raises(ValueError):
+        _ltx(aspect_ratio="4:3")
+    with pytest.raises(ValueError):
+        _ltx(image_data_uri="data:image/png;base64," + base64.b64encode(b"not an image").decode())
+
+
+def test_local_ltx_is_listed_free_with_the_crop_and_vertical_schemas(sync_client, monkeypatch):
+    monkeypatch.setitem(video_router.API_KEYS, "comfyui", SERVER)
+    listed = {p["id"] for p in sync_client.get("/api/video/providers").json()}
+    assert {"local-ltx", "local-ltx-vertical"} <= listed
+    assert generation_budget.per_gen_cost_usd("local-ltx", 8) == 0.0
+    assert generation_budget.per_gen_cost_usd("local-ltx-vertical", 8) == 0.0
+    schemas = sync_client.get("/api/video/provider-schemas").json()
+    assert schemas["local-ltx"]["crop_mode"]["default"] == "both"
+    assert "crop_mode" not in schemas["local-ltx-vertical"]
+
+
+async def test_generate_uploads_the_ltx_start_image(monkeypatch):
+    fake = _FakeComfy(_DONE)
+    await _run(fake, monkeypatch, {"model_id": comfyui.LTX_23, "image_data_uri": _image_data_uri(900, 1600)})
+    paths = [r.url.path for r in fake.requests]
+    assert paths.count("/upload/image") == 1
+    workflow = json.loads(next(r for r in fake.requests if r.url.path == "/prompt").content)["prompt"]
+    assert workflow["first_frame"]["inputs"]["image"] == "uploaded.png"
+
+
+async def test_generate_waits_out_a_server_too_busy_to_answer(monkeypatch):
+    """A poll that times out while ComfyUI swaps models is not a failed render."""
+
+    class _BusyThenDone(_FakeComfy):
+        def __call__(self, request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/history/p-1" and self.polls < 3:
+                self.polls += 1
+                self.requests.append(request)
+                raise httpx.ReadTimeout("busy loading a model", request=request)
+            return super().__call__(request)
+
+    fake = _BusyThenDone(_DONE)
+    url, entry = await _run(fake, monkeypatch, {"model_id": comfyui.H3_FL2VA})
+    assert url.startswith(SERVER + "/view?")
+    assert fake.polls >= 4
