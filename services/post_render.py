@@ -231,7 +231,7 @@ def min_source_height() -> int:
     thumbnails or refusing everything.
     """
     raw = os.getenv(MIN_SOURCE_HEIGHT_ENV, "").strip()
-    if raw.isdigit() and _MIN_SOURCE_HEIGHT_BOUNDS[0] <= int(raw) <= _MIN_SOURCE_HEIGHT_BOUNDS[1]:
+    if raw.isascii() and raw.isdigit() and _MIN_SOURCE_HEIGHT_BOUNDS[0] <= int(raw) <= _MIN_SOURCE_HEIGHT_BOUNDS[1]:
         return int(raw)
     return DEFAULT_MIN_SOURCE_HEIGHT
 

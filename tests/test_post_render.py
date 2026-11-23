@@ -286,6 +286,20 @@ def test_source_floor_junk_falls_back_to_the_default(monkeypatch, raw):
     assert render.source_geometry_refusal(_geometry(404, 718)) is not None
 
 
+def test_source_floor_unicode_digit_falls_back_instead_of_crashing(monkeypatch):
+    # "\u00b2".isdigit() is True but int("\u00b2") raises ValueError.
+    monkeypatch.setenv(render.MIN_SOURCE_HEIGHT_ENV, "72\u00b2")
+    assert render.min_source_height() == render.DEFAULT_MIN_SOURCE_HEIGHT
+
+
+@pytest.mark.parametrize("sar", ["1216:1215", "1214:1215"])
+def test_shared_source_rule_keeps_near_square_pool_clips(monkeypatch, sar):
+    # #410: pool clips within 0.5% of square pixels are deliverable; the shared
+    # rule must not fall back to the exact-SAR set when #416 is rebased.
+    monkeypatch.delenv(render.MIN_SOURCE_HEIGHT_ENV, raising=False)
+    assert render.source_geometry_refusal(_geometry(1080, 1920, sar)) is None
+
+
 def test_source_floor_still_refuses_wrong_shape_at_any_height(monkeypatch):
     monkeypatch.delenv(render.MIN_SOURCE_HEIGHT_ENV, raising=False)
     for probe in (_geometry(1920, 1080), _geometry(560, 1080), _geometry(606, 1080, "2:1"), _geometry(1080, 1920, rotation=90)):
