@@ -30,6 +30,8 @@ import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import logging
+
 import pytest
 
 import routers.control_plane as cp
@@ -227,27 +229,38 @@ def test_on_enqueue_reserves_draws_and_enriches_origin_windows(lab, monkeypatch,
         assert row["state"] == "reserved"
 
 
-def test_on_enqueue_without_originality_feed_fails_closed_and_releases(lab, monkeypatch):
+def _plain_job(response):
+    """The job was created as plain cuts: no cut carries a Scrambler draw."""
+    assert response.status_code == 200, response.json()
+    job = cp._load_jobs()["jobs"][response.json()["jobId"]]
+    assert job["sourceCuts"]
+    assert all("scrambler" not in cut for cut in job["sourceCuts"])
+    return job
+
+
+def test_on_enqueue_without_originality_feed_plans_plain_and_reserves_nothing(
+        lab, monkeypatch, caplog):
     client, tmp_path, _ = lab
     _scrambler_on(monkeypatch)
-    # No CONTENT_LAB_ORIGINALITY_* env: the authoritative feed is REQUIRED.
+    caplog.set_level(logging.WARNING, logger="control_plane")
+    # No CONTENT_LAB_ORIGINALITY_* env: the remix cannot run, but the post
+    # must never be refused for it (Eric 11-22): the job plans plain cuts.
     response = client.post(
         "/api/control-plane/v1/jobs", json=job_body(1),
         headers=headers("scrambler-no-feed"),
     )
-    assert response.status_code == 409
-    assert "usage_path_unconfigured" in response.json()["detail"]
-    assert "scrambler_unavailable" in response.json()["detail"]
-    # All-or-nothing: no job was created and no reservation survives.
-    assert cp._load_jobs()["jobs"] == {} or all(
-        job.get("status") != "queued"
-        for job in cp._load_jobs()["jobs"].values())
+    job = _plain_job(response)
+    assert "scrambler_fallback_plain" in caplog.text
+    assert "usage_path_unconfigured" in caplog.text
+    assert job["pageId"] == PAGE_ID
+    # No reservation was made for the plain job.
     assert scrambler_history_rows(PAGE_ID) == []
 
 
-def test_on_enqueue_with_missing_page_handle_refuses(lab, monkeypatch):
+def test_on_enqueue_with_missing_page_handle_plans_plain(lab, monkeypatch, caplog):
     client, tmp_path, _ = lab
     _scrambler_on(monkeypatch)
+    caplog.set_level(logging.WARNING, logger="control_plane")
 
     def recipe_without_handle(_publication):
         resolved = cp.resolve_source_recipe(publication())
@@ -259,8 +272,52 @@ def test_on_enqueue_with_missing_page_handle_refuses(lab, monkeypatch):
         "/api/control-plane/v1/jobs", json=job_body(1),
         headers=headers("scrambler-no-handle"),
     )
-    assert response.status_code == 409
-    assert "scrambler_page_handle_missing" in response.json()["detail"]
+    _plain_job(response)
+    assert "scrambler_page_handle_missing" in caplog.text
+    assert scrambler_history_rows(PAGE_ID) == []
+
+
+def test_on_enqueue_with_exhausted_combos_plans_plain(lab, monkeypatch, caplog):
+    client, tmp_path, _ = lab
+    _scrambler_on(monkeypatch)
+    _originality_feed(monkeypatch, tmp_path)
+    caplog.set_level(logging.WARNING, logger="control_plane")
+
+    def exhausted(*_args, **_kwargs):
+        raise cp.ScramblerExhausted("scrambler_combo_space_exhausted")
+
+    monkeypatch.setattr(cp, "reserve_job_cuts", exhausted)
+    response = client.post(
+        "/api/control-plane/v1/jobs", json=job_body(1),
+        headers=headers("scrambler-exhausted"),
+    )
+    _plain_job(response)
+    assert "reason=scrambler_combo_space_exhausted" in caplog.text
+
+
+def test_on_enqueue_whose_spans_cannot_plan_releases_and_plans_plain(lab, monkeypatch, caplog):
+    client, tmp_path, _ = lab
+    _scrambler_on(monkeypatch)
+    _originality_feed(monkeypatch, tmp_path)
+    caplog.set_level(logging.WARNING, logger="control_plane")
+    real_plan = cp.plan_source_cuts
+
+    def no_room_for_drawn_spans(*args, **kwargs):
+        if kwargs.get("scrambler") is not None:
+            return []
+        return real_plan(*args, **kwargs)
+
+    monkeypatch.setattr(cp, "plan_source_cuts", no_room_for_drawn_spans)
+    response = client.post(
+        "/api/control-plane/v1/jobs", json=job_body(1),
+        headers=headers("scrambler-plan-short"),
+    )
+    _plain_job(response)
+    job_id = response.json()["jobId"]
+    assert "reason=scrambler_source_windows_unavailable" in caplog.text
+    # The drawn reservations were released, never left holding footage.
+    assert all(row["state"] != "reserved" for row in scrambler_history_rows(PAGE_ID)
+               if row["jobId"] == job_id)
 
 
 def test_endpoint_replay_returns_stored_draws_under_changed_config(lab, monkeypatch, tmp_path):

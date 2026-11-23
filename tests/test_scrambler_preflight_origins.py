@@ -21,6 +21,7 @@ from pathlib import Path
 
 import pytest
 
+import routers.control_plane as cp
 from services import scrambler_preflight as pf
 from tests.test_control_plane_source_execution import (  # noqa: F401
     _isolated_source_dna,  # autouse: main #279 isolated source-DNA registry
@@ -154,7 +155,7 @@ def test_vault_network_failure_reports_not_ready(lab, monkeypatch, caplog):
 
 
 @pytest.mark.asyncio
-async def test_job_409_logs_page_and_detail(lab, monkeypatch, tmp_path, caplog):
+async def test_unmapped_master_plans_plain_and_logs_why(lab, monkeypatch, tmp_path, caplog):
     client, tmp_path, _ = lab
     _scrambler_on(monkeypatch, pages=PAGE_ID)
     feed = _originality_feed(monkeypatch, tmp_path)
@@ -164,9 +165,12 @@ async def test_job_409_logs_page_and_detail(lab, monkeypatch, tmp_path, caplog):
     caplog.set_level(logging.INFO, logger="control_plane")
     response = client.post("/api/control-plane/v1/jobs", json=job_body(1),
                            headers=headers("preflight-origin-409"))
-    assert response.status_code == 409, response.json()
-    assert response.json()["detail"] == (
-        f"scrambler_unavailable: origin_mapping_unknown:{MASTER_SHA[:12]}")
-    assert (f"POST /api/control-plane/v1/jobs 409 page={PAGE_ID} "
-            f"detail=scrambler_unavailable: origin_mapping_unknown:{MASTER_SHA[:12]}"
+    # The page keeps posting: an unmapped master plans plain cuts (never a
+    # 409 loop), and one named line says why the remix was skipped.
+    assert response.status_code == 200, response.json()
+    job = cp._load_jobs()["jobs"][response.json()["jobId"]]
+    assert all("scrambler" not in cut for cut in job["sourceCuts"])
+    assert (f"scrambler_fallback_plain page={PAGE_ID} "
+            f"job={response.json()['jobId']} "
+            f"reason=scrambler_unavailable: origin_mapping_unknown:{MASTER_SHA[:12]}"
             ) in caplog.text

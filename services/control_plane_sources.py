@@ -548,7 +548,7 @@ def cut_window_recipe(
                 or not math.isfinite(float(speed)) or float(speed) <= 0:
             raise ValueError("cut window recipe speed is invalid")
         emitted_speed = float(speed) if float(speed) != 1.0 else None
-    emitted_crop: dict[str, float] | None = None
+    emitted_crop: str | None = None
     if crop is not None:
         if not isinstance(crop, dict) or set(crop) != set(NEUTRAL_CLIP_CROP):
             raise ValueError("cut window recipe crop is invalid")
@@ -563,7 +563,13 @@ def cut_window_recipe(
                 or not 0.0 <= values["focusY"] <= 1.0:
             raise ValueError("cut window recipe crop is out of range")
         if values != NEUTRAL_CLIP_CROP:
-            emitted_crop = values
+            # One bounded string, never an object: the Worker carries only
+            # scalar recipe values (contentLabClient.js isBoundedRecipeValue)
+            # and the originality ledger reads crop as text (origledger
+            # Recipe.crop: Option<String>). An object here would make the
+            # Worker refuse the whole artifacts response.
+            emitted_crop = ",".join(
+                f"{name}={values[name]:g}" for name in ("zoom", "focusX", "focusY"))
     for name, value in (("reverse", reverse), ("hflip", hflip),
                         ("loop_split", loop_split)):
         if value is not None and not isinstance(value, bool):

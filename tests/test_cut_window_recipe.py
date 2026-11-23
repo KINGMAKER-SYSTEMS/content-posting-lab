@@ -131,13 +131,24 @@ def test_invalid_speeds_are_refused(speed):
 @pytest.mark.parametrize("crop,expected", [
     ({"zoom": 1.0, "focusX": 0.5, "focusY": 0.5}, None),  # neutral: not applied
     ({"zoom": 3.0, "focusX": 0.0, "focusY": 1.0},
-     {"zoom": 3.0, "focusX": 0.0, "focusY": 1.0}),  # inclusive bounds
+     "zoom=3,focusX=0,focusY=1"),  # inclusive bounds
     ({"zoom": 1.2, "focusX": 0.42, "focusY": 0.58},
-     {"zoom": 1.2, "focusX": 0.42, "focusY": 0.58}),
+     "zoom=1.2,focusX=0.42,focusY=0.58"),
     (None, None),  # unknown: legacy recipes carry no crop
 ])
 def test_crop_is_the_clipcrop_shape_or_null(crop, expected):
     assert cut_window_recipe(1.0, crop)["crop"] == expected
+
+
+def test_every_recipe_value_is_a_worker_bounded_scalar():
+    # The live Worker (contentLabClient.js isBoundedRecipeValue) refuses the
+    # whole artifacts response unless every recipe value is null, a bool, a
+    # finite number or a string of at most 200 characters.
+    recipe = cut_window_recipe(0.65, {"zoom": 2.999999, "focusX": 0.123456, "focusY": 0.987654},
+                               reverse=True, hflip=True, loop_split=True)
+    for value in recipe.values():
+        assert value is None or isinstance(value, (bool, int, float)) \
+            or (isinstance(value, str) and len(value) <= 200)
 
 
 @pytest.mark.parametrize("crop", [
@@ -281,7 +292,9 @@ async def test_flag_on_a_vary_cut_records_its_drawn_look(lab, monkeypatch):
     assert recipe["reverse"] is (True if drawn.reverse else None)
     assert recipe["hflip"] is (True if drawn.mirror else None)
     assert recipe["loop_split"] is None  # Layer B vary cuts are not the split loop
-    assert recipe["crop"] == clip["clipCrop"]  # the drawn crop, as drawn
+    crop = clip["clipCrop"]  # the drawn crop, as drawn (one bounded string)
+    assert recipe["crop"] == (None if crop == {"zoom": 1.0, "focusX": 0.5, "focusY": 0.5}
+                              else ",".join(f"{k}={float(crop[k]):g}" for k in ("zoom", "focusX", "focusY")))
 
 
 @pytest.mark.asyncio
