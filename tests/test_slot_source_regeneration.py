@@ -1271,21 +1271,9 @@ def test_parent_strategy_flip_after_queue_refuses_before_io(source_parent, tmp_p
     assert job["error_code"] == "source_regeneration_parent_changed"
 
 
-def test_master_origin_mismatch_refuses_regeneration_when_receipt_lacks_origin(
-    source_parent, monkeypatch,
-):
-    """`origin` participates in the master-mismatch check, not just the receipt.
-
-    The recipe's master now records an origin but the parent clip's stored
-    lineage does not carry it, so authority resolution must refuse. Deleting the
-    origin term from the `_equal_dict` comparison would let this resolve green.
-    The G39 gate applies (expected_master_lineage expects `origin` only
-    behind CONTENT_LAB_ADVERTISE_ORIGIN, the same gate that writes it into
-    receipts), so this flag-on test sets it.
-    """
+def _master_with_origin(monkeypatch, **changes):
     from dataclasses import replace
 
-    monkeypatch.setenv(cp.ADVERTISE_ORIGIN_ENV, "1")
     origin = {
         "originSourceId": "vt5im2TRAKw",
         "originStartMs": 120_000,
@@ -1296,10 +1284,39 @@ def test_master_origin_mismatch_refuses_regeneration_when_receipt_lacks_origin(
     def with_origin(payload):
         recipe = resolve(payload)
         return replace(recipe, masters=tuple(
-            replace(master, origin=dict(origin)) for master in recipe.masters
+            replace(master, origin=dict(origin), **changes) for master in recipe.masters
         ))
 
     monkeypatch.setattr(cp, "_dossier_source_recipe", with_origin)
+
+
+def test_flag_on_receipt_from_before_the_flip_still_resolves(source_parent, monkeypatch):
+    """A receipt written before CONTENT_LAB_ADVERTISE_ORIGIN was turned on.
+
+    The master now records an origin and the flag is on, but the stored
+    lineage predates the flag and carries no origin leg. It is the same
+    master, so a repair of that ready post must still resolve (turning the
+    flag on must never refuse posts that were already made).
+    """
+    monkeypatch.setenv(cp.ADVERTISE_ORIGIN_ENV, "1")
+    _master_with_origin(monkeypatch)
+    clip = source_parent["job"]["clips"][0]
+    assert "origin" not in clip["source"]["master"]
+    request = _submission(clip["sha256"], PAGE_ID).request
+    command = regen.resolve_parent_authority(
+        page_id=PAGE_ID,
+        parent_generation_job_id=source_parent["job_id"],
+        request=request,
+    )
+    assert command["masterSha256"] == clip["source"]["master"]["sha256"]
+
+
+def test_flag_on_receipt_without_origin_still_refuses_any_other_master_change(
+    source_parent, monkeypatch,
+):
+    """Only the origin leg may be missing: every other master field must match."""
+    monkeypatch.setenv(cp.ADVERTISE_ORIGIN_ENV, "1")
+    _master_with_origin(monkeypatch, storage_key="vault/other/masters/moved.mp4")
     clip = source_parent["job"]["clips"][0]
     request = _submission(clip["sha256"], PAGE_ID).request
     with pytest.raises(regen.SourceRegenerationError) as refused:

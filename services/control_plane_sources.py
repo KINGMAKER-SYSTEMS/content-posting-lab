@@ -529,9 +529,10 @@ def cut_window_recipe(
     """The recipe leg of contentLabProvenance.source.recipe.
 
     ``speed`` is the actual playback multiplier (null at 1.0: normal playback
-    applies no speed treatment). ``crop`` is the clipCrop shape
-    (routers/control_plane_recipes.py CLIP_CROP_FIELDS) actually rendered,
-    null when it is the neutral centered crop (not applied) or unknown.
+    applies no speed treatment). ``crop`` is the clipCrop actually
+    rendered (routers/control_plane_recipes.py CLIP_CROP_FIELDS), written as
+    one string ``zoom=<z>,focusX=<x>,focusY=<y>``, null when it is the
+    neutral centered crop (not applied) or unknown.
     ``reverse``/``hflip`` are true only when that transform ran
     (services/clip_transforms.py CutTransforms.reverse/mirror). ``loop_split``
     is true when the cut is a split-and-rotate loop (it covers the same
@@ -548,7 +549,7 @@ def cut_window_recipe(
                 or not math.isfinite(float(speed)) or float(speed) <= 0:
             raise ValueError("cut window recipe speed is invalid")
         emitted_speed = float(speed) if float(speed) != 1.0 else None
-    emitted_crop: dict[str, float] | None = None
+    emitted_crop: str | None = None
     if crop is not None:
         if not isinstance(crop, dict) or set(crop) != set(NEUTRAL_CLIP_CROP):
             raise ValueError("cut window recipe crop is invalid")
@@ -557,13 +558,19 @@ def cut_window_recipe(
             if isinstance(value, bool) or not isinstance(value, (int, float)) \
                     or not math.isfinite(float(value)):
                 raise ValueError("cut window recipe crop is invalid")
-            values[name] = float(value)
+            values[name] = float(value) + 0.0  # -0.0 -> 0.0: one spelling per crop
         if not 1.0 <= values["zoom"] <= 3.0 \
                 or not 0.0 <= values["focusX"] <= 1.0 \
                 or not 0.0 <= values["focusY"] <= 1.0:
             raise ValueError("cut window recipe crop is out of range")
         if values != NEUTRAL_CLIP_CROP:
-            emitted_crop = values
+            # One bounded string, never an object: the Worker carries only
+            # scalar recipe values (contentLabClient.js isBoundedRecipeValue)
+            # and the originality ledger reads crop as text (origledger
+            # Recipe.crop: Option<String>). An object here would make the
+            # Worker refuse the whole artifacts response.
+            emitted_crop = ",".join(
+                f"{name}={values[name]:g}" for name in ("zoom", "focusX", "focusY"))
     for name, value in (("reverse", reverse), ("hflip", hflip),
                         ("loop_split", loop_split)):
         if value is not None and not isinstance(value, bool):

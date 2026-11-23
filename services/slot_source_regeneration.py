@@ -456,8 +456,14 @@ def resolve_parent_authority(
     )
     if master is None:
         raise SourceRegenerationError("source_regeneration_master_unknown")
-    if not _equal_dict(master_lineage, expected_master_lineage(master)):
-        raise SourceRegenerationError("source_regeneration_master_mismatch")
+    expected = expected_master_lineage(master)
+    if not _equal_dict(master_lineage, expected):
+        # A receipt written before CONTENT_LAB_ADVERTISE_ORIGIN was turned on
+        # carries no origin leg; it is still the same master. Only that one
+        # leg may be absent, every other field must still match exactly.
+        legacy = {key: value for key, value in expected.items() if key != "origin"}
+        if "origin" in master_lineage or not _equal_dict(master_lineage, legacy):
+            raise SourceRegenerationError("source_regeneration_master_mismatch")
 
     start_ms = cut_window.get("libraryStartMs")
     duration_ms = cut_window.get("durationMs")

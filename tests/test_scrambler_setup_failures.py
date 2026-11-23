@@ -77,8 +77,12 @@ def test_missing_ledger_and_marker_cannot_reset_existing_jobs(lab, monkeypatch):
     path.with_name(path.name + ".created").unlink()
     second = client.post("/api/control-plane/v1/jobs", json=job_body(1),
                          headers=headers("after-history-loss"))
-    assert second.status_code == 409, second.json()
-    assert "history" in second.json()["detail"]
+    # A lost history never refuses the post: the job plans plain cuts and
+    # the missing ledger is NOT recreated (existing Scrambler jobs still
+    # fail closed at execution).
+    assert second.status_code == 200, second.json()
+    job = cp._load_jobs()["jobs"][second.json()["jobId"]]
+    assert all("scrambler" not in cut for cut in job["sourceCuts"])
     assert not path.exists()
 
 def test_crash_before_durable_job_save_releases_uncommitted_draw(lab, monkeypatch):

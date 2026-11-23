@@ -266,6 +266,14 @@ ADVERTISE_ZERO_REASONS_ENV = "CONTENT_LAB_ADVERTISE_ZERO_REASONS"
 ADVERTISE_ORIGIN_ENV = "CONTENT_LAB_ADVERTISE_ORIGIN"
 
 
+class _ScramblerFallback(Exception):
+    """A page-level reason the Scrambler cannot draw this job: plan plain cuts."""
+
+    def __init__(self, reason: str):
+        super().__init__(reason)
+        self.reason = reason
+
+
 def _env_flag(name: str) -> bool:
     return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
 
@@ -6539,6 +6547,8 @@ async def _create_job_impl(
             # tt-warner- storage scope is Eric-approved sourced footage and is
             # scrambled like any other source library.
             scrambler_draws = None
+            scrambler_skip_reason = None
+            per_job_plan_seed = cut_plan_seed
             originality_index = None
             page_handles: frozenset[str] = frozenset()
             _gate_on, _gate_reason = scrambler_gate(page_id)
@@ -6555,81 +6565,77 @@ async def _create_job_impl(
                             "scrambler_worker_source_window_compat_required"),
                 )
             if _gate_on:
-                master_pages = source_recipe.recipe_spec.get("masterPages")
-                handle = master_pages.get("handle") if isinstance(master_pages, dict) else None
-                if not isinstance(handle, str) or not handle.strip():
-                    # Ownership mapping is required: without the page's real
-                    # handle the usage ledger cannot tell this page's own
-                    # shows from another page's, and unknown ownership
-                    # refuses ON.
-                    raise HTTPException(
-                        status_code=409,
-                        detail="scrambler_unavailable: scrambler_page_handle_missing",
-                    )
-                page_handles = frozenset({handle})
-                look_filters = {}
-                render_treatment = source_recipe.recipe_spec.get("renderTreatment")
-                if isinstance(render_treatment, dict):
-                    filters = render_treatment.get("filters")
-                    if isinstance(filters, dict):
-                        look_filters = filters
-                # Real-ledger show limits, ON only: the authoritative
-                # usage/origins/retired feed is REQUIRED (unset raises and
-                # fails this job closed); the OFF path never reads it.
-                # Loading BEFORE the reserve means a feed failure can never
-                # leak a just-committed reservation.
                 try:
-                    if preloaded_originality is None:
-                        # Switch flipped ON after the preload: load here.
-                        preloaded_originality = load_originality_index_cached()
-                    if isinstance(preloaded_originality, BaseException):
-                        raise preloaded_originality
-                    originality_index = preloaded_originality
-                    assert_existing_jobs(
-                        old_id for old_id, old_job in store["jobs"].items()
-                        if any(isinstance(cut, dict) and "scrambler" in cut
-                               for cut in old_job.get("sourceCuts", ())))
-                    # The jobs lock serializes every enqueue. A RESERVED
-                    # operation absent from the durable job store never became
-                    # executable (e.g. crash between reserve and save).
-                    orphaned = {(row["pageId"], row["jobId"])
-                                for row in live_reservation_rows()
-                                if row["jobId"] not in store["jobs"]
-                                and row["state"] == "reserved"}
-                    for orphan_page, orphan_job in orphaned:
-                        release_job_reservations(orphan_page, orphan_job,
-                                                 reason="uncommitted_enqueue_recovered")
-                    # Rendered cuts whose job failed never deliver: release
-                    # their origin-window holds after the grace period.
-                    release_undelivered_holds(
-                        lambda held: (store["jobs"].get(held) or {}).get("status"))
-                    pending_windows = scrambler_pending_windows(originality_index, job_id)
-                    prior_canonical_starts = scrambler_recent_canonical_starts(
-                        originality_index, page_id, job_id)
-                except (ScramblerOriginalityUnavailable, ScramblerHistoryCorrupt,
-                        ScramblerHistoryLost) as error:
-                    raise HTTPException(
-                        status_code=409,
-                        detail=f"scrambler_unavailable: {error}",
-                    )
-                try:
-                    scrambler_draws = reserve_job_cuts(
-                        page_id, job_id, quantity,
-                        grade_allowed=grade_allowed_for_look(look_filters.get("brightness")),
-                    )
-                except ScramblerExhausted:
-                    raise HTTPException(
-                        status_code=409,
-                        detail="scrambler_combo_space_exhausted",
-                    )
-                except (
-                    ScramblerHistoryCorrupt, ScramblerHistoryLost,
-                    ScramblerOriginalityUnavailable, ValueError,
-                ) as error:
-                    raise HTTPException(
-                        status_code=409,
-                        detail=f"scrambler_unavailable: {error}",
-                    )
+                    master_pages = source_recipe.recipe_spec.get("masterPages")
+                    handle = master_pages.get("handle") if isinstance(master_pages, dict) else None
+                    if not isinstance(handle, str) or not handle.strip():
+                        # Ownership mapping is required: without the page's real
+                        # handle the usage ledger cannot tell this page's own
+                        # shows from another page's, and unknown ownership
+                        # refuses ON.
+                        raise _ScramblerFallback("scrambler_unavailable: scrambler_page_handle_missing")
+                    page_handles = frozenset({handle})
+                    look_filters = {}
+                    render_treatment = source_recipe.recipe_spec.get("renderTreatment")
+                    if isinstance(render_treatment, dict):
+                        filters = render_treatment.get("filters")
+                        if isinstance(filters, dict):
+                            look_filters = filters
+                    # Real-ledger show limits, ON only: the authoritative
+                    # usage/origins/retired feed is REQUIRED (unset raises and
+                    # fails this job closed); the OFF path never reads it.
+                    # Loading BEFORE the reserve means a feed failure can never
+                    # leak a just-committed reservation.
+                    try:
+                        if preloaded_originality is None:
+                            # Switch flipped ON after the preload: load here.
+                            preloaded_originality = load_originality_index_cached()
+                        if isinstance(preloaded_originality, BaseException):
+                            raise preloaded_originality
+                        originality_index = preloaded_originality
+                        assert_existing_jobs(
+                            old_id for old_id, old_job in store["jobs"].items()
+                            if any(isinstance(cut, dict) and "scrambler" in cut
+                                   for cut in old_job.get("sourceCuts", ())))
+                        # The jobs lock serializes every enqueue. A RESERVED
+                        # operation absent from the durable job store never became
+                        # executable (e.g. crash between reserve and save).
+                        orphaned = {(row["pageId"], row["jobId"])
+                                    for row in live_reservation_rows()
+                                    if row["jobId"] not in store["jobs"]
+                                    and row["state"] == "reserved"}
+                        for orphan_page, orphan_job in orphaned:
+                            release_job_reservations(orphan_page, orphan_job,
+                                                     reason="uncommitted_enqueue_recovered")
+                        # Rendered cuts whose job failed never deliver: release
+                        # their origin-window holds after the grace period.
+                        release_undelivered_holds(
+                            lambda held: (store["jobs"].get(held) or {}).get("status"))
+                        pending_windows = scrambler_pending_windows(originality_index, job_id)
+                        prior_canonical_starts = scrambler_recent_canonical_starts(
+                            originality_index, page_id, job_id)
+                    except (ScramblerOriginalityUnavailable, ScramblerHistoryCorrupt,
+                            ScramblerHistoryLost) as error:
+                        raise _ScramblerFallback(f"scrambler_unavailable: {error}")
+                    try:
+                        scrambler_draws = reserve_job_cuts(
+                            page_id, job_id, quantity,
+                            grade_allowed=grade_allowed_for_look(look_filters.get("brightness")),
+                        )
+                    except ScramblerExhausted:
+                        raise _ScramblerFallback("scrambler_combo_space_exhausted")
+                    except (
+                        ScramblerHistoryCorrupt, ScramblerHistoryLost,
+                        ScramblerOriginalityUnavailable, ValueError,
+                    ) as error:
+                        raise _ScramblerFallback(f"scrambler_unavailable: {error}")
+                except _ScramblerFallback as fallback:
+                    # Never refuse a post because the remix cannot run on this
+                    # page right now (Eric 11-22, control-plane NORTH-STAR.md:
+                    # every page posts on time). Nothing was reserved yet at
+                    # this stage, so the job simply plans as a plain cut.
+                    scrambler_skip_reason = fallback.reason
+                    scrambler_draws = None
             if scrambler_draws is not None:
                 scrambler_plan = ScramblerPlan(
                     page_id=page_id,
@@ -6656,17 +6662,24 @@ async def _create_job_impl(
                     # A planner refusal (e.g. retired master) after a
                     # committed reserve must not orphan the reservations.
                     release_job_reservations(page_id, job_id, reason="source_plan_failed")
-                    if isinstance(error, (ScramblerOriginalityUnavailable,
-                                          ScramblerHistoryCorrupt, ScramblerHistoryLost)):
-                        raise HTTPException(status_code=409,
-                            detail=f"scrambler_unavailable: {error}")
-                    raise
-                if len(cuts) != quantity:
+                    if not isinstance(error, (ScramblerOriginalityUnavailable,
+                                              ScramblerHistoryCorrupt, ScramblerHistoryLost)):
+                        raise
+                    scrambler_skip_reason = f"scrambler_unavailable: {error}"
+                    scrambler_draws = None
+                if scrambler_draws is not None and len(cuts) != quantity:
                     # The drawn spans cannot be planned on this library:
-                    # release the reservations (named) and refuse through the
-                    # same paths as OFF below.
+                    # release the reservations (named) and plan plain cuts.
                     release_job_reservations(page_id, job_id, reason="source_plan_short")
-            else:
+                    scrambler_skip_reason = "scrambler_source_windows_unavailable"
+                    scrambler_draws = None
+            if scrambler_skip_reason is not None:
+                # One named line per job, so a page that keeps posting plain
+                # is visible (and its cause fixable) without refusing a post.
+                log.warning("scrambler_fallback_plain page=%s job=%s reason=%s",
+                            page_id, job_id, scrambler_skip_reason)
+                cut_plan_seed = per_job_plan_seed
+            if scrambler_draws is None:
                 job_plan_seed = cut_plan_seed
                 cuts = plan_source_cuts(
                     source_recipe, quantity, served_slots, excluded_windows,
