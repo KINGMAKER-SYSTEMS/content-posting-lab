@@ -2,7 +2,15 @@
 # This shim re-exports the real app from app.py and provides a __main__ entrypoint.
 import os
 
-from app import app  # noqa: F401
+# Relay mode (services/studio_relay.py): this deployment only forwards to a Lab running
+# elsewhere. It must be decided before `app` is imported, so nothing of the Lab loads.
+if __name__ == "__main__" and os.getenv("CONTENT_LAB_RELAY_ORIGIN", "").strip():
+    from services.studio_relay import run as _run_relay
+
+    _run_relay(os.environ["CONTENT_LAB_RELAY_ORIGIN"], int(os.getenv("PORT", "8000")))
+    raise SystemExit(0)
+
+from app import app  # noqa: F401,E402
 
 if __name__ == "__main__":
     import uvicorn
