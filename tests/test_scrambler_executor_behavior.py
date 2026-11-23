@@ -301,10 +301,12 @@ def test_on_enqueue_whose_spans_cannot_plan_releases_and_plans_plain(lab, monkey
     _originality_feed(monkeypatch, tmp_path)
     caplog.set_level(logging.WARNING, logger="control_plane")
     real_plan = cp.plan_source_cuts
+    plain_seeds = []
 
     def no_room_for_drawn_spans(*args, **kwargs):
         if kwargs.get("scrambler") is not None:
             return []
+        plain_seeds.append(kwargs.get("seed"))
         return real_plan(*args, **kwargs)
 
     monkeypatch.setattr(cp, "plan_source_cuts", no_room_for_drawn_spans)
@@ -315,7 +317,35 @@ def test_on_enqueue_whose_spans_cannot_plan_releases_and_plans_plain(lab, monkey
     _plain_job(response)
     job_id = response.json()["jobId"]
     assert "reason=scrambler_source_windows_unavailable" in caplog.text
+    # The plain plan starts from the job's own seed, as on an OFF page, not
+    # the capability seed the short Scrambler retry left behind.
+    assert plain_seeds and plain_seeds[0] != cp.CAPABILITY_PLAN_SEED
     # The drawn reservations were released, never left holding footage.
+    assert all(row["state"] != "reserved" for row in scrambler_history_rows(PAGE_ID)
+               if row["jobId"] == job_id)
+
+
+def test_on_enqueue_whose_planner_loses_the_feed_releases_and_plans_plain(
+        lab, monkeypatch, caplog):
+    client, tmp_path, _ = lab
+    _scrambler_on(monkeypatch)
+    _originality_feed(monkeypatch, tmp_path)
+    caplog.set_level(logging.WARNING, logger="control_plane")
+    real_plan = cp.plan_source_cuts
+
+    def feed_gone(*args, **kwargs):
+        if kwargs.get("scrambler") is not None:
+            raise cp.ScramblerOriginalityUnavailable("usage_unreadable")
+        return real_plan(*args, **kwargs)
+
+    monkeypatch.setattr(cp, "plan_source_cuts", feed_gone)
+    response = client.post(
+        "/api/control-plane/v1/jobs", json=job_body(1),
+        headers=headers("scrambler-plan-raises"),
+    )
+    _plain_job(response)
+    job_id = response.json()["jobId"]
+    assert "reason=scrambler_unavailable: usage_unreadable" in caplog.text
     assert all(row["state"] != "reserved" for row in scrambler_history_rows(PAGE_ID)
                if row["jobId"] == job_id)
 

@@ -151,6 +151,12 @@ def test_every_recipe_value_is_a_worker_bounded_scalar():
             or (isinstance(value, str) and len(value) <= 200)
 
 
+def test_negative_zero_focus_has_one_spelling():
+    plus = cut_window_recipe(1.0, {"zoom": 1.5, "focusX": 0.0, "focusY": 0.5})["crop"]
+    minus = cut_window_recipe(1.0, {"zoom": 1.5, "focusX": -0.0, "focusY": 0.5})["crop"]
+    assert plus == minus == "zoom=1.5,focusX=0,focusY=0.5"
+
+
 @pytest.mark.parametrize("crop", [
     {"zoom": 0.99, "focusX": 0.5, "focusY": 0.5},
     {"zoom": 3.01, "focusX": 0.5, "focusY": 0.5},
