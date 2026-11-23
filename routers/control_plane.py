@@ -2247,7 +2247,8 @@ SOURCE_CUT_RECORDS_MAX = 50
 
 def _source_cut_records_request(body: Any) -> dict[str, Any]:
     """Validate a source-cut-records body; 400 on anything unexpected."""
-    fields = {"schema", "pageId", "sourceLibraryId", "masterSha256", "usedAt", "note", "cuts", "apply"}
+    fields = {"schema", "pageId", "sourceLibraryId", "masterSha256", "masterDurationMs", "usedAt", "note",
+              "cuts", "apply"}
     if not isinstance(body, dict) or set(body) - fields or body.get("schema") != SOURCE_CUT_RECORDS_SCHEMA:
         raise HTTPException(status_code=400, detail=f"body must be a {SOURCE_CUT_RECORDS_SCHEMA} object")
     for name in ("pageId", "sourceLibraryId", "note"):
@@ -2264,6 +2265,9 @@ def _source_cut_records_request(body: Any) -> dict[str, Any]:
         parsed = None
     if parsed is None or parsed.tzinfo is None:
         raise HTTPException(status_code=400, detail="usedAt must be an ISO time with a zone")
+    master_ms = body.get("masterDurationMs")
+    if type(master_ms) is not int or master_ms <= 0:
+        raise HTTPException(status_code=400, detail="masterDurationMs must be a positive integer")
     apply = body.get("apply", False)
     if type(apply) is not bool:
         raise HTTPException(status_code=400, detail="apply must be true or false")
@@ -2278,6 +2282,9 @@ def _source_cut_records_request(body: Any) -> dict[str, Any]:
             or cut["startMs"] < 0 or not 0 < cut["durationMs"] <= 60_000
         ):
             raise HTTPException(status_code=400, detail="each cut must be {startMs >= 0, durationMs > 0} integers")
+        if cut["startMs"] + cut["durationMs"] > master_ms:
+            # Past the master's end, every planner would count the whole master as used.
+            raise HTTPException(status_code=400, detail="a cut runs past masterDurationMs")
         windows.append((cut["startMs"], cut["durationMs"]))
     if len(set(windows)) != len(windows):
         raise HTTPException(status_code=400, detail="cuts repeat a window")
@@ -2318,11 +2325,22 @@ async def record_source_cuts(
             except compaction.ArchiveIndexUnreadable as error:
                 raise HTTPException(status_code=409, detail=f"archive index unreadable: {error}") from error
             if compaction.ARCHIVE_INDEX_KEY not in store:
+                if compaction._archive_files(_jobs_path()):
+                    # Same refusal as compaction: lost history is never "nothing used".
+                    raise HTTPException(status_code=409, detail="archive index missing while archives exist")
                 index = compaction.empty_index()
             elif index.get("version") != compaction.ARCHIVE_INDEX_VERSION or not isinstance(
                 index.get("sourceDnaCuts", []), list,
             ):
                 raise HTTPException(status_code=409, detail="archive index version or cut list is not readable")
+            known_ms = {
+                row.get("durationMs")
+                for job in store.get("jobs", {}).values() if isinstance(job, dict)
+                for row in job.get(page_source_library.JOB_LIBRARY_MASTERS_KEY) or []
+                if isinstance(row, dict) and row.get("sha256") == master_sha
+            }
+            if known_ms and known_ms != {request["masterDurationMs"]}:
+                raise HTTPException(status_code=409, detail=f"the Lab records this master as {sorted(map(str, known_ms))} ms")
             recorded = {
                 (row.get("startMs"), row.get("durationMs"))
                 for row in index.get("sourceDnaCuts", [])
@@ -2354,6 +2372,7 @@ async def record_source_cuts(
                 "schema": SOURCE_CUT_RECORDS_SCHEMA,
                 "applied": request["apply"],
                 "masterSha256": master_sha,
+                "masterKnownToLab": bool(known_ms),
                 "alreadyRecorded": sorted(
                     [start_ms, duration_ms] for start_ms, duration_ms in request["windows"]
                     if (start_ms, duration_ms) in recorded

@@ -30,7 +30,7 @@ def client(monkeypatch):
 def _body(apply, cuts=((23000, 6000), (38000, 6000))):
     return {
         "schema": "content-lab.source-cut-records.v1", "pageId": "acct:thingsleftunsaid52",
-        "sourceLibraryId": "shipstream-thingsleftunsaid52-fca169b3bae44946", "masterSha256": MASTER,
+        "sourceLibraryId": "shipstream-thingsleftunsaid52-fca169b3bae44946", "masterSha256": MASTER, "masterDurationMs": 600000,
         "usedAt": "2026-11-23T14:20:33Z", "note": "tlu-recut-1123", "apply": apply,
         "cuts": [{"startMs": start, "durationMs": duration} for start, duration in cuts],
     }
@@ -65,7 +65,7 @@ def test_recorded_windows_block_overlapping_cuts_and_repeat_safely(client):
 @pytest.mark.parametrize("change", [
     {"masterSha256": "DCFC"}, {"cuts": []}, {"cuts": [{"startMs": -1, "durationMs": 6000}]},
     {"cuts": [{"startMs": 1, "durationMs": 6000}] * 2}, {"usedAt": "2026-11-23"}, {"apply": "yes"},
-    {"extra": 1},
+    {"extra": 1}, {"cuts": [{"startMs": 595000, "durationMs": 6000}]}, {"masterDurationMs": 0},
 ])
 def test_bad_bodies_are_refused_and_write_nothing(client, change):
     response = client.post("/api/control-plane/v1/source-cut-records", headers=HEADERS,
@@ -79,3 +79,22 @@ def test_needs_the_machine_bearer(client):
                            headers={"X-RT-Lane": "content-bucket-control-plane"}, json=_body(True))
     assert response.status_code == 401
     assert not _overlaps(23000, 6000)
+
+
+def test_keeps_existing_rows_and_checks_a_known_master_length(client):
+    cp._save_jobs({**cp._empty_jobs(), "jobs": {"j": {
+        "pageId": "acct:x", cp.page_source_library.JOB_LIBRARY_MASTERS_KEY: [{"sha256": MASTER, "durationMs": 600000}],
+    }}, cp.compaction.ARCHIVE_INDEX_KEY: {**cp.compaction.empty_index(), "sourceDnaCuts": [
+        {"masterSha256": MASTER, "startMs": 100000, "durationMs": 6000}]}})
+    url = "/api/control-plane/v1/source-cut-records"
+    assert client.post(url, headers=HEADERS, json={**_body(True), "masterDurationMs": 599000}).status_code == 409
+    response = client.post(url, headers=HEADERS, json=_body(True))
+    assert response.status_code == 200 and response.json()["masterKnownToLab"] is True
+    assert _overlaps(100000, 6000) and _overlaps(23000, 6000)   # old row kept, new rows added
+
+
+def test_refuses_when_the_index_is_lost_but_archives_exist(client):
+    cp._jobs_path().with_name(cp._jobs_path().name + ".archive-202611.jsonl").write_text("{}\n")
+    response = client.post("/api/control-plane/v1/source-cut-records", headers=HEADERS, json=_body(True))
+    assert response.status_code == 409
+    assert cp.compaction.ARCHIVE_INDEX_KEY not in cp._load_jobs()
