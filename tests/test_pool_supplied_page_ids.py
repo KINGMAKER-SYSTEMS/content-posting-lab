@@ -54,6 +54,8 @@ POOL_FED_PAGE_IDS = frozenset({
     "acct:lovenightwalks",
     "acct:theonlywayisaerial",
     "acct:thingsleftunsaid52",
+    # Good Boy Records: Drop Line POV (finished clips rendered outside the Lab).
+    "acct:user6390595910283",
 })
 
 

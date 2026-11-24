@@ -72,7 +72,7 @@ class BootstrapBoundary(unittest.TestCase):
 
     def test_every_listed_page_and_slideshow_engine_is_discoverable_at_zero(self):
         ids = pool.load_pool_supplied_page_ids()
-        self.assertEqual(len(ids),23)
+        self.assertEqual(len(ids),24)
         for page in ids:
             for engine in ("sourced_slideshow","lyrics_slideshows","sourced_image"):
                 with self.subTest(page=page,engine=engine):
