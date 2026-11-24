@@ -64,6 +64,15 @@
         "resolution": "768p"
       },
       "cost_per_gen_usd": 0.24
+    },
+    "local-h3-vertical": {
+      "model": "comfyui/minimax-h3-fl2va",
+      "base_input": {
+        "aspect_ratio": "9:16",
+        "duration": 8,
+        "resolution": "768p"
+      },
+      "cost_per_gen_usd": 0
     }
   }
 }
