@@ -7,6 +7,11 @@ exposed, and the lab never calls out.
 
 State is in memory, like the generation job table it serves: a restart drops
 queued hand-offs and the owning job fails closed rather than replaying.
+
+Claims are not first-come-first-served: jobs for the model the worker's server
+already holds go first (see services.local_render_order). The loaded model is
+inferred from the last claim, which is exact for the one worker per server this
+is built for.
 """
 
 from __future__ import annotations
@@ -16,9 +21,10 @@ import os
 import secrets
 import time
 import uuid
-from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
+
+from services import local_render_order
 
 # A worker polls every few seconds while idle and heartbeats while rendering.
 # Silence this long means nobody is there to take or finish the job.
@@ -46,19 +52,21 @@ class Job:
 
 
 _jobs: dict[str, Job] = {}
-_pending: deque[str] = deque()
+_pending: list[str] = []          # arrival order
 _last_seen: float | None = None
+_loaded_model: str | None = None  # model of the most recently claimed job
 
 
 def reset() -> None:
     """Drop all state (tests)."""
-    global _last_seen
+    global _last_seen, _loaded_model
     for job in _jobs.values():
         if not job.future.done():
             job.future.cancel()
     _jobs.clear()
     _pending.clear()
     _last_seen = None
+    _loaded_model = None
 
 
 def worker_key() -> str:
@@ -88,17 +96,28 @@ def enqueue(payload: dict) -> Job:
 
 
 def claim() -> dict | None:
-    """Give the oldest waiting job to the calling worker, or None."""
+    """Give the next job in batch order to the calling worker, or None."""
+    global _loaded_model
     touch()
-    while _pending:
-        job = _jobs.get(_pending.popleft())
-        if job is None or job.future.done():
-            continue
-        job.claim_token = secrets.token_urlsafe(24)
-        job.claimed_at = time.monotonic()
-        job.claim_heartbeat_at = job.claimed_at
-        return {"id": job.id, "claim_token": job.claim_token, **job.payload}
-    return None
+    # Drop hand-offs whose owner already gave up (timed out or cancelled).
+    _pending[:] = [
+        job_id for job_id in _pending
+        if (job := _jobs.get(job_id)) is not None and not job.future.done()
+    ]
+    index = local_render_order.pick(
+        [(_jobs[job_id].payload.get("model_id"), _jobs[job_id].created) for job_id in _pending],
+        _loaded_model,
+        time.monotonic(),
+        local_render_order.max_wait_seconds(),
+    )
+    if index is None:
+        return None
+    job = _jobs[_pending.pop(index)]
+    _loaded_model = job.payload.get("model_id")
+    job.claim_token = secrets.token_urlsafe(24)
+    job.claimed_at = time.monotonic()
+    job.claim_heartbeat_at = job.claimed_at
+    return {"id": job.id, "claim_token": job.claim_token, **job.payload}
 
 
 def _claimed(job_id: str, claim_token: str) -> Job:

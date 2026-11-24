@@ -85,9 +85,57 @@ _QUEUE_CHECK_EVERY = 5   # polls between checks that the server still has the jo
 # One render at a time per server, and only one model family resident. ComfyUI
 # keeps every model it has loaded; on unified-memory Macs three families at
 # once (H3 plus both Wan pairs) got the server killed by the OS for memory.
+# Waiting jobs are let in batch order, so a loaded model is used up before the
+# server switches (services.local_render_order).
 _FREE_SETTLE_SECONDS = 2.0
-_server_locks: dict[str, asyncio.Lock] = {}
 _server_model: dict[str, str] = {}
+
+
+class _ServerGate:
+    """Admit one render at a time to a server, in batch order rather than FIFO."""
+
+    def __init__(self, url: str) -> None:
+        self.url = url
+        self.busy = False
+        self._waiting: list[tuple[str | None, float, asyncio.Future]] = []
+
+    def locked(self) -> bool:
+        return self.busy
+
+    async def acquire(self, model_id: str | None) -> None:
+        if not self.busy:
+            self.busy = True
+            return
+        future = asyncio.get_running_loop().create_future()
+        waiter = (model_id, time.monotonic(), future)
+        self._waiting.append(waiter)
+        try:
+            await future
+        except asyncio.CancelledError:
+            if waiter in self._waiting:
+                self._waiting.remove(waiter)
+            elif future.done() and not future.cancelled():
+                self.release()  # handed the server while being cancelled: pass it on
+            raise
+
+    def release(self) -> None:
+        from services import local_render_order
+
+        self._waiting = [w for w in self._waiting if not w[2].done()]
+        index = local_render_order.pick(
+            [(model, since) for model, since, _ in self._waiting],
+            _server_model.get(self.url),
+            time.monotonic(),
+            local_render_order.max_wait_seconds(),
+        )
+        if index is None:
+            self.busy = False
+            return
+        # The server stays busy: ownership passes straight to the chosen job.
+        self._waiting.pop(index)[2].set_result(None)
+
+
+_server_gates: dict[str, _ServerGate] = {}
 
 # ``API_KEYS["comfyui"]`` holds this instead of a URL when jobs go to a worker.
 WORKER_QUEUE = "worker-queue"
@@ -465,13 +513,16 @@ async def run_on_server(url: str, prompt: str, params: dict, client: httpx.Async
     url = url.rstrip("/")
     build_workflow(prompt, params)  # refuse a bad request before waiting in line
     entry = params["entry"]
-    lock = _server_locks.setdefault(url, asyncio.Lock())
-    if lock.locked():
+    gate = _server_gates.setdefault(url, _ServerGate(url))
+    if gate.locked():
         entry["status"] = "queued"
-    async with lock:
+    await gate.acquire(params.get("model_id"))
+    try:
         entry["status"] = "generating"
         await _release_other_models(client, url, params.get("model_id"))
         return await _render(url, prompt, params, client)
+    finally:
+        gate.release()
 
 
 async def _render(url: str, prompt: str, params: dict, client: httpx.AsyncClient) -> str:
