@@ -31,6 +31,7 @@ from services.dossier_ingredients import (
     catalog_selection_version,
 )
 from tests.master_pages_fixtures import master_pages
+from tests.source_dna_fixture import isolate_source_dna_registry
 
 TOKEN = "test-control-plane-token"
 DROP_LINE = "acct:user6390595910283"
@@ -39,10 +40,20 @@ FORMAT = "pov-dirt-bike"
 
 
 @pytest.fixture(autouse=True)
-def _no_live_syzygy(monkeypatch):
-    def unavailable(profile, master_pages, *, timeout):
-        raise di.SyzygyError("test: no live library")
-    monkeypatch.setattr(di, "load_syzygy_library", unavailable)
+def _isolated_source_dna(monkeypatch, tmp_path):
+    isolate_source_dna_registry(monkeypatch, tmp_path)
+
+
+@pytest.fixture(autouse=True)
+def _no_vault_manifest(monkeypatch):
+    # Live Drop Line has no ShipStream vault manifest: the master reads
+    # "missing", exactly what the live Dossier reports today.
+    from services.shipstream_source_manifest import ShipStreamSourceMissing
+
+    def missing(*args, **kwargs):
+        raise ShipStreamSourceMissing("no vault manifest for this page")
+
+    monkeypatch.setattr(di, "load_shipstream_source_projection", missing)
 
 
 def _intent(page_id, handle):
@@ -176,11 +187,28 @@ def test_drop_line_capability_is_zero_so_the_lab_never_renders(monkeypatch, tmp_
     monkeypatch.setattr(cp, "load_engine_registry", lambda: ({}, "h"))
     monkeypatch.setattr(cp, "resolve_slideshow_recipe", lambda publication: None)
     monkeypatch.setattr(cp, "resolve_generation_recipe_with_reason", lambda publication: (None, None))
-    monkeypatch.setattr(cp, "_dossier_source_recipe", lambda publication, refusal_reasons=None: None)
     monkeypatch.setattr(cp, "syzygy_runtime_available", lambda: True)
 
+    calls = []
+    monkeypatch.setattr(
+        cp, "_dossier_source_recipe",
+        lambda publication, refusal_reasons=None: calls.append(publication) or None,
+    )
     response = cp.capabilities(x_rt_page_id=DROP_LINE, x_page_id=None)
     assert response["capabilities"] == [{
         "recipeId": f"{FORMAT}:master", "engine": "sourced_video", "recipeVersion": "v1",
         "maxQuantity": 0, "zeroReason": reasons.POOL_SUPPLIED,
     }]
+    assert calls == [], "a no-library pool policy must never reach the source planner"
+
+    # The same listed page WITH a real library keeps the normal planner path.
+    cp._capabilities_cache.clear()
+    with_library = json.loads(publication["recipeSpecCanonical"])
+    with_library["production"]["sourceLibraryId"] = "masters-x"
+    monkeypatch.setattr(cp, "list_registered_recipe_bindings", lambda *a: [("k", {
+        **publication, "recipeSpecHash": "sha256:" + "ef" * 32,
+        "recipeSpecCanonical": json.dumps(with_library, sort_keys=True, separators=(",", ":")),
+    })])
+    response = cp.capabilities(x_rt_page_id=DROP_LINE, x_page_id=None)
+    assert len(calls) == 1
+    assert not any(row.get("zeroReason") == reasons.POOL_SUPPLIED for row in response["capabilities"])
