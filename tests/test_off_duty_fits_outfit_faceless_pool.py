@@ -73,18 +73,18 @@ def _ingredient(entry, ingredient_id):
     return next(item for item in entry["ingredients"] if item["ingredientId"] == ingredient_id)
 
 
-def _spec_and_body(page_id, intent, revision, production):
+def _spec_and_body(page_id, intent, revision, production, *, format_id=FORMAT):
     spec = {
         "schema": "dossier.recipe-spec.v3",
         "masterPages": intent, "masterPagesHash": revision,
         "renderTreatment": {"stylePreset": None, "filters": {}, "captionStyle": {}},
-        "demand": {"formatMix": {FORMAT: 1}},
+        "demand": {"formatMix": {format_id: 1}},
         "production": production,
     }
     canonical = json.dumps(spec, sort_keys=True, separators=(",", ":"))
     return {
         "schema": recipes.REQUEST_SCHEMA, "pageId": page_id, "lane": recipes.LANE,
-        "recipeId": f"{FORMAT}:master", "engine": "sourced_video",
+        "recipeId": f"{format_id}:master", "engine": "sourced_video",
         "recipeVersion": "dossier-1234567890abcdef", "dossierRevision": "rev-1",
         "recipeSpecHash": "sha256:" + hashlib.sha256(canonical.encode()).hexdigest(),
         "recipeSpecCanonical": canonical,
@@ -142,6 +142,32 @@ def test_off_duty_fits_resolves_a_pool_supplied_dossier_and_registers(lab):
     assert response.json()["status"] == "registered"
 
 
+@pytest.mark.parametrize(("handle", "niche", "format_id"), [
+    ("user3771297960159", "Flower Morph", "flower-morph"),
+    ("user9795207473816", "Glass Architecture", "glass-architecture"),
+])
+def test_studio_finished_formats_register_without_a_lab_master(lab, handle, niche, format_id):
+    page_id = f"acct:{handle}"
+    intent, revision = _intent(page_id, handle, niche=niche)
+    catalog = build_dossier_ingredient_catalog(page_id, intent, revision)
+    assert catalog["currentFormatCandidates"] == [format_id]
+    entry = _format(catalog, format_id)
+    assert entry["blockers"] == []
+    assert _ingredient(entry, "master-source-video")["status"] == "pool_supplied"
+    production = {
+        "providerId": None, "modelId": None, "promptModuleId": None,
+        "referenceSetId": None, "sourceLibraryId": None, "variationValues": {}, "controls": {},
+    }
+    production["catalogVersion"] = catalog_selection_version(catalog, format_id, production)
+    assert production["catalogVersion"] == entry["productionSelections"][0]["catalogVersion"]
+    assert production["catalogVersion"]
+    body, _ = _spec_and_body(page_id, intent, revision, production, format_id=format_id)
+    response = _post(lab, page_id, body)
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "registered"
+    assert format_id not in SOURCE_CUT_FORMATS
+
+
 def test_outfit_clips_stay_exactly_as_delivered():
     # No mirror / motion / reverse transform may ever touch these clips.
     assert FORMAT not in SOURCE_CUT_FORMATS
@@ -183,6 +209,33 @@ def test_off_duty_fits_capability_is_zero_so_the_lab_never_renders(monkeypatch, 
         "maxQuantity": 0, "zeroReason": reasons.POOL_SUPPLIED,
     }]
     assert calls == [], "a no-library pool policy must never reach the source planner"
+
+
+@pytest.mark.parametrize(("page", "niche", "format_id"), [
+    (OFF_DUTY, NICHE, FORMAT),
+    ("acct:user3771297960159", "Flower Morph", "flower-morph"),
+    ("acct:user9795207473816", "Glass Architecture", "glass-architecture"),
+])
+def test_finished_clip_bootstrap_exposes_policy_with_zero_lab_capacity(
+    monkeypatch, tmp_path, page, niche, format_id,
+):
+    from routers import control_plane as cp
+    from services.json_store import atomic_save
+
+    monkeypatch.setenv("CONTENT_LAB_ADVERTISE_ZERO_REASONS", "1")
+    monkeypatch.setattr(cp, "_jobs_snapshot", None)
+    monkeypatch.setattr(cp, "_capabilities_cache", {})
+    monkeypatch.setattr(cp, "_jobs_path", lambda: tmp_path / "jobs.json")
+    atomic_save(tmp_path / "jobs.json", {"jobs": {}, "version": 1, "byIdempotency": {}, "served": {}})
+    monkeypatch.setattr(cp, "_current_intent_for_capabilities", lambda _: (
+        {"contentNiche": niche, "contentEngine": "sourced_video"}, "h",
+    ))
+    monkeypatch.setattr(cp, "list_registered_recipe_bindings", lambda *args: [])
+    actual = cp.capabilities(x_rt_page_id=page, x_page_id=None)["capabilities"]
+    assert len(actual) == 1
+    assert actual[0]["recipeId"] == f"{format_id}:master"
+    assert actual[0]["maxQuantity"] == 0
+    assert actual[0]["zeroReason"] == reasons.POOL_SUPPLIED
 
 
 def test_unlisted_page_with_the_same_niche_gets_no_pool_exemption(lab):

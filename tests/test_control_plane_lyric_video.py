@@ -97,6 +97,7 @@ def test_legacy_authority_maps_match_reviewed_burnt_retirement(filename, key, ex
     for slug in (
         "lyric-video", "image-video", "single-image-video", "meme",
         "coffee-slideshow", "pov-seasonal",
+        "outfit-faceless", "flower-morph", "glass-architecture",
     ):
         current.pop(slug)
     encoded = json.dumps(current, sort_keys=True, separators=(",", ":"),
