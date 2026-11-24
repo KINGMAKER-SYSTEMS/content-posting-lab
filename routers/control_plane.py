@@ -2241,6 +2241,150 @@ async def run_media_retention_remedy(
     }
 
 
+SOURCE_CUT_RECORDS_SCHEMA = "content-lab.source-cut-records.v1"
+SOURCE_CUT_RECORDS_MAX = 50
+
+
+def _source_cut_records_request(body: Any) -> dict[str, Any]:
+    """Validate a source-cut-records body; 400 on anything unexpected."""
+    fields = {"schema", "pageId", "sourceLibraryId", "masterSha256", "masterDurationMs", "usedAt", "note",
+              "cuts", "apply"}
+    if not isinstance(body, dict) or set(body) - fields or body.get("schema") != SOURCE_CUT_RECORDS_SCHEMA:
+        raise HTTPException(status_code=400, detail=f"body must be a {SOURCE_CUT_RECORDS_SCHEMA} object")
+    for name in ("pageId", "sourceLibraryId", "note"):
+        value = body.get(name)
+        if not isinstance(value, str) or not 0 < len(value) <= 200:
+            raise HTTPException(status_code=400, detail=f"{name} must be a non-empty string")
+    master_sha = body.get("masterSha256")
+    if not isinstance(master_sha, str) or not re.fullmatch(r"[0-9a-f]{64}", master_sha):
+        raise HTTPException(status_code=400, detail="masterSha256 must be 64 lowercase hex characters")
+    used_at = body.get("usedAt")
+    try:
+        parsed = datetime.fromisoformat(used_at.replace("Z", "+00:00")) if isinstance(used_at, str) else None
+    except ValueError:
+        parsed = None
+    if parsed is None or parsed.tzinfo is None:
+        raise HTTPException(status_code=400, detail="usedAt must be an ISO time with a zone")
+    master_ms = body.get("masterDurationMs")
+    if type(master_ms) is not int or master_ms <= 0:
+        raise HTTPException(status_code=400, detail="masterDurationMs must be a positive integer")
+    apply = body.get("apply", False)
+    if type(apply) is not bool:
+        raise HTTPException(status_code=400, detail="apply must be true or false")
+    cuts = body.get("cuts")
+    if not isinstance(cuts, list) or not 0 < len(cuts) <= SOURCE_CUT_RECORDS_MAX:
+        raise HTTPException(status_code=400, detail=f"cuts must list 1..{SOURCE_CUT_RECORDS_MAX} windows")
+    windows: list[tuple[int, int]] = []
+    for cut in cuts:
+        if (
+            not isinstance(cut, dict) or set(cut) != {"startMs", "durationMs"}
+            or type(cut["startMs"]) is not int or type(cut["durationMs"]) is not int
+            or cut["startMs"] < 0 or not 0 < cut["durationMs"] <= 60_000
+        ):
+            raise HTTPException(status_code=400, detail="each cut must be {startMs >= 0, durationMs > 0} integers")
+        if cut["startMs"] + cut["durationMs"] > master_ms:
+            # Past the master's end, every planner would count the whole master as used.
+            raise HTTPException(status_code=400, detail="a cut runs past masterDurationMs")
+        windows.append((cut["startMs"], cut["durationMs"]))
+    if len(set(windows)) != len(windows):
+        raise HTTPException(status_code=400, detail="cuts repeat a window")
+    return {**body, "apply": apply, "windows": windows}
+
+
+@router.post("/v1/source-cut-records")
+async def record_source_cuts(
+    body: Any = Body(default=None),
+    x_rt_lane: str | None = Header(default=None),
+    authorization: str | None = Header(default=None),
+) -> dict[str, Any]:
+    """Record master windows cut OUTSIDE a Lab job as used, forever.
+
+    Every planner already refuses any cut that overlaps a window in the
+    archive index's ``sourceDnaCuts`` (_source_dna_cut_ledger, the freshness
+    check, page_source_library.prior_cut_rows). A clip cut by an operator
+    tool never became a Lab job, so its window was free to be cut again.
+    This route appends one such row per window, in the same shape compaction
+    writes, under the jobs lock inside the Lab process. It never removes or
+    edits a row. ``apply`` false (the default) is a dry run that writes
+    nothing; a repeat call skips windows already recorded for that master,
+    so the dry run after a write is the read-back. Rows outside the master's
+    length make the planners treat the whole master as used (fail closed).
+    Fail closed behind the machine bearer.
+    """
+    require_control_plane_bearer(authorization)
+    if x_rt_lane != CONTROL_PLANE_LANE:
+        raise HTTPException(status_code=400, detail="X-RT-Lane must be content-bucket-control-plane")
+    request = _source_cut_records_request(body)
+    master_sha = request["masterSha256"]
+
+    def run() -> dict[str, Any]:
+        with lock_for(_jobs_path()):
+            store = _load_jobs()
+            try:
+                index = compaction.read_archive_index(store)
+            except compaction.ArchiveIndexUnreadable as error:
+                raise HTTPException(status_code=409, detail=f"archive index unreadable: {error}") from error
+            if compaction.ARCHIVE_INDEX_KEY not in store:
+                if compaction._archive_files(_jobs_path()):
+                    # Same refusal as compaction: lost history is never "nothing used".
+                    raise HTTPException(status_code=409, detail="archive index missing while archives exist")
+                index = compaction.empty_index()
+            elif index.get("version") != compaction.ARCHIVE_INDEX_VERSION or not isinstance(
+                index.get("sourceDnaCuts", []), list,
+            ):
+                raise HTTPException(status_code=409, detail="archive index version or cut list is not readable")
+            known_ms = {
+                row.get("durationMs")
+                for job in store.get("jobs", {}).values() if isinstance(job, dict)
+                for row in job.get(page_source_library.JOB_LIBRARY_MASTERS_KEY) or []
+                if isinstance(row, dict) and row.get("sha256") == master_sha
+            }
+            if known_ms and known_ms != {request["masterDurationMs"]}:
+                raise HTTPException(status_code=409, detail=f"the Lab records this master as {sorted(map(str, known_ms))} ms")
+            recorded = {
+                (row.get("startMs"), row.get("durationMs"))
+                for row in index.get("sourceDnaCuts", [])
+                if isinstance(row, dict) and row.get("masterSha256") == master_sha
+            }
+            new_rows = [
+                {
+                    "pageId": request["pageId"],
+                    "jobId": f"external:{request['note']}",
+                    "sourceLibraryId": request["sourceLibraryId"],
+                    "sourceLibraryHash": None,
+                    "recipeVersion": None,
+                    "slotId": None,
+                    "masterSha256": master_sha,
+                    "startMs": start_ms,
+                    "durationMs": duration_ms,
+                    "usedAt": request["usedAt"],
+                    "cutIndex": order,
+                }
+                for order, (start_ms, duration_ms) in enumerate(request["windows"])
+                if (start_ms, duration_ms) not in recorded
+            ]
+            if request["apply"] and new_rows:
+                index = json.loads(json.dumps(index))
+                index.setdefault("sourceDnaCuts", []).extend(new_rows)
+                store[compaction.ARCHIVE_INDEX_KEY] = index
+                _save_jobs(store)
+            return {
+                "schema": SOURCE_CUT_RECORDS_SCHEMA,
+                "applied": request["apply"],
+                "masterSha256": master_sha,
+                "masterKnownToLab": bool(known_ms),
+                "alreadyRecorded": sorted(
+                    [start_ms, duration_ms] for start_ms, duration_ms in request["windows"]
+                    if (start_ms, duration_ms) in recorded
+                ),
+                "written" if request["apply"] else "wouldWrite": [
+                    [row["startMs"], row["durationMs"]] for row in new_rows
+                ],
+            }
+
+    return await anyio.to_thread.run_sync(run)
+
+
 def _reject_prompt_fields(value: Any, path: str = "job") -> None:
     if isinstance(value, dict):
         for key, item in value.items():
