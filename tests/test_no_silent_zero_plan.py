@@ -90,6 +90,10 @@ SWEEP = {
     "pov-night-core": ("source-dna", True, reasons.SOURCE_WINDOWS_EXHAUSTED),
     "pov-scenic": ("source-dna", True, reasons.SOURCE_WINDOWS_EXHAUSTED),
     "meme": ("source-dna", True, reasons.SOURCE_WINDOWS_EXHAUSTED),
+    # Finished clips enter through the Worker's vault pool.
+    "outfit-faceless": ("pool", True, reasons.POOL_SUPPLIED),
+    "flower-morph": ("pool", True, reasons.POOL_SUPPLIED),
+    "glass-architecture": ("pool", True, reasons.POOL_SUPPLIED),
     # ai_video generation: prompts reserve only while jobs are in flight, so a
     # zero clears when those finish (not terminal by design).
     "boat-lake": ("generated", False, reasons.PROMPT_INVENTORY_EXHAUSTED),

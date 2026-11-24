@@ -211,6 +211,33 @@ def test_off_duty_fits_capability_is_zero_so_the_lab_never_renders(monkeypatch, 
     assert calls == [], "a no-library pool policy must never reach the source planner"
 
 
+@pytest.mark.parametrize(("page", "niche", "format_id"), [
+    (OFF_DUTY, NICHE, FORMAT),
+    ("acct:user3771297960159", "Flower Morph", "flower-morph"),
+    ("acct:user9795207473816", "Glass Architecture", "glass-architecture"),
+])
+def test_finished_clip_bootstrap_exposes_policy_with_zero_lab_capacity(
+    monkeypatch, tmp_path, page, niche, format_id,
+):
+    from routers import control_plane as cp
+    from services.json_store import atomic_save
+
+    monkeypatch.setenv("CONTENT_LAB_ADVERTISE_ZERO_REASONS", "1")
+    monkeypatch.setattr(cp, "_jobs_snapshot", None)
+    monkeypatch.setattr(cp, "_capabilities_cache", {})
+    monkeypatch.setattr(cp, "_jobs_path", lambda: tmp_path / "jobs.json")
+    atomic_save(tmp_path / "jobs.json", {"jobs": {}, "version": 1, "byIdempotency": {}, "served": {}})
+    monkeypatch.setattr(cp, "_current_intent_for_capabilities", lambda _: (
+        {"contentNiche": niche, "contentEngine": "sourced_video"}, "h",
+    ))
+    monkeypatch.setattr(cp, "list_registered_recipe_bindings", lambda *args: [])
+    actual = cp.capabilities(x_rt_page_id=page, x_page_id=None)["capabilities"]
+    assert len(actual) == 1
+    assert actual[0]["recipeId"] == f"{format_id}:master"
+    assert actual[0]["maxQuantity"] == 0
+    assert actual[0]["zeroReason"] == reasons.POOL_SUPPLIED
+
+
 def test_unlisted_page_with_the_same_niche_gets_no_pool_exemption(lab):
     intent, revision = _intent(UNLISTED, "outfit.unlisted")
     catalog = build_dossier_ingredient_catalog(UNLISTED, intent, revision)
