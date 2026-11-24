@@ -12,7 +12,9 @@
   `local-h3` and `local-h3-vertical` engines build a MiniMax H3 first/last-frame
   graph (picture only) and the `local-wan-t2v` / `local-wan-i2v` engines a Wan
   2.2 14B graph. `local-h3` mirrors Hailuo: it always renders 16:9, belongs to
-  `FORCE_LANDSCAPE`, and feeds the dual/triptych/both multi-crop pipeline;
+  `FORCE_LANDSCAPE` (built from each catalog entry's `landscape_master` flag, so
+  a new engine opts in without editing a list of ids), and feeds the
+  dual/triptych/both multi-crop pipeline;
   `local-h3-vertical` renders native 9:16. Each
   run uploads any start or end image, submits to `/prompt`, polls `/history`
   and hands `generate_one` the server's `/view` URL. A catalog entry is free only
@@ -990,7 +992,10 @@
   The frame is not source treatment: existing sources stay reusable when a page changes frame
   (they post through the centre band); new cuts carry the page's frame and fit.
 - Prepared artifacts require source-byte verification and upright square-pixel
-  near-9:16 input at least 768 pixels high. Exact and chroma-aligned frames
+  near-9:16 input at least `CONTENT_LAB_POST_RENDER_MIN_SOURCE_HEIGHT` pixels high
+  (default 768, the floor it always had; an operator may lower it, e.g. to 720 for
+  the common HD tier). `post_render.source_geometry_refusal` is the single rule, shared
+  with source-duration repair. Exact and chroma-aligned frames
   scale directly; native provider frames within three percent of 9:16 are
   center-cropped at the edge and scaled to 1080x1920 before caption composition
   so provider sizing cannot stretch or block otherwise usable vertical media.
