@@ -1522,6 +1522,21 @@ async def _write_response_bytes(response: httpx.Response, destination: Path) -> 
             handle.write(chunk)
 
 
+# A finished render is fetched again, not re-rendered, when the transfer fails
+# for a reason that can pass: a dropped connection, a timeout, or a gateway
+# status from a proxy between the Lab and Syzygy. Each attempt asks Syzygy for a
+# fresh signed URL. Contract failures (bad redirect, 4xx, empty body) are not
+# retried. The delays sit between attempts, so the last attempt fails at once.
+_DOWNLOAD_RETRY_DELAYS_S: tuple[float, ...] = (2.0, 5.0)
+_TRANSIENT_STATUSES = frozenset({429, 500, 502, 503, 504})
+
+
+def _status_error(status_code: int) -> SyzygyError:
+    if status_code in _TRANSIENT_STATUSES:
+        return SyzygyUnavailable(f"Syzygy artifact returned {status_code}")
+    return SyzygyError(f"Syzygy artifact returned {status_code}")
+
+
 async def download_syzygy_artifact(play_url: str, destination: Path) -> None:
     runtime = _runtime()
     if runtime is None:
@@ -1532,6 +1547,19 @@ async def download_syzygy_artifact(play_url: str, destination: Path) -> None:
         raise SyzygyError("Syzygy artifact origin is invalid")
     name = play_url.removeprefix("/render-file/")
     destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    for delay in (*_DOWNLOAD_RETRY_DELAYS_S, None):
+        try:
+            await _download_artifact_once(base, key, absolute, name, destination)
+            return
+        except SyzygyUnavailable:
+            if delay is None:
+                raise
+            await asyncio.sleep(delay)
+
+
+async def _download_artifact_once(
+    base: str, key: str, absolute: str, name: str, destination: Path,
+) -> None:
     try:
         async with httpx.AsyncClient(timeout=120.0, follow_redirects=False) as client:
             async with client.stream("GET", absolute, headers=_headers(key)) as response:
@@ -1549,9 +1577,7 @@ async def download_syzygy_artifact(play_url: str, destination: Path) -> None:
                                     "Syzygy artifact redirect rejected: signed URL redirected again"
                                 )
                             if signed.status_code != 200:
-                                raise SyzygyError(
-                                    f"Syzygy artifact returned {signed.status_code}"
-                                )
+                                raise _status_error(signed.status_code)
                             await _write_response_bytes(signed, destination)
                     except httpx.HTTPError:
                         destination.unlink(missing_ok=True)
@@ -1559,9 +1585,7 @@ async def download_syzygy_artifact(play_url: str, destination: Path) -> None:
                 elif response.status_code == 200:
                     await _write_response_bytes(response, destination)
                 else:
-                    raise SyzygyError(
-                        f"Syzygy artifact returned {response.status_code}"
-                    )
+                    raise _status_error(response.status_code)
     except httpx.HTTPError as error:
         destination.unlink(missing_ok=True)
         raise SyzygyUnavailable("Syzygy artifact download failed") from error
