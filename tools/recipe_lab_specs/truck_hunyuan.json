@@ -1,0 +1,57 @@
+{
+ "name": "truck-scenic-hunyuan15",
+ "format": "truck-scenic",
+ "family": "truck",
+ "base": {
+  "engine": "hunyuan15",
+  "width": 1344,
+  "height": 768,
+  "duration": 3
+ },
+ "combinations": [
+  0,
+  367,
+  101,
+  555,
+  230,
+  44
+ ],
+ "seed": 1000,
+ "targets": {
+  "brightness": [
+   30,
+   95
+  ],
+  "min_opening_ratio": 0.7,
+  "max_red_fraction": 0.0015,
+  "motion": [
+   0.15,
+   6.0
+  ]
+ },
+ "vision": true,
+ "variants": [
+  {
+   "name": "hy-catalog"
+  },
+  {
+   "name": "hy-catalog-negative",
+   "negative": "lettering, text, words, numbers, logo, badge, emblem, decal, sticker, license plate, watermark, glowing tail lights, brake lights, headlights on, people, driver, passengers, fade in, black frame"
+  },
+  {
+   "name": "hy-positive-negative",
+   "template": "Understated phone footage, live-action: an extreme wide shot at low wheel height frames a {angle} of a dark navy-black full-size crew-cab pickup parked {setting}. The truck is stationary with its engine off and every one of its lights dark. Its body panels, tailgate, fenders and grille are smooth plain painted metal in one dark colour, its wheels are plain dark alloy, and its windows are clear and empty. The whole truck and the landscape around it stay in frame. The light is {light}, with {atmosphere}. The image holds one steady exposure from the first frame to the last. The camera stays almost still, with a barely perceptible natural drift at very slow speed.",
+   "negative": "lettering, text, words, numbers, logo, badge, emblem, decal, sticker, license plate, watermark, glowing tail lights, brake lights, headlights on, people, driver, passengers, fade in, black frame"
+  },
+  {
+   "name": "hy-negative-easycache",
+   "negative": "lettering, text, words, numbers, logo, badge, emblem, decal, sticker, license plate, watermark, glowing tail lights, brake lights, headlights on, people, driver, passengers, fade in, black frame",
+   "easycache": 0.2
+  }
+ ],
+ "crops": "both",
+ "advisory": [
+  "lights_off",
+  "no_red_accents"
+ ]
+}

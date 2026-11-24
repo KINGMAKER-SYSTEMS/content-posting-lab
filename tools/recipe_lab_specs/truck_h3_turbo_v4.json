@@ -1,0 +1,61 @@
+{
+ "format": "truck-scenic",
+ "family": "truck",
+ "base": {
+  "model_id": "comfyui/minimax-h3-fl2va",
+  "variant": "landscape",
+  "duration": 3,
+  "go_fast": true
+ },
+ "combinations": [
+  0,
+  367,
+  101,
+  555,
+  230,
+  44
+ ],
+ "seed": 1000,
+ "targets": {
+  "brightness": [
+   30,
+   95
+  ],
+  "min_opening_ratio": 0.7,
+  "max_red_fraction": 0.0015,
+  "motion": [
+   0.15,
+   6.0
+  ]
+ },
+ "vision": true,
+ "crops": "both",
+ "advisory": [
+  "lights_off",
+  "no_red_accents"
+ ],
+ "name": "truck-h3-turbo-v4",
+ "variants": [
+  {
+   "name": "official-8step",
+   "rewrite": "h3"
+  },
+  {
+   "name": "v4-8step",
+   "rewrite": "h3",
+   "lora_name": "minimax_h3_turbo_v4_step600_ema.safetensors"
+  },
+  {
+   "name": "v4-6step",
+   "rewrite": "h3",
+   "lora_name": "minimax_h3_turbo_v4_step600_ema.safetensors",
+   "steps": 6
+  },
+  {
+   "name": "v4-4step",
+   "rewrite": "h3",
+   "lora_name": "minimax_h3_turbo_v4_step600_ema.safetensors",
+   "steps": 4
+  }
+ ]
+}

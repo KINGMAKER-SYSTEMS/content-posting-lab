@@ -143,6 +143,8 @@ const PROVIDER_SHORT: Record<string, string> = {
   'wan-i2v-fast': 'Wan',
   'local-h3': 'H3 (local)',
   'local-h3-vertical': 'H3 9:16 (local)',
+  'local-ltx': 'LTX (local)',
+  'local-ltx-vertical': 'LTX 9:16 (local)',
   'local-wan-t2v': 'Wan (local)',
   'local-wan-i2v': 'Wan (local)',
   'grok': 'Grok',

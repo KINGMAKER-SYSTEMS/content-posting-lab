@@ -1,0 +1,136 @@
+{
+ "name": "truck-scenic-h3",
+ "format": "truck-scenic",
+ "family": "truck",
+ "base": {
+  "model_id": "comfyui/minimax-h3-fl2va",
+  "variant": "landscape",
+  "duration": 3,
+  "go_fast": true
+ },
+ "combinations": [
+  0,
+  367,
+  101,
+  555,
+  230,
+  44
+ ],
+ "seed": 1000,
+ "targets": {
+  "brightness": [
+   30,
+   95
+  ],
+  "snow_brightness": [
+   30,
+   125
+  ],
+  "min_opening_ratio": 0.7,
+  "max_red_fraction": 0.0015,
+  "motion": [
+   0.15,
+   6.0
+  ]
+ },
+ "variants": [
+  {
+   "name": "baseline-turbo8",
+   "rounds": 4
+  },
+  {
+   "name": "h3-format",
+   "template": "integrated_multimodal_description: [Shot 1] Live-action, understated phone footage, an extreme wide shot at low wheel height frames a {angle} of a dark navy-black full-size crew-cab pickup parked {setting}. The truck is stationary with its engine off and every one of its lights dark. Its body panels, tailgate, fenders and grille are smooth plain painted metal in one dark colour, its wheels are plain dark alloy, and its windows are clear and empty. The whole truck and the landscape around it stay in frame. The light is {light}, with {atmosphere}. The image holds one steady exposure from the first frame to the last. The camera stays almost still, with a barely perceptible natural drift at very slow speed.\n\noverall_soundscape: A light breeze moves through dry grass and the air is otherwise quiet; there are no voices.\n\nnon_diegetic_music: None."
+  },
+  {
+   "name": "h3-format-mesh",
+   "template": "integrated_multimodal_description: [Shot 1] Live-action, understated phone footage, an extreme wide shot at low wheel height frames a {angle} of a dark navy-black full-size crew-cab pickup parked {setting}. The truck is stationary with its engine off and every one of its lights dark. Its grille is one unbroken black honeycomb mesh from edge to edge, and its body panels, tailgate and fenders are smooth plain painted metal in one dark colour. Its wheels are plain dark alloy, and its windows are clear and empty. The whole truck and the landscape around it stay in frame. The light is {light}, with {atmosphere}. The image holds one steady exposure from the first frame to the last. The camera stays almost still, with a barely perceptible natural drift at very slow speed.\n\noverall_soundscape: A light breeze moves through dry grass and the air is otherwise quiet; there are no voices.\n\nnon_diegetic_music: None."
+  },
+  {
+   "name": "h3-format-stock",
+   "template": "integrated_multimodal_description: [Shot 1] Live-action, understated phone footage, an extreme wide shot at low wheel height frames a {angle} of an ordinary stock dark navy-black full-size crew-cab pickup in plain base trim, parked {setting}. The truck is stationary with its engine off and every one of its lights dark. Its body panels, tailgate, fenders and grille are smooth plain painted metal in one dark colour, its wheels are plain dark alloy, and its windows are clear and empty. The whole truck and the landscape around it stay in frame. The light is {light}, with {atmosphere}. The image holds one steady exposure from the first frame to the last. The camera stays almost still, with a barely perceptible natural drift at very slow speed.\n\noverall_soundscape: A light breeze moves through dry grass and the air is otherwise quiet; there are no voices.\n\nnon_diegetic_music: None."
+  },
+  {
+   "name": "h3-format-steps6",
+   "template": "integrated_multimodal_description: [Shot 1] Live-action, understated phone footage, an extreme wide shot at low wheel height frames a {angle} of a dark navy-black full-size crew-cab pickup parked {setting}. The truck is stationary with its engine off and every one of its lights dark. Its body panels, tailgate, fenders and grille are smooth plain painted metal in one dark colour, its wheels are plain dark alloy, and its windows are clear and empty. The whole truck and the landscape around it stay in frame. The light is {light}, with {atmosphere}. The image holds one steady exposure from the first frame to the last. The camera stays almost still, with a barely perceptible natural drift at very slow speed.\n\noverall_soundscape: A light breeze moves through dry grass and the air is otherwise quiet; there are no voices.\n\nnon_diegetic_music: None.",
+   "steps": 6
+  },
+  {
+   "name": "h3-format-v2",
+   "template": "integrated_multimodal_description: [Shot 1] Live-action, understated phone footage, an extreme wide shot at low wheel height frames a {angle} of a dark navy-black full-size crew-cab pickup parked {setting}. The truck is stationary for the whole shot. Its grille is a flat panel of plain horizontal bars, its head lamps and tail lamps are dark smoked glass, and its doors, fenders, bed sides and tailgate are smooth painted metal in one dark colour. Its wheels are plain dark alloy and its windows are clear glass showing empty seats. The whole truck and the landscape around it stay in frame. The light is {light}, with {atmosphere}. The exposure is steady from the first frame to the last. The camera holds a static shot with a barely perceptible drift at slow speed.\n\noverall_soundscape: A light breeze moves through dry grass and the air is otherwise quiet.\n\nnon_diegetic_music: N/A",
+   "rounds": 2
+  },
+  {
+   "name": "h3-rewrite",
+   "rewrite": "h3"
+  },
+  {
+   "name": "h3-format-steps12",
+   "template": "integrated_multimodal_description: [Shot 1] Live-action, understated phone footage, an extreme wide shot at low wheel height frames a {angle} of a dark navy-black full-size crew-cab pickup parked {setting}. The truck is stationary with its engine off and every one of its lights dark. Its body panels, tailgate, fenders and grille are smooth plain painted metal in one dark colour, its wheels are plain dark alloy, and its windows are clear and empty. The whole truck and the landscape around it stay in frame. The light is {light}, with {atmosphere}. The image holds one steady exposure from the first frame to the last. The camera stays almost still, with a barely perceptible natural drift at very slow speed.\n\noverall_soundscape: A light breeze moves through dry grass and the air is otherwise quiet; there are no voices.\n\nnon_diegetic_music: None.",
+   "steps": 12,
+   "rounds": 2
+  },
+  {
+   "name": "h3-format-easycache",
+   "template": "integrated_multimodal_description: [Shot 1] Live-action, understated phone footage, an extreme wide shot at low wheel height frames a {angle} of a dark navy-black full-size crew-cab pickup parked {setting}. The truck is stationary with its engine off and every one of its lights dark. Its body panels, tailgate, fenders and grille are smooth plain painted metal in one dark colour, its wheels are plain dark alloy, and its windows are clear and empty. The whole truck and the landscape around it stay in frame. The light is {light}, with {atmosphere}. The image holds one steady exposure from the first frame to the last. The camera stays almost still, with a barely perceptible natural drift at very slow speed.\n\noverall_soundscape: A light breeze moves through dry grass and the air is otherwise quiet; there are no voices.\n\nnon_diegetic_music: None.",
+   "easycache": 0.2,
+   "rounds": 3
+  },
+  {
+   "name": "positive-prose",
+   "template": "Understated phone footage, live-action: an extreme wide shot at low wheel height frames a {angle} of a dark navy-black full-size crew-cab pickup parked {setting}. The truck is stationary with its engine off and every one of its lights dark. Its body panels, tailgate, fenders and grille are smooth plain painted metal in one dark colour, its wheels are plain dark alloy, and its windows are clear and empty. The whole truck and the landscape around it stay in frame. The light is {light}, with {atmosphere}. The image holds one steady exposure from the first frame to the last. The camera stays almost still, with a barely perceptible natural drift at very slow speed.",
+   "rounds": 1
+  },
+  {
+   "name": "prompt-no-fade",
+   "prompt_edits": [
+    {
+     "prepend": "The shot begins already fully exposed at a steady brightness that never changes; there is no fade-in."
+    }
+   ],
+   "rounds": 1
+  },
+  {
+   "name": "prompt-lights-off",
+   "prompt_edits": [
+    {
+     "append": "Every light on the truck is switched off, including tail lights, brake lights and headlights. There is no red anywhere on the vehicle and no badge, emblem or decal on any panel."
+    }
+   ],
+   "rounds": 1
+  },
+  {
+   "name": "easycache-0.2",
+   "easycache": 0.2,
+   "rounds": 1
+  },
+  {
+   "name": "h3-format-quality20",
+   "template": "integrated_multimodal_description: [Shot 1] Live-action, understated phone footage, an extreme wide shot at low wheel height frames a {angle} of a dark navy-black full-size crew-cab pickup parked {setting}. The truck is stationary with its engine off and every one of its lights dark. Its body panels, tailgate, fenders and grille are smooth plain painted metal in one dark colour, its wheels are plain dark alloy, and its windows are clear and empty. The whole truck and the landscape around it stay in frame. The light is {light}, with {atmosphere}. The image holds one steady exposure from the first frame to the last. The camera stays almost still, with a barely perceptible natural drift at very slow speed.\n\noverall_soundscape: A light breeze moves through dry grass and the air is otherwise quiet; there are no voices.\n\nnon_diegetic_music: None.",
+   "lora_strength": 0,
+   "steps": 20,
+   "rounds": 1
+  },
+  {
+   "name": "quality-20",
+   "lora_strength": 0,
+   "steps": 20,
+   "rounds": 1
+  }
+ ],
+ "vision": true,
+ "crops": "both",
+ "still_first": {
+  "variant": "h3-rewrite",
+  "labels": [
+   "still-clean",
+   "still-push",
+   "still-ltx"
+  ],
+  "push": 1.06
+ },
+ "advisory": [
+  "lights_off",
+  "no_red_accents"
+ ]
+}

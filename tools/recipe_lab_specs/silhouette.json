@@ -1,0 +1,16 @@
+{
+  "name": "silhouette",
+  "format": "silhouette-truck",
+  "family": "silhouette",
+  "targets": {},
+  "vision": {
+    "question": "You are inspecting a dusk photograph of two silhouetted people beside a pickup truck. Reply with one line of JSON and nothing else, using exactly these keys: {\"readable_text_or_logos\": true or false, \"where\": \"short phrase, or empty\", \"overlay_graphics\": true or false, \"subject_visible\": true or false}. readable_text_or_logos is true if any legible words, brand names, badges or logos appear anywhere. overlay_graphics is true if there are subtitles, watermarks, app interface elements or other graphics drawn over the picture. subject_visible is true if the picture clearly shows two dark human silhouettes and a pickup truck.",
+    "must_be_false": {
+      "no_text": "readable_text_or_logos",
+      "no_overlay": "overlay_graphics"
+    },
+    "must_be_true": {
+      "subject_in_view": "subject_visible"
+    }
+  }
+}
