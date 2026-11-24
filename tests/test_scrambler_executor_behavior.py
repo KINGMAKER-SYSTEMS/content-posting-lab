@@ -1039,7 +1039,7 @@ def test_off_enqueue_serialization_matches_base_golden(lab, tmp_path, monkeypatc
         assert type(captured[phase]["sourceClaimVersion"]) is int
         assert captured[phase].pop("sourceClaimVersion") == 1
 
-    # Burnt's UGC retirement and the additive Coffee slideshow changed the
+    # Later formats, including the three Good Boy formats, changed the
     # shared registry. The current capture changes only
     # these two stored registry hashes. The fixture page's executor,
     # contract, profile and request hashes remain byte-identical to BASE.
@@ -1050,7 +1050,7 @@ def test_off_enqueue_serialization_matches_base_golden(lab, tmp_path, monkeypatc
             "4c8de21caa2e3fefbfc6b2ba659a3e029321e576ef0291f9213497043a4f31ed"
         )
         golden[phase]["engineRegistryHash"] = (
-            "7af6d9dd076fcb35521876d7753bdc0d30ac96731d17e2e93ffa1240907c96e7"
+            "837c873e9b54e80ad1b815e449049ba08e8944e460fa152d8b8d8597a7f59ec2"
         )
     assert captured == golden
 
