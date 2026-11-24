@@ -7,6 +7,11 @@ exposed, and the lab never calls out.
 
 State is in memory, like the generation job table it serves: a restart drops
 queued hand-offs and the owning job fails closed rather than replaying.
+
+Claims are not first-come-first-served: jobs for the model the worker's server
+already holds go first (see services.local_render_order). The loaded model is
+inferred from the last claim, which is exact for the one worker per server this
+is built for.
 """
 
 from __future__ import annotations
@@ -16,9 +21,10 @@ import os
 import secrets
 import time
 import uuid
-from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
+
+from services import local_render_order
 
 # A worker polls every few seconds while idle and heartbeats while rendering.
 # Silence this long means nobody is there to take or finish the job.
@@ -46,33 +52,51 @@ class Job:
 
 
 _jobs: dict[str, Job] = {}
-_pending: deque[str] = deque()
+_pending: list[str] = []          # arrival order
 _last_seen: float | None = None
+_loaded_model: str | None = None  # model of the most recently claimed job
+# The worker said its ComfyUI server is rendering someone else's job.
+_busy = False
 
 
 def reset() -> None:
     """Drop all state (tests)."""
-    global _last_seen
+    global _last_seen, _loaded_model, _busy
     for job in _jobs.values():
         if not job.future.done():
             job.future.cancel()
     _jobs.clear()
     _pending.clear()
     _last_seen = None
+    _loaded_model = None
+    _busy = False
 
 
 def worker_key() -> str:
     return os.getenv("LOCAL_WORKER_KEY", "").strip()
 
 
-def touch() -> None:
+def touch(busy: bool = False) -> None:
     """Record that an authenticated worker just spoke to the lab."""
-    global _last_seen
+    global _last_seen, _busy
     _last_seen = time.monotonic()
+    _busy = busy
 
 
 def worker_online() -> bool:
     return _last_seen is not None and time.monotonic() - _last_seen < WORKER_STALE_SECONDS
+
+
+def worker_ready(max_queue: int) -> tuple[bool, str]:
+    """Whether a new job would start soon: a worker is online, idle, and the line is short."""
+    if not worker_online():
+        return False, "worker_offline"
+    if _busy:
+        return False, "worker_busy"
+    live = [job for job in _jobs.values() if not job.future.done()]
+    if len(live) >= max_queue:
+        return False, "queue_full"
+    return True, "ok"
 
 
 def enqueue(payload: dict) -> Job:
@@ -88,17 +112,28 @@ def enqueue(payload: dict) -> Job:
 
 
 def claim() -> dict | None:
-    """Give the oldest waiting job to the calling worker, or None."""
+    """Give the next job in batch order to the calling worker, or None."""
+    global _loaded_model
     touch()
-    while _pending:
-        job = _jobs.get(_pending.popleft())
-        if job is None or job.future.done():
-            continue
-        job.claim_token = secrets.token_urlsafe(24)
-        job.claimed_at = time.monotonic()
-        job.claim_heartbeat_at = job.claimed_at
-        return {"id": job.id, "claim_token": job.claim_token, **job.payload}
-    return None
+    # Drop hand-offs whose owner already gave up (timed out or cancelled).
+    _pending[:] = [
+        job_id for job_id in _pending
+        if (job := _jobs.get(job_id)) is not None and not job.future.done()
+    ]
+    index = local_render_order.pick(
+        [(_jobs[job_id].payload.get("model_id"), _jobs[job_id].created) for job_id in _pending],
+        _loaded_model,
+        time.monotonic(),
+        local_render_order.max_wait_seconds(),
+    )
+    if index is None:
+        return None
+    job = _jobs[_pending.pop(index)]
+    _loaded_model = job.payload.get("model_id")
+    job.claim_token = secrets.token_urlsafe(24)
+    job.claimed_at = time.monotonic()
+    job.claim_heartbeat_at = job.claimed_at
+    return {"id": job.id, "claim_token": job.claim_token, **job.payload}
 
 
 def _claimed(job_id: str, claim_token: str) -> Job:
@@ -134,10 +169,11 @@ def fail(job_id: str, claim_token: str, message: str) -> None:
     job.future.set_exception(LocalWorkerError(f"local worker: {message}"[:600]))
 
 
-async def wait(job: Job, entry: dict, render_timeout: float) -> Path:
+async def wait(job: Job, entry: dict, render_timeout: float, claim_timeout: float | None = None) -> Path:
     """Wait for the worker's video. Fails closed when nobody is rendering it.
 
-    Time spent queued behind other jobs is unbounded while a worker is alive;
+    Time spent queued behind other jobs is unbounded while a worker is alive,
+    unless ``claim_timeout`` is given (a hosted fallback is waiting);
     ``render_timeout`` only bounds the render itself, from the claim.
     """
     try:
@@ -148,8 +184,13 @@ async def wait(job: Job, entry: dict, render_timeout: float) -> Path:
                 pass
             now = time.monotonic()
             if job.claimed_at is None:
+                if entry.get("status") in ("error", "cancelled"):
+                    # Stopped (e.g. swept as stuck) while waiting: never hand it out (#426).
+                    raise LocalWorkerError("the job was stopped before a worker claimed it")
                 if not worker_online() and now - job.created >= WORKER_STALE_SECONDS:
                     raise LocalWorkerError("no local worker is online to render this job")
+                if claim_timeout is not None and now - job.created >= claim_timeout:
+                    raise LocalWorkerError("the local worker has not claimed this job")
                 continue
             entry["status"] = "polling"
             if not _claim_alive(job, now):

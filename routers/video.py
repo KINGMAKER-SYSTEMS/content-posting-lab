@@ -35,7 +35,20 @@ MAX_PROMPT_HISTORY = 200
 
 # Limit concurrent video generation tasks to prevent resource exhaustion
 _gen_semaphore = asyncio.Semaphore(10)
-_local_gen_semaphore = asyncio.Semaphore(1)
+
+
+def _local_gen_limit() -> int:
+    try:
+        return max(1, int(os.getenv("LOCAL_GEN_MAX_PENDING", "60")))
+    except ValueError:
+        return 60
+
+
+# Local engines render one at a time on one machine, so most of their tasks sit
+# in that machine's queue for minutes or hours. Holding the shared slots above
+# while they wait would block every paid provider and hide the backlog from the
+# local scheduler's batching, so they get their own, larger bound.
+_local_gen_semaphore = asyncio.Semaphore(_local_gen_limit())
 
 # Cap concurrent color-correct ffmpeg encodes so a big bulk request can't
 # exhaust the host's CPU/IO. 4 is conservative and matches the burn router's
@@ -408,7 +421,7 @@ PROVIDER_SCHEMAS: dict[str, dict] = {
         "optimize_prompt": {"type": "toggle", "default": True, "label": "Prompt Optimizer"},
     },
     "local-h3": {
-        "duration": {"type": "range", "min": 2, "max": 15, "default": 6, "label": "Duration (seconds)"},
+        "duration": {"type": "range", "min": 2, "max": 15, "default": 6, "step": 1, "label": "Duration (seconds)"},
         "crop_mode": {"type": "select", "options": ["none", "dual", "triptych", "both"], "default": "both", "label": "Multi-Crop", "note": "dual=2, triptych=3, both=5 crops from one 16:9"},
         "last_image_supported": True,
         "_advanced": {
@@ -417,7 +430,7 @@ PROVIDER_SCHEMAS: dict[str, dict] = {
         },
     },
     "local-h3-vertical": {
-        "duration": {"type": "range", "min": 2, "max": 15, "default": 6, "label": "Duration (seconds)", "note": "With a start image, output keeps the image's shape"},
+        "duration": {"type": "range", "min": 2, "max": 15, "default": 6, "step": 1, "label": "Duration (seconds)", "note": "With a start image, output keeps the image's shape"},
         "last_image_supported": True,
         "_advanced": {
             "go_fast": {"type": "toggle", "default": True, "label": "Go Fast (8-step LoRA)"},
@@ -757,7 +770,16 @@ def _sweep_stuck_entries(job: dict) -> None:
         return
     age = (datetime.now(timezone.utc) - created_dt).total_seconds()
     # Local engines queue on one machine and may legitimately run far longer.
-    timeout = (PROVIDERS.get(job.get("provider")) or {}).get("stuck_timeout_secs", _STUCK_JOB_TIMEOUT_SECS)
+    # With backend ordering on and a local engine configured, a job may be
+    # served by any engine in its chain.
+    from providers import backend_order
+
+    provider = job.get("provider") or ""
+    chain = backend_order.chain_for(provider) if API_KEYS.get("comfyui") else (provider,)
+    timeout = max(
+        (PROVIDERS.get(backend) or {}).get("stuck_timeout_secs", _STUCK_JOB_TIMEOUT_SECS)
+        for backend in chain
+    )
     if age < timeout:
         return
     swept = False

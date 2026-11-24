@@ -12,7 +12,9 @@
   `local-h3` and `local-h3-vertical` engines build a MiniMax H3 first/last-frame
   graph (picture only) and the `local-wan-t2v` / `local-wan-i2v` engines a Wan
   2.2 14B graph. `local-h3` mirrors Hailuo: it always renders 16:9, belongs to
-  `FORCE_LANDSCAPE`, and feeds the dual/triptych/both multi-crop pipeline;
+  `FORCE_LANDSCAPE` (built from each catalog entry's `landscape_master` flag, so
+  a new engine opts in without editing a list of ids), and feeds the
+  dual/triptych/both multi-crop pipeline;
   `local-h3-vertical` renders native 9:16. Each
   run uploads any start or end image, submits to `/prompt`, polls `/history`
   and hands `generate_one` the server's `/view` URL. A catalog entry is free only
@@ -22,12 +24,19 @@
   paid and fail-closed. A prompt that ComfyUI no longer lists as running or
   pending and never reached history (cancelled, or the server restarted) fails
   the job at once. One process sends a server one render at a time
-  (`_server_locks`), so `COMFYUI_TIMEOUT_SECONDS` bounds a render and not its
+  (`_ServerGate`), so `COMFYUI_TIMEOUT_SECONDS` bounds a render and not its
   time in line, and posts `/free` before a job whose model differs from the
   previous one. ComfyUI otherwise keeps every loaded model: on the 512 GB
   studio Mac H3 holds about 186 GB and each Wan pair about 120 GB, and holding
-  all three got the server killed by the OS (jetsam) mid-render. Local jobs use
-  the entry's `stuck_timeout_secs` instead
+  all three got the server killed by the OS (jetsam) mid-render. Waiting jobs
+  are let in batch order, not first-come-first-served
+  (`services/local_render_order.py`, used by both the gate and the worker
+  queue's `claim`): the oldest job for the already-loaded model goes next, and
+  the server switches only when that model has nothing queued or another job
+  has waited `LOCAL_BATCH_MAX_WAIT_SECONDS` (default 30 min; 0 = oldest first).
+  Local generations from `/generate` take `_local_gen_semaphore`
+  (`LOCAL_GEN_MAX_PENDING`, default 60), never the paid providers' 10 shared
+  slots. Local jobs use the entry's `stuck_timeout_secs` instead
   of the 20-minute watchdog. Control Plane can use a local engine when an
   operator explicitly includes it in the pinned prompt catalog with a
   compatible method and zero cost. Bundled recipes keep their existing provider
@@ -57,6 +66,43 @@
   requests use a separate one-job permit from paid Generate requests. Concurrent
   result uploads use independent spool files. Only the winning result is handed
   to the waiting job.
+
+- `providers/backend_order.py` and `providers/backend_order.json` own which
+  backend serves a generation. Off by default: with `CONTENT_LAB_BACKEND_ORDER`
+  unset every job uses exactly the provider it asked for. With it `on` (or set
+  to another order file), `generate_one` walks the first chain naming the
+  requested provider: a `billing: local` engine is tried only when its ComfyUI
+  `/queue` answers within `local.probe_timeout_s` with fewer than
+  `local.max_queue` jobs (counting this process's jobs waiting for the render
+  lock), or, in worker mode, when a worker checked in within
+  `WORKER_STALE_SECONDS`, is not busy, and the hand-off line is short. A worker
+  whose ComfyUI is rendering someone else's job (or whose load is over
+  `LOCAL_WORKER_MAX_LOAD`) checks in with `claim?busy=true` and takes nothing;
+  an unclaimed hand-off gives up after `local.claim_timeout_s`. A down, busy or
+  failed local engine falls to the next entry; a request shape the local engine
+  refuses (`ValueError`) skips it quietly. A chain holds at most one paid
+  provider, after every local one, and a paid failure ends the job as before, so
+  one job makes at most one paid request plus that provider's own retries. A
+  paid substitute the caller did not reserve is priced from the same request
+  and debited under `<job id>:fallback:<provider>`, so a retry of the job never
+  reserves twice and the zero-budget stop holds. A resumed hosted prediction
+  (`_prediction_checkpoint` with a record) never detours through a local
+  engine. Post-processing (`FORCE_LANDSCAPE`, `strip_audio`, `output_kind`)
+  follows the served provider; the entry records `backend_attempts`,
+  `served_provider` and `billing`. Every job probes again, so jobs return to
+  the local engine on their own once it answers and is idle. Each local
+  engine's change of state (down, back) logs one warning line and each job
+  served by a later entry one `backend-order fallback` line; an
+  `ALERT backend-order` fires only when every backend in a job's chain failed.
+  A malformed order file alerts once and turns ordering off. Control Plane recipes still pin hosted engines; ordering only
+  changes who serves them. The same file's `vision.studio` section, with
+  `CONTENT_LAB_VISION_STUDIO_URL` set, asks the Studio's fast vision model
+  (then the hard one, only if already loaded) after the primary vision model
+  fails. Its verdict is a `studioHint` beside the hosted fallback's verdict
+  unless `authority: verdict` carries a passing `agreement` record from
+  `scripts/vision_agreement.py` (rate and frame count at or above
+  `min_agreement` / `min_frames`, same model); otherwise it alerts and stays a
+  hint.
 
 - `routers/recreate.py` confines REST and WebSocket job IDs to one real
   recreate-directory child before any job write or deletion. Reject encoded
@@ -990,7 +1036,10 @@
   The frame is not source treatment: existing sources stay reusable when a page changes frame
   (they post through the centre band); new cuts carry the page's frame and fit.
 - Prepared artifacts require source-byte verification and upright square-pixel
-  near-9:16 input at least 768 pixels high. Exact and chroma-aligned frames
+  near-9:16 input at least `CONTENT_LAB_POST_RENDER_MIN_SOURCE_HEIGHT` pixels high
+  (default 768, the floor it always had; an operator may lower it, e.g. to 720 for
+  the common HD tier). `post_render.source_geometry_refusal` is the single rule, shared
+  with source-duration repair. Exact and chroma-aligned frames
   scale directly; native provider frames within three percent of 9:16 are
   center-cropped at the edge and scaled to 1080x1920 before caption composition
   so provider sizing cannot stretch or block otherwise usable vertical media.

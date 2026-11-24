@@ -1,4 +1,4 @@
-from . import comfyui, grok, replicate
+from . import base, comfyui, grok, replicate
 
 PROVIDERS = {
     "h3-highspeed": {
@@ -22,6 +22,7 @@ PROVIDERS = {
         "module": grok,
     },
     "hailuo": {
+        "landscape_master": True,
         "name": "Hailuo 2.3",
         "group": "MiniMax",
         "key_id": "replicate",
@@ -69,6 +70,7 @@ PROVIDERS = {
         "output_kind": "image",
     },
     "pruna-pvideo": {
+        "landscape_master": True,
         "name": "P-Video",
         "group": "PrunaAI",
         "key_id": "replicate",
@@ -91,6 +93,7 @@ PROVIDERS = {
     # Local engines run on a ComfyUI server the operator owns (COMFYUI_URL).
     # ``billing: local`` is the only way a provider may meter as free.
     "local-h3": {
+        "landscape_master": True,
         "name": "H3 (local)",
         "group": "Local (ComfyUI)",
         "key_id": "comfyui",
@@ -137,3 +140,8 @@ PROVIDERS = {
         "module": comfyui,
     },
 }
+
+# Engines that always emit a 16:9 master, which the multi-crop pipeline slices
+# into 9:16 clips. Declared per catalog entry so a new engine opts in with one
+# flag instead of an edit to a list of provider ids.
+base.FORCE_LANDSCAPE = {pid for pid, info in PROVIDERS.items() if info.get("landscape_master") is True}
