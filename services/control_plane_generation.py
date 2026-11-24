@@ -38,6 +38,8 @@ CATALOG_PATH = (
 READY_MODE = "ready"
 MAX_PROVIDER_CALLS = 20
 MAX_CAPABILITY_QUANTITY = 10
+# Deliverable 9:16 crops cut from one landscape render, per crop mode.
+CROP_MODE_CLIPS = {"dual": 2, "triptych": 3, "both": 5}
 MAX_ANCHOR_BYTES = 5 * 1024 * 1024
 MAX_ANCHOR_MANIFEST_BYTES = 64 * 1024
 SHA256 = re.compile(r"^[a-f0-9]{64}$")
@@ -151,6 +153,15 @@ class GenerationRecipe:
 
     @property
     def clips_per_generation(self) -> int:
+        # A page may override the family's crop mode in its Dossier controls
+        # ("none" = one centre crop per render). The render count must follow
+        # the crop mode that will actually run, or a one-crop page gets one
+        # clip per five requested posts.
+        crop_mode = generation_options(self).get("crop_mode")
+        if crop_mode in CROP_MODE_CLIPS:
+            return CROP_MODE_CLIPS[crop_mode]
+        if crop_mode is not None:
+            return 1
         return max(1, int(self.family.get("clips_per_gen") or 1))
 
     @property

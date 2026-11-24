@@ -154,7 +154,7 @@ def _stub_generation_recipe():
         prompt_catalog_hash=CATALOG_HASHES[0],
         family_name=FAMILIES[0],
         provider_model=PROVIDER_MODELS[0],
-        clips_per_generation=1,
+        clips_per_generation=5,  # a truck recipe cuts five crops per master
         recipe_spec={"renderTreatment": {}},
         planned_provider_calls=lambda n: min(n, 10),
     )

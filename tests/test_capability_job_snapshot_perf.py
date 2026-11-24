@@ -166,7 +166,7 @@ def capabilities_scaffold(monkeypatch):
         prompt_catalog_hash="sha256:" + ("33" * 32),
         family_name="truck-scenic",
         provider_model="replicate/veo-3",
-        clips_per_generation=1,
+        clips_per_generation=5,  # a truck recipe cuts five crops per master
         recipe_spec={"renderTreatment": {}},
         planned_provider_calls=lambda quantity: min(quantity, 10),
     )

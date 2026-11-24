@@ -95,6 +95,7 @@ from services.control_plane_generation import (
     dossier_clip_crop,
     dossier_clip_speed,
     dossier_filters_to_color_correction,
+    CROP_MODE_CLIPS,
     generation_options,
     new_generation_options,
     load_generation_anchor,
@@ -2835,6 +2836,11 @@ def _truck_master_candidates(
     Applied-video evidence must bind the producer and match the requested
     grade, speed and crop; caption-only recipe changes still permit reuse.
     """
+    # Recovery always re-cuts five sibling crops. A recipe that no longer asks
+    # for five crops per render (e.g. Dossier crop_mode "none") must get fresh
+    # renders instead.
+    if generation_recipe.clips_per_generation != CROP_MODE_CLIPS[TRUCK_CROP_MODE]:
+        return []
     reserved: set[str] = set()
     jobs = store.get("jobs", {})
     archive_index = compaction.read_archive_index(store)
@@ -3638,7 +3644,7 @@ async def _validated_source_url(value: Any) -> str:
 def _validated_provider_candidates(entry: dict[str, Any], crop_mode: Any) -> list[dict[str, Any]]:
     """A multi-crop provider call must fulfill its complete commissioned set."""
     candidates = entry.get("crops") or [{"file": entry.get("file")}]
-    counts = {"dual": 2, "triptych": 3, "both": 5}
+    counts = CROP_MODE_CLIPS
     expected = counts.get(crop_mode)
     if expected is not None:
         if not isinstance(candidates, list) or len(candidates) != expected or any(
@@ -3790,7 +3796,7 @@ async def _run_owned_dossier_generation(job_id: str) -> None:
 
         if manifests:
             await asyncio.to_thread(_verify_preserved_generation, job_root, manifests)
-        expected_crops = {"dual": 2, "triptych": 3, "both": 5}.get(options.get("crop_mode"), 1)
+        expected_crops = CROP_MODE_CLIPS.get(options.get("crop_mode"), 1)
         seen_candidates = set()
         for clip in manifests:
             index = clip.get("generationIndex")
@@ -7741,7 +7747,7 @@ def job_artifacts(
         artifact_limit = math.ceil(requested / TRUCK_CROP_COUNT) * TRUCK_CROP_COUNT
     if 0 < artifact_limit < len(job["clips"]):
         boundary = job["clips"][artifact_limit - 1].get("delivery", {}).get("crop", {})
-        count = {"dual": 2, "triptych": 3, "both": 5}.get(boundary.get("mode"))
+        count = CROP_MODE_CLIPS.get(boundary.get("mode"))
         index = boundary.get("index")
         if count is not None and type(index) is int and 0 <= index < count:
             artifact_limit += count - index - 1
