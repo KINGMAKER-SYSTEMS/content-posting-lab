@@ -32,7 +32,7 @@ def test_other_recipe_contexts_still_require_a_caption_library(page_id, format_m
 
 
 def test_glass_captionless_scope_matches_the_architecture_recipe():
-    page = "acct:user9795207473816"
+    page = "acct:user2524162424686"
     glass = {"glass-architecture": 1}
 
     assert validate_caption_discipline(EMPTY, page_id=page, format_mix=glass) == EMPTY
@@ -43,6 +43,7 @@ def test_glass_captionless_scope_matches_the_architecture_recipe():
         )
 
     for foreign_page, format_mix in [
+        ("acct:user9795207473816", glass),
         (OFF_DUTY, glass),
         ("acct:user3771297960159", glass),
         (page, {"glass-architecture": True}),

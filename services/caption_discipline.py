@@ -28,7 +28,7 @@ CAPTION_DISCIPLINE_FIELDS = {"captionSet", "register", "slingshotShare"}
 CAPTION_SET_SLUG = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 CAPTIONLESS_CLIP_FORMATS = {
     "acct:user8696130597870": ("outfit-faceless", "Off Duty Fits"),
-    "acct:user9795207473816": ("glass-architecture", "Glass Signal"),
+    "acct:user2524162424686": ("glass-architecture", "Glass Signal"),
 }
 
 
