@@ -113,13 +113,16 @@ def _library(library_id: str, lane: str, subject: str, count: int = 6) -> Syzygy
                 key=f"{lane}/{subject}/photos/img-{index:02d}.jpg",
                 bytes=2_000 + index,
                 url=f"https://r2.example/{lane}/{subject}/photos/img-{index:02d}.jpg",
+                indexed_sha256=hashlib.sha256(
+                    f"{lane}/{subject}/photos/img-{index:02d}.jpg".encode()
+                ).hexdigest(),
             )
             for index in range(count)
         ),
         key=lambda item: item.key,
     ))
     canonical = json.dumps(
-        [[item.key, item.bytes] for item in objects],
+        [[item.key, item.bytes, item.indexed_sha256] for item in objects],
         separators=(",", ":"), ensure_ascii=False,
     )
     return SyzygyLibrary(
