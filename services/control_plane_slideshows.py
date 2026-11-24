@@ -24,7 +24,7 @@ from urllib.parse import parse_qsl, quote, unquote, urljoin, urlsplit
 
 import httpx
 
-from services.content_engine_registry import MaterialProfile, resolve_material_profile
+from services.content_engine_registry import MaterialProfile, engine_family, resolve_material_profile
 from services.control_plane_image_video import IMAGE_VIDEO_FORMATS, image_video_plan_for_format
 from services.control_plane_generation import typed_recipe_spec
 from services.master_pages_contract import EXTERNAL_PAGE_SOURCES
@@ -862,7 +862,7 @@ def resolve_slideshow_recipe(
     if (
         not isinstance(recipe_id, str)
         or not recipe_id.endswith(":master")
-        or engine not in {"sourced_slideshow", "lyrics_slideshows", "sourced_image"}
+        or engine_family(engine) != "slideshow"
     ):
         return None
     spec = typed_recipe_spec(publication)

@@ -60,6 +60,7 @@ class BootstrapBoundary(unittest.TestCase):
                                 read_archive_index=lambda view: view.get("archive", {})),
                  page_niche_admits=lambda niche, wanted, eng: niche == wanted,
                  _SLIDESHOW_ENGINES=frozenset({"sourced_slideshow", "lyrics_slideshows", "sourced_image"}),
+                 _GENERATED_ENGINES=frozenset({"ai_video"}), _SOURCED_ENGINES=frozenset({"sourced_video"}),
                  is_pool_supplied=pool.is_pool_supplied,
                  typed_recipe_spec=lambda p: p,
                  POOL_SUPPLIED="pool_supplied", MAX_CAPABILITIES=100,

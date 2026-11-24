@@ -22,6 +22,7 @@ from typing import Any
 
 from fastapi import APIRouter, Header, HTTPException
 
+from services.content_engine_registry import engine_family
 from services.json_store import lock_for
 from services.roster import ROSTER_PATH
 from services.master_pages_contract import exact_intent, intent_hash
@@ -359,7 +360,7 @@ def _valid_source_start_control(value: Any, intent: dict[str, Any]) -> bool:
     only as a bounded whole-second timestamp.
     """
     return (
-        intent.get("contentEngine") == "sourced_video"
+        engine_family(intent.get("contentEngine")) == "sourced"
         and source_start_ms(value) is not None
     )
 

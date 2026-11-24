@@ -24,7 +24,7 @@ import httpx
 
 from providers import PROVIDERS
 from providers.base import API_KEYS
-from services.content_engine_registry import resolve_material_profile
+from services.content_engine_registry import engine_family, resolve_material_profile
 from services.caption_discipline import validate_caption_discipline
 from services.content_format_contracts import load_format_contracts
 from services.generation_budget import charged_cost_per_gen, is_local_provider
@@ -381,7 +381,7 @@ def _resolve_generation_recipe(
     content_engine = publication.get("engine")
     if not isinstance(recipe_id, str) or not recipe_id.endswith(":master"):
         return _unavailable(publication, "recipe_identity")
-    if content_engine != "ai_video":
+    if engine_family(content_engine) != "generated":
         return _unavailable(publication, "content_engine")
     spec = _typed_recipe_spec(publication)
     if spec is None:

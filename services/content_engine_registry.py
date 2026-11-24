@@ -32,13 +32,169 @@ PROFILE_FIELDS = {
 FORMAT_ID = re.compile(r"^[a-z0-9][a-z0-9-]{0,99}$")
 SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,199}$")
 SHA256_VERSION = re.compile(r"^sha256:[0-9a-f]{64}$")
-ALLOWED_BINDINGS = {
-    "ai_video": ("generated_video", "prompt_family"),
-    "sourced_video": ("source_library", "source_dna_recut"),
-    "sourced_slideshow": ("image_library", "slideshow_renderer"),
-    "sourced_image": ("image_library", "slideshow_renderer"),
-    "lyrics_slideshows": ("lyric_image_library", "slideshow_renderer"),
+
+# THE ONE ENGINE LIST (B9, 2026-11-22). Engines used to be a Python literal here
+# and a JS literal in the Worker; a new engine needed code in two repos. Now
+# recipes/content-engines.v1.json names every engine with its material source
+# and executor kind, this module builds the bindings from it, and
+# GET /v1/format-contracts serves the same list (plus its hash) to the Worker,
+# which drops its own literal. What stays code is the executor itself: an
+# engine may only bind to an executor kind the Lab has a renderer for.
+ENGINES_PATH = Path(__file__).resolve().parents[1] / "recipes/content-engines.v1.json"
+ENGINES_SCHEMA = "content-lab.content-engines.v1"
+ENGINE_ID = re.compile(r"^[a-z][a-z0-9_]{0,39}$")
+ENGINE_FIELDS = {"label", "materialSource", "executorKind"}
+# Executor kinds with code behind them (services/control_plane_generation.py,
+# control_plane_sources.py, control_plane_slideshows.py). Adding a kind IS a
+# code change, by nature; adding an engine on an existing kind is not.
+KNOWN_EXECUTOR_KINDS = frozenset({"prompt_family", "source_dna_recut", "slideshow_renderer"})
+# Material sources each executor kind reads. A binding outside this table
+# would name material the executor cannot consume, so it is refused at load.
+MATERIAL_SOURCES_BY_KIND = {
+    "prompt_family": frozenset({"generated_video"}),
+    "source_dna_recut": frozenset({"source_library"}),
+    "slideshow_renderer": frozenset({"image_library", "lyric_image_library"}),
 }
+# The dispatch family an engine belongs to, by what its executor consumes.
+ENGINE_FAMILY_BY_KIND = {
+    "prompt_family": "generated",
+    "source_dna_recut": "sourced",
+    "slideshow_renderer": "slideshow",
+}
+
+
+@dataclass(frozen=True)
+class ContentEngine:
+    engine: str
+    label: str
+    material_source: str
+    executor_kind: str
+
+    @property
+    def family(self) -> str:
+        return ENGINE_FAMILY_BY_KIND[self.executor_kind]
+
+
+def _engines_path() -> Path:
+    configured = os.environ.get("CONTENT_LAB_CONTENT_ENGINES", "").strip()
+    return Path(configured).resolve() if configured else ENGINES_PATH
+
+
+def canonical_engines_hash(engines: dict[str, ContentEngine]) -> str:
+    """sha256 of the engine list in canonical JSON (sorted keys, no spaces).
+
+    The Worker recomputes exactly this over the `engines` it receives and
+    refuses the whole authority when it differs, so a partial or edited list
+    can never be acted on. Formatting of the file on disk does not matter.
+    """
+    canonical = json.dumps(
+        {
+            engine.engine: {
+                "executorKind": engine.executor_kind,
+                "label": engine.label,
+                "materialSource": engine.material_source,
+            }
+            for engine in engines.values()
+        },
+        sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+    ).encode("utf-8")
+    return "sha256:" + hashlib.sha256(canonical).hexdigest()
+
+
+# Material source -> dispatch family, for a profile (whose executor may be
+# None while uncommissioned) and for callers that hold only the engine name.
+MATERIAL_FAMILY = {
+    "generated_video": "generated",
+    "source_library": "sourced",
+    "image_library": "slideshow",
+    "lyric_image_library": "slideshow",
+}
+
+_ENGINES_CACHE: tuple[tuple[str, int, int], tuple[dict[str, ContentEngine], str]] | None = None
+
+
+def load_content_engines() -> tuple[dict[str, ContentEngine], str]:
+    """Every engine, by id, plus the canonical hash the Worker checks.
+
+    Re-read when the file changes (path, mtime, size); the file is tiny and
+    the dispatch helpers below ask on every request.
+    """
+    global _ENGINES_CACHE
+    path = _engines_path()
+    stat = path.stat()
+    key = (str(path), stat.st_mtime_ns, stat.st_size)
+    if _ENGINES_CACHE is not None and _ENGINES_CACHE[0] == key:
+        return _ENGINES_CACHE[1]
+    value = json.loads(path.read_bytes())
+    if (
+        not isinstance(value, dict)
+        or not {"schema", "engines"} <= set(value) <= {"schema", "engines", "note"}
+        or value.get("schema") != ENGINES_SCHEMA
+        or not isinstance(value.get("engines"), dict)
+        or not value["engines"]
+    ):
+        raise ValueError("content engines file is invalid")
+    engines: dict[str, ContentEngine] = {}
+    for engine_id, entry in value["engines"].items():
+        if not isinstance(engine_id, str) or not ENGINE_ID.fullmatch(engine_id):
+            raise ValueError("content engine id is invalid")
+        if not isinstance(entry, dict) or set(entry) != ENGINE_FIELDS:
+            raise ValueError(f"content engine {engine_id} fields are invalid")
+        label = entry.get("label")
+        material_source = entry.get("materialSource")
+        executor_kind = entry.get("executorKind")
+        if (
+            not _nonempty(label, 80)
+            or not _nonempty(material_source, 60)
+            or executor_kind not in KNOWN_EXECUTOR_KINDS
+        ):
+            raise ValueError(f"content engine {engine_id} is invalid")
+        if material_source not in MATERIAL_SOURCES_BY_KIND[executor_kind]:
+            raise ValueError(f"content engine {engine_id} binds material its executor cannot read")
+        engines[engine_id] = ContentEngine(engine_id, label, material_source, executor_kind)
+    result = (engines, canonical_engines_hash(engines))
+    _ENGINES_CACHE = (key, result)
+    return result
+
+
+def allowed_bindings() -> dict[str, tuple[str, str]]:
+    """engine -> (materialSource, executorKind), from the engines file."""
+    engines, _ = load_content_engines()
+    return {
+        engine.engine: (engine.material_source, engine.executor_kind)
+        for engine in engines.values()
+    }
+
+
+def engine_family(engine: Any) -> str | None:
+    """'generated' | 'sourced' | 'slideshow' for a known engine, else None.
+
+    Dispatch branches ask this instead of comparing engine names, so an
+    engine added to the file dispatches like its siblings with no code edit.
+    An unknown engine is None: no branch claims it. An unreadable file is
+    also None here, but it cannot hide for long: routers/control_plane.py
+    loads the file at import (the Lab does not start on a broken file) and
+    /v1/format-contracts answers 503 on it.
+    """
+    if not isinstance(engine, str):
+        return None
+    try:
+        engines, _ = load_content_engines()
+    except (OSError, ValueError, json.JSONDecodeError):
+        return None
+    known = engines.get(engine)
+    return known.family if known is not None else None
+
+
+def engines_in_family(family: str) -> frozenset[str]:
+    """The engine ids whose executor is in one dispatch family."""
+    try:
+        engines, _ = load_content_engines()
+    except (OSError, ValueError, json.JSONDecodeError):
+        return frozenset()
+    return frozenset(
+        engine.engine for engine in engines.values() if engine.family == family
+    )
 
 
 @dataclass(frozen=True)
@@ -56,6 +212,11 @@ class MaterialProfile:
     format_contract_version: str
     registry_hash: str
     authority_hash: str
+
+    @property
+    def family(self) -> str:
+        """'generated' | 'sourced' | 'slideshow', by the material it consumes."""
+        return MATERIAL_FAMILY[self.material_source]
 
 
 def _registry_path() -> Path:
@@ -77,6 +238,7 @@ def _parse_profile(
     value: Any,
     registry_hash: str,
     contract: FormatContract,
+    bindings: dict[str, tuple[str, str]],
 ) -> MaterialProfile:
     if not FORMAT_ID.fullmatch(format_slug):
         raise ValueError("engine registry format is invalid")
@@ -94,7 +256,7 @@ def _parse_profile(
     format_contract_version = value.get("formatContractVersion")
     if (
         not _nonempty(content_niche)
-        or content_engine not in ALLOWED_BINDINGS
+        or content_engine not in bindings
         or not _nonempty(material_source)
         or asset_type != "video/mp4"
         or execution_status not in {"commissioned", "uncommissioned"}
@@ -104,7 +266,7 @@ def _parse_profile(
         or not isinstance(max_quantity, int)
     ):
         raise ValueError(f"engine registry profile {format_slug} is invalid")
-    expected_source, expected_kind = ALLOWED_BINDINGS[content_engine]
+    expected_source, expected_kind = bindings[content_engine]
     if material_source != expected_source:
         raise ValueError(f"engine registry profile {format_slug} changes engine semantics")
     if (
@@ -206,9 +368,10 @@ def load_engine_registry() -> tuple[dict[str, MaterialProfile], str]:
     contracts, _ = load_format_contracts()
     if set(value["profiles"]) != set(contracts):
         raise ValueError("engine registry and format contract coverage diverge")
+    bindings = allowed_bindings()
     profiles = {
         format_slug: _parse_profile(
-            format_slug, profile, registry_hash, contracts[format_slug],
+            format_slug, profile, registry_hash, contracts[format_slug], bindings,
         )
         for format_slug, profile in value["profiles"].items()
     }

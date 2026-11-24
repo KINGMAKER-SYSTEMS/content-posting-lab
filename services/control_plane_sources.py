@@ -24,7 +24,7 @@ from urllib.parse import urlsplit, urlunsplit, parse_qsl, quote_plus
 from pathlib import Path
 from typing import Any, Callable
 
-from services.content_engine_registry import resolve_material_profile
+from services.content_engine_registry import engine_family, resolve_material_profile
 from services.content_format_contracts import load_format_contracts
 from services.scrambler_originality import ScramblerOriginalityUnavailable
 from services.control_plane_generation import (
@@ -296,7 +296,7 @@ def resolve_source_recipe(
         return None
     recipe_id = publication.get("recipeId")
     engine = publication.get("engine")
-    if not isinstance(recipe_id, str) or engine != "sourced_video":
+    if not isinstance(recipe_id, str) or engine_family(engine) != "sourced":
         return None
     spec = typed_recipe_spec(publication)
     if spec is None or spec.get("schema") not in {
