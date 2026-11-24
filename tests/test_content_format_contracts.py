@@ -93,7 +93,7 @@ def test_every_known_format_has_a_strict_contract_and_registry_binding():
     profiles, _ = load_engine_registry()
     assert set(contracts) == set(profiles) == {
         "boat-lake", "pov-seasonal", "coffee-tok", "coffee-slideshow", "construction-scenic", "lyric-edits", "lyric-video",
-        "meme", "meme-slideshow", "outfit-faceless", "pov-dirt-bike", "pov-dusk-core",
+        "meme", "meme-slideshow", "flower-morph", "glass-architecture", "outfit-faceless", "pov-dirt-bike", "pov-dusk-core",
         "pov-club", "pov-night-core", "pov-night-core-ai", "pov-scenic",
         "silhouette-truck", "truck-scenic", "truck-ugc", "ugc-slideshow", "image-video", "single-image-video",
     }
@@ -111,7 +111,7 @@ def test_only_complete_hash_bound_formats_are_commissioned():
         if profile.execution_status == "commissioned"
     } == {
         "boat-lake", "pov-seasonal", "coffee-tok", "coffee-slideshow", "lyric-edits", "lyric-video", "meme", "meme-slideshow",
-        "outfit-faceless", "pov-club", "pov-dirt-bike", "pov-night-core", "pov-scenic", "silhouette-truck",
+        "flower-morph", "glass-architecture", "outfit-faceless", "pov-club", "pov-dirt-bike", "pov-night-core", "pov-scenic", "silhouette-truck",
         "truck-scenic", "ugc-slideshow", "image-video", "single-image-video",
     }
     assert all(

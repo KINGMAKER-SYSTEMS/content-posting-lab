@@ -1734,6 +1734,168 @@
         "sounds": "page_binding_required"
       },
       "definitionGaps": []
+    },
+    "flower-morph": {
+      "contentNiche": "Flower Morph",
+      "contentEngine": "sourced_video",
+      "materialSource": "source_library",
+      "assetType": "video/mp4",
+      "definitionStatus": "complete",
+      "creativeAuthority": {
+        "kind": "source_dna_recut",
+        "id": "source-dna-recut",
+        "version": "sha256:2d0dd20fad4302f799272e7d5e1ba7de1ecb8b9a85646f68cf9720ac14569171"
+      },
+      "dimensions": {
+        "subject": {
+          "status": "defined",
+          "rule": "Three sharply isolated blooms with no visible stems, fringe or halos.",
+          "authority": "finishedClip.review"
+        },
+        "setting": {
+          "status": "defined",
+          "rule": "Isolated centered blooms against pure black.",
+          "authority": "finishedClip.bytes"
+        },
+        "shotGrammar": {
+          "status": "defined",
+          "rule": "A continuous 9:16 bloom morph with a clean loop seam.",
+          "authority": "finishedClip.review"
+        },
+        "lighting": {
+          "status": "defined",
+          "rule": "Sharp petal detail and clean contours against black.",
+          "authority": "finishedClip.bytes"
+        },
+        "motion": {
+          "status": "defined",
+          "rule": "Smooth transitions between distinct blooms. Avoid jerks and flicker.",
+          "authority": "finishedClip.bytes"
+        },
+        "duration": {
+          "status": "defined",
+          "rule": "5.133-second silent blank at 30 fps. TikTok adds the exact zero-offset campaign sound.",
+          "authority": "finishedClip.bytes_and_pageSoundBinding"
+        },
+        "textPolicy": {
+          "status": "defined",
+          "rule": "Zero baked text. Add the page-bound Between the Lines caption in TikTok only, centered, white TikTok Sans, in the approved 15 pt treatment. No burned fallback.",
+          "authority": "review.text_scan_and_pageCaptionBinding"
+        },
+        "negativeRules": {
+          "status": "defined",
+          "rule": "Reject visible stems, halos, muddy detail, baked text, logos, watermarks, audio and visible loop seams.",
+          "authority": "finishedClip.review"
+        },
+        "referenceExamples": {
+          "status": "defined",
+          "rule": "Approved flower-morph blanks and the pinned Between the Lines caption reference in the Good Boy Records delivery agenda.",
+          "authority": "finishedClip.sha256"
+        }
+      },
+      "output": {
+        "aspectRatio": "9:16",
+        "container": "video/mp4",
+        "durationPolicy": "source_bound",
+        "audioPolicy": "campaign_sound_bound_downstream"
+      },
+      "reviewAuthority": "finishedClip.provenance",
+      "reviewGates": [
+        "documented_license_provenance",
+        "clean_bloom_edges",
+        "loop_seam",
+        "native_caption_binding",
+        "text_scan",
+        "technical_video",
+        "operator_visual_qa",
+        "duplicate_and_never_reuse"
+      ],
+      "distribution": {
+        "captions": "page_binding_required",
+        "sounds": "page_binding_required"
+      },
+      "definitionGaps": []
+    },
+    "glass-architecture": {
+      "contentNiche": "Glass Architecture",
+      "contentEngine": "sourced_video",
+      "materialSource": "source_library",
+      "assetType": "video/mp4",
+      "definitionStatus": "complete",
+      "creativeAuthority": {
+        "kind": "source_dna_recut",
+        "id": "source-dna-recut",
+        "version": "sha256:2d0dd20fad4302f799272e7d5e1ba7de1ecb8b9a85646f68cf9720ac14569171"
+      },
+      "dimensions": {
+        "subject": {
+          "status": "defined",
+          "rule": "Recognizable glass architecture without identifiable people.",
+          "authority": "finishedClip.review"
+        },
+        "setting": {
+          "status": "defined",
+          "rule": "Square picture in a black vertical canvas with black top and bottom bars.",
+          "authority": "finishedClip.bytes"
+        },
+        "shotGrammar": {
+          "status": "defined",
+          "rule": "Distinct cobalt architectural fisheye compositions with beat-bound warps.",
+          "authority": "finishedClip.review"
+        },
+        "lighting": {
+          "status": "defined",
+          "rule": "Well-lit, legible architectural structure in deep cobalt with clean blacks.",
+          "authority": "finishedClip.bytes"
+        },
+        "motion": {
+          "status": "defined",
+          "rule": "Warps hit the selected track's measured beat grid. Settled shots have no doubling.",
+          "authority": "finishedClip.bytes"
+        },
+        "duration": {
+          "status": "defined",
+          "rule": "Length follows the selected GHOST arrangement and its measured beat grid. Export silently and add the exact zero-offset sound in TikTok.",
+          "authority": "finishedClip.bytes_and_pageSoundBinding"
+        },
+        "textPolicy": {
+          "status": "defined",
+          "rule": "No on-screen text, including burned text and TikTok text. No logos or watermarks.",
+          "authority": "review.text_scan_and_pageCaptionBinding"
+        },
+        "negativeRules": {
+          "status": "defined",
+          "rule": "Reject underexposure, repeated source sequences, recognizable faces, text, marks, nonblack bars, and off-beat or unsettled warps.",
+          "authority": "finishedClip.review"
+        },
+        "referenceExamples": {
+          "status": "defined",
+          "rule": "The approved hash-recorded GHOST B pilot and track-specific beat grids in the Good Boy Records QA evidence.",
+          "authority": "finishedClip.sha256"
+        }
+      },
+      "output": {
+        "aspectRatio": "9:16",
+        "container": "video/mp4",
+        "durationPolicy": "source_bound",
+        "audioPolicy": "campaign_sound_bound_downstream"
+      },
+      "reviewAuthority": "finishedClip.provenance",
+      "reviewGates": [
+        "documented_license_provenance",
+        "no_recognizable_face",
+        "beat_alignment",
+        "black_bars",
+        "text_scan",
+        "technical_video",
+        "operator_visual_qa",
+        "duplicate_and_never_reuse"
+      ],
+      "distribution": {
+        "captions": "page_binding_required",
+        "sounds": "page_binding_required"
+      },
+      "definitionGaps": []
     }
   }
 }

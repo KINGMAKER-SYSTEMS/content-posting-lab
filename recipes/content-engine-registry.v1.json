@@ -264,6 +264,30 @@
       "executorVersion": "sha256:2d0dd20fad4302f799272e7d5e1ba7de1ecb8b9a85646f68cf9720ac14569171",
       "formatContractVersion": "sha256:c42bd5280f9e49872d4a879b4ea1693bde07e30b323a44c743315fd66a4bd0f2",
       "maxQuantity": 1
+    },
+    "flower-morph": {
+      "contentNiche": "Flower Morph",
+      "contentEngine": "sourced_video",
+      "materialSource": "source_library",
+      "assetType": "video/mp4",
+      "executionStatus": "commissioned",
+      "executorKind": "source_dna_recut",
+      "executorId": "source-dna-recut",
+      "executorVersion": "sha256:2d0dd20fad4302f799272e7d5e1ba7de1ecb8b9a85646f68cf9720ac14569171",
+      "formatContractVersion": "sha256:09f5c35f78eeca1d8e4b4b1c1b0a3eb11b73b3c6e1196e0dcf39cdecc861a20f",
+      "maxQuantity": 1
+    },
+    "glass-architecture": {
+      "contentNiche": "Glass Architecture",
+      "contentEngine": "sourced_video",
+      "materialSource": "source_library",
+      "assetType": "video/mp4",
+      "executionStatus": "commissioned",
+      "executorKind": "source_dna_recut",
+      "executorId": "source-dna-recut",
+      "executorVersion": "sha256:2d0dd20fad4302f799272e7d5e1ba7de1ecb8b9a85646f68cf9720ac14569171",
+      "formatContractVersion": "sha256:2da922b5a121bf32e3bd912a498de6a1623dc90b6b92af98331020454e33ddf3",
+      "maxQuantity": 1
     }
   }
 }
