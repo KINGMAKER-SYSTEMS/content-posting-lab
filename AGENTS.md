@@ -993,8 +993,8 @@
   (they post through the centre band); new cuts carry the page's frame and fit.
 - Prepared artifacts require source-byte verification and upright square-pixel
   near-9:16 input at least `CONTENT_LAB_POST_RENDER_MIN_SOURCE_HEIGHT` pixels high
-  (default 720, the common HD tier; it was a fixed 768 while Hailuo's 768p was the
-  only source). `post_render.source_geometry_refusal` is the single rule, shared
+  (default 768, the floor it always had; an operator may lower it, e.g. to 720 for
+  the common HD tier). `post_render.source_geometry_refusal` is the single rule, shared
   with source-duration repair. Exact and chroma-aligned frames
   scale directly; native provider frames within three percent of 9:16 are
   center-cropped at the edge and scaled to 1080x1920 before caption composition

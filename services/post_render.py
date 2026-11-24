@@ -217,9 +217,10 @@ def sha256(data: bytes) -> str:
 
 
 MIN_SOURCE_HEIGHT_ENV = "CONTENT_LAB_POST_RENDER_MIN_SOURCE_HEIGHT"
-# 720 is the common HD tier across video models (Wan, HunyuanVideo, LTX). The
-# floor used to be 768 only because Hailuo's cheapest tier is 768p.
-DEFAULT_MIN_SOURCE_HEIGHT = 720
+# 768 is the floor the Lab has always applied (Hailuo's 768p tier). The owner
+# kept it as the default, so this setting changes no output unless an operator
+# lowers it (720 would admit the common HD tier: Wan, HunyuanVideo, LTX).
+DEFAULT_MIN_SOURCE_HEIGHT = 768
 _MIN_SOURCE_HEIGHT_BOUNDS = (360, 1920)
 
 
@@ -242,7 +243,8 @@ def source_geometry_refusal(probe: "MediaProbe") -> str | None:
     The rule is about the picture, not about which model made it: upright,
     square pixels, within 3% of 9:16, and tall enough to scale up cleanly.
     Landscape masters therefore qualify through their 9:16 crops (432x768 from
-    a 768p master, 404x720 from a 720p one, 606x1080 from 1080p).
+    a 768p master, 606x1080 from 1080p; 404x720 from a 720p one only when the
+    floor is lowered to 720).
     """
     floor = min_source_height()
     target_width = probe.height * 9 / 16
