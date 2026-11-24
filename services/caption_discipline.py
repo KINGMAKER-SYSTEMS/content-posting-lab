@@ -26,6 +26,10 @@ CAPTION_SENTIMENTS = (
 )
 CAPTION_DISCIPLINE_FIELDS = {"captionSet", "register", "slingshotShare"}
 CAPTION_SET_SLUG = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
+CAPTIONLESS_CLIP_FORMATS = {
+    "acct:user8696130597870": ("outfit-faceless", "Off Duty Fits"),
+    "acct:user2524162424686": ("glass-architecture", "Glass Signal"),
+}
 
 
 def validate_caption_discipline(
@@ -39,17 +43,21 @@ def validate_caption_discipline(
     """
     if not isinstance(value, dict) or set(value) != CAPTION_DISCIPLINE_FIELDS:
         raise ValueError("caption discipline schema mismatch")
-    if (
-        page_id == "acct:user8696130597870"
-        and isinstance(format_mix, dict)
-        and set(format_mix) == {"outfit-faceless"}
-        and type(format_mix["outfit-faceless"]) in (int, float)
-        and format_mix["outfit-faceless"] == 1
-    ):
-        empty = {"captionSet": None, "register": [], "slingshotShare": None}
-        if value != empty:
-            raise ValueError("Off Duty Fits uses the finished outfit clip with no caption library")
-        return empty
+    captionless_route = CAPTIONLESS_CLIP_FORMATS.get(page_id)
+    if captionless_route is not None:
+        format_id, label = captionless_route
+        if (
+            isinstance(format_mix, dict)
+            and set(format_mix) == {format_id}
+            and type(format_mix[format_id]) in (int, float)
+            and format_mix[format_id] == 1
+        ):
+            empty = {"captionSet": None, "register": [], "slingshotShare": None}
+            if value != empty:
+                if format_id == "outfit-faceless":
+                    raise ValueError("Off Duty Fits uses the finished outfit clip with no caption library")
+                raise ValueError(f"{label} uses the finished architecture clip with no caption library")
+            return empty
     caption_set = value.get("captionSet")
     if not isinstance(caption_set, str) or CAPTION_SET_SLUG.fullmatch(caption_set) is None:
         raise ValueError("captionSet must be a lowercase corpus slug")

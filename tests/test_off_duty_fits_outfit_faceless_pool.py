@@ -144,7 +144,7 @@ def test_off_duty_fits_resolves_a_pool_supplied_dossier_and_registers(lab):
 
 @pytest.mark.parametrize(("handle", "niche", "format_id"), [
     ("user3771297960159", "Flower Morph", "flower-morph"),
-    ("user9795207473816", "Glass Architecture", "glass-architecture"),
+    ("user2524162424686", "Glass Architecture", "glass-architecture"),
 ])
 def test_studio_finished_formats_register_without_a_lab_master(lab, handle, niche, format_id):
     page_id = f"acct:{handle}"
@@ -214,7 +214,7 @@ def test_off_duty_fits_capability_is_zero_so_the_lab_never_renders(monkeypatch, 
 @pytest.mark.parametrize(("page", "niche", "format_id"), [
     (OFF_DUTY, NICHE, FORMAT),
     ("acct:user3771297960159", "Flower Morph", "flower-morph"),
-    ("acct:user9795207473816", "Glass Architecture", "glass-architecture"),
+    ("acct:user2524162424686", "Glass Architecture", "glass-architecture"),
 ])
 def test_finished_clip_bootstrap_exposes_policy_with_zero_lab_capacity(
     monkeypatch, tmp_path, page, niche, format_id,

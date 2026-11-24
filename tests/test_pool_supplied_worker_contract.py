@@ -50,7 +50,7 @@ _NICHE_BY_PAGE = {
     "acct:cody-szn6": ("POV", "sourced_image"),
     "acct:all-i-want-for-xma": ("TRUCK", "ai_video"),
     "acct:user3771297960159": ("Flower Morph", "sourced_video"),
-    "acct:user9795207473816": ("Glass Architecture", "sourced_video"),
+    "acct:user2524162424686": ("Glass Architecture", "sourced_video"),
 }
 
 

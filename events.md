@@ -1877,3 +1877,11 @@ record. A page with no library is unchanged; a used-up library keeps the 409
 code and adds a plain `X-RT-Zero-Reason-Help` header naming new footage and
 the fetcher issue #227. `tests/test_page_source_library.py` (59 tests) fails
 on the previous head. No deployment; HENRY merges.
+
+## 2026-11-24 — Glass Signal replacement account
+
+worktree: codex/good-boy-glass-replacement-lab
+
+The registered Glass Signal architecture account is now `acct:user2524162424686`.
+Its exact pool recipe uses reviewed inventory and an empty caption selection.
+The retired account has neither the pool entry nor the captionless exception.
