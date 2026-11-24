@@ -56,6 +56,11 @@ POOL_FED_PAGE_IDS = frozenset({
     "acct:thingsleftunsaid52",
     # Good Boy Records: Drop Line POV (finished clips rendered outside the Lab).
     "acct:user6390595910283",
+    # Good Boy Records: Off Duty Fits (finished outfit clips from the vault pool).
+    "acct:user8696130597870",
+    # Good Boy Records: Petal After Dark and Glass Signal (finished Studio edits).
+    "acct:user3771297960159",
+    "acct:user9795207473816",
 })
 
 

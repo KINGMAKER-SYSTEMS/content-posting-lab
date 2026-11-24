@@ -548,6 +548,7 @@ _CAPABILITIES_CACHE_TTL_SECONDS = 2.0
 _CAPABILITIES_CACHE_MAX_ENTRIES = 4096
 
 _SLIDESHOW_ENGINES = frozenset({"sourced_slideshow", "lyrics_slideshows", "sourced_image"})
+_FINISHED_CLIP_FORMATS = frozenset({"outfit-faceless", "flower-morph", "glass-architecture"})
 
 
 def _file_stat_signature(path: Path) -> tuple[str, int, int, int, int]:
@@ -888,12 +889,11 @@ def capabilities(
                       and profile.content_engine == intent_engine
                       and profile.execution_status == "commissioned"), None)
     if bootstrap is not None and not registered_bindings:
-        # Keep the first-publication discovery row, but do not advertise Lab
-        # render inventory for a listed pool slideshow. Match the registered
-        # pool route below; other engines retain their commissioned ceiling.
-        bootstrap_pool_supplied = (
+        # Keep the discovery row for the Dossier editor. The vault supplies
+        # finished clips for these listed pages from their first publication.
+        bootstrap_pool_supplied = is_pool_supplied(page_id) and (
             bootstrap.content_engine in _SLIDESHOW_ENGINES
-            and is_pool_supplied(page_id)
+            or bootstrap.format_slug in _FINISHED_CLIP_FORMATS
         )
         entries.append({
             "recipeId": f"{bootstrap.format_slug}:master",
