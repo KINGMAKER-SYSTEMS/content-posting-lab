@@ -70,6 +70,15 @@ def format_for(name: str, width: int, height: int) -> str:
     return "truck"
 
 
+def spec_for(name: str, fmt: str) -> dict:
+    """The format's checks; snowy and Christmas truck shots get the snow brightness range (30-125,
+    user's choice 2026-11-24; see pipeline.SNOW_SCENES)."""
+    spec = json.loads((SPECS / f"{'truck' if fmt == 'truck-xmas' else fmt}.json").read_text())
+    if fmt == "truck-xmas" or (fmt == "truck" and any(k in name.lower() for k in ("snow", "frozen", "xmas", "cabin"))):
+        spec = pipeline.snow_spec(spec)
+    return spec
+
+
 def score_one(path: Path) -> dict:
     width, height, frames = shape(path)
     fmt = format_for(path.name, width, height)
@@ -78,7 +87,7 @@ def score_one(path: Path) -> dict:
     if fmt == "none":
         row["failed_checks"] = None
         return row
-    spec = json.loads((SPECS / f"{'truck' if fmt == 'truck-xmas' else fmt}.json").read_text())
+    spec = spec_for(path.name, fmt)
     try:
         facts, checks = rl.score(path, spec)
         row["failed_checks"] = [k for k, ok in checks.items() if not ok]
@@ -106,7 +115,7 @@ def score_still(path: Path) -> dict:
     if fmt == "none":
         row["failed_checks"] = None
         return row
-    spec = json.loads((SPECS / f"{'truck' if fmt == 'truck-xmas' else fmt}.json").read_text())
+    spec = spec_for(path.name, fmt)
     found = pipeline.faults(path, spec, slices=False)
     if fmt == "truck-xmas" and found is not None:
         xfound = pipeline.faults(path, json.loads((SPECS / "christmas.json").read_text()), slices=False)

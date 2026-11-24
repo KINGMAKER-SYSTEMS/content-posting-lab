@@ -100,6 +100,8 @@ def one_video(scene: str, tag: str, seed: int, timings: dict, retry: int = 0, vi
         raise RuntimeError(f"video step reported no file: {out[-300:]}")
     rendered = Path(match.group(1))
     spec = json.loads((HERE.parent / "recipe_lab_specs" / "truck.json").read_text())
+    if scene in pipeline.SNOW_SCENES:
+        spec = pipeline.snow_spec(spec)
     row = {"scene": scene, "tag": f"{tag}-hd{suffix}", "video": f"{scene}__{tag}-hd{suffix}.mp4", "seconds": timings}
     try:
         facts, checks = rl.score(rendered, spec)

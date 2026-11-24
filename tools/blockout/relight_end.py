@@ -90,6 +90,8 @@ def main() -> None:
             pipeline.sh([sys.executable, str(HERE / tool), str(clip), str(nxt)])
             clip = nxt
     spec = json.loads((HERE.parent / "recipe_lab_specs" / f"{cfg.get('spec', 'truck')}.json").read_text())
+    if scene in pipeline.SNOW_SCENES:
+        spec = pipeline.snow_spec(spec)
     facts, checks = rl.score(clip, spec)
     pipeline.say(f"{scene}: relit clip {clip}, failed checks {[k for k, v in checks.items() if not v]}")
 

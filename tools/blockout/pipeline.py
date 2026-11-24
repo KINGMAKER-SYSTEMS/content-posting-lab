@@ -490,6 +490,25 @@ def sh(cmd: list[str]) -> str:
     return done.stdout
 
 
+# Snow and Christmas truck shots: snow is white, so a correctly exposed snowy frame averages
+# 100-125 on 0-255 and failed the truck format's 30-95 (covered-bridge 101, barn-snow 100,
+# pass-snow 104, snow-field 108, frozen-lake 124; ec's Christmas trucks 101-139). The user chose
+# on 2026-11-24 to raise the limit for these shots to the truck spec's snow_brightness (30-125)
+# rather than darken the pictures; every other truck shot keeps 30-95.
+SNOW_SCENES = {"snow-field", "cabin-snow", "tree-farm", "covered-bridge", "frozen-lake", "cabin-lights",
+               "barn-snow", "pass-snow"}
+
+
+def snow_spec(spec: dict) -> dict:
+    """The same spec with the brightness range swapped for its snow_brightness, if it has one."""
+    limits = spec.get("targets", {}).get("snow_brightness")
+    if not limits:
+        return spec
+    out = json.loads(json.dumps(spec))
+    out["targets"]["brightness"] = list(limits)
+    return out
+
+
 def faults(path: Path, spec: dict, slices: bool = True) -> list[str] | None:
     """Faults of a still, on the whole frame and inside each of the five posted slices.
 
@@ -572,7 +591,9 @@ def run_scene(scene: str, tag: str, do_clean: bool, spec: dict, seed: int, force
     cfg = SCENES[scene]
     if cfg.get("spec"):                                  # a scene of another format is judged by that format's rules
         spec = json.loads((HERE.parent / "recipe_lab_specs" / f"{cfg['spec']}.json").read_text())
-    if cfg.get("clean") is False:                        # the cleaning instruction is written for trucks
+    if scene in SNOW_SCENES:
+        spec = snow_spec(spec)
+    if cfg.get("clean") is False:                       # the cleaning instruction is written for trucks
         do_clean = False
     shot = ROOT / scene
     name = f"{tag}-{scene}"
