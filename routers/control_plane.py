@@ -548,6 +548,7 @@ _CAPABILITIES_CACHE_TTL_SECONDS = 2.0
 _CAPABILITIES_CACHE_MAX_ENTRIES = 4096
 
 _SLIDESHOW_ENGINES = frozenset({"sourced_slideshow", "lyrics_slideshows", "sourced_image"})
+_FINISHED_CLIP_FORMATS = frozenset({"outfit-faceless", "flower-morph", "glass-architecture"})
 
 
 def _file_stat_signature(path: Path) -> tuple[str, int, int, int, int]:
@@ -888,12 +889,11 @@ def capabilities(
                       and profile.content_engine == intent_engine
                       and profile.execution_status == "commissioned"), None)
     if bootstrap is not None and not registered_bindings:
-        # Keep the first-publication discovery row, but do not advertise Lab
-        # render inventory for a listed pool slideshow. Match the registered
-        # pool route below; other engines retain their commissioned ceiling.
-        bootstrap_pool_supplied = (
+        # Keep the discovery row for the Dossier editor. The vault supplies
+        # finished clips for these listed pages from their first publication.
+        bootstrap_pool_supplied = is_pool_supplied(page_id) and (
             bootstrap.content_engine in _SLIDESHOW_ENGINES
-            and is_pool_supplied(page_id)
+            or bootstrap.format_slug in _FINISHED_CLIP_FORMATS
         )
         entries.append({
             "recipeId": f"{bootstrap.format_slug}:master",
@@ -921,9 +921,13 @@ def capabilities(
         publication_engine = publication.get("engine")
         # A listed pool-supplied page with no Lab library id still advertises
         # its registered recipe, but at zero: the Worker supplies the finished
-        # clips from its vault pool, so the Lab never renders it.
+        # clips from its vault pool, so the Lab never renders it. This holds
+        # for sourced_video too: a listed page whose finished cuts are made
+        # outside the Lab (Good Boy Drop Line POV) has no master, so its
+        # no-library policy must never reach the source-recipe planner.
         pool_supplied_zero = (
-            publication_engine in _SLIDESHOW_ENGINES
+            (publication_engine in _SLIDESHOW_ENGINES
+             or publication_engine == "sourced_video")
             and is_pool_supplied(page_id)
             and _pool_supplied_recipe_without_library(publication)
         )
