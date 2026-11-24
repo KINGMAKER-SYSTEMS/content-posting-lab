@@ -28,7 +28,9 @@ CAPTION_DISCIPLINE_FIELDS = {"captionSet", "register", "slingshotShare"}
 CAPTION_SET_SLUG = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 
 
-def validate_caption_discipline(value: Any) -> dict[str, Any]:
+def validate_caption_discipline(
+    value: Any, *, page_id: str | None = None, format_mix: Any = None,
+) -> dict[str, Any]:
     """Return an exact validated copy or raise ``ValueError``.
 
     Corpus membership is resolved by the control plane.  This boundary pins
@@ -37,6 +39,17 @@ def validate_caption_discipline(value: Any) -> dict[str, Any]:
     """
     if not isinstance(value, dict) or set(value) != CAPTION_DISCIPLINE_FIELDS:
         raise ValueError("caption discipline schema mismatch")
+    if (
+        page_id == "acct:user8696130597870"
+        and isinstance(format_mix, dict)
+        and set(format_mix) == {"outfit-faceless"}
+        and type(format_mix["outfit-faceless"]) in (int, float)
+        and format_mix["outfit-faceless"] == 1
+    ):
+        empty = {"captionSet": None, "register": [], "slingshotShare": None}
+        if value != empty:
+            raise ValueError("Off Duty Fits uses the finished outfit clip with no caption library")
+        return empty
     caption_set = value.get("captionSet")
     if not isinstance(caption_set, str) or CAPTION_SET_SLUG.fullmatch(caption_set) is None:
         raise ValueError("captionSet must be a lowercase corpus slug")

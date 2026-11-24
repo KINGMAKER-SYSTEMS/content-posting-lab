@@ -298,7 +298,9 @@ def _typed_recipe_spec(publication: dict[str, Any]) -> dict[str, Any] | None:
         return None
     if spec.get("schema") == "dossier.recipe-spec.v4":
         try:
-            validate_caption_discipline(spec.get("captionDiscipline"))
+            validate_caption_discipline(
+                spec.get("captionDiscipline"), page_id=publication.get("pageId"), format_mix=format_mix,
+            )
         except ValueError:
             return None
     return spec
