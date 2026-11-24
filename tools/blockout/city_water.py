@@ -38,6 +38,14 @@ CITIES = {
                            "replace the line of trees on the far shore with a distant dense row of lit high-rise "
                            "buildings below dark hills, and tint the open water with magenta, teal and gold "
                            "neon reflections under a darker dusk sky. " + KEEP,
+    "harbor-singapore-rev": "In <Picture 1>, repaint the boat's stern at the bottom plain glossy white with no red, "
+                            "replace the line of trees on the far shore with a distant row of lit glass office "
+                            "towers, and tint the open water with teal and soft gold dusk reflections under a "
+                            "pastel sky. " + KEEP,
+    "harbor-shanghai-rev": "In <Picture 1>, repaint the boat's stern at the bottom plain glossy white with no red, "
+                           "make it night with a dark hazy sky, replace the line of trees on the far shore with a "
+                           "distant dense row of brightly lit skyscrapers, and make the open water black with "
+                           "blue, pink and white light reflections. " + KEEP,
 }
 
 

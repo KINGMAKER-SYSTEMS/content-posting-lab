@@ -141,6 +141,33 @@ def main() -> None:
         wide = fmt in ("truck-scenic", "boat-lake")
         sections.append(f'<section><h2>{html.escape(title)} <small>{len(cells)}</small></h2><p>{html.escape(note)}</p>'
                         f'<div class="grid {"wide" if wide else "tall"}">{"".join(cells)}</div></section>')
+    # clips delivered from any lane by tools/blockout/deliver.py (already finished at 1080x1920)
+    delivered = LIBRARY / "delivered.jsonl"
+    if delivered.exists():
+        cells = []
+        for line in delivered.read_text().splitlines():
+            if not line.strip():
+                continue
+            row = json.loads(line)
+            for piece in row["pieces"]:
+                manifest.append({"format": row["format"], "scene": row["scene"], "take": row["take"],
+                                 "file": piece, "source": row["source"], "route": f"delivered from lane {row['lane']}",
+                                 "failed_checks": row.get("failed_checks"), "delivered": True,
+                                 "approved": bool(row.get("approved"))})
+                label = (f"{html.escape(row['scene'])} <span>{html.escape(row['lane'])} {html.escape(row['take'])}</span>"
+                         f" <span>motion {html.escape(str(row.get('motion_by_quarter')))}</span>")
+                if not row.get("approved"):
+                    label += " <span class=bad>draft, not approved</span>"
+                if row.get("failed_checks"):
+                    label += f" <span class=bad>failed: {html.escape(', '.join(row['failed_checks']))}</span>"
+                cells.append(f'<figure><video controls muted loop playsinline preload=metadata src="{piece}"></video>'
+                             f"<figcaption>{label}</figcaption></figure>")
+        if cells:
+            sections.insert(0, '<section><h2>Delivered in posting form, 1080x1920 <small>'
+                            f'{len(cells)}</small></h2><p>Clips from any lane after the last steps: slowed and '
+                            'sliced if wide, phone finish at 1080x1920. Drafts stay here until approved and are '
+                            'never sent to the Lab.</p>'
+                            f'<div class="grid tall">{"".join(cells)}</div></section>')
     (LIBRARY / "manifest.json").write_text(json.dumps(manifest, indent=1))
     (LIBRARY / "index.html").write_text(PAGE.replace("@@", "".join(sections)))
     print(f"{len(manifest)} items saved under {LIBRARY}")

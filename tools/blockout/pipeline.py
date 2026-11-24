@@ -70,7 +70,7 @@ SCENES = {
                  f"open field of dry grass, a weathered wooden fence line behind and a distant dark tree line, heavy dark "
                  f"overcast sky at dusk, {LOOK}",
         "video": f"{STILL} on a dirt farm track in an open field, dry grass in the foreground moving gently in the wind, "
-                 f"a wooden fence line behind, heavy dark overcast sky at dusk, {FOOTAGE}, slow sideways camera drift",
+                 f"a wooden fence line behind, heavy dark overcast sky at dusk, {FOOTAGE}, slow steady push-in straight toward the side of the parked truck",
         "strength": 0.8},
     "desert-road": {
         "still": f"Extreme wide low wheel-height front three-quarter photograph of {TRUCK}, parked on an empty two-lane "
@@ -132,7 +132,7 @@ SCENES = {
                  f"golden stubble, large round hay bales scattered across the field behind, low rises on the horizon, "
                  f"heavy dark overcast sky at dusk, {LOOK}",
         "video": f"{STILL} in a mown hay field, round hay bales scattered behind, stubble and loose straw stirring in "
-                 f"a light wind, heavy dark overcast sky at dusk, {FOOTAGE}, slow sideways camera drift",
+                 f"a light wind, heavy dark overcast sky at dusk, {FOOTAGE}, slow steady push-in straight toward the side of the parked truck",
         "strength": 0.9},
     "cabin-snow": {
         "still": f"Extreme wide low wheel-height front three-quarter photograph of {TRUCK}, parked in a snowy forest "
@@ -164,7 +164,7 @@ SCENES = {
                  f"snow-dusted evergreen trees behind, flat dark overcast light at dusk in deep winter, {LOOK}",
         "video": f"{STILL} at a Christmas tree farm in deep winter, a cut Christmas tree lying in its bed, rows of small "
                  f"snow-dusted evergreens behind, light snow falling slowly, flat dark overcast light at dusk, {FOOTAGE}, "
-                 f"slow sideways camera drift",
+                 f"slow steady push-in straight toward the side of the parked truck",
         "strength": 0.9},
     "covered-bridge": {
         "still": f"Extreme wide low wheel-height front three-quarter photograph of {TRUCK}, parked on a snowy lane in front "
@@ -389,6 +389,16 @@ SCENES["harbor-dubai-rev"] = _harbor_city(
     "Dubai Marina", "the Dubai Marina skyline of very tall slender residential towers standing close together")
 SCENES["harbor-hongkong-rev"] = _harbor_city(
     "Hong Kong Victoria Harbour", "the Hong Kong Island skyline of dense high-rise towers below dark green hills")
+SCENES["harbor-singapore-rev"] = _harbor_city(
+    "Singapore Marina Bay", "the Singapore Marina Bay skyline of tall glass bank towers")
+# Shanghai is the catalog's night scene: the night harbor's own prompts, with the city named in the still.
+SCENES["harbor-shanghai-rev"] = {
+    **SCENES["harbor-night-rev"],
+    "still": "Photograph taken from onboard a speedboat at night on the Huangpu River in Shanghai, the plain white "
+             "bow low in frame, moody dark choppy open water reflecting the Pudong skyline of real glass "
+             "skyscrapers lit up at night, window lights and bright fluorescent light strips on the towers, hazy "
+             "night sky, raw handheld look, deep blacks, photorealistic",
+    "end_still": "water_end_city.png"}
 
 
 # Model files each stage loads. ComfyUI maps them into memory, and from the external drive a

@@ -158,7 +158,8 @@ def open_field(scene, frames):
     for i in range(40):                                            # distant tree line
         x = -200 + i * 10 + rnd.uniform(-3, 3)
         hill(f"tree_{i}", (x, 190, 6), rnd.uniform(6, 10), rnd.uniform(7, 12))
-    camera(scene, frames, start=(-1.2, -11.5, 0.55), end=(1.0, -11.5, 0.55), look_at=(0, 0, 1.15), lens=35)
+    # straight push-in: a sideways track aimed at the truck made it look like it slid (2026-11-23)
+    camera(scene, frames, start=(0.0, -12.6, 0.55), end=(0.0, -10.4, 0.6), look_at=(0, 0, 1.15), lens=35)
 
 
 def desert_road(scene, frames):
@@ -290,7 +291,8 @@ def hay_field(scene, frames):
         bpy.context.object.name = f"bale_{i}"
     for i, (x, r, h) in enumerate([(-120, 110, 10), (90, 140, 14)]):
         hill(f"far_rise_{i}", (x, 260, 0), r, h)
-    camera(scene, frames, start=(1.2, -11.5, 0.55), end=(-1.0, -11.5, 0.55), look_at=(0, 0, 1.15), lens=35)
+    # straight push-in: a sideways track aimed at the truck made it look like it slid (2026-11-23)
+    camera(scene, frames, start=(0.0, -12.6, 0.55), end=(0.0, -10.4, 0.6), look_at=(0, 0, 1.15), lens=35)
 
 
 def cabin_snow(scene, frames):
@@ -346,15 +348,18 @@ def lying_tree(root_xy, length=2.6):
 
 
 def tree_farm(scene, frames):
-    """Christmas-tree farm in snow, a cut tree in the bed. Side profile, slow sideways drift.
-    The rows of trees are left to the prompt; only the tree in the bed is blocked."""
+    """Christmas-tree farm in snow, a cut tree in the bed. Side profile, slow push-in.
+    The rows of trees are left to the prompt; only the tree in the bed is blocked.
+    The camera used to drift sideways along the truck while aiming at it, so the truck held its
+    place in frame while the trees slid past behind: it read as the truck sliding down the road
+    with its wheels still (user, 2026-11-23). A straight push-in has no sideways parallax."""
     ground()
     root = truck(heading=math.radians(-90))                        # nose to the right, broadside
     tree = lying_tree((0, -1.75))                                  # over the bed, in truck space
     tree.parent = root
     for i, (x, r, h) in enumerate([(-140, 120, 12), (110, 150, 16)]):
         hill(f"far_rise_{i}", (x, 280, 0), r, h)
-    camera(scene, frames, start=(-1.1, -11.5, 0.55), end=(1.1, -11.5, 0.55), look_at=(0, 0, 1.2), lens=35)
+    camera(scene, frames, start=(0.0, -12.6, 0.55), end=(0.0, -10.4, 0.6), look_at=(0, 0, 1.2), lens=35)
 
 
 def covered_bridge(scene, frames):
@@ -490,6 +495,14 @@ def harbor_dubai_rev(scene, frames):
 
 def harbor_hongkong_rev(scene, frames):
     harbor(scene, frames, towers_seed=34, speed=6.0, reverse=True)
+
+
+def harbor_shanghai_rev(scene, frames):
+    harbor(scene, frames, towers_seed=41, speed=5.0, reverse=True)
+
+
+def harbor_singapore_rev(scene, frames):
+    harbor(scene, frames, towers_seed=55, speed=6.0, reverse=True)
 
 
 # --- Christmas POV format (the Lab's pov-seasonal: an eight-second portrait walk at eye level) ----
@@ -758,6 +771,7 @@ SCENES = {"lakeside": lakeside, "mountain-pullout": mountain_pullout,
           "harbor-night-rev": harbor_night_rev, "harbor-dusk-rev": harbor_dusk_rev,
           "harbor-newyork-rev": harbor_newyork_rev, "harbor-dubai-rev": harbor_dubai_rev,
           "harbor-hongkong-rev": harbor_hongkong_rev,
+          "harbor-shanghai-rev": harbor_shanghai_rev, "harbor-singapore-rev": harbor_singapore_rev,
           # Christmas POV format
           "xmas-lane": xmas_lane, "xmas-market": xmas_market, "xmas-bridge": xmas_bridge,
           "xmas-bakery": xmas_bakery, "xmas-chapel": xmas_chapel, "xmas-mews": xmas_mews,

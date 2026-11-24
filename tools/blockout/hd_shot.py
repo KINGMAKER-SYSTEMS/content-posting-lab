@@ -78,16 +78,21 @@ def one_still(scene: str, tag: str, seed: int, size: tuple[int, int], retry: int
     return timings
 
 
-def one_video(scene: str, tag: str, seed: int, timings: dict, retry: int = 0) -> None:
+def one_video(scene: str, tag: str, seed: int, timings: dict, retry: int = 0, video_seed: int = 0) -> None:
     name = f"{tag}-{scene}"
     suffix = f"-r{retry}" if retry else ""
+    still_suffix = suffix
+    if video_seed:
+        # same still, another video seed: for a clip whose truck crept against the background on
+        # its own (snowy barn, found by tools/blockout/subject_drift.py and checked by eye)
+        suffix += f"-v{video_seed}"
     shot = ROOT / f"{scene}-hd"
-    still = shot / f"{name}_hd_still{suffix}.png"
+    still = shot / f"{name}_hd_still{still_suffix}.png"
     t = time.monotonic()
     pipeline.say(f"{scene} hd: depth-guided video on LTX")
     with pipeline.warm("video"):
         out = pipeline.sh(["python3", str(EC / "run_shot.py"), str(shot), "--model", "ltx", "--ref", str(still),
-                           "--name", f"{name}-hd{suffix}", "--seed", str(seed + 100),
+                           "--name", f"{name}-hd{suffix}", "--seed", str(video_seed or seed + 100),
                            "--prompt", pipeline.SCENES[scene]["video"]])
     timings["video"] = round(time.monotonic() - t)
     match = re.search(r"^output (.+\.mp4)\s*$", out, re.M)
@@ -115,6 +120,7 @@ def main() -> None:
     parser.add_argument("shots", nargs="+", help="scene:tag:seed[:retry], e.g. cabin-lights:s3:81 or salt-flat:v3:52:1")
     parser.add_argument("--width", type=int, default=1920)
     parser.add_argument("--height", type=int, default=1088)
+    parser.add_argument("--video-seed", type=int, default=0, help="render the video with this seed (same still)")
     args = parser.parse_args()
     shots = []
     for item in args.shots:
@@ -131,7 +137,7 @@ def main() -> None:
         if scene not in timings:
             continue
         try:
-            one_video(scene, tag, seed, timings[scene], retry)
+            one_video(scene, tag, seed, timings[scene], retry, args.video_seed)
         except Exception as exc:  # noqa: BLE001
             pipeline.say(f"{scene} hd: FAILED at the video: {(str(exc) or repr(exc))[:300]}")
     pipeline.say("hd batch finished")
