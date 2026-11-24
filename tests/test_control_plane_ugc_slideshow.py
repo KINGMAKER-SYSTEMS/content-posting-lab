@@ -312,14 +312,16 @@ def test_curated_executor_change_is_scoped_to_the_two_pages():
         }[page]
         assert hashlib.sha256(canonical.encode()).hexdigest() == pinned, page
     # Compare every other format with the base of #351, which already
-    # included the H3 Highspeed POV Seasonal recipe from #350.
+    # included the H3 Highspeed POV Seasonal recipe from #350. Re-pinned when
+    # POV Seasonal gained its opt-in local H3 option; every other format is
+    # byte-identical to the previous pin.
     contracts_doc = json.loads(
         (UGC_EXECUTOR_PATH.parents[1] / "content-format-contracts.v1.json").read_bytes()
     )
     others = {slug: entry for slug, entry in contracts_doc["contracts"].items() if slug != "ugc-slideshow"}
     assert hashlib.sha256(json.dumps(
         others, sort_keys=True, separators=(",", ":")).encode()).hexdigest() == (
-        "753a86b41a737ad3b922829c3b6db3cc7481c2752e1c412f52382cfdd06b2051"
+        "0abab87ee032e26e94243238b114891472a6aee9cdf547642f95f08b4cece9e0"
     )
     registry_doc = json.loads(
         (UGC_EXECUTOR_PATH.parents[1] / "content-engine-registry.v1.json").read_bytes()
@@ -327,7 +329,7 @@ def test_curated_executor_change_is_scoped_to_the_two_pages():
     profiles = {slug: entry for slug, entry in registry_doc["profiles"].items() if slug != "ugc-slideshow"}
     assert hashlib.sha256(json.dumps(
         profiles, sort_keys=True, separators=(",", ":")).encode()).hexdigest() == (
-        "ba81c64a62c0f2c662bc8330ac4d44094100840df26ce58cbd5a1c726ae31743"
+        "94a019f635b25152cf3623cda700647d07b66277e69594453eec99a5370ed83a"
     )
 
 

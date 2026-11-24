@@ -1191,6 +1191,13 @@
   $0.24 against the existing budget, and removes provider audio with a video
   stream copy before delivery. Dossier advertises the fixed settings without
   a source library or reference image. The slideshow source contracts are separate.
+  The same catalog also lists `local-h3-vertical` (the same H3 model on the
+  studio Mac's ComfyUI, 9:16, eight seconds, zero cost) as an opt-in second
+  visual model. H3 Highspeed stays the bound default; a page uses the local
+  engine only when its Dossier selection picks it, and that selection resolves
+  only while `COMFYUI_URL` (or the local worker queue) is configured. The local
+  option lives in this format-scoped file so no other format is offered it and
+  no other format's catalog version changes.
 
 - `GET /api/health` reports the most recently completed ffmpeg/yt-dlp
   executable check. Startup checks both off the event loop before serving.

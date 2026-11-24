@@ -1877,3 +1877,19 @@ record. A page with no library is unchanged; a used-up library keeps the 409
 code and adds a plain `X-RT-Zero-Reason-Help` header naming new footage and
 the fetcher issue #227. `tests/test_page_source_library.py` (59 tests) fails
 on the previous head. No deployment; HENRY merges.
+
+_________________________________________________________________________________
+time: [2026-11-23T23:42Z]
+agent: [Claude Code] [claude-opus-5-5] [control-plane local pilot]
+worktree: [feat/control-plane-local-pilot] ~/dev/jake/work/1123-comfy-pilot/repo
+type: [config]: Offer the studio's local H3 as an opt-in engine for POV - Seasonal
+area: [backend], [testing]
+
+`recipes/generation/christmas_pov.v1.json` now lists `local-h3-vertical`
+(ComfyUI H3 FL2VA, 9:16, 8 s, 768p, cost 0) beside the paid H3 Highspeed
+default. The pov-seasonal contract creative authority and registry
+executor/contract versions are re-pinned to the new catalog bytes; no other
+format's version changes. Because the format's executor version changed, any
+active pov-seasonal page must re-adopt its advertised selection (H3 Highspeed
+or the local one) before it generates again. The local selection resolves only
+while `COMFYUI_URL` or `LOCAL_WORKER_KEY` is set on the Lab. No deployment.

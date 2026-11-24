@@ -137,7 +137,10 @@ def test_christmas_dossier_routes_to_native_vertical_generation_without_a_source
     christmas = next(entry for entry in catalog["formats"] if entry["formatId"] == "pov-seasonal")
     model = next(entry for entry in christmas["ingredients"] if entry["ingredientId"] == "visual-model")
     assert model["options"][0]["controls"] == {}
-    selection, = christmas["productionSelections"]
+    selection, = (
+        entry for entry in christmas["productionSelections"]
+        if entry["providerId"] == "h3-highspeed"
+    )
     assert selection["sourceLibraryId"] is None
     assert selection["referenceSetId"] is None
     spec.update(
@@ -164,6 +167,80 @@ def test_christmas_dossier_routes_to_native_vertical_generation_without_a_source
         "prompt": prompt, "ratio": "9:16", "duration": 8,
     }
     assert PROVIDERS[recipe.engine]["strip_audio"] is True
+
+
+def _christmas_local_publication():
+    payload = publication(pageId="acct:christmas-test", recipeId="pov-seasonal:master")
+    spec = json.loads(payload["recipeSpecCanonical"])
+    intent, revision = master_pages(payload["pageId"], content_niche="XMAS")
+    catalog = build_dossier_ingredient_catalog(payload["pageId"], intent, revision)
+    christmas = next(entry for entry in catalog["formats"] if entry["formatId"] == "pov-seasonal")
+    selection, = (
+        entry for entry in christmas["productionSelections"]
+        if entry["providerId"] == "local-h3-vertical"
+    )
+    spec.update(
+        schema="dossier.recipe-spec.v3",
+        masterPages=intent,
+        masterPagesHash=revision,
+        demand={"formatMix": {"pov-seasonal": 1.0}},
+        production={**selection, "variationValues": {}, "controls": {}},
+    )
+    payload["recipeSpecCanonical"] = json.dumps(spec, sort_keys=True, separators=(",", ":"))
+    return christmas, selection, payload
+
+
+def test_christmas_offers_the_studio_h3_as_an_opt_in_free_engine(monkeypatch):
+    from providers import comfyui
+
+    monkeypatch.setitem(API_KEYS, "comfyui", "http://comfy.test:8188")
+    christmas, selection, payload = _christmas_local_publication()
+    model = next(entry for entry in christmas["ingredients"] if entry["ingredientId"] == "visual-model")
+    # The paid Replicate engine stays the default; the local one is an alternative.
+    assert model["binding"]["providerId"] == "h3-highspeed"
+    assert {option["providerId"] for option in model["options"]} == {
+        "h3-highspeed", "local-h3-vertical",
+    }
+    assert selection["modelId"] == comfyui.H3_FL2VA
+
+    recipe = resolve_generation_recipe(payload)
+    assert recipe is not None
+    assert recipe.engine == "local-h3-vertical"
+    assert recipe.provider_model == comfyui.H3_FL2VA
+    assert recipe.provider_config["cost_per_gen_usd"] == 0
+    assert recipe.planned_provider_calls(3) == 3
+    assert new_generation_options(recipe) == {
+        "aspect_ratio": "9:16", "duration": 8, "resolution": "768p",
+    }
+    # Same native portrait frame and 8 s length as the paid H3 Highspeed clips.
+    graph = comfyui.build_workflow("snowy street", {
+        **new_generation_options(recipe),
+        "variant": PROVIDERS[recipe.engine]["variant"],
+        "model_id": recipe.provider_model,
+    })
+    assert (graph["h3"]["inputs"]["width"], graph["h3"]["inputs"]["height"]) == (768, 1344)
+    assert graph["h3"]["inputs"]["length"] == 192
+
+
+def test_christmas_local_engine_is_unavailable_without_a_comfyui_server(monkeypatch):
+    monkeypatch.setitem(API_KEYS, "comfyui", "")
+    _, _, payload = _christmas_local_publication()
+    assert resolve_generation_recipe(payload) is None
+    assert resolve_generation_recipe(payload, require_runtime=False) is not None
+
+
+def test_christmas_local_engine_is_not_offered_to_other_formats():
+    intent, revision = master_pages("tt-tucker-reeves", handle="tucker.reeves")
+    catalog = build_dossier_ingredient_catalog("tt-tucker-reeves", intent, revision)
+    for entry in catalog["formats"]:
+        if entry["formatId"] == "pov-seasonal":
+            continue
+        for ingredient in entry["ingredients"]:
+            assert all(
+                option.get("providerId") != "local-h3-vertical"
+                for option in ingredient.get("options", [])
+            ), entry["formatId"]
+    assert "local-h3-vertical" not in load_prompt_catalog()[0]["providers"]
 
 
 def test_h3_audio_removal_preserves_video_packets(tmp_path):
