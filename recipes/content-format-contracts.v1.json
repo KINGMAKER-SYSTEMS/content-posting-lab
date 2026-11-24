@@ -1654,6 +1654,86 @@
         "sounds": "page_binding_required"
       },
       "definitionGaps": []
+    },
+    "outfit-faceless": {
+      "contentNiche": "Outfit - Faceless",
+      "contentEngine": "sourced_video",
+      "materialSource": "source_library",
+      "assetType": "video/mp4",
+      "definitionStatus": "complete",
+      "creativeAuthority": {
+        "kind": "source_dna_recut",
+        "id": "source-dna-recut",
+        "version": "sha256:2d0dd20fad4302f799272e7d5e1ba7de1ecb8b9a85646f68cf9720ac14569171"
+      },
+      "dimensions": {
+        "subject": {
+          "status": "defined",
+          "rule": "One outfit worn by a person whose face is never recognizable at any point in the clip.",
+          "authority": "finishedClip.review"
+        },
+        "setting": {
+          "status": "defined",
+          "rule": "Whatever setting the delivered clip shows; the Lab never adds, swaps or synthesizes a setting.",
+          "authority": "finishedClip.bytes"
+        },
+        "shotGrammar": {
+          "status": "defined",
+          "rule": "One continuous handheld outfit shot: no internal cuts, no split screens and no persistent obstruction of the outfit.",
+          "authority": "finishedClip.review"
+        },
+        "lighting": {
+          "status": "defined",
+          "rule": "Lighting is the delivered clip's own; the clip stays exactly as delivered and is never regraded by the Lab.",
+          "authority": "finishedClip.bytes"
+        },
+        "motion": {
+          "status": "defined",
+          "rule": "Natural handheld motion from the delivered clip; no mirror, motion, reverse or speed transform.",
+          "authority": "finishedClip.bytes"
+        },
+        "duration": {
+          "status": "defined",
+          "rule": "The delivered clip's own length. Audio is the page's bound campaign sound, baked in at its exact start offset.",
+          "authority": "finishedClip.bytes_and_pageSoundBinding"
+        },
+        "textPolicy": {
+          "status": "defined",
+          "rule": "No on-screen text, logos or watermarks anywhere in the clip, and no caption: captions are none for this format.",
+          "authority": "review.text_scan"
+        },
+        "negativeRules": {
+          "status": "defined",
+          "rule": "Reject any clip with a recognizable face, an internal cut, a split screen, persistent obstruction, on-screen text, a logo or watermark, or a source that is not owned or documented-licensed for publication (no reposts, no Pinterest).",
+          "authority": "finishedClip.review"
+        },
+        "referenceExamples": {
+          "status": "defined",
+          "rule": "The reviewed, hash-recorded finished clips in the page's private review set are the complete visual reference.",
+          "authority": "finishedClip.sha256"
+        }
+      },
+      "output": {
+        "aspectRatio": "9:16",
+        "container": "video/mp4",
+        "durationPolicy": "source_bound",
+        "audioPolicy": "campaign_sound_bound_downstream"
+      },
+      "reviewAuthority": "finishedClip.provenance",
+      "reviewGates": [
+        "documented_license_provenance",
+        "no_recognizable_face",
+        "single_continuous_shot",
+        "text_scan",
+        "technical_video",
+        "operator_visual_qa",
+        "duplicate_and_never_reuse"
+      ],
+      "distribution": {
+        "captions": "page_binding_required",
+        "sounds": "page_binding_required"
+      },
+      "definitionGaps": []
     }
   }
 }

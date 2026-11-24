@@ -88,7 +88,7 @@ def test_vendored_worker_validator_matches_live_sha():
 def test_worker_accepts_catalog_for_every_listed_and_one_unlisted_page(tmp_path):
     _require_node_or_skip()
     # The exact roster guard separately checks membership, including Culture Core.
-    assert len(LISTED_PAGES) == 24, LISTED_PAGES
+    assert len(LISTED_PAGES) == 25, LISTED_PAGES
     for page_id in [*LISTED_PAGES, UNLISTED_PAGE]:
         intent, revision = _intent(page_id)
         catalog = build_dossier_ingredient_catalog(page_id, intent, revision)
