@@ -29,3 +29,24 @@ def test_only_off_duty_outfit_accepts_the_empty_caption_selection():
 def test_other_recipe_contexts_still_require_a_caption_library(page_id, format_mix):
     with pytest.raises(ValueError, match="lowercase corpus slug"):
         validate_caption_discipline(EMPTY, page_id=page_id, format_mix=format_mix)
+
+
+def test_glass_captionless_scope_matches_the_architecture_recipe():
+    page = "acct:user9795207473816"
+    glass = {"glass-architecture": 1}
+
+    assert validate_caption_discipline(EMPTY, page_id=page, format_mix=glass) == EMPTY
+    with pytest.raises(ValueError, match="Glass Signal"):
+        validate_caption_discipline(
+            {**EMPTY, "captionSet": "meme", "register": ["relatable_meme"]},
+            page_id=page, format_mix=glass,
+        )
+
+    for foreign_page, format_mix in [
+        (OFF_DUTY, glass),
+        ("acct:user3771297960159", glass),
+        (page, {"glass-architecture": True}),
+        (page, {"glass-architecture": 0.75, "flower-morph": 0.25}),
+    ]:
+        with pytest.raises(ValueError, match="lowercase corpus slug"):
+            validate_caption_discipline(EMPTY, page_id=foreign_page, format_mix=format_mix)
