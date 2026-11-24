@@ -1,0 +1,54 @@
+{
+ "name": "christmas-pov-h3",
+ "format": "pov-seasonal",
+ "family": "christmas-pov",
+ "base": {
+  "model_id": "comfyui/minimax-h3-fl2va",
+  "variant": "vertical",
+  "duration": 3,
+  "go_fast": true
+ },
+ "combinations": [
+  0,
+  167,
+  41,
+  233,
+  97,
+  300
+ ],
+ "seed": 3000,
+ "targets": {
+  "min_opening_ratio": 0.7,
+  "motion": [
+   1.0,
+   25.0
+  ]
+ },
+ "vision": {
+  "question": "You are inspecting one frame of a first-person Christmas walking or driving video. Reply with one line of JSON and nothing else, using exactly these keys: {\"readable_text_or_signs\": true or false, \"where\": \"short phrase, or empty\", \"people_visible\": true or false, \"upright\": true or false, \"christmas_lights\": true or false, \"overlay_graphics\": true or false}. readable_text_or_signs is true if any legible words, shop signs, brand names or logos appear. people_visible is true if any person or face is visible. upright is true if the scene is the right way up, with the ground at the bottom and the sky at the top. christmas_lights is true if Christmas lights or a lit Christmas tree are visible. overlay_graphics is true if there are subtitles, watermarks, app interface elements or other graphics drawn over the picture.",
+  "must_be_false": {
+   "no_text_or_signs": "readable_text_or_signs",
+   "no_people": "people_visible",
+   "no_overlays": "overlay_graphics"
+  },
+  "must_be_true": {
+   "upright": "upright",
+   "christmas_lights": "christmas_lights"
+  }
+ },
+ "variants": [
+  {
+   "name": "baseline-turbo8"
+  },
+  {
+   "name": "h3-rewrite",
+   "rewrite": "h3"
+  },
+  {
+   "name": "h3-rewrite-steps12",
+   "rewrite": "h3",
+   "steps": 12,
+   "rounds": 0
+  }
+ ]
+}

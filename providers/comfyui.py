@@ -30,6 +30,7 @@ from .base import API_KEYS
 WAN_T2V = "comfyui/wan-2.2-t2v-14b"
 WAN_I2V = "comfyui/wan-2.2-i2v-14b"
 H3_FL2VA = "comfyui/minimax-h3-fl2va"
+LTX_23 = "comfyui/ltx-2.3"
 
 # Full-precision files: the studio Mac has the memory for them, and the
 # NVIDIA-oriented fp8/int8 repacks buy nothing on Apple silicon.
@@ -77,6 +78,23 @@ _H3_FILES = {
 _H3_SIZES = {"16:9": (1344, 768), "9:16": (768, 1344), "1:1": (1024, 1024)}
 _H3_PIXELS = 1344 * 768
 _H3_FPS = 24
+
+# LTX 2.3 (22B): a half-size pass, LTX's own latent upscaler, then a refining
+# pass at full size, as its reference workflow does. On the studio Mac it turns
+# out a 3 s 768p clip in about 40 s once loaded, several times faster than H3.
+_LTX_FILES = {
+    "checkpoint": "ltx-2.3-22b-dev.safetensors",
+    "text_encoder": "gemma_3_12B_it.safetensors",
+    "lora": "ltx_2.3_22b_distilled_1.1_lora_dynamic_fro09_avg_rank_111_bf16.safetensors",
+    "upscaler": "ltx-2.3-spatial-upscaler-x2-1.1.safetensors",
+}
+# Both sides must halve onto LTX's x32 grid for the first pass.
+_LTX_SIZES = {"16:9": (1344, 768), "9:16": (768, 1344), "1:1": (1024, 1024)}
+_LTX_PIXELS = 1344 * 768
+_LTX_FPS = 24
+_LTX_NEGATIVE = "pc game, console game, video game, cartoon, childish, ugly"
+_LTX_FIRST_PASS_SIGMAS = "1.0, 0.99375, 0.9875, 0.98125, 0.975, 0.909375, 0.725, 0.421875, 0.0"
+_LTX_SECOND_PASS_SIGMAS = "0.85, 0.7250, 0.4219, 0.0"
 
 _DEFAULT_TIMEOUT_SECONDS = 60 * 60
 _POLL_SECONDS = 2.0
@@ -185,6 +203,8 @@ def build_workflow(prompt: str, params: dict) -> dict:
         return _build_h3(prompt, params)
     if model_id in _WAN_FILES:
         return _build_wan(prompt, params)
+    if model_id == LTX_23:
+        return _build_ltx(prompt, params)
     raise ValueError(f"no ComfyUI workflow for model: {model_id!r}")
 
 
@@ -354,6 +374,105 @@ def _build_wan(prompt: str, params: dict) -> dict:
     return graph
 
 
+def _build_ltx(prompt: str, params: dict) -> dict:
+    """LTX 2.3 text or first-frame to video, video track only."""
+    first = params.get("image_data_uri")
+    variant = params.get("variant")
+    if variant == "landscape":
+        # Always 16:9 for the multi-crop pipeline; a start image is cropped to the frame.
+        width, height = _LTX_SIZES["16:9"]
+        if first:
+            _decode_data_uri(first)
+    elif first:
+        image_size = params.get("image_size")
+        if image_size is None:
+            image_size = _image_size(_decode_data_uri(first)[0])
+        width, height = _fit_to_image(_LTX_PIXELS, image_size, 64)
+    elif variant == "vertical":
+        width, height = _LTX_SIZES["9:16"]
+    else:
+        size = _LTX_SIZES.get(params.get("aspect_ratio") or "9:16")
+        if size is None:
+            raise ValueError("aspect ratio must be 16:9, 9:16 or 1:1")
+        width, height = size
+
+    # LTX's latent grid: frame counts are 8n + 1 at 24 fps.
+    frames = _int_param(params, "duration", 5, 2, 15) * _LTX_FPS + 1
+    negative = (params.get("negative_prompt") or "").strip() or _LTX_NEGATIVE
+    checkpoint = _LTX_FILES["checkpoint"]
+
+    graph: dict = {
+        "ckpt": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": checkpoint}},
+        "clip": {"class_type": "LTXAVTextEncoderLoader", "inputs": {
+            "text_encoder": _LTX_FILES["text_encoder"], "ckpt_name": checkpoint, "device": "default"}},
+        "audio_vae": {"class_type": "LTXVAudioVAELoader", "inputs": {"ckpt_name": checkpoint}},
+        "upscaler": {"class_type": "LatentUpscaleModelLoader", "inputs": {"model_name": _LTX_FILES["upscaler"]}},
+        "lora": {"class_type": "LoraLoaderModelOnly", "inputs": {
+            "model": ["ckpt", 0], "lora_name": _LTX_FILES["lora"], "strength_model": 0.5}},
+        "positive": {"class_type": "CLIPTextEncode", "inputs": {"text": prompt, "clip": ["clip", 0]}},
+        "negative": {"class_type": "CLIPTextEncode", "inputs": {"text": negative, "clip": ["clip", 0]}},
+        "cond": {"class_type": "LTXVConditioning", "inputs": {
+            "positive": ["positive", 0], "negative": ["negative", 0], "frame_rate": _LTX_FPS}},
+        # First pass at half size. The model makes sound alongside the picture;
+        # the lab posts with campaign sounds, so the sound is never decoded.
+        "latent": {"class_type": "EmptyLTXVLatentVideo", "inputs": {
+            "width": width // 2, "height": height // 2, "length": frames, "batch_size": 1}},
+        "audio_latent": {"class_type": "LTXVEmptyLatentAudio", "inputs": {
+            "frames_number": frames, "frame_rate": _LTX_FPS, "batch_size": 1, "audio_vae": ["audio_vae", 0]}},
+        "av1": {"class_type": "LTXVConcatAVLatent", "inputs": {
+            "video_latent": ["latent", 0], "audio_latent": ["audio_latent", 0]}},
+        "noise": {"class_type": "RandomNoise", "inputs": {"noise_seed": _seed(params)}},
+        "sampler": {"class_type": "KSamplerSelect", "inputs": {"sampler_name": "euler"}},
+        "sigmas1": {"class_type": "ManualSigmas", "inputs": {"sigmas": _LTX_FIRST_PASS_SIGMAS}},
+        "guider1": {"class_type": "CFGGuider", "inputs": {
+            "model": ["lora", 0], "positive": ["cond", 0], "negative": ["cond", 1], "cfg": 1.0}},
+        "sample1": {"class_type": "SamplerCustomAdvanced", "inputs": {
+            "noise": ["noise", 0], "guider": ["guider1", 0], "sampler": ["sampler", 0],
+            "sigmas": ["sigmas1", 0], "latent_image": ["av1", 0]}},
+        "split1": {"class_type": "LTXVSeparateAVLatent", "inputs": {"av_latent": ["sample1", 0]}},
+        # Second pass: enlarge the latent and refine at full size.
+        "upsample": {"class_type": "LTXVLatentUpsampler", "inputs": {
+            "samples": ["split1", 0], "upscale_model": ["upscaler", 0], "vae": ["ckpt", 2]}},
+        "av2": {"class_type": "LTXVConcatAVLatent", "inputs": {
+            "video_latent": ["upsample", 0], "audio_latent": ["split1", 1]}},
+        "crop": {"class_type": "LTXVCropGuides", "inputs": {
+            "positive": ["cond", 0], "negative": ["cond", 1], "latent": ["split1", 0]}},
+        "noise2": {"class_type": "RandomNoise", "inputs": {"noise_seed": 42}},
+        "sigmas2": {"class_type": "ManualSigmas", "inputs": {"sigmas": _LTX_SECOND_PASS_SIGMAS}},
+        "guider2": {"class_type": "CFGGuider", "inputs": {
+            "model": ["lora", 0], "positive": ["crop", 0], "negative": ["crop", 1], "cfg": 1.0}},
+        "sample2": {"class_type": "SamplerCustomAdvanced", "inputs": {
+            "noise": ["noise2", 0], "guider": ["guider2", 0], "sampler": ["sampler", 0],
+            "sigmas": ["sigmas2", 0], "latent_image": ["av2", 0]}},
+        "split2": {"class_type": "LTXVSeparateAVLatent", "inputs": {"av_latent": ["sample2", 0]}},
+        "decode": {"class_type": "VAEDecodeTiled", "inputs": {
+            "samples": ["split2", 0], "vae": ["ckpt", 2], "tile_size": 768, "overlap": 64,
+            "temporal_size": 4096, "temporal_overlap": 4}},
+        "video": {"class_type": "CreateVideo", "inputs": {"images": ["decode", 0], "fps": _LTX_FPS}},
+        "save": {"class_type": "SaveVideo", "inputs": {
+            "video": ["video", 0], "filename_prefix": "content-lab/ltx",
+            "format": "auto", "codec": "auto"}},
+    }
+    if first:
+        # The start image conditions both passes, cropped to the frame.
+        graph["first_frame"] = {"class_type": "LoadImage", "inputs": {
+            "image": params.get("image_name") or "pending-upload"}}
+        graph["first_fit"] = {"class_type": "ImageScale", "inputs": {
+            "image": ["first_frame", 0], "upscale_method": "lanczos",
+            "width": width, "height": height, "crop": "center"}}
+        graph["first_prep"] = {"class_type": "LTXVPreprocess", "inputs": {
+            "image": ["first_fit", 0], "img_compression": 18}}
+        graph["i2v1"] = {"class_type": "LTXVImgToVideoInplace", "inputs": {
+            "vae": ["ckpt", 2], "image": ["first_prep", 0], "latent": ["latent", 0],
+            "strength": 0.7, "bypass": False}}
+        graph["av1"]["inputs"]["video_latent"] = ["i2v1", 0]
+        graph["i2v2"] = {"class_type": "LTXVImgToVideoInplace", "inputs": {
+            "vae": ["ckpt", 2], "image": ["first_prep", 0], "latent": ["upsample", 0],
+            "strength": 1.0, "bypass": False}}
+        graph["av2"]["inputs"]["video_latent"] = ["i2v2", 0]
+    return graph
+
+
 async def _upload_image(client: httpx.AsyncClient, url: str, raw: bytes, extension: str) -> str:
     name = f"content-lab-{uuid.uuid4().hex}.{extension}"
     resp = await client.post(
@@ -390,6 +509,20 @@ async def _still_queued(client: httpx.AsyncClient, url: str, prompt_id: str) -> 
         return False
     except (httpx.HTTPError, ValueError):
         return True
+
+
+async def _history(client: httpx.AsyncClient, url: str, prompt_id: str) -> dict | None:
+    """The server's record of one prompt, or None when it has none yet.
+
+    ComfyUI answers nothing while it swaps large models in and out (seen for
+    well over 30 s on the studio Mac), so a timed-out poll means "ask again",
+    not "the render failed"; the job's own deadline still bounds the wait.
+    """
+    try:
+        poll = await client.get(f"{url}/history/{prompt_id}", timeout=30)
+    except httpx.TimeoutException:
+        return None
+    return poll.json().get(prompt_id) if poll.status_code == 200 else None
 
 
 def _execution_error(history: dict) -> str | None:
@@ -503,13 +636,11 @@ async def _render(url: str, prompt: str, params: dict, client: httpx.AsyncClient
     deadline = time.monotonic() + _timeout_seconds()
     polls = 0
     while time.monotonic() < deadline:
-        poll = await client.get(f"{url}/history/{prompt_id}", timeout=30)
-        history = poll.json().get(prompt_id) if poll.status_code == 200 else None
+        history = await _history(client, url, prompt_id)
         polls += 1
         if history is None and polls % _QUEUE_CHECK_EVERY == 0 and not await _still_queued(client, url, prompt_id):
             # One more look: it may have finished between the two requests.
-            poll = await client.get(f"{url}/history/{prompt_id}", timeout=30)
-            history = poll.json().get(prompt_id) if poll.status_code == 200 else None
+            history = await _history(client, url, prompt_id)
             if history is None:
                 raise RuntimeError("ComfyUI no longer has this job (cancelled, or the server restarted)")
         if isinstance(history, dict):
