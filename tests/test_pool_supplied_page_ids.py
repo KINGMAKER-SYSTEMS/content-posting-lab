@@ -61,6 +61,8 @@ POOL_FED_PAGE_IDS = frozenset({
     # Good Boy Records: Petal After Dark and Glass Signal (finished Studio edits).
     "acct:user3771297960159",
     "acct:user9795207473816",
+    # between.the.lines66: vault pool clips with no Lab receipt (pad #746).
+    "acct:between-the-lines66",
 })
 
 
