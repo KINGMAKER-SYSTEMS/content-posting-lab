@@ -316,7 +316,9 @@ def test_curated_executor_change_is_scoped_to_the_two_pages():
     contracts_doc = json.loads(
         (UGC_EXECUTOR_PATH.parents[1] / "content-format-contracts.v1.json").read_bytes()
     )
-    others = {slug: entry for slug, entry in contracts_doc["contracts"].items() if slug != "ugc-slideshow"}
+    separate_formats = {"ugc-slideshow", "outfit-faceless", "flower-morph", "glass-architecture"}
+    others = {slug: entry for slug, entry in contracts_doc["contracts"].items()
+              if slug not in separate_formats}
     assert hashlib.sha256(json.dumps(
         others, sort_keys=True, separators=(",", ":")).encode()).hexdigest() == (
         "753a86b41a737ad3b922829c3b6db3cc7481c2752e1c412f52382cfdd06b2051"
@@ -324,7 +326,8 @@ def test_curated_executor_change_is_scoped_to_the_two_pages():
     registry_doc = json.loads(
         (UGC_EXECUTOR_PATH.parents[1] / "content-engine-registry.v1.json").read_bytes()
     )
-    profiles = {slug: entry for slug, entry in registry_doc["profiles"].items() if slug != "ugc-slideshow"}
+    profiles = {slug: entry for slug, entry in registry_doc["profiles"].items()
+                if slug not in separate_formats}
     assert hashlib.sha256(json.dumps(
         profiles, sort_keys=True, separators=(",", ":")).encode()).hexdigest() == (
         "ba81c64a62c0f2c662bc8330ac4d44094100840df26ce58cbd5a1c726ae31743"

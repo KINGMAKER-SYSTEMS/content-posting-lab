@@ -292,7 +292,9 @@ def _validate_spec(
         )
     if schema == "dossier.recipe-spec.v4":
         try:
-            validate_caption_discipline(spec.get("captionDiscipline"))
+            validate_caption_discipline(
+                spec.get("captionDiscipline"), page_id=page_id, format_mix=demand["formatMix"],
+            )
         except ValueError as error:
             raise HTTPException(400, str(error)) from error
     return spec

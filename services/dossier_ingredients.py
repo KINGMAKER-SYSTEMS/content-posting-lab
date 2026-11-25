@@ -979,6 +979,20 @@ def _format_entry(
         # Lab image library and slideshow treatment must not block Save & apply.
         # Lyric-video still needs a bound timing set to produce a valid selection.
         for ingredient in ingredients:
+            if (
+                ingredient["ingredientId"] == "master-source-video"
+                and ingredient["status"] == "missing"
+                and ingredient.get("binding") is None
+                and not ingredient.get("options")
+            ):
+                # A listed page whose finished clips are rendered OUTSIDE the
+                # Lab (Good Boy Drop Line POV) has no master at all. The pool
+                # supplies the clips, so the missing master must not block
+                # Save & apply. Only a master with no library and no option is
+                # covered: a listed page that has masters keeps its binding.
+                ingredient["required"] = False
+                ingredient["status"] = "pool_supplied"
+                continue
             if ingredient["ingredientId"] not in POOL_SUPPLIED_INGREDIENT_IDS:
                 continue
             if (
